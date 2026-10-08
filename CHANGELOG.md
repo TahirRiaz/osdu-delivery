@@ -13,6 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Search terms are deleted and restored several at once.** Each row of the Search terms page has a box (a shift-click
+  picks a range, Space the row the keys are on, the header's box every row listed); while any are picked, the states
+  give way to **Delete** and **Restore**. A term a pipeline reads is taken out of the explorer and listed under the new
+  **Deleted** state, its name, note and route kept until it is restored, since each sync extracts it again; a term no
+  longer found is removed for good. A deletion is confirmed first and acts only on the rows listed. **Left out** is
+  called **Deleted** throughout, and the first state lists the terms not deleted. New routes
+  `POST /api/v1/delivery/search-terms/delete` and `/restore`, each one save for every term named
+  ([osdu/docs/search-terms.md](osdu/docs/search-terms.md#deleting-terms)).
+
 - **The explorer searches in one attribute picked at the field's start.** The search field begins with where it
   searches, **In every property** by default: a property or a source column picked there (the type's source columns
   first) makes what is typed a value of it, with the values it holds listed under the field as it is typed, the commonest

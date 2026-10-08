@@ -15,8 +15,8 @@ the cache: the mappings and the cache flows' declarations (metadata, never a cac
 what it finds is what OSDU holds.
 
 The **Search terms** page (`/delivery/search-terms`, in the OSDU navigation group) lists the terms and refines them:
-renamed to what the people searching call them, left out of the explorer, searched through another of their routes, or
-given a note.
+renamed to what the people searching call them, searched through another of their routes, or given a note, and deletes
+them from the explorer, several at once, or restores them.
 
 ## Where the terms come from
 
@@ -135,8 +135,8 @@ term that was gone comes back. A refinement whose term no pipeline gives any lon
 it is removed.
 
 Terms were first keyed by their mapping's source system, so one table read by two flows under two systems gave two
-terms. Each sync moves what was made of such a term to the term its column is now, the table's: a name, a note, leaving
-it out, and a route picked where the term still has it. Of two made for what is now one term, the newer moves; the other
+terms. Each sync moves what was made of such a term to the term its column is now, the table's: a name, a note, its
+deletion, and a route picked where the term still has it. Of two made for what is now one term, the newer moves; the other
 stays, listed as **No longer found**, for a person to remove. Nothing else is written: the terms themselves are a read
 model the control plane writes again from the pipelines.
 
@@ -144,18 +144,34 @@ model the control plane writes again from the pipelines.
   its entity type in any case). Empty, or the column's own label, is the column's label: `WellLogCurve.curve_unit`.
 - **Note**: what the term means to the people searching by it (at most 1,000 characters), on hover wherever the term
   is offered.
-- **Offered in the explorer**: off, the term is left out. It stays listed here and is never offered; a condition on it
-  that a link still carries is refused with why.
+- **Offered in the explorer**: off, the term is deleted ([Deleting terms](#deleting-terms)). It is listed under
+  **Deleted** and never offered; a condition on it that a link still carries is refused with why.
 - **Searched as**: one of the routes that can be searched. Left to the term, it is searched by the plainest one.
 
 A refinement that keeps none of these is removed, and **Reset** removes it at once: the term is searched as its
 pipelines give it again. Every change records who made it and when.
 
+### Deleting terms
+
+A term a pipeline reads cannot be erased: the next sync extracts it from the pipeline again. Deleting it takes it out of
+the search instead. The explorer no longer offers it, a condition on it that a link still carries is refused with why,
+and it is listed under **Deleted** with its name, note and route kept, through every sync, until it is restored. A term
+no longer found is only what was made of it, and deleting it removes that for good.
+
+On the Search terms page every row has a box: a click picks the row (a shift-click every row from the one picked last),
+Space picks the row the arrow keys are on, and the box in the header picks every row listed. While any are picked, the
+states give way to how many are and what can be done with them: **Delete**, confirmed first with what happens to each
+kind, and **Restore** for the deleted ones, which offers them in the explorer again as they were (a refinement that kept
+nothing but the deletion is removed). Only rows listed are acted on, never one the find hides, and picking another type
+or state lets the rows picked go. One request deletes or restores every term picked, in one save
+(`SearchTermDirectory.DeleteAsync`, `RestoreAsync`), and an id that is no term any longer is reported, not refused. The
+switch **Offered in the explorer** deletes and restores one term the same way.
+
 ### The Search terms page
 
 The page lists the terms of one entity type (picked at its head, each with how many terms it has), found by any part of
-a name, a column or a path, and shown by state: **Every term**, **Searched**, **Left out**, **Not searchable** and **No
-longer found**, each with its count. A row says the term's name (a note on hover), the source column in full (the table's
+a name, a column or a path, and shown by state: **Terms** (every term not deleted), **Searched**, **Not searchable**,
+**Deleted** and **No longer found**, each with its count. A row says the term's name (a note on hover), the source column in full (the table's
 whole name and the column, cut from its start when long, so the column stays in view), the property it is searched in
 with how it gets there (`steps`, `lookup`, `search`), its state (why it cannot be searched on hover) and when it was last
 changed. The grid fits the page and scrolls in place. A row opens the term in a panel: its name and note, whether the
@@ -184,7 +200,7 @@ the records the column's route finds (the wellbores' names), and a value searche
 With no choice made, the terms searched in lately for the type are offered under the properties as text is typed
 (`Wellbore UWI is NO 34/10-A-12`), and **Pick another property or source column** opens the field's choice with the
 text kept. Each condition names its term by id in
-the address (`st`), so a link brings it back. A term no longer offered (left out, or no mapping reads it) is marked on
+the address (`st`), so a link brings it back. A term no longer offered (deleted, or no mapping reads it) is marked on
 its chip, and the search says why it was refused.
 
 The control plane resolves every condition naming a term before the search is checked or run, in the partition the
@@ -216,9 +232,11 @@ keeping every refinement.
 | --- | --- | --- |
 | `GET /api/v1/delivery/search-terms?entityType=&kind=&orphans=` | read | The terms of an entity type, or of the one a kind or kind pattern names (`*:*:work-product-component--WellLog:*`; a pattern of many types has none), or of every type, a term once per type it reaches; named by a kind, each is searched through its route for that kind. With `orphans=true`, the refinements whose terms no pipeline gives any longer too. Each term: `id`, `key`, `source` (the table), `table`, `entityType`, `column`, `columnLabel` (`WellLog.wellbore_uwi`), `systems`, `name`, `renamed`, `excluded`, `note`, `pickedRoute`, `route` (the one searched by), `routes` (each `id`, `entityType`, `kinds`, `dataset`, `target`, `path`, `kind`, `how`, `steps`, `mappings`, `location`, `find`, `keyColumns`, `when`, `description`, `index`, `nested`, `conditions`, `problem`), `flows`, `mappings`, `problem`, `suggest` (where its values are listed from: `kind`, `path`, `index`, `nested`), `orphan`, `updatedBy`, `updatedUtc`. |
 | `GET /api/v1/delivery/search-terms/entity-types` | read | The entity types terms are extracted for, each with how many terms it has. |
-| `GET /api/v1/delivery/search-terms/{termId}?entityType=` | read | One term as it reaches `entityType` (the first type it reaches when left out), or its refinement while no pipeline gives it; 404 for neither. |
+| `GET /api/v1/delivery/search-terms/{termId}?entityType=` | read | One term as it reaches `entityType` (the first type it reaches when none is named), or its refinement while no pipeline gives it; 404 for neither. `excluded` is true for a deleted term. |
 | `PUT /api/v1/delivery/search-terms/{termId}?entityType=` | author | Refines a term, as shown for `entityType`. Body: `name`, `excluded`, `route` (a route's `id`), `note`. A body that keeps nothing removes the refinement. A name another term of the type has, a route the term does not have or that cannot be searched, or a name or note too long is refused with 400; a term no pipeline gives with 400 too, since only its refinement can be removed. |
 | `DELETE /api/v1/delivery/search-terms/{termId}/refinement` | author | Removes what people made of the term: 204, or 404 when there was nothing. |
+| `POST /api/v1/delivery/search-terms/delete` | author | Deletes terms, in one save. Body: `terms` (ids, at most 5,000) and `entityType`, the type they are listed for. A term a pipeline reads is taken out of the search, its name, note and route kept; a term no pipeline reads has its refinement removed. Answers `deleted`, `removed` and `missing` (the ids that were neither), each a list of ids; no id given, or too many, is refused with 400. |
+| `POST /api/v1/delivery/search-terms/restore` | author | Offers deleted terms in the explorer again, in one save. Body: `terms` (ids, at most 5,000). Answers `restored` and `missing` (the ids no pipeline reads); no id given, or too many, is refused with 400. |
 | `POST /api/v1/delivery/explorer/search`, `/explorer/types`, `/explorer/validate-list` | operate | A condition of `filters` names a term by `term` (its id) in place of a property: its `condition`, `value`, `values` and `to` are the source's own. The `path` and `index` it carries are the property the route compares, which the page shows as a column; the control plane resolves the condition from the term, through its route for the search's `kind`. |
 
 The MCP server offers none of these routes.

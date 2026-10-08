@@ -1,36 +1,100 @@
 import { useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleOff, EyeOff, Info, Search, Telescope, TextSearch, Undo2 } from "lucide-react";
+import { toast } from "sonner";
+import { CircleOff, Info, Search, Telescope, TextSearch, Trash2, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
 import { Page } from "@/components/Page";
 import { RelativeTime } from "@/components/RelativeTime";
 import { RichTooltip } from "@/components/RichTooltip";
 import { cn } from "@/lib/utils";
 import { failureText } from "../answers";
+import { counted } from "../assertions/assertionFormat";
 import { ExplorerGrid, type GridColumn } from "../explorer/ExplorerGrid";
 import { kindParts } from "../explorer/explorerModel";
 import { routeVersions, termSource } from "../explorer/explorerTerms";
 import { useWindowFit } from "../useWindowFit";
-import { searchTermsApi, searchedRoute, type SearchRouteView, type SearchTermView } from "../../../api/searchTerms";
+import {
+  searchTermsApi,
+  searchedRoute,
+  type SearchRouteView,
+  type SearchTermDeletion,
+  type SearchTermRestoration,
+  type SearchTermView,
+} from "../../../api/searchTerms";
 
-/** What the grid lists: every term, those searched, those left out, those that cannot be searched, or refinements of terms no longer found. */
-type Show = "all" | "searched" | "excluded" | "unsearchable" | "orphans";
+/** Where a term stands: searched, not searchable, deleted (taken out of the search), or a refinement whose term is no longer found. */
+type TermState = "searched" | "unsearchable" | "deleted" | "orphans";
+
+/** What the grid lists: the terms not deleted, or the terms in one state. */
+type Show = "all" | TermState;
 
 const SHOWS: { value: Show; label: string }[] = [
-  { value: "all", label: "Every term" },
+  { value: "all", label: "Terms" },
   { value: "searched", label: "Searched" },
-  { value: "excluded", label: "Left out" },
   { value: "unsearchable", label: "Not searchable" },
+  { value: "deleted", label: "Deleted" },
   { value: "orphans", label: "No longer found" },
 ];
+
+function stateOf(term: SearchTermView): TermState {
+  if (term.orphan) {
+    return "orphans";
+  }
+
+  if (term.excluded) {
+    return "deleted";
+  }
+
+  return term.problem === null ? "searched" : "unsearchable";
+}
+
+/** Whether `show` lists a term in `state`: the terms tab lists every term not deleted and still found. */
+function listedIn(show: Show, state: TermState): boolean {
+  return show === "all" ? state === "searched" || state === "unsearchable" : show === state;
+}
+
+/** What a deletion did, in a sentence. */
+function deletionText(deletion: SearchTermDeletion): string {
+  return [
+    deletion.deleted.length > 0 ? `${counted(deletion.deleted.length, "term")} deleted` : null,
+    deletion.removed.length > 0 ? `${counted(deletion.removed.length, "term")} no longer found removed` : null,
+    deletion.missing.length > 0 ? `${counted(deletion.missing.length, "term")} gone already` : null,
+  ].filter((part) => part !== null).join(", ");
+}
+
+/** What a restoration did, in a sentence. */
+function restorationText(restoration: SearchTermRestoration): string {
+  return [
+    restoration.restored.length > 0 ? `${counted(restoration.restored.length, "term")} restored` : null,
+    restoration.missing.length > 0 ? `${counted(restoration.missing.length, "term")} no pipeline reads any longer` : null,
+  ].filter((part) => part !== null).join(", ");
+}
+
+/** What deleting the terms picked does, said before it is done: the terms a pipeline reads leave the search, the others go. */
+function deletionMessage(terms: SearchTermView[]): string {
+  const read = terms.filter((term) => !term.orphan).length;
+  const gone = terms.length - read;
+  return [
+    read === 0
+      ? null
+      : read === 1
+        ? "1 term leaves the search and moves to Deleted, where it keeps its name and note and can be restored. A pipeline still reads its column, so it cannot be erased: each sync finds it again, still deleted."
+        : `${counted(read, "term")} leave the search and move to Deleted, where they keep their names and notes and can be restored. Pipelines still read their columns, so they cannot be erased: each sync finds them again, still deleted.`,
+    gone === 0
+      ? null
+      : `${counted(gone, "term")} no longer found ${gone === 1 ? "is" : "are"} removed for good, with what was made of ${gone === 1 ? "it" : "them"}.`,
+  ].filter((part) => part !== null).join(" ");
+}
 
 /** The least height the grid keeps, so a short window still shows a few rows. */
 const MIN_HEIGHT = 360;
@@ -38,14 +102,14 @@ const MIN_HEIGHT = 360;
 /** What stays under the grid: the page's bottom padding and the workbench's status bar. */
 const BELOW = 46;
 
-/** A term's state, in a word and a mark: searched, left out, not searchable, no longer found. */
+/** A term's state, in a word and a mark: searched, deleted, not searchable, no longer found. */
 function State({ term }: { term: SearchTermView }) {
   if (term.orphan) {
     return <span className="text-[12px] text-muted-foreground" title={term.problem ?? undefined}>No longer found</span>;
   }
 
   if (term.excluded) {
-    return <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground"><EyeOff className="size-3.5" />Left out</span>;
+    return <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground"><Trash2 className="size-3.5" />Deleted</span>;
   }
 
   if (term.problem) {
@@ -81,9 +145,9 @@ const ROUTE_WORDS: Record<SearchRouteView["kind"], string | null> = {
 /**
  * Search terms (osdu/docs/search-terms.md): the columns of the source systems that the mappings of active delivery flows
  * read, extracted by every repository sync, each with the routes by which it reaches the records. Here they are refined:
- * renamed to what the people searching call them, left out of the search, searched through another of their routes, or
- * given a note; what is made of a term holds across syncs and mapping versions. The explorer offers the terms searched,
- * by their names, wherever it offers a property of the type.
+ * renamed to what the people searching call them, searched through another of their routes, or given a note, one at a
+ * time; and picked, several at once, to be deleted from the search or restored. What is made of a term holds across syncs
+ * and mapping versions. The explorer offers the terms searched, by their names, wherever it offers a property of the type.
  */
 export default function SearchTermsPage() {
   const [params, setParams] = useSearchParams();
@@ -92,6 +156,10 @@ export default function SearchTermsPage() {
   const show = (SHOWS.find((s) => s.value === params.get("show"))?.value ?? "all") as Show;
   const [typed, setTyped] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  // The terms picked to act on together, and the row a shift-click picks from.
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const anchor = useRef<number | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const frame = useRef<HTMLDivElement>(null);
   useWindowFit(frame, BELOW, MIN_HEIGHT, undefined, "height");
 
@@ -107,47 +175,122 @@ export default function SearchTermsPage() {
   const shown = useMemo(() => {
     const wanted = typed.trim().toLowerCase();
     return (terms.data?.terms ?? [])
-      .filter((term) => {
-        switch (show) {
-          case "searched":
-            return !term.orphan && !term.excluded && term.problem === null;
-          case "excluded":
-            return term.excluded && !term.orphan;
-          case "unsearchable":
-            return !term.orphan && term.problem !== null;
-          case "orphans":
-            return term.orphan;
-          default:
-            return !term.orphan;
-        }
-      })
+      .filter((term) => listedIn(show, stateOf(term)))
       .filter((term) => wanted === "" || [term.name, term.columnLabel, term.source, ...term.routes.map((r) => r.path)].some((text) => text.toLowerCase().includes(wanted)));
   }, [terms.data, show, typed]);
   const counts = useMemo(() => {
     const all = terms.data?.terms ?? [];
-    return {
-      all: all.filter((t) => !t.orphan).length,
-      searched: all.filter((t) => !t.orphan && !t.excluded && t.problem === null).length,
-      excluded: all.filter((t) => t.excluded && !t.orphan).length,
-      unsearchable: all.filter((t) => !t.orphan && t.problem !== null).length,
-      orphans: all.filter((t) => t.orphan).length,
-    } satisfies Record<Show, number>;
+    return Object.fromEntries(SHOWS.map(({ value }) => [value, all.filter((term) => listedIn(value, stateOf(term))).length])) as Record<Show, number>;
   }, [terms.data]);
 
-  const navigate = (changes: Record<string, string | null>) => setParams((current) => {
-    const next = new URLSearchParams(current);
-    for (const [key, value] of Object.entries(changes)) {
-      if (value === null) {
-        next.delete(key);
+  // What is acted on is what is picked and listed: a term the find hides is never deleted unseen.
+  const pickedShown = shown.filter((term) => picked.has(term.id));
+  const deletable = pickedShown.filter((term) => term.orphan || !term.excluded);
+  const restorable = pickedShown.filter((term) => !term.orphan && term.excluded);
+  const allPicked = shown.length > 0 && pickedShown.length === shown.length;
+
+  const navigate = (changes: Record<string, string | null>) => {
+    // Another type or another state lists other terms: what was picked there is let go.
+    setPicked(new Set());
+    anchor.current = null;
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null) {
+          next.delete(key);
+        } else {
+          next.set(key, value);
+        }
+      }
+
+      return next;
+    }, { replace: true });
+  };
+
+  /** Picks the term at `index` or lets it go; with `range`, every term from the one picked last to it, alike. */
+  const pick = (term: SearchTermView, index: number, range: boolean) => {
+    const from = range && anchor.current !== null ? Math.min(anchor.current, index) : index;
+    const to = range && anchor.current !== null ? Math.max(anchor.current, index) : index;
+    const on = !picked.has(term.id);
+    setPicked((current) => {
+      const next = new Set(current);
+      for (const row of shown.slice(from, to + 1)) {
+        if (on) {
+          next.add(row.id);
+        } else {
+          next.delete(row.id);
+        }
+      }
+
+      return next;
+    });
+    anchor.current = index;
+  };
+
+  const pickAll = (on: boolean) => setPicked((current) => {
+    const next = new Set(current);
+    for (const term of shown) {
+      if (on) {
+        next.add(term.id);
       } else {
-        next.set(key, value);
+        next.delete(term.id);
       }
     }
 
     return next;
-  }, { replace: true });
+  });
+
+  const changed = () => {
+    setPicked(new Set());
+    anchor.current = null;
+    void queryClient.invalidateQueries({ queryKey: ["delivery", "search-terms"] });
+  };
+  const remove = useMutation({
+    mutationFn: (ids: string[]) => searchTermsApi.delete(ids, chosen ?? undefined),
+    onSuccess: (deletion) => {
+      setConfirming(false);
+      toast.success(deletionText(deletion));
+      changed();
+    },
+    onError: (error) => toast.error(failureText(error)),
+  });
+  const restore = useMutation({
+    mutationFn: (ids: string[]) => searchTermsApi.restore(ids),
+    onSuccess: (restoration) => {
+      toast.success(restorationText(restoration));
+      changed();
+    },
+    onError: (error) => toast.error(failureText(error)),
+  });
+  const busy = remove.isPending || restore.isPending;
 
   const columns: GridColumn<SearchTermView>[] = [
+    {
+      id: "pick",
+      header: (
+        <Checkbox
+          checked={allPicked ? true : pickedShown.length > 0 ? "indeterminate" : false}
+          disabled={shown.length === 0}
+          onCheckedChange={(on) => pickAll(on === true)}
+          aria-label="Select every term listed"
+          data-testid="search-terms-pick-all"
+        />
+      ),
+      width: 18,
+      render: (term, index) => (
+        <Checkbox
+          checked={picked.has(term.id)}
+          // The row opens the term on a click; the box only picks it, a shift-click every term from the last one picked.
+          onClick={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            pick(term, index, event.shiftKey);
+          }}
+          aria-label={`Select ${term.name}`}
+          data-testid="search-terms-pick"
+        />
+      ),
+    },
     {
       id: "name",
       header: "Name",
@@ -205,7 +348,7 @@ export default function SearchTermsPage() {
     },
   ];
 
-  const selected = (terms.data?.terms ?? []).find((term) => term.id === open) ?? null;
+  const opened = (terms.data?.terms ?? []).find((term) => term.id === open) ?? null;
   let body;
   if (types.isPending || (chosen !== null && terms.isPending)) {
     body = <p className="p-4 text-[13px] text-muted-foreground">Reading the search terms.</p>;
@@ -229,6 +372,8 @@ export default function SearchTermsPage() {
         columns={columns}
         rowKey={(term) => term.id}
         onOpen={(term) => setOpen(term.id)}
+        picked={(term) => picked.has(term.id)}
+        onPick={(term, index) => pick(term, index, false)}
         label="Search terms"
         testId="search-terms-grid"
       />
@@ -241,7 +386,7 @@ export default function SearchTermsPage() {
         <h1 className="text-lg font-semibold leading-7">Search terms</h1>
         <RichTooltip
           title="Search terms"
-          body="The columns of your source systems, as the mappings of active delivery flows read them, each with the place in the OSDU record it fills. The explorer searches by them: a value typed for a term is put through the mapping as a delivery puts it, and the search asks OSDU's own search service. Each sync extracts them again; a name, a note, leaving a term out or the route picked here holds across syncs."
+          body="The columns of your source systems, as the mappings of active delivery flows read them, each with the place in the OSDU record it fills. The explorer searches by them: a value typed for a term is put through the mapping as a delivery puts it, and the search asks OSDU's own search service. Each sync extracts them again; a name, a note, the route picked or a term deleted here holds across syncs. Pick several to delete or restore them together."
         >
           <Info className="size-4 text-muted-foreground" aria-label="About search terms" />
         </RichTooltip>
@@ -273,36 +418,71 @@ export default function SearchTermsPage() {
       </div>
       <div ref={frame} className="flex min-h-0 flex-col" data-testid="search-terms-frame">
         <Card className="min-h-0 flex-1 gap-0 overflow-hidden rounded-lg p-0">
-          <div className="flex items-center gap-1 border-b px-2 py-1.5" role="tablist" aria-label="Which terms">
-            {SHOWS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="tab"
-                aria-selected={show === option.value}
-                onClick={() => navigate({ show: option.value === "all" ? null : option.value })}
-                className={cn("rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:bg-accent/60 hover:text-foreground", show === option.value && "bg-accent text-foreground")}
-                data-testid="search-terms-show"
-              >
-                {option.label}
-                <span className="ml-1.5 font-mono tabular-nums text-[11px]">{counts[option.value]}</span>
-              </button>
-            ))}
-          </div>
+          {/* The terms picked take the place of the states while any are, so the rows never move under the pointer. */}
+          {pickedShown.length === 0
+            ? (
+              <div className="flex h-9 shrink-0 items-center gap-1 border-b px-2" role="tablist" aria-label="Which terms">
+                {SHOWS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="tab"
+                    aria-selected={show === option.value}
+                    onClick={() => navigate({ show: option.value === "all" ? null : option.value })}
+                    className={cn("rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:bg-accent/60 hover:text-foreground", show === option.value && "bg-accent text-foreground")}
+                    data-testid="search-terms-show"
+                  >
+                    {option.label}
+                    <span className="ml-1.5 font-mono tabular-nums text-[11px]">{counts[option.value]}</span>
+                  </button>
+                ))}
+              </div>
+            )
+            : (
+              <div className="flex h-9 shrink-0 items-center gap-2 border-b bg-muted/40 px-3 text-[12px]" data-testid="search-terms-selection">
+                <span className="font-medium" data-testid="search-terms-picked">{pickedShown.length} of {shown.length} selected</span>
+                <div className="grow" />
+                {deletable.length > 0 && (
+                  <Button size="xs" variant="outline" className="text-destructive hover:text-destructive" disabled={busy} onClick={() => setConfirming(true)} data-testid="search-terms-delete">
+                    <Trash2 />
+                    Delete {deletable.length}
+                  </Button>
+                )}
+                {restorable.length > 0 && (
+                  <Button size="xs" variant="outline" disabled={busy} onClick={() => restore.mutate(restorable.map((term) => term.id))} data-testid="search-terms-restore">
+                    <Undo2 />
+                    Restore {restorable.length}
+                  </Button>
+                )}
+                <Button size="xs" variant="ghost" disabled={busy} onClick={() => { setPicked(new Set()); anchor.current = null; }} data-testid="search-terms-clear">
+                  Clear
+                </Button>
+              </div>
+            )}
           {body}
         </Card>
       </div>
-      <Sheet open={selected !== null} onOpenChange={(next) => { if (!next) { setOpen(null); } }}>
+      <Sheet open={opened !== null} onOpenChange={(next) => { if (!next) { setOpen(null); } }}>
         <SheetContent className="w-[520px] gap-0 p-0 sm:max-w-[520px]" data-testid="search-term-sheet">
-          {selected !== null && (
+          {opened !== null && (
             <TermEditor
-              key={`${selected.id}:${selected.updatedUtc ?? ""}`}
-              term={selected}
+              key={`${opened.id}:${opened.updatedUtc ?? ""}:${opened.excluded}`}
+              term={opened}
               onSaved={() => void queryClient.invalidateQueries({ queryKey: ["delivery", "search-terms"] })}
             />
           )}
         </SheetContent>
       </Sheet>
+      <ConfirmDialog
+        open={confirming}
+        title={`Delete ${counted(deletable.length, "search term")}?`}
+        message={deletionMessage(deletable)}
+        confirmLabel="Delete"
+        danger
+        busy={remove.isPending}
+        onConfirm={() => remove.mutate(deletable.map((term) => term.id))}
+        onClose={() => setConfirming(false)}
+      />
     </Page>
   );
 }
@@ -350,7 +530,7 @@ function TermEditor({ term, onSaved }: { term: SearchTermView; onSaved: () => vo
               <label className="flex items-center justify-between gap-3 text-[13px]">
                 <span className="flex flex-col">
                   Offered in the explorer
-                  <span className="text-[11px] text-muted-foreground">Left out, the term is listed here and never offered as a search.</span>
+                  <span className="text-[11px] text-muted-foreground">Off, the term is deleted: listed under Deleted and never offered as a search.</span>
                 </span>
                 <Switch checked={!excluded} onCheckedChange={(on) => setExcluded(!on)} data-testid="search-term-offered" />
               </label>

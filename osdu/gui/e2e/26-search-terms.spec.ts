@@ -4,7 +4,8 @@ import type { APIRequestContext } from "@playwright/test";
 
 // The search terms (osdu/docs/search-terms.md): the columns of the source systems the mappings of active delivery flows
 // read, extracted by the seed's repository sync from the sample estate's WellLog mapping. The Search terms page lists
-// them with the property each fills, and refines one: renamed, noted, left out of the explorer and offered again. The
+// them with the property each fills, and refines one: renamed, noted, deleted from the explorer and offered again; and
+// deletes several at once, picked by their boxes, and restores them. The
 // explorer offers the terms beside the record's own properties: a value typed as Recall holds it is carried through the
 // mapping, here through the wellbore search the mapping makes, and asked of OSDU's own search like any condition.
 //
@@ -26,7 +27,11 @@ const TERMS_API = `${E2E.apiBaseUrl}/api/v1/delivery/search-terms`;
 interface TermRow {
   id: string;
   column: string;
+  columnLabel: string;
 }
+
+/** The two WellLog terms the spec deletes together and restores, by their tables' names and columns. */
+const PICKED = ["WellLog.index_min", "WellLog.index_max"];
 
 /** The id of the WellLog term of the Recall column `column`, as the seed's sync extracted it. */
 async function termId(request: APIRequestContext, column: string): Promise<string> {
@@ -39,6 +44,17 @@ async function termId(request: APIRequestContext, column: string): Promise<strin
   return term!.id;
 }
 
+/** The ids of the WellLog terms named `labels` (`WellLog.index_min`), as the seed's sync extracted them. */
+async function termIds(request: APIRequestContext, labels: string[]): Promise<string[]> {
+  const session = await adminSession(request);
+  const response = await request.get(`${TERMS_API}?entityType=${LOG_TYPE}`, { headers: { Authorization: `Bearer ${session.token}` } });
+  expect(response.ok(), await response.text()).toBe(true);
+  const body = (await response.json()) as { terms: TermRow[] };
+  const ids = labels.map((label) => body.terms.find((candidate) => candidate.columnLabel === label)?.id);
+  expect(ids.every((id) => id !== undefined), `the seed's sync extracts the WellLog terms ${labels.join(", ")}`).toBe(true);
+  return ids as string[];
+}
+
 /** Gives the term back as the mappings give it: no name, no note, offered, its likeliest route. */
 async function resetTerm(request: APIRequestContext, id: string): Promise<void> {
   const session = await adminSession(request);
@@ -48,10 +64,14 @@ async function resetTerm(request: APIRequestContext, id: string): Promise<void> 
 
 test.describe.serial("search terms", () => {
   let uwi = "";
+  let picked: string[] = [];
 
   test.beforeAll(async ({ playwright, request }) => {
     uwi = await termId(request, "wellbore_uwi");
-    await resetTerm(request, uwi);
+    picked = await termIds(request, PICKED);
+    for (const id of [uwi, ...picked]) {
+      await resetTerm(request, id);
+    }
     const standIn = await playwright.request.newContext();
     try {
       for (const log of LOGS) {
@@ -74,8 +94,8 @@ test.describe.serial("search terms", () => {
   });
 
   test.afterAll(async ({ playwright, request }) => {
-    if (uwi !== "") {
-      await resetTerm(request, uwi);
+    for (const id of [uwi, ...picked].filter((id) => id !== "")) {
+      await resetTerm(request, id);
     }
 
     // The stand-in forgets the records this spec gave it, so a later spec meets the platform as the suite starts it.
@@ -87,7 +107,7 @@ test.describe.serial("search terms", () => {
     }
   });
 
-  test("lists the columns the delivery flows read, and refines one: renamed, left out of the explorer, offered again", async ({ adminPage }) => {
+  test("lists the columns the delivery flows read, and refines one: renamed, deleted from the explorer, offered again", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-search-terms").click();
     await expect(adminPage.getByTestId("page-delivery-search-terms")).toBeVisible();
     await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}`);
@@ -120,13 +140,15 @@ test.describe.serial("search terms", () => {
     await adminPage.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
 
-    // Left out, it is listed as such, and the explorer no longer offers it.
+    // Deleted, it leaves the terms listed for the Deleted state, and the explorer no longer offers it.
     await renamed.click();
     await sheet.getByTestId("search-term-offered").click();
     await sheet.getByTestId("search-term-save").click();
-    await expect(renamed).toContainText("Left out", { timeout: 30_000 });
+    await expect(renamed).toHaveCount(0, { timeout: 30_000 });
     await adminPage.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
+    await adminPage.getByTestId("search-terms-show").filter({ hasText: "Deleted" }).click();
+    await expect(renamed).toContainText("Deleted", { timeout: 30_000 });
     await adminPage.getByTestId("search-terms-explore").click();
     await expect(adminPage.getByTestId("explorer-grid").getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
     await adminPage.getByTestId("explorer-add-filter").click();
@@ -134,15 +156,54 @@ test.describe.serial("search terms", () => {
     await expect(adminPage.locator(`[data-testid="explorer-filter-attributes-term"][data-term="${uwi}"]`)).toHaveCount(0);
     await adminPage.keyboard.press("Escape");
 
-    // Offered again.
-    await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}`);
+    // Offered again, it leaves the Deleted state.
+    await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}&show=deleted`);
     await find.fill("wellbore_uwi");
     await renamed.click();
     await sheet.getByTestId("search-term-offered").click();
     await sheet.getByTestId("search-term-save").click();
-    await expect(renamed).toContainText("Searched", { timeout: 30_000 });
+    await expect(renamed).toHaveCount(0, { timeout: 30_000 });
     await adminPage.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
+    await adminPage.getByTestId("search-terms-show").first().click();
+    await expect(renamed).toContainText("Searched", { timeout: 30_000 });
+  });
+
+  test("deletes several terms at once, picked by their boxes, and restores them together", async ({ adminPage }) => {
+    await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}`);
+    const grid = adminPage.getByTestId("search-terms-grid");
+    const rows = adminPage.getByTestId("search-terms-grid-row");
+    await expect(rows.first()).toBeVisible({ timeout: 60_000 });
+
+    // The rows the find lists, every one picked by the header's box: the states give way to what can be done with them.
+    await adminPage.getByTestId("search-terms-find").fill("WellLog.index_m");
+    await expect(rows).toHaveCount(2);
+    await grid.getByTestId("search-terms-pick-all").click();
+    await expect(adminPage.getByTestId("search-terms-picked")).toHaveText("2 of 2 selected");
+    await expect(adminPage.getByTestId("search-terms-show")).toHaveCount(0);
+
+    // Deleted after a confirmation that says they can be restored; both leave the terms listed in one request.
+    await adminPage.getByTestId("search-terms-delete").click();
+    const confirm = adminPage.getByTestId("confirm-dialog");
+    await expect(confirm).toContainText("2 terms leave the search and move to Deleted");
+    await confirm.getByRole("button", { name: "Delete" }).click();
+    await expect(confirm).toBeHidden({ timeout: 30_000 });
+    await expect(rows).toHaveCount(0, { timeout: 30_000 });
+    await expect(adminPage.getByTestId("search-terms-none")).toBeVisible();
+
+    // Listed under Deleted, each picked by its own box, and restored together.
+    await adminPage.getByTestId("search-terms-show").filter({ hasText: "Deleted" }).click();
+    await expect(rows).toHaveCount(2, { timeout: 30_000 });
+    await expect(rows.first()).toContainText("Deleted");
+    await rows.nth(0).getByTestId("search-terms-pick").click();
+    await rows.nth(1).getByTestId("search-terms-pick").click();
+    await expect(adminPage.getByTestId("search-term-sheet")).toBeHidden();
+    await adminPage.getByTestId("search-terms-restore").click();
+    await expect(rows).toHaveCount(0, { timeout: 30_000 });
+    await adminPage.getByTestId("search-terms-show").first().click();
+    await expect(rows).toHaveCount(2, { timeout: 30_000 });
+    await expect(rows.first()).toContainText("Searched");
+    await expect(rows.last()).toContainText("Searched");
   });
 
   test("searches the explorer by a source column, its value as Recall holds it, beside a property", async ({ adminPage }) => {

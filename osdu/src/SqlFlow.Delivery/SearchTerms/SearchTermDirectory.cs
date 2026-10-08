@@ -134,8 +134,18 @@ public sealed record SearchRouteView
     public string? Problem { get; init; }
 }
 
-/// <summary>What a person makes of a term: a name (null for the column's own), whether it is left out, the route (null for the preferred one), a note.</summary>
+/// <summary>What a person makes of a term: a name (null for the column's own), whether it is deleted, the route (null for the preferred one), a note.</summary>
 public sealed record SearchTermRefinementRequest(string? Name, bool Excluded, string? Route, string? Note);
+
+/// <summary>
+/// What deleting search terms did: the terms taken out of the search (a pipeline still reads each, so the next sync extracts
+/// it again; it is listed as deleted until restored), the terms whose refinement was removed for good (no pipeline reads
+/// them any longer, so the refinement was all there was of them), and the ids that were neither, already gone.
+/// </summary>
+public sealed record SearchTermDeletion(IReadOnlyList<Guid> Deleted, IReadOnlyList<Guid> Removed, IReadOnlyList<Guid> Missing);
+
+/// <summary>What restoring search terms did: the terms offered in the explorer again, and the ids no pipeline reads, which have nothing to restore.</summary>
+public sealed record SearchTermRestoration(IReadOnlyList<Guid> Restored, IReadOnlyList<Guid> Missing);
 
 /// <summary>
 /// The search terms of the module (osdu/docs/search-terms.md): the terms the repository syncs extracted, merged across
@@ -145,6 +155,9 @@ public sealed record SearchTermRefinementRequest(string? Name, bool Excluded, st
 /// </summary>
 public sealed class SearchTermDirectory
 {
+    /// <summary>The most terms one deletion or restoration names: every term of an entity type, with room to spare.</summary>
+    public const int MaxBatch = 5000;
+
     private readonly OsduDbContext _db;
     private readonly ITemplateStore _templates;
     private readonly DeliveryDocumentLoader _documents;
@@ -241,7 +254,7 @@ public sealed class SearchTermDirectory
 
     /// <summary>
     /// Keeps what <paramref name="actor"/> made of the term: its name (unique among the terms of the entity type it is refined
-    /// in), whether it is left out, the route it is searched through (one of its routes that can be searched) and a note. A
+    /// in), whether it is deleted, the route it is searched through (one of its routes that can be searched) and a note. A
     /// request that keeps nothing of the term's own removes its refinement.
     /// </summary>
     /// <exception cref="DeliveryException">The term does not exist, or the request is not one a term takes; the message says why.</exception>
@@ -285,7 +298,7 @@ public sealed class SearchTermDirectory
         }
 
         var row = await _db.DeliverySearchTermRefinements.AsTracking().FirstOrDefaultAsync(r => r.TermId == termId, ct).ConfigureAwait(false);
-        if (name is null && !request.Excluded && route is null && note is null)
+        if (KeepsNothing(name, request.Excluded, route, note))
         {
             if (row is not null)
             {
@@ -308,10 +321,108 @@ public sealed class SearchTermDirectory
         row.Excluded = request.Excluded;
         row.Route = route;
         row.Note = note;
-        row.UpdatedBy = actor.Length <= 200 ? actor : actor[..200];
-        row.UpdatedUtc = _time.GetUtcNow().UtcDateTime;
+        Stamp(row, actor, _time.GetUtcNow().UtcDateTime);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return (await FindAsync(termId, current.EntityType, null, ct).ConfigureAwait(false))!;
+    }
+
+    /// <summary>
+    /// Deletes the terms <paramref name="termIds"/> as <paramref name="actor"/>, in one save. A term a pipeline reads cannot go,
+    /// since the next sync extracts it again, so it is taken out of the search: its refinement marks it deleted and keeps its
+    /// name, note and route, so a restore gives it back as it was (one made new is kept for <paramref name="entityType"/> when
+    /// the term reaches it, as a refinement made on the Search terms page is). A term no pipeline reads any longer is only its
+    /// refinement, which is removed for good. An id that is neither is reported missing.
+    /// </summary>
+    /// <exception cref="DeliveryException">No term is named, or more than <see cref="MaxBatch"/>.</exception>
+    public async Task<SearchTermDeletion> DeleteAsync(IReadOnlyCollection<Guid> termIds, string? entityType, string actor, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        var ids = Batch(termIds);
+        var extracted = await ExtractedAsync(ids, ct).ConfigureAwait(false);
+        var rows = await _db.DeliverySearchTermRefinements.AsTracking().Where(r => ids.Contains(r.TermId)).ToDictionaryAsync(r => r.TermId, ct).ConfigureAwait(false);
+        var now = _time.GetUtcNow().UtcDateTime;
+        List<Guid> deleted = [], removed = [], missing = [];
+        foreach (var id in ids)
+        {
+            var row = rows.GetValueOrDefault(id);
+            if (extracted.TryGetValue(id, out var term))
+            {
+                if (row is null)
+                {
+                    row = new DeliverySearchTermRefinement
+                    {
+                        TermId = id,
+                        TermKey = term.Key,
+                        EntityType = entityType is not null && term.EntityTypes.Contains(entityType, StringComparer.Ordinal) ? entityType : term.EntityTypes[0],
+                    };
+                    _db.DeliverySearchTermRefinements.Add(row);
+                }
+
+                // Deleted already, it keeps who deleted it and when.
+                if (!row.Excluded)
+                {
+                    row.Excluded = true;
+                    Stamp(row, actor, now);
+                }
+
+                deleted.Add(id);
+            }
+            else if (row is not null)
+            {
+                _db.DeliverySearchTermRefinements.Remove(row);
+                removed.Add(id);
+            }
+            else
+            {
+                missing.Add(id);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return new SearchTermDeletion(deleted, removed, missing);
+    }
+
+    /// <summary>
+    /// Restores the deleted terms of <paramref name="termIds"/> as <paramref name="actor"/>, in one save: each is offered in the
+    /// explorer again with the name, note and route it had, and a refinement that keeps nothing else is removed, as a refine
+    /// keeping nothing removes it. A term offered already is restored as it is; an id no pipeline reads is reported missing,
+    /// since only a term a pipeline reads can be searched.
+    /// </summary>
+    /// <exception cref="DeliveryException">No term is named, or more than <see cref="MaxBatch"/>.</exception>
+    public async Task<SearchTermRestoration> RestoreAsync(IReadOnlyCollection<Guid> termIds, string actor, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        var ids = Batch(termIds);
+        var extracted = await ExtractedAsync(ids, ct).ConfigureAwait(false);
+        var rows = await _db.DeliverySearchTermRefinements.AsTracking().Where(r => ids.Contains(r.TermId) && r.Excluded).ToDictionaryAsync(r => r.TermId, ct).ConfigureAwait(false);
+        var now = _time.GetUtcNow().UtcDateTime;
+        List<Guid> restored = [], missing = [];
+        foreach (var id in ids)
+        {
+            if (!extracted.ContainsKey(id))
+            {
+                missing.Add(id);
+                continue;
+            }
+
+            if (rows.GetValueOrDefault(id) is { } row)
+            {
+                row.Excluded = false;
+                if (KeepsNothing(row.Name, row.Excluded, row.Route, row.Note))
+                {
+                    _db.DeliverySearchTermRefinements.Remove(row);
+                }
+                else
+                {
+                    Stamp(row, actor, now);
+                }
+            }
+
+            restored.Add(id);
+        }
+
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return new SearchTermRestoration(restored, missing);
     }
 
     /// <summary>Removes what people made of the term, so it is searched as its pipelines give it; false when there was nothing to remove.</summary>
@@ -321,6 +432,47 @@ public sealed class SearchTermDirectory
         return removed > 0;
     }
 
+    /// <summary>A refinement keeping none of these keeps nothing of the term's own, and is removed rather than kept.</summary>
+    private static bool KeepsNothing(string? name, bool excluded, string? route, string? note)
+        => name is null && !excluded && route is null && note is null;
+
+    /// <summary>Records who changed a refinement and when, the name cut to what the table keeps.</summary>
+    private static void Stamp(DeliverySearchTermRefinement row, string actor, DateTime nowUtc)
+    {
+        row.UpdatedBy = actor.Length <= 200 ? actor : actor[..200];
+        row.UpdatedUtc = nowUtc;
+    }
+
+    /// <summary>The ids a deletion or restoration names, each once.</summary>
+    /// <exception cref="DeliveryException">None is named, or more than <see cref="MaxBatch"/>.</exception>
+    private static List<Guid> Batch(IReadOnlyCollection<Guid> termIds)
+    {
+        ArgumentNullException.ThrowIfNull(termIds);
+        var ids = termIds.Where(id => id != Guid.Empty).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            throw new DeliveryException("Name the search terms to change: no term id was given.");
+        }
+
+        return ids.Count <= MaxBatch
+            ? ids
+            : throw new DeliveryException($"{ids.Count} search terms were named; at most {MaxBatch} are changed at once.");
+    }
+
+    /// <summary>The terms of <paramref name="ids"/> a pipeline reads, each with its key and the entity types it reaches, by name.</summary>
+    private async Task<Dictionary<Guid, (string Key, IReadOnlyList<string> EntityTypes)>> ExtractedAsync(List<Guid> ids, CancellationToken ct)
+    {
+        var rows = await _db.DeliverySearchTerms.AsNoTracking()
+            .Where(t => ids.Contains(t.TermId))
+            .Select(t => new { t.TermId, t.TermKey, t.EntityType })
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows
+            .GroupBy(r => r.TermId)
+            .ToDictionary(
+                g => g.Key,
+                g => (g.First().TermKey, (IReadOnlyList<string>)g.Select(r => r.EntityType).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList()));
+    }
+
     /// <summary>
     /// The condition the explorer asks of the records of <paramref name="kind"/> for <paramref name="asked"/> on the term
     /// <paramref name="termId"/>, in <paramref name="partition"/>: on the property its route for that kind fills (the route
@@ -328,7 +480,7 @@ public sealed class SearchTermDirectory
     /// mapping, and for a route through other records, the way the node reads those. A kind of many types takes the term's
     /// one type, and is refused for a term that reaches several.
     /// </summary>
-    /// <exception cref="DeliveryException">The term does not exist, is left out, cannot be searched, or a value cannot be carried.</exception>
+    /// <exception cref="DeliveryException">The term does not exist, is deleted, cannot be searched, or a value cannot be carried.</exception>
     public async Task<ExplorerFilter> ResolveAsync(Guid termId, SearchTermCondition asked, string partition, string? kind, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(asked);
@@ -360,7 +512,7 @@ public sealed class SearchTermDirectory
         var view = await ViewAsync(term, refinement, kind, ct).ConfigureAwait(false);
         if (view.Excluded)
         {
-            throw new DeliveryException($"{view.Name} is left out of the search; include it again on the Search terms page.");
+            throw new DeliveryException($"{view.Name} is deleted from the search terms; restore it on the Search terms page.");
         }
 
         var chosenAt = view.Route is { } routeId ? term.Routes.ToList().FindIndex(r => r.Route.Id == routeId) : -1;

@@ -19,14 +19,17 @@ public sealed record DeliverySearchTermsDto(string? EntityType, IReadOnlyList<Se
 /// <summary>An entity type search terms are extracted for, with how many it has.</summary>
 public sealed record DeliverySearchTermTypeDto(string EntityType, int Terms);
 
-/// <summary>What a person makes of a search term, as the GUI sends it: a name (empty for the column's own), whether it is left out, the route, a note.</summary>
+/// <summary>What a person makes of a search term, as the GUI sends it: a name (empty for the column's own), whether it is deleted, the route, a note.</summary>
 public sealed record DeliverySearchTermRefinementDto(string? Name = null, bool Excluded = false, string? Route = null, string? Note = null);
+
+/// <summary>Search terms to delete or restore, by id, as the GUI sends them, with the entity type they are listed for.</summary>
+public sealed record DeliverySearchTermBatchDto(IReadOnlyList<Guid>? Terms = null, string? EntityType = null);
 
 /// <summary>
 /// The search terms (osdu/docs/search-terms.md): the columns of the source systems the mappings of active delivery flows
 /// read, extracted by the repository sync, with every route by which each reaches the records, and what people made of
-/// them. Listing them is any signed-in reader's; refining them changes what every reader searches by, so it is an author
-/// action, as saving a template is.
+/// them. Listing them is any signed-in reader's; refining, deleting and restoring them changes what every reader searches
+/// by, so each is an author action, as saving a template is.
 /// </summary>
 public static class DeliverySearchTermEndpoints
 {
@@ -46,6 +49,8 @@ public static class DeliverySearchTermEndpoints
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
         delivery.MapPut("/search-terms/{termId:guid}", RefineAsync).WithName("RefineDeliverySearchTerm");
         delivery.MapDelete("/search-terms/{termId:guid}/refinement", ResetAsync).WithName("ResetDeliverySearchTerm");
+        delivery.MapPost("/search-terms/delete", DeleteAsync).WithName("DeleteDeliverySearchTerms");
+        delivery.MapPost("/search-terms/restore", RestoreAsync).WithName("RestoreDeliverySearchTerms");
         return group;
     }
 
@@ -114,6 +119,41 @@ public static class DeliverySearchTermEndpoints
             var refined = await directory.RefineAsync(
                 termId, Blank(entityType), new SearchTermRefinementRequest(request.Name, request.Excluded, request.Route, request.Note), RequestActor.Label(user), ct).ConfigureAwait(false);
             return TypedResults.Ok(refined);
+        }
+        catch (DeliveryException ex)
+        {
+            return DeliveryEndpoints.Invalid(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Deletes the terms named, in one save: one a pipeline reads is taken out of the search and listed as deleted until
+    /// restored, since the next sync extracts it again; one no pipeline reads any longer has its refinement removed for good.
+    /// </summary>
+    private static async Task<Results<Ok<SearchTermDeletion>, ProblemHttpResult>> DeleteAsync(
+        DeliverySearchTermBatchDto? body, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+    {
+        try
+        {
+            var deleted = await new SearchTermDirectory(osdu, templates, documents, clock)
+                .DeleteAsync(body?.Terms ?? [], Blank(body?.EntityType), RequestActor.Label(user), ct).ConfigureAwait(false);
+            return TypedResults.Ok(deleted);
+        }
+        catch (DeliveryException ex)
+        {
+            return DeliveryEndpoints.Invalid(ex.Message);
+        }
+    }
+
+    /// <summary>Offers the deleted terms named in the explorer again, with the name, note and route each had, in one save.</summary>
+    private static async Task<Results<Ok<SearchTermRestoration>, ProblemHttpResult>> RestoreAsync(
+        DeliverySearchTermBatchDto? body, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+    {
+        try
+        {
+            var restored = await new SearchTermDirectory(osdu, templates, documents, clock)
+                .RestoreAsync(body?.Terms ?? [], RequestActor.Label(user), ct).ConfigureAwait(false);
+            return TypedResults.Ok(restored);
         }
         catch (DeliveryException ex)
         {

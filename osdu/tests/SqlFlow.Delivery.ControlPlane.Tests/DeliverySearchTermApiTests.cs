@@ -149,13 +149,13 @@ public sealed class DeliverySearchTermApiTests
             Assert.Equal(("data.WellboreID", "Wellbore name", "osdu:wks:master-data--Wellbore:*"), (search.Filters[0].Path, search.Filters[0].Via!.Term, search.Filters[0].Via!.Kind));
             Assert.Equal(["" + partition + ":reference-data--WellLogSamplingDomainType:Depth:"], search.Filters[1].Values!);
 
-            // A term left out of the search, and a value its route cannot carry, are refused before anything is read.
+            // A term deleted from the search, and a value its route cannot carry, are refused before anything is read.
             using (var excluded = await SendAsync(client, author, HttpMethod.Put, $"/api/v1/delivery/search-terms/{IdOf("index_type")}", new { excluded = true }))
             {
                 Assert.Equal(HttpStatusCode.OK, excluded.StatusCode);
             }
 
-            await RefusedAsync(client, reader, $"/api/v1/delivery/explorer/search?partition={partition}", new { filters = new[] { new { term = IdOf("index_type"), condition = "is", value = "DEPTH" } } }, "is left out of the search");
+            await RefusedAsync(client, reader, $"/api/v1/delivery/explorer/search?partition={partition}", new { filters = new[] { new { term = IdOf("index_type"), condition = "is", value = "DEPTH" } } }, "is deleted from the search terms");
             await RefusedAsync(client, reader, $"/api/v1/delivery/explorer/search?partition={partition}", new { filters = new[] { new { term = IdOf("index_min"), condition = "is", value = "deep" } } }, "cannot be searched for");
 
             // Reset: the term is searched as its mapping gives it again; a term with nothing made of it has nothing to reset.
@@ -176,6 +176,32 @@ public sealed class DeliverySearchTermApiTests
 
             var plain = await ReadAsync<SearchTermView>(await SendAsync(client, reader, HttpMethod.Get, $"/api/v1/delivery/search-terms/{IdOf("wellbore_uwi")}"));
             Assert.Equal(("WellLog.wellbore_uwi", false), (plain.Name, plain.Renamed));
+
+            // Several deleted in one request: each term a pipeline reads leaves the search, listed as deleted, and an id that is no
+            // term is reported missing; restored in one request, they are offered again. Nothing named is refused.
+            using (var anonymous = await client.PostAsJsonAsync(new Uri("/api/v1/delivery/search-terms/delete", UriKind.Relative), new { terms = new[] { IdOf("log_run") } }, Web))
+            {
+                Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+            }
+
+            var nothing = Guid.NewGuid();
+            var deletion = await ReadAsync<SearchTermDeletion>(await SendAsync(
+                client, author, HttpMethod.Post, "/api/v1/delivery/search-terms/delete", new { terms = new[] { IdOf("log_run"), IdOf("index_type"), nothing }, entityType = WellLog }));
+            Assert.Equal([IdOf("log_run"), IdOf("index_type")], deletion.Deleted);
+            Assert.Equal([nothing], deletion.Missing);
+            var deleted = await ReadAsync<DeliverySearchTermsDto>(await SendAsync(client, reader, HttpMethod.Get, $"/api/v1/delivery/search-terms?entityType={WellLog}"));
+            Assert.True(Assert.Single(deleted.Terms, t => t.Id == IdOf("log_run")).Excluded);
+            await RefusedAsync(client, reader, $"/api/v1/delivery/explorer/search?partition={partition}", new { filters = new[] { new { term = IdOf("index_type"), condition = "is", value = "DEPTH" } } }, "is deleted from the search terms");
+
+            var restoration = await ReadAsync<SearchTermRestoration>(await SendAsync(
+                client, author, HttpMethod.Post, "/api/v1/delivery/search-terms/restore", new { terms = new[] { IdOf("log_run"), IdOf("index_type") } }));
+            Assert.Equal([IdOf("log_run"), IdOf("index_type")], restoration.Restored);
+            var offered = await ReadAsync<DeliverySearchTermsDto>(await SendAsync(client, reader, HttpMethod.Get, $"/api/v1/delivery/search-terms?entityType={WellLog}"));
+            Assert.False(Assert.Single(offered.Terms, t => t.Id == IdOf("index_type")).Excluded);
+            using (var none = await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/search-terms/delete", new { terms = Array.Empty<Guid>() }))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, none.StatusCode);
+            }
         }
         finally
         {

@@ -229,9 +229,74 @@ public sealed class SearchTermCatalogTests : IDisposable
 
         await RefineAsync(IdOf("index_type"), new SearchTermRefinementRequest(null, true, null, null));
         var excluded = await Assert.ThrowsAsync<DeliveryException>(() => WithDirectoryAsync(d => d.ResolveAsync(IdOf("index_type"), new SearchTermCondition(ExplorerCondition.Is, "DEPTH"), "dev", null, CancellationToken.None)));
-        Assert.Contains("is left out of the search", excluded.Message, StringComparison.Ordinal);
+        Assert.Contains("is deleted from the search terms", excluded.Message, StringComparison.Ordinal);
 
         await Assert.ThrowsAsync<DeliveryException>(() => WithDirectoryAsync(d => d.ResolveAsync(Guid.NewGuid(), new SearchTermCondition(ExplorerCondition.Is, "x"), "dev", null, CancellationToken.None)));
+    }
+
+    [Fact]
+    public async Task Terms_deleted_together_leave_the_search_until_restored_and_one_no_pipeline_reads_is_removed_for_good()
+    {
+        await SyncAsync();
+        await SaveTemplatesAsync();
+        await RefineAsync(IdOf("wellbore_uwi"), new SearchTermRefinementRequest("Wellbore name", false, null, "The UWI Recall files the log under."));
+
+        // What is left of a term no pipeline reads any longer: its refinement alone.
+        var retired = Guid.NewGuid();
+        await using (var db = _module.CreateDbContext())
+        {
+            db.DeliverySearchTermRefinements.Add(new SqlFlow.Delivery.Data.DeliverySearchTermRefinement
+            {
+                TermId = retired, TermKey = "osdudata.arc.welllog/retired_column", EntityType = WellLog, Name = "Retired",
+                UpdatedBy = "tester", UpdatedUtc = _clock.GetUtcNow().UtcDateTime,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // One deletion, each id once: the terms a pipeline reads leave the search, the retired one goes, an unknown id is missing.
+        var unknown = Guid.NewGuid();
+        var deletion = await WithDirectoryAsync(d => d.DeleteAsync([IdOf("wellbore_uwi"), IdOf("log_run"), retired, unknown, IdOf("log_run")], WellLog, "remover", CancellationToken.None));
+        Assert.Equal([IdOf("wellbore_uwi"), IdOf("log_run")], deletion.Deleted);
+        Assert.Equal([retired], deletion.Removed);
+        Assert.Equal([unknown], deletion.Missing);
+
+        // Deleted, a term keeps its name and note through a sync, which extracts it again, and the explorer refuses it.
+        await SyncAsync();
+        var terms = await TermsAsync(orphans: true);
+        var uwi = Assert.Single(terms, t => t.Id == IdOf("wellbore_uwi"));
+        Assert.Equal(("Wellbore name", "The UWI Recall files the log under.", true, "remover"), (uwi.Name, uwi.Note, uwi.Excluded, uwi.UpdatedBy));
+        var run = Assert.Single(terms, t => t.Id == IdOf("log_run"));
+        Assert.Equal((true, false, WellLog), (run.Excluded, run.Renamed, run.EntityType));
+        Assert.DoesNotContain(terms, t => t.Id == retired);
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => WithDirectoryAsync(d => d.ResolveAsync(
+            IdOf("log_run"), new SearchTermCondition(ExplorerCondition.Is, "1"), "dev", null, CancellationToken.None)));
+        Assert.Contains("is deleted from the search terms", refused.Message, StringComparison.Ordinal);
+
+        // Deleting it again changes nothing of who deleted it.
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await WithDirectoryAsync(d => d.DeleteAsync([IdOf("log_run")], WellLog, "someone else", CancellationToken.None));
+        Assert.Equal("remover", Assert.Single(await TermsAsync(), t => t.Id == IdOf("log_run")).UpdatedBy);
+
+        // Restored, each is offered as it was: the renamed one by its name and note; one with nothing else made of it keeps no
+        // refinement. A term offered already is restored as it is; the retired one has nothing to restore.
+        var restoration = await WithDirectoryAsync(d => d.RestoreAsync([IdOf("wellbore_uwi"), IdOf("log_run"), IdOf("log_source"), retired], "restorer", CancellationToken.None));
+        Assert.Equal([IdOf("wellbore_uwi"), IdOf("log_run"), IdOf("log_source")], restoration.Restored);
+        Assert.Equal([retired], restoration.Missing);
+        terms = await TermsAsync();
+        uwi = Assert.Single(terms, t => t.Id == IdOf("wellbore_uwi"));
+        Assert.Equal(("Wellbore name", "The UWI Recall files the log under.", false, "restorer"), (uwi.Name, uwi.Note, uwi.Excluded, uwi.UpdatedBy));
+        run = Assert.Single(terms, t => t.Id == IdOf("log_run"));
+        Assert.Equal((false, null), (run.Excluded, run.UpdatedBy));
+        await using (var db = _module.CreateDbContext())
+        {
+            Assert.False(await db.DeliverySearchTermRefinements.AnyAsync(r => r.TermId == IdOf("log_run") || r.TermId == IdOf("log_source")));
+        }
+
+        // Nothing named, or more than one change takes, is refused.
+        await Assert.ThrowsAsync<DeliveryException>(() => WithDirectoryAsync(d => d.DeleteAsync([], WellLog, "remover", CancellationToken.None)));
+        var many = Enumerable.Range(0, SearchTermDirectory.MaxBatch + 1).Select(_ => Guid.NewGuid()).ToList();
+        var tooMany = await Assert.ThrowsAsync<DeliveryException>(() => WithDirectoryAsync(d => d.RestoreAsync(many, "restorer", CancellationToken.None)));
+        Assert.Contains($"at most {SearchTermDirectory.MaxBatch}", tooMany.Message, StringComparison.Ordinal);
     }
 
     [Fact]

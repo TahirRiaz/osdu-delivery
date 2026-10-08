@@ -66,7 +66,7 @@ export function ExplorerFilterEditor({ partition, base, initial, applyLabel, onA
   const [value, setValue] = useState(initial?.value ?? "");
   const [values, setValues] = useState<string[]>(initial?.values ?? []);
   const [to, setTo] = useState(initial?.to ?? "");
-  // The term named, once the terms are read; one left out or no longer searchable since is not, and is picked again.
+  // The term named, once the terms are read; one deleted or no longer searchable since is not, and is picked again.
   const named = termId === null ? undefined : termsRead.data?.terms.find((candidate) => candidate.id === termId);
   const term: OfferedTerm | null = named === undefined ? null : offeredTerm(named);
   const termGone = termId !== null && term === null && (termsRead.isError || termsRead.data !== undefined || !termsRead.isFetching);

@@ -25,13 +25,18 @@ export interface GridColumn<T> {
  * A list of records as a grid that holds ten thousand rows as lightly as a hundred: rows of one height, only those in view
  * (and a margin around them) drawn, the column headers fixed above them, every column holding its share of the width so
  * the grid never scrolls sideways. A row opens on a click or on Enter; the arrow keys, Page Up and Down, Home and End move
- * through the rows, and the row the keys are on is kept in view. Scrolling near the end asks for the next page.
+ * through the rows, and the row the keys are on is kept in view. Scrolling near the end asks for the next page. A grid
+ * whose rows can be picked (`picked`, `onPick`) marks those picked, and Space picks the row the keys are on or lets it go.
  */
-export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, footer, label, testId, rowTestId = `${testId}-row` }: {
+export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, picked, onPick, footer, label, testId, rowTestId = `${testId}-row` }: {
   rows: T[];
   columns: GridColumn<T>[];
   rowKey: (row: T) => string;
   onOpen: (row: T) => void;
+  /** Whether a row is picked, for a grid whose rows are picked to act on together. */
+  picked?: (row: T) => boolean;
+  /** Called with the row the keys are on, and where it is, when Space is pressed. */
+  onPick?: (row: T, index: number) => void;
   /** Called when the rows are scrolled near their end; the caller reads the next page when there is one. */
   onNearEnd?: () => void;
   /** What stands under the last row: the next page loading, or why there is no more. */
@@ -105,6 +110,10 @@ export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, foot
     } else if (event.key === "Enter" && cursor !== null && rows[cursor] !== undefined) {
       event.preventDefault();
       onOpen(rows[cursor]);
+    } else if (event.key === " " && onPick !== undefined && event.target === event.currentTarget && cursor !== null && rows[cursor] !== undefined) {
+      // Space on the grid itself: a checkbox in a row takes its own Space.
+      event.preventDefault();
+      onPick(rows[cursor], cursor);
     }
   };
 
@@ -134,15 +143,18 @@ export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, foot
       <div className="relative" style={{ height: rows.length * ROW }}>
         {rows.slice(first, last).map((row, offset) => {
           const index = first + offset;
+          const marked = picked?.(row) ?? false;
           return (
             <div
               key={rowKey(row)}
               role="row"
               aria-rowindex={index + 2}
               aria-selected={cursor === index}
+              data-picked={picked === undefined ? undefined : marked}
               onClick={() => { setCursor(index); onOpen(row); }}
               className={cn(
                 "group/row absolute inset-x-0 grid cursor-pointer items-center gap-3 border-b border-border/60 px-3 text-[13px] hover:bg-accent/50",
+                marked && "bg-accent/40",
                 cursor === index && "bg-accent/70 shadow-[inset_2px_0_0_var(--primary)]",
               )}
               style={{ top: index * ROW, height: ROW, gridTemplateColumns: template }}

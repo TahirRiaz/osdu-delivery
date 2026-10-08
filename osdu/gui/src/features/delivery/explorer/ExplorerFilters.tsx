@@ -71,7 +71,7 @@ export function ExplorerFilterChips({ partition, request, onFilters }: {
         const condition = filter.condition ?? "is";
         const named = termOf(filter, terms.data?.terms);
         const offered = named === undefined ? null : offeredTerm(named);
-        // A term named but no longer searched (left out, or no mapping reads it): the search says why it was refused.
+        // A term named but no longer searched (deleted, or no mapping reads it): the search says why it was refused.
         const lost = filter.term !== undefined && offered === null && (terms.data !== undefined || terms.isError);
         const name = named?.name;
         const said = filterSentence(filter, name);

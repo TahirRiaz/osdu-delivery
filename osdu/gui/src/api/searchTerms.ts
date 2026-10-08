@@ -2,7 +2,7 @@
 // from the pipelines by the repository sync, each the table's column whichever flows read it, with the routes by which it
 // reaches the records and what people made of it. The explorer searches by them; the Search terms page refines them.
 
-import { del, get, put } from "@/api/client";
+import { del, get, post, put } from "@/api/client";
 import type { ExplorerCondition, ExplorerIndex } from "./explorer";
 
 /** How a route carries a source value to what the record holds. */
@@ -72,6 +72,7 @@ export interface SearchTermView {
   /** The name the term is searched by. */
   name: string;
   renamed: boolean;
+  /** Deleted: taken out of the search, listed as deleted until restored (a pipeline still reads it, so each sync extracts it again). */
   excluded: boolean;
   note: string | null;
   /** The route a person picked; null for the one the explorer prefers. */
@@ -100,7 +101,7 @@ export interface SearchTermType {
   terms: number;
 }
 
-/** What a person makes of a term: a name (empty for the column's own), whether it is left out, the route, a note. */
+/** What a person makes of a term: a name (empty for the column's own), whether it is deleted, the route, a note. */
 export interface SearchTermRefinement {
   name?: string | null;
   excluded?: boolean;
@@ -108,7 +109,23 @@ export interface SearchTermRefinement {
   note?: string | null;
 }
 
-/** The route a term is searched through, when it can be searched and is not left out; null otherwise. */
+/**
+ * What deleting terms did: those taken out of the search (listed as deleted until restored), those no pipeline reads whose
+ * refinement was removed for good, and the ids that were neither, already gone.
+ */
+export interface SearchTermDeletion {
+  deleted: string[];
+  removed: string[];
+  missing: string[];
+}
+
+/** What restoring terms did: those offered in the explorer again, and the ids no pipeline reads, with nothing to restore. */
+export interface SearchTermRestoration {
+  restored: string[];
+  missing: string[];
+}
+
+/** The route a term is searched through, when it can be searched and is not deleted; null otherwise. */
 export function searchedRoute(term: SearchTermView): SearchRouteView | null {
   if (term.excluded || term.route === null) {
     return null;
@@ -134,4 +151,8 @@ export const searchTermsApi = {
   refine: (id: string, refinement: SearchTermRefinement, entityType?: string) =>
     put<SearchTermView>(`${termsPath}/${encodeURIComponent(id)}${entityType ? `?entityType=${encodeURIComponent(entityType)}` : ""}`, refinement),
   reset: (id: string) => del<void>(`${termsPath}/${encodeURIComponent(id)}/refinement`),
+  /** Deletes the terms `ids`, listed for `entityType`, in one request. */
+  delete: (ids: string[], entityType?: string) => post<SearchTermDeletion>(`${termsPath}/delete`, { terms: ids, ...(entityType ? { entityType } : {}) }),
+  /** Offers the deleted terms `ids` in the explorer again, in one request. */
+  restore: (ids: string[]) => post<SearchTermRestoration>(`${termsPath}/restore`, { terms: ids }),
 };

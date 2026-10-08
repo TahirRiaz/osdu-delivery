@@ -50,7 +50,7 @@ export interface OfferedTerm {
   field: ExplorerFieldInfo;
 }
 
-/** The term `term` as offered: with its route and that route's property; null for one left out or that cannot be searched. */
+/** The term `term` as offered: with its route and that route's property; null for one deleted or that cannot be searched. */
 export function offeredTerm(term: SearchTermView): OfferedTerm | null {
   const route = term.orphan ? null : searchedRoute(term);
   if (route === null || route.index === null || route.conditions.length === 0) {
@@ -60,7 +60,7 @@ export function offeredTerm(term: SearchTermView): OfferedTerm | null {
   return { term, route, field: { path: route.path, index: route.index, nested: route.nested } };
 }
 
-/** The terms a place offers, by name: each searchable one, none left out. */
+/** The terms a place offers, by name: each searchable one, none deleted. */
 export function offeredTerms(terms: SearchTermView[] | undefined): OfferedTerm[] {
   return (terms ?? [])
     .map(offeredTerm)
