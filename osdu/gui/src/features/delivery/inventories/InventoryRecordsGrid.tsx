@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
@@ -6,17 +6,18 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { RelativeTime } from "@/components/RelativeTime";
 import { RichTooltip } from "@/components/RichTooltip";
 import { TruncatedText } from "@/components/TruncatedText";
+import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cn } from "@/lib/utils";
 import { deliveryRecordRoute } from "../../../api/delivery";
 import { inventoryApi, type Inventory, type InventoryRecord } from "../../../api/inventories";
 import { RecordName } from "../RecordName";
+import { idParts } from "../osduRecordModel";
 import { ProblemView } from "../TemplateSheet";
-import { useWindowFit } from "../useWindowFit";
 import { DimensionGrid, GridFooter, GridViewMenu } from "../dimensions/DimensionGrid";
 import { useHiddenColumns, type GridColumnChoice } from "../dimensions/dimensionGridState";
 import { ExplainTip, FindingGlyph } from "./InventoryBadges";
-import { InventoryIdDock } from "./InventoryIdDock";
-import { clampShare, findingVisual, findingWhy } from "./inventoryFormat";
+import { InventoryIdPanel } from "./InventoryIdPanel";
+import { findingVisual, findingWhy } from "./inventoryFormat";
 
 const PAGE = 200;
 
@@ -26,41 +27,22 @@ const AT_FIRST_FINDING: readonly string[] = ["created"];
 /** The columns a grid of every id starts without. */
 const AT_FIRST_EVERY_ID: readonly string[] = ["created", "since"];
 
-/** What stays under the grid and its panel: the page's bottom padding and the workbench's status bar. */
-const BELOW = 46;
+/** The workbench's bottom panel content this grid raises: an OSDU id after this prefix. */
+const PANEL = "inventory-id:";
 
-/** The least height the grid keeps alone, and with its panel under it, so a short window still shows a few rows of each. */
-const MIN_HEIGHT = 300;
-const MIN_HEIGHT_WITH_PANEL = 420;
-
-/** The share of the height the panel takes when it first opens, and where the reader's own is remembered. */
-const FIRST_SHARE = 0.55;
-const SHARE_KEY = "osdu.inventories.panel.share";
-
-/** The row whose id is open in the panel, marked as the row a reader is on. */
-const OPEN_ROW: CSSProperties = { backgroundColor: "color-mix(in oklab, var(--primary) 10%, transparent)" };
-
-/** The panel's share as this browser remembers it, or the first one. */
-function rememberedShare(): number {
-  try {
-    const kept = Number.parseFloat(window.localStorage.getItem(SHARE_KEY) ?? "");
-    return Number.isFinite(kept) ? clampShare(kept) : FIRST_SHARE;
-  } catch {
-    // A browser that keeps nothing opens the panel at its first share.
-    return FIRST_SHARE;
-  }
-}
+/** The row whose id is open in the panel, marked as the cache history marks the row its panel shows. */
+const OPEN_ROW: CSSProperties = { backgroundColor: "var(--accent)" };
 
 /** Whether a key went to a field, which keeps every key it is given. */
 function typedInField(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
-/** Whether an arrow key went to something that moves by arrows of its own: a field, a menu, a tree, the panel and its handle. */
+/** Whether an arrow key went to something that moves by arrows of its own: a field, a menu, a tree, a handle, the panel. */
 function arrowsKeptByTarget(target: EventTarget | null): boolean {
   return typedInField(target)
     || (target instanceof HTMLElement
-      && target.closest("[role=menu],[role=listbox],[role=tree],[role=dialog],[role=separator],[data-testid=inventory-dock]") !== null);
+      && target.closest("[role=menu],[role=listbox],[role=tree],[role=dialog],[role=separator],[data-testid=bottom-panel]") !== null);
 }
 
 /**
@@ -99,13 +81,13 @@ function LedgerCell({ row }: { row: InventoryRecord }) {
 }
 
 /**
- * The ids of an inventory with one finding, or every id, as a grid in a frame as tall as the window leaves: the findings
- * to pick from lead its toolbar, its rows scroll inside it, and more are read as it is scrolled, a page at a time after the
- * last id read. Each id is named as a reader knows it (the whole id on hover, its copy on the row's hover), with its
- * finding (why it has it on hover, to copy), its version, the ledger that holds it (which opens its record), who created
- * it and when it last changed, and since when it has its finding; columns are left out under View. A reader who can read
- * OSDU opens an id by its row in the panel that slides up under the grid, and steps through the ids there with Up and Down;
- * Escape closes it. The id open is the page's, so a link lands on it.
+ * The ids of an inventory with one finding, or every id, as a grid that fits the window and scrolls inside the page: the
+ * findings to pick from lead its toolbar, and more ids are read as it is scrolled, a page at a time after the last id
+ * read. Each id is named as a reader knows it (the whole id on hover, its copy on the row's hover), with its finding (why
+ * it has it on hover, to copy), its version, the ledger that holds it (which opens its record), who created it and when it
+ * last changed, and since when it has its finding; columns are left out under View. A reader who can read OSDU opens an
+ * id by its row in the workbench's bottom panel, over the page as a run's trace is, and steps through the ids there with
+ * Up and Down; Escape or the panel's own close closes it. The id open is the page's, so a link lands on it.
  */
 export function InventoryRecordsGrid({ inventory, finding, total, leading, trailing, openId, onOpen }: {
   inventory: Inventory;
@@ -117,7 +99,7 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
   leading?: ReactNode;
   /** What the toolbar holds before View at its end (the export). */
   trailing?: ReactNode;
-  /** The OSDU id open in the panel; null when the panel is closed. */
+  /** The OSDU id open in the bottom panel; null when none is. */
   openId: string | null;
   /** Opens an id in the panel, or closes it with null; absent where the reader cannot read OSDU. */
   onOpen?: (id: string | null) => void;
@@ -141,23 +123,10 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
     }
   };
 
-  const panelOpen = openId !== null && onOpen !== undefined;
-  const [share, setShare] = useState(rememberedShare);
-  const [maximized, setMaximized] = useState(false);
-  const keepShare = (next: number) => {
-    const kept = clampShare(next);
-    setShare(kept);
-    try {
-      window.localStorage.setItem(SHARE_KEY, String(kept));
-    } catch {
-      // The share still holds for this visit.
-    }
-  };
-
-  const frame = useRef<HTMLDivElement>(null);
-  useWindowFit(frame, BELOW, panelOpen ? MIN_HEIGHT_WITH_PANEL : MIN_HEIGHT, undefined, "height");
-
-  const at = panelOpen && rows !== undefined ? rows.findIndex((row) => row.targetId === openId) : -1;
+  const { ownedId, show, close } = useOwnedPanel(PANEL);
+  const wanted = openId !== null && onOpen !== undefined ? openId : null;
+  const at = wanted !== null && rows !== undefined ? rows.findIndex((row) => row.targetId === wanted) : -1;
+  const record = at >= 0 ? rows?.[at] : undefined;
   const canBack = at > 0;
   const canForward = at >= 0 && (at < (rows?.length ?? 0) - 1 || pages.hasNextPage);
   // The id stepped to last, ahead of the address that follows it, so keys pressed faster than the page renders (a key
@@ -188,26 +157,73 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
     }
   };
 
-  // The row of the id open stays in view of the grid as the panel steps through the ids.
+  // What the panel's content and the keys reach for: the latest rows and the page's own way to open an id, so a panel
+  // raised a while ago, or a listener set once, holds nothing stale.
+  const latest = useRef({ step, open: (id: string | null) => onOpen?.(id), openId });
   useEffect(() => {
-    if (at < 0 || frame.current === null) {
+    latest.current = { step, open: (id: string | null) => onOpen?.(id), openId };
+  });
+
+  // The id open in the address is raised in the panel, and raised again as what the panel says of it changes (its row
+  // read, the rows around it, a step to another id); with none open, the panel is closed when it shows this grid's.
+  // Whether it does is read, not followed: a panel closed by its own close must not be raised again on the way to the
+  // address letting go of the id.
+  const showing = ownedId !== null;
+  const showingNow = useRef(showing);
+  useEffect(() => {
+    showingNow.current = showing;
+  });
+  useEffect(() => {
+    if (wanted === null) {
+      if (showingNow.current) {
+        close();
+      }
+
       return;
     }
 
-    const row = frame.current.querySelectorAll<HTMLTableRowElement>('[data-slot="table-container"] tbody tr')[at];
-    row?.scrollIntoView({ block: "nearest" });
-  }, [at, maximized]);
+    const type = idParts(wanted).type;
+    show(wanted, `Explorer · ${type === "" ? "record" : type}`, (
+      <InventoryIdPanel
+        partition={inventory.partition}
+        id={wanted}
+        record={record}
+        place={at >= 0 ? { at: at + 1, of: total } : null}
+        canBack={canBack}
+        canForward={canForward}
+        onStep={(by) => latest.current.step(by)}
+        onOpenId={(id) => latest.current.open(id)}
+      />
+    ));
+  }, [wanted, record, at, total, canBack, canForward, inventory.partition, show, close]);
 
-  // Up and Down step through the ids while the panel is open, unless they are for something that moves by arrows of its
-  // own (the panel's record view among them); Escape closes it from anywhere but a field, once whatever it would close
-  // first (a menu, a hover card) has taken it. The listener is set once per opening and reaches the latest rows through
-  // the ref.
-  const keys = useRef({ step, close: () => onOpen?.(null) });
+  // The panel closed by its own close, or taken by another surface (a run's trace), lets go of the id in the address. Only
+  // a panel that showed this grid's id and no longer does counts, so the first raise is never mistaken for a close.
+  const wasShowing = useRef(false);
   useEffect(() => {
-    keys.current = { step, close: () => onOpen?.(null) };
-  });
+    if (wasShowing.current && !showing && latest.current.openId !== null) {
+      latest.current.open(null);
+    }
+
+    wasShowing.current = showing;
+  }, [showing]);
+
+  // The row of the id open stays in view as the panel steps through the ids.
+  const grid = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!panelOpen) {
+    if (at < 0 || grid.current === null) {
+      return;
+    }
+
+    const row = grid.current.querySelectorAll<HTMLTableRowElement>('[data-slot="table-container"] tbody tr')[at];
+    row?.scrollIntoView({ block: "nearest" });
+  }, [at]);
+
+  // Up and Down step through the ids while the panel shows one, unless they are for something that moves by arrows of
+  // its own (the panel's record view among them); Escape closes it from anywhere but a field, once whatever it would
+  // close first (a menu, a hover card) has taken it.
+  useEffect(() => {
+    if (!showing) {
       return undefined;
     }
 
@@ -218,14 +234,14 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
 
       if ((event.key === "ArrowDown" || event.key === "ArrowUp") && !arrowsKeptByTarget(event.target)) {
         event.preventDefault();
-        keys.current.step(event.key === "ArrowDown" ? 1 : -1);
+        latest.current.step(event.key === "ArrowDown" ? 1 : -1);
       } else if (event.key === "Escape") {
-        keys.current.close();
+        latest.current.open(null);
       }
     };
     window.addEventListener("keydown", keyed);
     return () => window.removeEventListener("keydown", keyed);
-  }, [panelOpen]);
+  }, [showing]);
 
   const choices: GridColumnChoice[] = [
     { id: "version", label: "Version" },
@@ -324,7 +340,7 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
   );
 
   return (
-    <div ref={frame} className="flex min-h-0 min-w-0 flex-col" data-testid="inventory-records">
+    <div ref={grid} className="flex min-w-0 flex-col" data-testid="inventory-records">
       {pages.isError
         ? (
           // The findings stay over the problem, so another finding can still be picked.
@@ -335,14 +351,12 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
         )
         : (
           <DimensionGrid
-            fill
             onNearEnd={more}
             // The copy of an id shows on its row's hover, or while it has the focus, so a page of ids reads as ids.
             className={cn(
               "[&_tbody_tr:not(:hover):not(:focus-within)_[data-testid=inventory-record-copy-id]]:opacity-0",
               // A row stepped to scrolls clear of the headers that stay over the rows.
               "[&_tbody_tr]:scroll-mt-8",
-              panelOpen && maximized && "hidden",
             )}
             testId="inventory-grid"
           >
@@ -352,7 +366,7 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
               rows={rows}
               rowKey={(row) => row.inventoryRecordId}
               onRowClick={onOpen === undefined ? undefined : (row) => onOpen(row.targetId)}
-              rowSx={(row) => (panelOpen && row.targetId === openId ? OPEN_ROW : undefined)}
+              rowSx={(row) => (showing && row.targetId === wanted ? OPEN_ROW : undefined)}
               footer={(
                 <GridFooter
                   shown={rows?.length ?? 0}
@@ -369,23 +383,6 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
             />
           </DimensionGrid>
         )}
-      {panelOpen && (
-        <InventoryIdDock
-          partition={inventory.partition}
-          id={openId}
-          record={at >= 0 ? rows?.[at] : undefined}
-          place={at >= 0 ? { at: at + 1, of: total } : null}
-          onStep={step}
-          canBack={canBack}
-          canForward={canForward}
-          onOpenId={(id) => onOpen(id)}
-          onClose={() => onOpen(null)}
-          share={share}
-          onShare={keepShare}
-          maximized={maximized}
-          onMaximized={setMaximized}
-        />
-      )}
     </div>
   );
 }

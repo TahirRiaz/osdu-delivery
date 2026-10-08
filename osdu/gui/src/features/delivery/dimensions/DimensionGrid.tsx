@@ -22,29 +22,22 @@ const NEAR_END = 320;
 /** The table's own scrolling container, which the grid sizes to the window. */
 const tableContainer = (element: HTMLElement) => element.querySelector<HTMLElement>('[data-slot="table-container"]');
 
-/** Nothing to size: a grid that fills its parent leaves the window to the frame its parent is. */
-const nothingToFit = () => null;
-
 /**
  * A table of a dimension as a grid that stays on the screen: its rows scroll inside it, under column headers that stay in
  * place, in rows a little denser than a list's, and it is as tall as the window leaves below where it starts, so the page
- * itself does not scroll for the rows. Scrolling near the end asks for the next page (`onNearEnd`). A grid that shares
- * the window with something under it (`fill`) takes the height its flex column parent gives it instead, and its rows
- * scroll inside that.
+ * itself does not scroll for the rows. Scrolling near the end asks for the next page (`onNearEnd`).
  */
-export function DimensionGrid({ children, onNearEnd, className, fill = false, testId = "dimension-grid" }: {
+export function DimensionGrid({ children, onNearEnd, className, testId = "dimension-grid" }: {
   children: ReactNode;
   /** Called when the rows are scrolled near their end; the caller reads the next page when there is one. */
   onNearEnd?: () => void;
   className?: string;
-  /** Whether the grid fills its flex column parent, a frame fitted to the window, rather than fitting itself to the window. */
-  fill?: boolean;
   /** The grid's test id, for a page that is not a dimension's. */
   testId?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  useWindowFit(ref, BELOW_GRID, MIN_GRID_HEIGHT, fill ? nothingToFit : tableContainer);
+  useWindowFit(ref, BELOW_GRID, MIN_GRID_HEIGHT, tableContainer);
 
   const scrolled = (event: UIEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -63,8 +56,6 @@ export function DimensionGrid({ children, onNearEnd, className, fill = false, te
         // Rows a little denser than a list's, and columns a little closer, with the card's own margin kept at both edges.
         "[&_td]:px-2 [&_td]:py-1 [&_th]:px-2",
         "[&_td:first-child]:pl-3 [&_th:first-child]:pl-3 [&_td:last-child]:pr-3 [&_th:last-child]:pr-3",
-        // Filling its parent, the table's card takes the height left and its rows scroll inside it, under its toolbar.
-        fill && "flex min-h-0 flex-1 flex-col [&>[data-slot=card]]:min-h-0 [&>[data-slot=card]]:flex-1 [&_[data-slot=table-container]]:min-h-0 [&_[data-slot=table-container]]:flex-1",
         className,
       )}
       data-testid={testId}

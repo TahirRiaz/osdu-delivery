@@ -222,18 +222,6 @@ export function inventoryRoute(ref: InventoryRef, finding?: string | null, id?: 
 /** The longest OSDU id the page reads from its address or sends to a lookup, as the control plane takes it. */
 export const MAX_ID_LENGTH = 1024;
 
-/**
- * The least and the most of the report's height the panel under its grid takes, as a share; the panel's own floor and
- * the grid's are in pixels.
- */
-export const MIN_SHARE = 0.2;
-export const MAX_SHARE = 0.85;
-
-/** A share of the report's height kept between the least and the most the panel takes. */
-export function clampShare(share: number): number {
-  return Math.min(MAX_SHARE, Math.max(MIN_SHARE, Number.isFinite(share) ? share : MIN_SHARE));
-}
-
 /** A part of a file name: letters, digits, dots, dashes and underscores, anything else a dash, as the control plane names it. */
 function safe(part: string): string {
   const cleaned = part.replace(/[^A-Za-z0-9._-]/g, "-");

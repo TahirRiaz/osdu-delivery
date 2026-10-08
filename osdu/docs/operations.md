@@ -351,12 +351,12 @@ finding picked, its runs, a lookup by OSDU id, and the export of a finding as CS
 the grid, the raised ones first; those the line has no room for, and those no id has, are in its **more** menu. What the
 inventory reads and who it counts as owners are on hover over the mark beside its name.
 
-A row of the grid opens its id as OSDU holds it now, in a panel that slides up under the grid: the explorer's record
-view ([explorer.md](explorer.md#a-record)), read through the partition's connection (the operate scope), under a line
-with the id's finding and why. **Up** and **Down** step through the grid's ids with the panel open, **Escape** closes it,
-its top edge gives it more or less of the height, and a double click (or its maximize) lets it take the grid's room.
-**Open in the explorer** opens the id there. The id open is in the address (`id`), and a lookup by OSDU id lands on it,
-open in the panel. An inventory flow's pipeline has an Inventories tab, and **Run pipeline** opens the run dialog with
+A row of the grid opens its id as OSDU holds it now in the workbench's bottom panel, over the page as a run's trace
+opens: the explorer's record view ([explorer.md](explorer.md#a-record)), read through the partition's connection (the
+operate scope), under a line with the id's finding and why. **Up** and **Down** step through the grid's ids while the
+panel shows one, and **Escape** or the panel's own close closes it; its handle gives it more or less of the height, as
+for a trace. **Open in the explorer** opens the id there. The id open is in the address (`id`), and a lookup by OSDU id
+lands on it, open in the panel. An inventory flow's pipeline has an Inventories tab, and **Run pipeline** opens the run dialog with
 the inventory picked.
 
 | Finding | What to do |
@@ -1294,7 +1294,7 @@ redacted before it is written.
 | Records skipped with phase `undo-wait`, or held naming items an earlier delivery left that its undo could not take back | The record's Artifacts tab (each item's note says why); the flow's Unfinished deliveries to undo card | The newer work waits so it does not write the ids the undo still has to take back. Fix what stops the undo (the note names the call and the answer), then run the flow's `undo` (with force once the undo has used its tries); a held record goes on once released, which tries the undo first ([Unfinished deliveries and their undo](#unfinished-deliveries-and-their-undo)). |
 | Delete ledger refused: something a delivery left cannot be undone | The flow's Unfinished deliveries to undo card | Run `undo` (with force for the items whose undo used every try) once what stops it is fixed, then delete the ledger again. Nothing was removed or deleted. |
 | An item kept by an undo (`kept`) | The record's Artifacts tab, its note | No call removes it: historian points, Seismic Store objects on gc, files behind a soft-deleted dataset, bulk data under a logical delete, ETP arrays, a DSPDM row whose key could not be recorded. It is listed so it is known; an inventory flow reports what OSDU still serves of it. |
-| An inventory reports `orphan` ids | OSDU, Inventories: the inventory's report, the finding `orphan`; a row opened in the panel under the grid, its kind, `createUser` and `createTime` as OSDU holds them | Ids OSDU serves that no ledger knows, written by an identity the estate writes as ([Finding orphans](#finding-orphans-inventory-flows)). Export them, find the delivery or the system that wrote them, and remove them in OSDU or bring them under a flow. Check the owners the run used (declared, or inferred) before acting on a large count. |
+| An inventory reports `orphan` ids | OSDU, Inventories: the inventory's report, the finding `orphan`; a row opened in the bottom panel, its kind, `createUser` and `createTime` as OSDU holds them | Ids OSDU serves that no ledger knows, written by an identity the estate writes as ([Finding orphans](#finding-orphans-inventory-flows)). Export them, find the delivery or the system that wrote them, and remove them in OSDU or bring them under a flow. Check the owners the run used (declared, or inferred) before acting on a large count. |
 | An inventory build fails: `goes in circles`, `no longer knows the cursor`, or a search read that came back short | The inventory's Runs tab; the run's trace | Nothing was merged: the inventory is as its last build left it. Run it again; a storage read that keeps failing on the cursor is read again from the start by every build. |
 | Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, recovers it (applying what the stopped worker had sent) and sends the rest; nothing else to do unless a node is wedged. |
 | Records show `delivering` while the run's trace says they were sent | The run's trace: its progress lines (`Delivering: <n> of <m> planned record(s) settled ...`) | Expected while the batch runs: a worker applies what it sent to the records at each renewal of its lease and when the batch closes, so the records trail the trace by at most one renewal. The attempts are there at once. |
