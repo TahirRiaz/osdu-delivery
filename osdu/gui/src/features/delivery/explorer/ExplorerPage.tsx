@@ -19,13 +19,16 @@ import { ElementQueryButton } from "./ExplorerElementQuery";
 import { ExplorerProblem } from "./ExplorerProblem";
 import { ExplorerRecord } from "./ExplorerRecord";
 import { ExplorerResults } from "./ExplorerResults";
-import { ExplorerRecent, ExplorerSearchBar, type SearchIn } from "./ExplorerSearchBar";
+import { ExplorerRecent, ExplorerSearchBar, type SearchIn, type SearchScope } from "./ExplorerSearchBar";
 import { ExplorerTypeRail } from "./ExplorerTypeRail";
 import { ExplorerWelcome } from "./ExplorerWelcome";
 import { BuildFieldActions } from "./dimension/BuildFieldActions";
 import { DimensionBuildPanel } from "./dimension/DimensionBuildPanel";
 import { useDimensionBuild } from "./dimension/useDimensionBuild";
 import { searchedInType, searchInChoices, useExplorerFields } from "./explorerFields";
+import {
+  scopeChoiceOf, scopeCondition, scopeMemory, scopeReplaces, scopeTargetOf, type SearchScopeChoice,
+} from "./explorerScope";
 import { offeredTerms, searchInTerms, termCondition, termMemory, useSearchTerms, type OfferedTerm } from "./explorerTerms";
 import {
   ALL_KINDS, columnsOf, filtersOf, filtersText, NAME_FIELDS, recordAt, rememberSearchedIn, rememberType, sameFilter, scopeKind, scopeLabel, scopeOf,
@@ -55,15 +58,15 @@ function WindowFrame({ hidden = false, children, testId }: { hidden?: boolean; c
 
 /**
  * The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU. It opens on a
- * welcome that reads nothing from OSDU: the search box, the records and types opened lately in this browser, and the types
- * of the partition one click away. Once asked, the types of the partition the title bar names stand beside its records; a
- * type, a group or a kind narrows them, and a property's values group and narrow them further. The search box in the
- * header searches every type, and a type, a group or a kind picked has a search box of its own over its records, which
- * searches inside it; each takes an id (which opens the record), the start of one, a name, any text or a Lucene query,
- * and the search shows in the box whose place it searches. A record opens in the record inspector, under the place it sits in, with
- * its versions, its links and the records that mention it. Everything is in the address (the search, the place, the values,
- * the order and the record open), so a link, Back and a refresh land on the same view; the records already read are kept,
- * so going back is immediate. Nothing here reads what the delivery system keeps.
+ * welcome that reads nothing from OSDU: the search field, the records and types opened lately in this browser, and the
+ * types of the partition one click away. Once asked, the types of the partition the title bar names stand beside its
+ * records; a type, a group or a kind narrows them, and a property's values group and narrow them further. One search field
+ * searches the place in view (the type picked, or every type) and keeps it: an id (which opens the record), the start of
+ * one, a name, any text or a Lucene query, in every property or in the one property or source column picked at the field's
+ * start. A record opens in the record inspector, under the place it sits in, with its versions, its links and the records
+ * that mention it. Everything is in the address (the search, the place, the values, the order and the record open), so a
+ * link, Back and a refresh land on the same view; the records already read are kept, so going back is immediate. Nothing
+ * here reads what the delivery system keeps.
  */
 export default function ExplorerPage() {
   const [params, setParams] = useSearchParams();
@@ -103,15 +106,14 @@ export default function ExplorerPage() {
   // Until then nothing is read from OSDU.
   const asksRecords = text !== "" || kindParam !== null || filters.length > 0;
   const browsing = asksRecords || params.get("view") === "types";
-  // A group, a type or a kind picked: its records have a search box of their own, which searches inside it and shows the
-  // search, while the header's searches every type.
-  const picked = asksRecords && scope.level !== "all";
-  // Edit puts the query sent in the field that shows the search, with the cursor at its end; each field is asked apart.
-  const [editInHeader, setEditInHeader] = useState(0);
-  const [editInPlace, setEditInPlace] = useState(0);
+  // A group, a type or a kind picked: the one search field searches inside it, and says so; else it searches every type.
+  const inPlace = asksRecords && scope.level !== "all";
+  // The place the field's choice of where to search is kept for: the kind pattern in view, every type when none is.
+  const placeKey = scopeKind(scope) ?? ALL_KINDS;
+  // Asked to (`/`, or Edit on the query sent), the field takes the cursor, at the end of what it shows.
+  const [focusRequest, setFocusRequest] = useState(0);
 
-  // `/` anywhere on the page but in a field puts the cursor in the search that is the list's: the place's when one is
-  // picked, else the header's.
+  // `/` anywhere on the page but in a field puts the cursor in the search field.
   useEffect(() => {
     const keyed = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -121,15 +123,11 @@ export default function ExplorerPage() {
       }
 
       event.preventDefault();
-      if (picked) {
-        setEditInPlace((asked) => asked + 1);
-      } else {
-        setEditInHeader((asked) => asked + 1);
-      }
+      setFocusRequest((asked) => asked + 1);
     };
     window.addEventListener("keydown", keyed);
     return () => window.removeEventListener("keydown", keyed);
-  }, [picked, recordId]);
+  }, [recordId]);
   const versionParam = Number(params.get("v") ?? "");
   const recordVersion = Number.isSafeInteger(versionParam) && versionParam > 0 ? versionParam : null;
 
@@ -177,12 +175,11 @@ export default function ExplorerPage() {
   const request = { text: text === "" ? undefined : text, lucene, kind: scopeKind(scope), filters, sort, columns: columnsOf(filters, NAME_FIELDS) };
 
   // Text searched in one property (osdu/docs/explorer.md, Searching a property): the properties of the place are read once
-  // text is typed in its field, and the condition editor is opened by the search box with the text typed there. A type's
-  // source columns (osdu/docs/search-terms.md) are read with them, and those searched in lately are offered after them.
-  const [adding, setAdding] = useState<string | null>(null);
+  // text is typed in the field or its choice of where to search is opened. A type's source columns
+  // (osdu/docs/search-terms.md) are read with them, and those searched in lately are offered after them.
   const [fieldsWanted, setFieldsWanted] = useState(false);
-  const placeFields = useExplorerFields(active, scopeKind(scope), reachable && picked && fieldsWanted);
-  const placeTerms = useSearchTerms(scopeKind(scope), reachable && picked && fieldsWanted);
+  const placeFields = useExplorerFields(active, scopeKind(scope), reachable && fieldsWanted);
+  const placeTerms = useSearchTerms(scopeKind(scope), reachable && fieldsWanted);
   const placeOffered = useMemo(() => offeredTerms(placeTerms.data?.terms), [placeTerms.data]);
   const searchIn = (kind: string | undefined, fields: ExplorerFieldInfo[] | undefined, reading: boolean, terms: OfferedTerm[] = []): SearchIn => ({
     choices: searchInChoices(fields, kind, searchedInType(kind)),
@@ -207,12 +204,29 @@ export default function ExplorerPage() {
       const condition = termCondition(term, typed);
       navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, f: filtersText([...filters.filter((f) => !sameFilter(f, condition)), condition]), id: null, v: null });
     },
-    onChoose: (typed) => {
-      // The text goes to the editor, to be searched in the property picked there; it replaced the field's search as it was typed.
-      navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, view: null, id: null, v: null });
-      setAdding(typed);
-    },
   });
+
+  // Where the place's field searches (osdu/docs/explorer.md, Searching a property): every property, or one source column or
+  // property picked at its start, kept while the place is in view. A value searched in it replaces the condition it had.
+  const [scopeChoice, setScopeChoice] = useState<{ place: string; choice: SearchScopeChoice } | null>(null);
+  const scopeTarget = scopeChoice !== null && scopeChoice.place === placeKey ? scopeTargetOf(scopeChoice.choice, placeOffered) : null;
+  const placeScope: SearchScope = {
+    target: scopeTarget,
+    terms: placeOffered,
+    fields: placeFields,
+    kind: scopeKind(scope),
+    partition: active,
+    base: { ...request, text: undefined, lucene: false, filters: scopeTarget === null ? filters : filters.filter((f) => !scopeReplaces(f, scopeTarget)) },
+    onWanted: () => setFieldsWanted(true),
+    onChoose: (target) => setScopeChoice(target === null ? null : { place: placeKey, choice: scopeChoiceOf(target) }),
+    onSearch: (target, value, exact) => {
+      const kind = scopeKind(scope);
+      rememberSearchedIn(searchedInType(kind), scopeMemory(target));
+      const condition = scopeCondition(target, value, exact);
+      // The value is the condition's now, so the field's own search, which it replaced as it was typed, is cleared.
+      navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, f: filtersText([...filters.filter((f) => !scopeReplaces(f, target)), condition]), id: null, v: null });
+    },
+  };
 
   // Every type is a place picked like any other, so the address keeps it rather than falling back to the welcome.
   const goScope = (next: ExplorerScope) => {
@@ -247,29 +261,21 @@ export default function ExplorerPage() {
         </RichTooltip>
       )}
       <ExplorerSearchBar
-        text={picked ? "" : text}
-        lucene={picked ? false : lucene}
-        placeholder={picked ? "Search every type by id, name or any text" : "Search by id, name or any text"}
+        text={text}
+        lucene={lucene}
+        placeholder={inPlace ? `Search ${scopeLabel(scope)} by id, name or any text` : "Search every type by id, name or any text"}
         label="Search OSDU"
-        onSearch={(typed, asLucene) => {
-          if (typed === "") {
-            // A search of every type cleared lists every record of every type; a place picked keeps its own search,
-            // which its own field clears.
-            if (!picked) {
-              navigate({ q: null, lq: null, kind: kindParam ?? ALL_KINDS, id: null, v: null });
-            }
-
-            return;
-          }
-
-          navigate({ q: typed, lq: asLucene ? "1" : null, kind: picked ? ALL_KINDS : kindParam, id: null, v: null });
-        }}
+        // The field searches the place in view and keeps it: a type picked, or every type. Cleared, the place lists every
+        // record it holds; every type is one click away in the list of types and in the place's own line.
+        onSearch={(typed, asLucene) => navigate(typed === ""
+          ? { q: null, lq: null, kind: kindParam ?? ALL_KINDS, id: null, v: null }
+          : { q: typed, lq: asLucene ? "1" : null, kind: kindParam, id: null, v: null })}
         onOpenId={openId}
-        // The header's field is the list's while no place is picked: across every type, text is searched in the record's name.
-        searchIn={picked ? undefined : searchIn(undefined, undefined, false)}
-        shortcut={!picked && recordId === null}
-        focusRequest={editInHeader}
-        className="min-w-[280px] max-w-[760px] flex-1"
+        searchIn={searchIn(scopeKind(scope), placeFields.data?.answer.fields, placeFields.isFetching && placeFields.data === undefined, placeOffered)}
+        scope={reachable ? placeScope : undefined}
+        shortcut={recordId === null}
+        focusRequest={focusRequest}
+        className="min-w-[320px] max-w-[880px] flex-1"
         testId="explorer-search"
       />
       {(browsing || recordId !== null) && <ExplorerRecent onOpen={openRecent} />}
@@ -332,48 +338,25 @@ export default function ExplorerPage() {
                 loading={types.isFetching}
                 error={types.isError ? failureText(types.error) : types.data?.answer.refusal ?? null}
                 scope={asksRecords ? scope : null}
+                searchKey={typesRequest.text === undefined && filters.length === 0 ? null : JSON.stringify(typesRequest)}
                 onScope={goScope}
               />
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel className="flex min-h-0 flex-col">
-              {/* Over the records of the place picked, in line with the filter over the types. */}
-              {picked && (
-                <div className="border-b p-2">
-                  <ExplorerSearchBar
-                    text={text}
-                    lucene={lucene}
-                    placeholder={`Search ${scopeLabel(scope)} by id, name or any text`}
-                    label={`Search ${scopeLabel(scope)}`}
-                    onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
-                    onOpenId={openId}
-                    searchIn={searchIn(scopeKind(scope), placeFields.data?.answer.fields, placeFields.isFetching && placeFields.data === undefined, placeOffered)}
-                    shortcut
-                    focusRequest={editInPlace}
-                    testId="explorer-within"
-                  />
-                </div>
-              )}
               {asksRecords
                 ? (
                   <ExplorerResults
                     partition={active}
                     request={request}
                     scope={scope}
-                    adding={adding}
-                    onAdding={setAdding}
                     onScope={goScope}
                     onOpen={(hit) => openId(hit.id)}
                     onFilters={(next: ExplorerFilter[]) => navigate({ f: filtersText(next) })}
                     onSort={(next: ExplorerSort) => navigate({ sort: next === "relevance" ? null : next }, true)}
                     onSearchEverywhere={() => navigate({ kind: ALL_KINDS })}
                     onEditQuery={(query) => {
-                      if (picked) {
-                        setEditInPlace((asked) => asked + 1);
-                      } else {
-                        setEditInHeader((asked) => asked + 1);
-                      }
-
+                      setFocusRequest((asked) => asked + 1);
                       navigate({ q: query, lq: "1", f: null, id: null, v: null });
                     }}
                   />
@@ -421,11 +404,12 @@ export default function ExplorerPage() {
     content = (
       <WindowFrame testId="explorer-build-frame">
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
-          <ResizablePanel minSize="40" className="flex min-h-0 flex-col gap-3 overflow-auto pr-1">
+          {/* The records keep the larger share: the builder is used by opening records and following their links. */}
+          <ResizablePanel minSize="45" className="flex min-h-0 flex-col gap-3 overflow-auto pr-1">
             {content}
           </ResizablePanel>
           <ResizableHandle />
-          <ResizablePanel defaultSize={560} minSize={380} maxSize="60" className="flex min-h-0 flex-col pl-1">
+          <ResizablePanel defaultSize="45" minSize={380} maxSize="55" className="flex min-h-0 flex-col pl-1">
             <Card className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden rounded-lg p-0">
               <DimensionBuildPanel build={build} startKind={startKind} />
             </Card>

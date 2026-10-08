@@ -58,7 +58,7 @@ function searches(partition: string | null): { icon: ReactNode; what: string; ex
     { icon: <Hash />, what: "A record id", example: `${partition ?? "dev"}:master-data--Wellbore:…`, does: "opens the record" },
     { icon: <TextCursorInput />, what: "The start of an id", example: "master-data--Well:", does: "ids starting with it" },
     { icon: <Type />, what: "A name or any text", example: "Norway", does: "in every property" },
-    { icon: <TextSearch />, what: "Text in one property", example: "NO 34/10, then: in WellboreName", does: "pick it under the field" },
+    { icon: <TextSearch />, what: "A value in one column", example: "In wellbore_uwi: NO 34/10-A-30", does: "pick it at the field's start" },
     { icon: <Braces />, what: "A Lucene query", example: "createTime:[2024-01-01 TO *]", does: "with { } on, sent as written" },
   ];
 }
@@ -151,7 +151,8 @@ export function ExplorerWelcome({ partition, onBrowseTypes, onOpenRecent, onOpen
 
   return (
     <div className="@container flex min-h-0 flex-1 flex-col" data-testid="explorer-welcome">
-      <div className="grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-3 overflow-y-auto @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:overflow-hidden @5xl:grid-cols-[minmax(0,1fr)_360px]">
+      {/* Side by side, the panels share the height; stacked on a narrow panel, each takes its own and the page scrolls. */}
+      <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto @3xl:auto-rows-[minmax(0,1fr)] @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:overflow-hidden @5xl:grid-cols-[minmax(0,1fr)_360px]">
         <Panel
           icon={<History />}
           title="Recently opened"
@@ -192,8 +193,8 @@ export function ExplorerWelcome({ partition, onBrowseTypes, onOpenRecent, onOpen
             )}
         </Panel>
 
-        <div className="flex min-h-0 flex-col gap-3">
-          <Panel icon={<Layers />} title="Types" className="flex min-h-0 flex-1 flex-col" testId="explorer-welcome-types">
+        <div className="flex flex-col gap-3 @3xl:min-h-0">
+          <Panel icon={<Layers />} title="Types" className="flex flex-col @3xl:min-h-0 @3xl:flex-1" testId="explorer-welcome-types">
             <div className="p-2">
               <button
                 type="button"

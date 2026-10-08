@@ -13,6 +13,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The explorer searches in one attribute picked at the field's start.** The search field begins with where it
+  searches, **In every property** by default: a property or a source column picked there (the type's source columns
+  first) makes what is typed a value of it, with the values it holds listed under the field as it is typed, the commonest
+  first, any picked whole with a click; a value searched there replaces the condition the attribute had
+  ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching-a-property)).
+
 - **The explorer searches by the columns of the source systems.** Every repository sync extracts the search terms of
   its delivery flows: each column a mapping of an active flow reads (Recall's `wellbore_uwi`, `log_source`,
   `curves.curve_unit`), with every route by which a value of it reaches the record (a copy, the mapping's steps, a
@@ -807,6 +813,18 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   assert the result contract, and a link can set the pipelines page's repo and kind filters.
 
 ### Changed
+
+- **The explorer has one search field, and asks less of the eye.** The field in the header searches the place in view
+  (the type picked, or every type) in place of a second field over a type's records; every type stays one click away.
+  The query a list is read by moved from a band over every list into a glyph in the place's line. The list of types
+  opens folded but for the place picked, and opens where a search finds records; the place picked stays listed where a
+  search finds nothing in it. A value picked from those held under **contains** or **starts with** is asked whole
+  (**is**), and only the arrow keys choose the option Enter takes under a search field, so a pointer resting over the
+  options no longer changes what Enter searches. The welcome's search syntax says how to search one attribute
+  ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching)). With a dimension's builder docked, the records keep the
+  larger share of the width, a record's field names leave its values room in a narrow panel (on the record pages too),
+  and the welcome stacks its panels without one covering another, so a record's links can be followed and every type
+  browsed while a dimension is built.
 
 - **A removal no longer blocks the record.** A record taken out of OSDU (`record` or `everything`) is marked `deleted`
   and follows its source again: the next run that reads its row delivers it again, with no release needed. Restoring the

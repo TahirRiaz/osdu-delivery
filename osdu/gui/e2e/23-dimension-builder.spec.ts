@@ -91,6 +91,8 @@ async function buildOnWellLogs(page: Page) {
   await page.goto("/delivery/explorer");
   await expect(page.getByTestId("explorer-live")).toContainText(PARTITION, { timeout: 30_000 });
   await page.getByTestId("explorer-browse-types").click();
+  // The groups start folded: the well logs are a type of work-product-component.
+  await page.getByTestId("explorer-types").getByRole("button", { name: "Unfold work-product-component" }).click({ timeout: 60_000 });
   const logs = page.getByTestId("explorer-types").getByTestId("explorer-type").filter({ hasText: "WellLog" });
   await expect(logs).toContainText("5", { timeout: 60_000 });
   await logs.getByRole("button").last().click();
@@ -272,6 +274,7 @@ test.describe.serial("dimension builder", () => {
     await adminPage.getByTestId("explorer-build-dimension").click();
     await expect(adminPage.getByTestId("builder-next")).toContainText("Pick a type");
     await adminPage.getByTestId("explorer-browse-types").click();
+    await adminPage.getByTestId("explorer-types").getByRole("button", { name: "Unfold work-product-component" }).click({ timeout: 60_000 });
     const logs = adminPage.getByTestId("explorer-types").getByTestId("explorer-type").filter({ hasText: "WellLog" });
     await logs.getByRole("button").last().click({ timeout: 60_000 });
     await expect(adminPage.getByTestId("builder-kind")).toContainText("WellLog", { timeout: 60_000 });

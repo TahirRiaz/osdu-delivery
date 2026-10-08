@@ -1,3 +1,4 @@
+import type { Locator, Page } from "@playwright/test";
 import { E2E } from "../playwright.config";
 import { expect, test } from "./helpers";
 
@@ -14,6 +15,17 @@ const LOG = `${E2E.osdu.OSDU_DATA_PARTITION}:work-product-component--WellLog:e2e
 
 /** The wellbore the log names, one of the wellbores the stand-in holds. */
 const WELLBORE = `${E2E.osdu.OSDU_DATA_PARTITION}:master-data--Wellbore:NO-33-9-C-28-B`;
+
+/**
+ * What the list in view is read by, as sent to the search service: its popover is opened, `check` runs on it, and it is
+ * closed again. A list is read before its query is asked, so a caller waits for its rows first.
+ */
+async function sent(page: Page, check: (panel: Locator) => Promise<void>) {
+  await page.getByTestId("explorer-sent-toggle").click();
+  await check(page.getByTestId("explorer-sent"));
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("explorer-sent")).toHaveCount(0);
+}
 
 test.describe.serial("explorer", () => {
   test.beforeAll(async ({ playwright }) => {
@@ -58,11 +70,13 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-types")).toHaveCount(0);
     await adminPage.getByTestId("explorer-browse-types").click();
     await expect(adminPage.getByTestId("explorer-pick-type")).toBeVisible();
-    await expect(adminPage.getByTestId("explorer-within")).toHaveCount(0);
 
-    // The kinds the partition holds, counted by one aggregation: its wellbores and the log this spec holds.
+    // The kinds the partition holds, counted by one aggregation: its wellbores and the log this spec holds. The groups start
+    // folded, and a group unfolded lists its types.
     const types = adminPage.getByTestId("explorer-types");
     await expect(types.getByTestId("explorer-type-all")).toContainText("8", { timeout: 60_000 });
+    await expect(types.getByTestId("explorer-type")).toHaveCount(0);
+    await types.getByTestId("explorer-type-group").filter({ hasText: "master-data" }).getByRole("button", { name: "Unfold master-data" }).click();
     const wellbores = types.getByTestId("explorer-type").filter({ hasText: "Wellbore" });
     await expect(wellbores).toContainText("7");
 
@@ -73,23 +87,26 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-place")).toContainText("Wellbore");
     await expect(adminPage.getByTestId("explorer-count")).toContainText("7 records");
 
-    // What the list is read by, as sent to the search service: the type's kind, and no query.
-    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
-    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
+    // What the list is read by, as sent to the search service, one click away: the type's kind, and no query.
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
+      await expect(panel.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
+    });
 
-    // A name typed in the field over the records finds those holding it, within the type picked; the header's field
-    // searches every type, and leaves the search to the type's.
-    await expect(adminPage.getByTestId("explorer-within-input")).toHaveAttribute("placeholder", "Search Wellbore by id, name or any text");
-    await expect(adminPage.getByTestId("explorer-search-input")).toHaveAttribute("placeholder", "Search every type by id, name or any text");
-    await adminPage.getByTestId("explorer-within-input").fill("NO 33/9-C-28");
-    await expect(adminPage.getByTestId("explorer-within-hint")).toContainText("search");
-    await adminPage.getByTestId("explorer-within-input").press("Enter");
+    // The one search field searches the place in view: a name typed finds the records of the type holding it.
+    const field = adminPage.getByTestId("explorer-search-input");
+    await expect(field).toHaveAttribute("placeholder", "Search Wellbore by id, name or any text");
+    await field.fill("NO 33/9-C-28");
+    await expect(adminPage.getByTestId("explorer-search-hint")).toContainText("search");
+    await field.press("Enter");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
     await expect(grid).toContainText("NO 33/9-C-28 A");
     await expect(grid).toContainText("NO 33/9-C-28 B");
-    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
-    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("NO 33/9-C-28");
-    await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue("");
+    await expect(field).toHaveValue("NO 33/9-C-28");
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
+      await expect(panel.getByTestId("explorer-sent-query")).toContainText("NO 33/9-C-28");
+    });
 
     // A property's values group the records, and a value narrows them to it.
     await adminPage.getByTestId("explorer-group-by").click();
@@ -98,39 +115,48 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-filter")).toContainText("NO 33/9-C-28 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
 
-    // The value narrowed to is a clause of the query sent, which Edit takes into the type's search field as Lucene, the
-    // cursor at its end, so it is edited at once.
+    // The value narrowed to is a clause of the query sent, which Edit takes into the search field as Lucene, the cursor at
+    // its end, so it is edited at once.
+    await adminPage.getByTestId("explorer-sent-toggle").click();
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText('data.FacilityName.keyword:"NO 33/9-C-28 B"');
     await adminPage.getByTestId("explorer-sent-edit").click();
-    const within = adminPage.getByTestId("explorer-within-input");
-    await expect(within).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
-    await expect(within).toBeFocused();
+    await expect(field).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
+    await expect(field).toBeFocused();
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
 
     // The cross clears the search, not only the field: every record of the type again.
-    await adminPage.getByTestId("explorer-within-clear").click();
+    await adminPage.getByTestId("explorer-search-clear").click();
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
-    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
-    await expect(within).toHaveValue("");
+    await expect(field).toHaveValue("");
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
+    });
 
     // Escape clears a search the same way.
-    await within.fill("NO 33/9-C-28");
-    await within.press("Enter");
+    await field.fill("NO 33/9-C-28");
+    await field.press("Enter");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
-    await within.press("Escape");
+    await field.press("Escape");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
 
-    // The header's field searches every type: the type's field goes, and the search shows in the header.
-    await adminPage.getByTestId("explorer-search-input").fill("NO 33/9-C-28 B");
-    await adminPage.getByTestId("explorer-search-input").press("Enter");
-    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*", { timeout: 60_000 });
-    await expect(adminPage.getByTestId("explorer-within")).toHaveCount(0);
-    await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue("NO 33/9-C-28 B");
+    // All types is a place like any other: the field then searches every type.
+    await types.getByTestId("explorer-type-all").getByRole("button").click();
+    await expect(field).toHaveAttribute("placeholder", "Search every type by id, name or any text");
+    await field.fill("NO 33/9-C-28 B");
+    await field.press("Enter");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*");
+    });
+    await expect(field).toHaveValue("NO 33/9-C-28 B");
 
     // Cleared, it lists every record of every type, rather than going back to the welcome.
     await adminPage.getByTestId("explorer-search-clear").click();
-    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind", { timeout: 60_000 });
-    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(8, { timeout: 60_000 });
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
+      await expect(panel.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*");
+    });
     await expect(adminPage.getByTestId("explorer-welcome")).toHaveCount(0);
   });
 
@@ -140,20 +166,22 @@ test.describe.serial("explorer", () => {
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
 
     // Text typed is searched in every property on Enter; under the field, it is offered in one property instead.
-    const within = adminPage.getByTestId("explorer-within-input");
-    await within.fill("33/9-c-28");
-    const options = adminPage.getByTestId("explorer-within-in");
-    await expect(options.getByTestId("explorer-within-in-everywhere")).toContainText("Search every property for 33/9-c-28");
-    await expect(options.getByTestId("explorer-within-in-choose")).toContainText("Search in another property", { timeout: 60_000 });
-    await options.getByTestId("explorer-within-in-field").filter({ hasText: "FacilityName" }).click();
+    const field = adminPage.getByTestId("explorer-search-input");
+    await field.fill("33/9-c-28");
+    const options = adminPage.getByTestId("explorer-search-in");
+    await expect(options.getByTestId("explorer-search-in-everywhere")).toContainText("Search every property for 33/9-c-28");
+    await expect(options.getByTestId("explorer-search-in-choose")).toContainText("Pick another property", { timeout: 60_000 });
+    await options.getByTestId("explorer-search-in-field").filter({ hasText: "FacilityName" }).click();
 
     // The text is a condition now, its words in any case, and no longer the field's search.
     const chips = adminPage.getByTestId("explorer-filter");
     await expect(chips).toHaveCount(1);
     await expect(chips.first()).toContainText("FacilityName contains 33/9-c-28");
-    await expect(within).toHaveValue("");
+    await expect(field).toHaveValue("");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
-    await expect(adminPage.getByTestId("explorer-sent-query")).toHaveText('data.FacilityName:"33/9-c-28"');
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-query")).toHaveText('data.FacilityName:"33/9-c-28"');
+    });
 
     // A chip opens the editor to change it: every wellbore but one, picked from the values the wellbores hold. A query that
     // only excludes starts from every record, since the search service refuses one that does not.
@@ -166,7 +194,9 @@ test.describe.serial("explorer", () => {
     await editor.getByTestId("explorer-filter-apply").click();
     await expect(chips.first()).toContainText("FacilityName is not NO 33/9-C-28 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(6, { timeout: 60_000 });
-    await expect(adminPage.getByTestId("explorer-sent-query")).toHaveText('_exists_:id AND NOT (data.FacilityName.keyword:"NO 33/9-C-28 B")');
+    await sent(adminPage, async (panel) => {
+      await expect(panel.getByTestId("explorer-sent-query")).toHaveText('_exists_:id AND NOT (data.FacilityName.keyword:"NO 33/9-C-28 B")');
+    });
 
     // Filter adds a condition, the property found by part of its name: the wellbores whose name starts with NO 33.
     await adminPage.getByTestId("explorer-add-filter").click();
@@ -185,6 +215,34 @@ test.describe.serial("explorer", () => {
     await adminPage.reload();
     await expect(chips).toHaveCount(2, { timeout: 60_000 });
     await adminPage.getByTestId("explorer-filters-clear").click();
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
+
+    // The field searches one property when one is picked at its start: the values it holds are listed as a value is
+    // typed, one picked is asked whole, and a value searched again replaces it.
+    await adminPage.getByTestId("explorer-search-scope").click();
+    await adminPage.getByTestId("explorer-search-scope-attributes-find").fill("facility");
+    await adminPage.locator('[data-testid="explorer-search-scope-attributes-field"][data-path="data.FacilityName"]').click({ timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-search-scope-name")).toHaveText("FacilityName");
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute("placeholder", "Type a value of FacilityName");
+    await field.fill("NO 33/9-C-28");
+    await expect(options.getByTestId("explorer-search-in-scoped")).toContainText("FacilityName contains NO 33/9-C-28");
+    await options.getByTestId("explorer-search-in-held").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
+    await expect(chips).toHaveCount(1);
+    await expect(chips.first()).toContainText("FacilityName is NO 33/9-C-28 B");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await field.fill("NO 33/9-C-28 A");
+    await field.press("Enter");
+    await expect(chips).toHaveCount(1);
+    await expect(chips.first()).toContainText("FacilityName contains NO 33/9-C-28 A");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await expect(grid).toContainText("NO 33/9-C-28 A");
+
+    // Every property again: the field searches as it always does.
+    await adminPage.getByTestId("explorer-search-scope").click();
+    await adminPage.getByTestId("explorer-search-scope-every").click();
+    await expect(field).toHaveAttribute("placeholder", "Search Wellbore by id, name or any text");
+    await chips.first().getByTestId("explorer-filter-drop").click();
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
 
     // A property a condition asks is a column, so the grid shows why each record is there: the log's source.

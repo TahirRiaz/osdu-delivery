@@ -3,21 +3,16 @@ import { ArrowLeft, Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { cn } from "@/lib/utils";
-import {
-  explorerApi, type ExplorerCondition, type ExplorerFieldInfo, type ExplorerFilter, type ExplorerPage, type ExplorerSearchRequest,
-} from "../../../api/explorer";
+import type { ExplorerCondition, ExplorerFieldInfo, ExplorerFilter, ExplorerSearchRequest } from "../../../api/explorer";
 import { isRecordReference } from "../osduDocument";
 import { RecordName } from "../RecordName";
 import { ExplorerAttributeList } from "./ExplorerAttributeList";
 import { ExplorerErrorText } from "./ExplorerProblem";
 import { nestedLabel, useExplorerFields } from "./explorerFields";
-import { CONDITION_HINTS, CONDITION_LABELS, conditionsFor, fieldLabel, filterProblem, kindParts, useExplorerRead } from "./explorerModel";
+import { heldFor, useHeldValues } from "./explorerHeld";
+import { CONDITION_HINTS, CONDITION_LABELS, conditionsFor, fieldLabel, filterProblem } from "./explorerModel";
 import { offeredTerm, offeredTerms, termsEntityType, termTitle, termValueIndex, useSearchTerms, type OfferedTerm } from "./explorerTerms";
-
-/** How long typing rests before the values held are asked for again. */
-const TYPING_DELAY_MS = 300;
 
 /** The values listed under the field at most. */
 const SUGGESTED = 40;
@@ -48,14 +43,12 @@ function inputType(index: ExplorerFieldInfo["index"], condition: ExplorerConditi
  * those its route allows, and the values listed are those of the property its route fills or, for a route through other
  * records, of the property those records are found by. The control plane carries the values through the mapping.
  */
-export function ExplorerFilterEditor({ partition, base, initial, startValue = "", applyLabel, onApply, onCancel }: {
+export function ExplorerFilterEditor({ partition, base, initial, applyLabel, onApply, onCancel }: {
   partition: string | null;
   /** The search in view without this condition: what the values held are counted within. */
   base: ExplorerSearchRequest;
   /** The condition changed; null to start a new one by picking the property. */
   initial: ExplorerFilter | null;
-  /** The value a new condition starts with: the text typed in the search box, to be searched in a property picked here. */
-  startValue?: string;
   applyLabel: string;
   onApply: (filter: ExplorerFilter) => void;
   onCancel: () => void;
@@ -70,7 +63,7 @@ export function ExplorerFilterEditor({ partition, base, initial, startValue = ""
   // The search term the condition names instead of a property, by its id: the one changed, or one picked here.
   const [termId, setTermId] = useState<string | null>(initial?.term ?? null);
   const [chosen, setCondition] = useState<ExplorerCondition>(initial?.condition ?? "is");
-  const [value, setValue] = useState(initial?.value ?? startValue);
+  const [value, setValue] = useState(initial?.value ?? "");
   const [values, setValues] = useState<string[]>(initial?.values ?? []);
   const [to, setTo] = useState(initial?.to ?? "");
   // The term named, once the terms are read; one left out or no longer searchable since is not, and is picked again.
@@ -225,6 +218,10 @@ export function ExplorerFilterEditor({ partition, base, initial, startValue = ""
               setValues((was) => (was.includes(picked) ? was.filter((other) => other !== picked) : [...was, picked]));
             } else {
               setValue(picked);
+              // A value listed is a whole value: picked under its words or its start, it is asked as it is.
+              if (condition === "contains" || condition === "startsWith") {
+                setCondition("is");
+              }
             }
           }}
         />
@@ -238,22 +235,6 @@ export function ExplorerFilterEditor({ partition, base, initial, startValue = ""
       </div>
     </form>
   );
-}
-
-/**
- * Where the values to pick from are read: the property of the records in view, within the search without this condition;
- * for a term, the property its suggestions name, and for a route through other records, every record of their kind.
- */
-function heldFor(base: ExplorerSearchRequest, target: ExplorerFieldInfo, term: OfferedTerm | null): { base: ExplorerSearchRequest; field: ExplorerFieldInfo; heading?: string } {
-  const suggest = term?.term.suggest;
-  if (suggest === undefined || suggest === null) {
-    return { base, field: target };
-  }
-
-  const field = { path: suggest.path, index: suggest.index, nested: suggest.nested };
-  return suggest.kind === null
-    ? { base, field }
-    : { base: { kind: suggest.kind, filters: [] }, field, heading: `Values of ${kindParts(suggest.kind).type} ${fieldLabel(suggest.path)}` };
 }
 
 /** The value, the values or the bounds a condition compares, typed in fields fit for the property's index. */
@@ -365,11 +346,7 @@ function ValueFields({ field, condition, value, values, to, onValue, onValues, o
   );
 }
 
-/**
- * The values the records in view hold at the property, the commonest first, each with how many records hold it: one grouping
- * of the search in view, and as a value is typed, one more of the values that start with it (exact case, as the index keeps
- * the whole value), with the values listed before that hold the text anywhere, in any case.
- */
+/** The values the records in view hold at the property, the commonest first, each with how many records hold it (`useHeldValues`). */
 function HeldValues({ partition, base, field, heading = "Values held here", typed, picked, onPick }: {
   partition: string | null;
   base: ExplorerSearchRequest;
@@ -380,29 +357,7 @@ function HeldValues({ partition, base, field, heading = "Values held here", type
   picked: string[];
   onPick: (value: string) => void;
 }) {
-  const settled = useDebouncedValue(typed.trim(), TYPING_DELAY_MS);
-  const facet = { path: field.path, index: field.index, ...(field.nested ? { nested: field.nested } : {}) };
-  const grouped = { ...base, offset: 0, limit: 1, columns: undefined, facet };
-  const all = useExplorerRead<ExplorerPage>(["held", partition, grouped], () => explorerApi.search(partition, grouped));
-  // The start typed is asked of the index where it keeps the whole value: text and keywords outside a nested list.
-  const narrowable = settled !== "" && (field.index === "text" || field.index === "keyword") && !field.nested;
-  const narrowed = { ...grouped, filters: [...(base.filters ?? []), { path: field.path, index: field.index, condition: "startsWith" as const, value: settled }] };
-  const starting = useExplorerRead<ExplorerPage>(["held", partition, narrowed], narrowable ? () => explorerApi.search(partition, narrowed) : null);
-
-  const listed = useMemo(() => {
-    const wanted = settled.toLowerCase();
-    const byValue = new Map<string, number>();
-    for (const bucket of [...(starting.data?.answer.facet ?? []), ...(all.data?.answer.facet ?? [])]) {
-      if (bucket.value != null && (wanted === "" || bucket.value.toLowerCase().includes(wanted)) && !byValue.has(bucket.value)) {
-        byValue.set(bucket.value, bucket.count);
-      }
-    }
-
-    return [...byValue.entries()].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).slice(0, SUGGESTED);
-  }, [all.data, starting.data, settled]);
-
-  const refusal = all.data?.answer.refusal;
-  const reading = all.isPending || (narrowable && starting.isFetching);
+  const { settled, listed, reading, error, refusal } = useHeldValues({ partition, base, field, typed, limit: SUGGESTED });
   return (
     <div className="flex max-h-56 min-h-0 flex-col border-t">
       <div className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -410,9 +365,9 @@ function HeldValues({ partition, base, field, heading = "Values held here", type
         {reading && <Loader2 className="size-3 animate-spin" aria-label="Counting the values" />}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-1" data-testid="explorer-filter-held">
-        {all.isError && <ExplorerErrorText error={all.error} className="px-1.5 py-1" />}
+        {error !== null && <ExplorerErrorText error={error} className="px-1.5 py-1" />}
         {refusal && <p className="px-1.5 py-1 text-[12px] text-destructive">{`The search service would not group by this property: ${refusal}`}</p>}
-        {!reading && !all.isError && !refusal && listed.length === 0 && (
+        {!reading && error === null && !refusal && listed.length === 0 && (
           <p className="px-1.5 py-1 text-[12px] text-muted-foreground">{settled === "" ? "None of these records holds a value of it." : `No value held here matches "${settled}".`}</p>
         )}
         {listed.map(([held, count]) => {

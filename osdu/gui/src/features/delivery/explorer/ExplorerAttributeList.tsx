@@ -1,6 +1,8 @@
-import { Info, Loader2 } from "lucide-react";
+import type { ReactNode } from "react";
+import { Check, Info, Loader2 } from "lucide-react";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { RichTooltip } from "@/components/RichTooltip";
+import { cn } from "@/lib/utils";
 import type { ExplorerFieldInfo, ExplorerFields } from "../../../api/explorer";
 import { ExplorerErrorText } from "./ExplorerProblem";
 import { nestedLabel, offeredFields, originText } from "./explorerFields";
@@ -25,24 +27,30 @@ const GROUPS: { origin: NonNullable<ExplorerFieldInfo["origin"]>; heading: strin
  * first, each by its name with its system and the property it is searched in, found by any of them. The foot says what the
  * list was read from.
  */
-export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, placeholder = "Find a property", testId }: {
+export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, lead, selected, placeholder = "Find a property", testId }: {
   read: { data?: { answer: ExplorerFields }; isPending: boolean; isError: boolean; error: unknown };
   kind: string | undefined;
   onPick: (field: ExplorerFieldInfo) => void;
   /** The search terms of the type in view, offered before its properties; none where the list offers properties alone. */
   terms?: OfferedTerm[];
   onPickTerm?: (term: OfferedTerm) => void;
+  /** What the list offers before the attributes (every property, for a search field's choice of where to search). */
+  lead?: ReactNode;
+  /** The attribute picked, marked: `term:<id>` or `field:<path>`; with it given, every item keeps room for the mark. */
+  selected?: string;
   placeholder?: string;
   testId: string;
 }) {
   const answer = read.data?.answer;
   const offered = answer === undefined ? [] : offeredFields(answer.fields, kind);
   const notes = answer?.notes ?? [];
+  const mark = (key: string) => (selected === undefined ? null : <Check className={cn("size-3.5 shrink-0", selected === key ? "text-primary" : "invisible")} aria-hidden />);
 
   return (
     <Command data-testid={testId}>
       <CommandInput placeholder={placeholder} data-testid={`${testId}-find`} />
       <CommandList className="max-h-80">
+        {lead}
         {read.isPending && (
           <div className="flex items-center gap-2 px-3 py-3 text-[12px] text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" />
@@ -63,6 +71,7 @@ export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, p
                 data-testid={`${testId}-term`}
                 data-term={offered.term.id}
               >
+                {mark(`term:${offered.term.id}`)}
                 <span className="min-w-0 flex-1 truncate text-[13px]">{offered.term.name}</span>
                 {offered.showSystem && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">{offered.term.system}</span>}
                 <span className="max-w-[45%] shrink-0 truncate text-right font-mono text-[11px] text-muted-foreground">{fieldLabel(offered.route.path)}</span>
@@ -85,6 +94,7 @@ export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, p
                   data-testid={`${testId}-field`}
                   data-path={field.path}
                 >
+                  {mark(`field:${field.path}`)}
                   <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{fieldLabel(field.path)}</span>
                   {nestedLabel(field.nested) !== null && (
                     <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground" title={`Inside the nested list ${field.nested}`}>

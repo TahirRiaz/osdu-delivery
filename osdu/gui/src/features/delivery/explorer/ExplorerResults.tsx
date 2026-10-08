@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/CopyButton";
 import { EmptyState } from "@/components/EmptyState";
@@ -39,39 +40,55 @@ const READINGS: Partial<Record<ExplorerReading, string>> = {
 };
 
 /**
- * What the list is read by, exactly as the explorer sends it to the search service: the kind and the Lucene query (none
- * where the list is every record of the kind). The search box, the place picked and the values narrowed to all make it,
- * so it is the expression to reuse elsewhere: copied as written or as a search request, or taken into the search box to
- * be changed there.
+ * What the list is read by, exactly as the explorer sends it to the search service, one click away rather than over every
+ * list: the kind and the Lucene query (none where the list is every record of the kind). The search field, the place
+ * picked and the conditions all make it, so it is the expression to reuse elsewhere: copied as written or as a search
+ * request, or taken into the search field as Lucene to be changed there.
  */
 function SentQuery({ kind, query, onEdit }: { kind: string; query: string | null; onEdit: (query: string) => void }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="flex min-w-0 items-start gap-2 border-b bg-muted/30 px-3 py-1.5 text-[12px]" data-testid="explorer-sent">
-      <RichTooltip
-        title="Sent to the search service"
-        body="The kind and the Lucene query this list is read by, exactly as the explorer sends them. The search box, the place picked and the values narrowed to all make it."
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          title="The query: the kind and the Lucene query this list is read by, as sent to the search service"
+          aria-label="The query this list is read by"
+          data-testid="explorer-sent-toggle"
+        >
+          <SearchCode />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-[min(560px,90vw)] p-0"
+        // The focus stays on the glyph, so no button's tooltip opens with the query and Escape closes it at once.
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        data-testid="explorer-sent"
       >
-        <SearchCode className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-label="Sent to the search service" />
-      </RichTooltip>
-      <div className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
-        <span className="text-muted-foreground">kind</span>
-        <span className="min-w-0 break-all font-mono" data-testid="explorer-sent-kind">{kind}</span>
-        <span className="text-muted-foreground">query</span>
-        {query
-          ? <span className="max-h-16 min-w-0 overflow-auto break-all font-mono text-foreground" data-testid="explorer-sent-query">{query}</span>
-          : <span className="text-muted-foreground" data-testid="explorer-sent-query">none: every record of the kind</span>}
-      </div>
-      <span className="flex shrink-0 items-center gap-0.5">
-        {query && <CopyButton iconOnly label="Copy the query" text={query} testId="explorer-sent-copy" />}
-        <CopyButton label="As a request" text={JSON.stringify(query ? { kind, query, limit: 10 } : { kind, limit: 10 }, null, 2)} testId="explorer-sent-copy-request" />
-        {query && (
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-[12px]" onClick={() => onEdit(query)} data-testid="explorer-sent-edit">
-            <Pencil />
-            Edit
-          </Button>
-        )}
-      </span>
-    </div>
+        <div className="flex items-center gap-1 border-b px-3 py-1.5">
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Sent to the search service</span>
+          {query && <CopyButton iconOnly label="Copy the query" text={query} testId="explorer-sent-copy" />}
+          <CopyButton label="As a request" text={JSON.stringify(query ? { kind, query, limit: 10 } : { kind, limit: 10 }, null, 2)} testId="explorer-sent-copy-request" />
+          {query && (
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[12px]" onClick={() => { setOpen(false); onEdit(query); }} data-testid="explorer-sent-edit">
+              <Pencil />
+              Edit
+            </Button>
+          )}
+        </div>
+        <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2.5 text-[12px]">
+          <span className="text-muted-foreground">kind</span>
+          <span className="min-w-0 break-all font-mono" data-testid="explorer-sent-kind">{kind}</span>
+          <span className="text-muted-foreground">query</span>
+          {query
+            ? <span className="max-h-40 min-w-0 overflow-auto break-all font-mono text-foreground" data-testid="explorer-sent-query">{query}</span>
+            : <span className="text-muted-foreground" data-testid="explorer-sent-query">none: every record of the kind</span>}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -154,19 +171,16 @@ function ColumnValues({ values }: { values: string[] | undefined }) {
 
 /**
  * The records a search finds in the place picked, a page at a time as the grid is scrolled, under one line that says
- * where they are, how many there are and how they were read, with the order, the conditions and the grouping beside it
- * and the conditions the records are narrowed to under it. Each property a condition asks is a column, so the grid shows
- * why each record is listed. A partition of millions reads as fast as one of hundreds: each page is one query of the
- * search index, and the total is the index's own count. The service pages through the first ten thousand records a query
- * matches; past them the reader narrows, and the foot of the grid says so.
+ * where they are, how many there are and how they were read, with the order, the conditions and the grouping beside it,
+ * the query sent and the checks one click away, and the conditions the records are narrowed to under it. Each property a
+ * condition asks is a column, so the grid shows why each record is listed. A partition of millions reads as fast as one
+ * of hundreds: each page is one query of the search index, and the total is the index's own count. The service pages
+ * through the first ten thousand records a query matches; past them the reader narrows, and the foot of the grid says so.
  */
-export function ExplorerResults({ partition, request, scope, adding, onAdding, onScope, onOpen, onFilters, onSort, onSearchEverywhere, onEditQuery }: {
+export function ExplorerResults({ partition, request, scope, onScope, onOpen, onFilters, onSort, onSearchEverywhere, onEditQuery }: {
   partition: string | null;
   /** The search, without its page. */
   request: ExplorerSearchRequest & { sort: ExplorerSort; filters: ExplorerFilter[]; columns: string[] };
-  /** The text a new condition starts with while the condition editor is open; null while it is closed. */
-  adding: string | null;
-  onAdding: (startValue: string | null) => void;
   scope: ExplorerScope;
   onScope: (scope: ExplorerScope) => void;
   onOpen: (hit: ExplorerHit) => void;
@@ -394,13 +408,11 @@ export function ExplorerResults({ partition, request, scope, adding, onAdding, o
           <ExplorerAddFilter
             partition={partition}
             request={request}
-            open={adding !== null}
-            startValue={adding ?? ""}
-            onOpenChange={(open) => onAdding(open ? "" : null)}
             onAdd={(filter) => onFilters([...request.filters.filter((f) => !sameFilter(f, filter)), filter])}
           />
           <ExplorerGroupBy partition={partition} base={request} onFilter={(filter) => onFilters([...request.filters.filter((f) => !sameFilter(f, filter)), filter])} />
           <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
+          {first !== undefined && <SentQuery kind={first.kind} query={first.query} onEdit={onEditQuery} />}
           {referencedType !== null && (
             <IconAction
               label={`Referenced by: the types whose schemas have a property naming ${kindParts(`*:*:${referencedType}:*`).type} records, and in which versions`}
@@ -422,7 +434,6 @@ export function ExplorerResults({ partition, request, scope, adding, onAdding, o
           <IconAction label="Read again from OSDU" icon={<RefreshCw />} variant="ghost" className="size-8" onClick={() => void pages.refetch()} data-testid="explorer-refresh" />
         </div>
       </div>
-      {first !== undefined && <SentQuery kind={first.kind} query={first.query} onEdit={onEditQuery} />}
       <ExplorerFilterChips partition={partition} request={request} onFilters={onFilters} />
       {body}
       {referencedType !== null && (

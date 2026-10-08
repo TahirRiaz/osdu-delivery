@@ -169,7 +169,9 @@ test.describe.serial("search terms", () => {
     await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
     await expect(grid).toContainText("e2e terms log B");
+    await adminPage.getByTestId("explorer-sent-toggle").click();
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText(`${PARTITION}:master-data--Wellbore:NO-33-9-C-28-B:`);
+    await adminPage.keyboard.press("Escape");
     await expect(adminPage.getByTestId("explorer-notes")).toBeVisible();
 
     // The chip opens in the term's editor again, and the condition is the page's address.
@@ -192,6 +194,38 @@ test.describe.serial("search terms", () => {
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
   });
 
+  test("searches in a source column picked at the field's start, its values those of the records it finds the record by", async ({ adminPage }) => {
+    await adminPage.goto(`/delivery/explorer?kind=*:*:${LOG_TYPE}:*`);
+    const grid = adminPage.getByTestId("explorer-grid");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
+
+    // The column is picked among the type's source columns, before its properties, by the name given it.
+    await adminPage.getByTestId("explorer-search-scope").click();
+    await adminPage.locator(`[data-testid="explorer-search-scope-attributes-term"][data-term="${uwi}"]`).click({ timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-search-scope-name")).toHaveText("Wellbore UWI");
+    const field = adminPage.getByTestId("explorer-search-input");
+    await expect(field).toHaveAttribute("placeholder", "Type a Wellbore UWI, as the source holds it");
+
+    // As a value is typed, the values listed are the wellbores' names, which the mapping finds a wellbore by.
+    await field.fill("NO 33/9-C-28");
+    const options = adminPage.getByTestId("explorer-search-in");
+    await expect(options.getByTestId("explorer-search-in-scoped")).toContainText("Wellbore UWI is NO 33/9-C-28");
+    await options.getByTestId("explorer-search-in-held").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
+    const chips = adminPage.getByTestId("explorer-filter");
+    await expect(chips).toHaveCount(1);
+    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 B");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await expect(grid).toContainText("e2e terms log B");
+
+    // Another value searched in the column replaces the condition it had.
+    await field.fill("NO 33/9-C-28 A");
+    await field.press("Enter");
+    await expect(chips).toHaveCount(1);
+    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 A");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await expect(grid).toContainText("e2e terms log A");
+  });
+
   test("searches text typed in the search box in a source column searched in lately", async ({ adminPage }) => {
     // The browser remembers the term as searched in for the type, as it does a property.
     await adminPage.evaluate(([type, remembered]) => {
@@ -201,12 +235,12 @@ test.describe.serial("search terms", () => {
     const grid = adminPage.getByTestId("explorer-grid");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
 
-    const within = adminPage.getByTestId("explorer-within-input");
+    const within = adminPage.getByTestId("explorer-search-input");
     await within.fill("NO 33/9-C-28 A");
-    const options = adminPage.getByTestId("explorer-within-in");
-    const option = options.getByTestId("explorer-within-in-term");
+    const options = adminPage.getByTestId("explorer-search-in");
+    const option = options.getByTestId("explorer-search-in-term");
     await expect(option).toContainText("Wellbore UWI is NO 33/9-C-28 A", { timeout: 60_000 });
-    await expect(options.getByTestId("explorer-within-in-choose")).toContainText("Search in another property or source column");
+    await expect(options.getByTestId("explorer-search-in-choose")).toContainText("Pick another property or source column");
     await option.click();
 
     const chips = adminPage.getByTestId("explorer-filter");

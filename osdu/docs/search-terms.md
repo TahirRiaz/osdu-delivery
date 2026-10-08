@@ -151,9 +151,12 @@ lists none.
 
 A condition on a term is a chip that names the term (`Wellbore UWI is NO 34/10-A-30`), marked as a source column, with
 the column, the property and the route on hover; it opens in the term's editor again. The property it compares is a
-column of the grid, its header naming the columns searched in it on hover. As text is typed in the type's search field,
-the terms searched in lately for the type are offered under the properties (`Wellbore UWI is NO 34/10-A-12`), and
-**Search in another property or source column** opens the editor with the text. Each condition names its term by id in
+column of the grid, its header naming the columns searched in it on hover. The search field searches one column when it
+is picked at the field's start (**In Wellbore UWI**): as a value is typed, the values listed under the field are those of
+the records the column's route finds (the wellbores' names), and a value searched there replaces the column's condition.
+With no choice made, the terms searched in lately for the type are offered under the properties as text is typed
+(`Wellbore UWI is NO 34/10-A-12`), and **Pick another property or source column** opens the field's choice with the
+text kept. Each condition names its term by id in
 the address (`st`), so a link brings it back. A term no longer offered (left out, or no mapping reads it) is marked on
 its chip, and the search says why it was refused.
 

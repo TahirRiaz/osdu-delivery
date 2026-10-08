@@ -5,11 +5,14 @@ import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
 import type { ExplorerTypes } from "../../../api/explorer";
 import { GroupGlyph } from "./ExplorerGlyphs";
-import { sameScope, typeTree, type ExplorerScope, type GroupNode } from "./explorerModel";
+import { kindParts, sameScope, typeTree, type ExplorerScope, type GroupNode } from "./explorerModel";
 import { ReadingBar } from "./ReadingBar";
 
-/** A group with more types than this starts folded, so a partition's long reference lists do not bury the rest. */
+/** A group with more types than this stays folded while a search is in view, so a partition's long reference lists do not bury the rest. */
 const OPEN_UP_TO = 24;
+
+/** No group opened or folded by the reader yet. */
+const UNDECIDED: ReadonlyMap<string, boolean> = new Map();
 
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
@@ -66,23 +69,48 @@ function Row({ depth, icon, label, title, count, selected, open, onToggle, onSel
 }
 
 /**
+ * The kinds the list shows: those the search finds records of, and the type or kind picked, with none where the search
+ * finds nothing there, so the list always says where the reader is.
+ */
+function withPlace(kinds: { kind: string; count: number }[], scope: ExplorerScope | null): { kind: string; count: number }[] {
+  if (scope?.level === "kind") {
+    return kinds.some((held) => held.kind === scope.kind) ? kinds : [...kinds, { kind: scope.kind, count: 0 }];
+  }
+
+  if (scope?.level === "type") {
+    return kinds.some((held) => kindParts(held.kind).entityType === scope.entityType) ? kinds : [...kinds, { kind: `*:*:${scope.entityType}:*`, count: 0 }];
+  }
+
+  return kinds;
+}
+
+/**
  * The kinds of the records a search finds, as a list to pick from: every type, then each group (master-data,
  * reference-data, work-product-component, ...) with its types, and a type kept in several kinds (versions, authorities)
  * with those kinds under it, each with how many records the search finds there. Picking one narrows the records to it; the
  * counts follow the text and the values typed, so the list also says where else a search finds something. A filter finds
- * a type among hundreds. Long groups start folded.
+ * a type among hundreds.
+ *
+ * The groups start folded, so the list opens as a short list of groups, but for the one holding the place picked. While a
+ * search is in view, the groups it finds something in open (but for one of more than 24 types), so the list says where the
+ * search found records; a filter opens every group it finds a type in. A group the reader opens or folds stays so until
+ * the search changes.
  */
-export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
+export function ExplorerTypeRail({ types, loading, error, scope, searchKey, onScope }: {
   types: ExplorerTypes | undefined;
   loading: boolean;
   error: string | null;
   /** The place picked; null while the reader has picked none. */
   scope: ExplorerScope | null;
+  /** The search the types are counted for, as text; null while every record is counted. */
+  searchKey: string | null;
   onScope: (scope: ExplorerScope) => void;
 }) {
   const [filter, setFilter] = useState("");
-  const groups = useMemo(() => typeTree(types?.kinds ?? []), [types]);
-  const [toggled, setToggled] = useState<ReadonlySet<string>>(() => new Set());
+  const groups = useMemo(() => typeTree(withPlace(types?.kinds ?? [], types === undefined ? null : scope)), [types, scope]);
+  // The groups and types the reader opened or folded, for the search they did it under: another search starts afresh.
+  const [decided, setDecided] = useState<{ search: string | null; open: ReadonlyMap<string, boolean> }>(() => ({ search: searchKey, open: UNDECIDED }));
+  const decisions = decided.search === searchKey ? decided.open : UNDECIDED;
   const term = filter.trim().toLowerCase();
   const shown = useMemo((): GroupNode[] => (term === ""
     ? groups
@@ -93,21 +121,17 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
       }))
       .filter((group) => group.types.length > 0)), [groups, term]);
 
-  // A group is open as it starts (short groups, and the one holding what is picked) unless the reader toggled it; a filter opens them all.
-  const startsOpen = (group: GroupNode) => group.types.length <= OPEN_UP_TO
+  // A group starts open when it holds the place picked, or while a search is in view and the group is not a long one; the
+  // reader's own choice wins, and a filter opens them all.
+  const startsOpen = (group: GroupNode) => (scope?.level === "group" && scope.group === group.group)
     || (scope?.level === "type" && group.types.some((type) => type.entityType === scope.entityType))
-    || (scope?.level === "kind" && group.types.some((type) => type.kinds.some((kind) => kind.kind === scope.kind)));
+    || (scope?.level === "kind" && group.types.some((type) => type.kinds.some((kind) => kind.kind === scope.kind)))
+    || (searchKey !== null && group.types.length <= OPEN_UP_TO);
   const picked = (candidate: ExplorerScope) => scope !== null && sameScope(scope, candidate);
-  const isOpen = (key: string, starts: boolean) => term !== "" || (toggled.has(key) ? !starts : starts);
-  const toggle = (key: string) => setToggled((was) => {
-    const next = new Set(was);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.add(key);
-    }
-
-    return next;
+  const isOpen = (key: string, starts: boolean) => term !== "" || (decisions.get(key) ?? starts);
+  const toggle = (key: string, starts: boolean) => setDecided({
+    search: searchKey,
+    open: new Map(decisions).set(key, !(decisions.get(key) ?? starts)),
   });
 
   return (
@@ -134,7 +158,8 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
             </div>
             {shown.map((group) => {
               const groupScope: ExplorerScope = { level: "group", group: group.group };
-              const open = isOpen(group.group, startsOpen(group));
+              const groupStarts = startsOpen(group);
+              const open = isOpen(group.group, groupStarts);
               return (
                 <div key={group.group}>
                   <Row
@@ -144,14 +169,15 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                     count={group.count}
                     selected={picked(groupScope)}
                     open={open}
-                    onToggle={() => toggle(group.group)}
+                    onToggle={() => toggle(group.group, groupStarts)}
                     onSelect={() => onScope(groupScope)}
                     testId="explorer-type-group"
                   />
                   {open && group.types.map((type) => {
                     const typeScope: ExplorerScope = { level: "type", entityType: type.entityType };
                     const versions = type.kinds.length > 1;
-                    const typeOpen = versions && isOpen(type.entityType, type.kinds.some((kind) => scope?.level === "kind" && kind.kind === scope.kind));
+                    const typeStarts = type.kinds.some((kind) => scope?.level === "kind" && kind.kind === scope.kind);
+                    const typeOpen = versions && isOpen(type.entityType, typeStarts);
                     return (
                       <div key={type.entityType}>
                         <Row
@@ -161,7 +187,7 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                           count={type.count}
                           selected={picked(typeScope)}
                           open={versions ? typeOpen : undefined}
-                          onToggle={versions ? () => toggle(type.entityType) : undefined}
+                          onToggle={versions ? () => toggle(type.entityType, typeStarts) : undefined}
                           onSelect={() => onScope(typeScope)}
                           testId="explorer-type"
                         />

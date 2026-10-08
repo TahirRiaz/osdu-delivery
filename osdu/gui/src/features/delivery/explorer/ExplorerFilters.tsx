@@ -13,20 +13,17 @@ import { offeredTerm, termOf, termTitle, useSearchTerms } from "./explorerTerms"
 const EDITOR_WIDTH = "w-[420px]";
 
 /**
- * Filter: a new condition on one property of the records in view, made in the editor (the property, what it must hold,
- * the value). Opened from here, or by the search box with the text typed there, to be searched in a property picked.
+ * Filter: a new condition on one property or source column of the records in view, made in the editor (the attribute,
+ * what it must hold, the value).
  */
-export function ExplorerAddFilter({ partition, request, open, startValue, onOpenChange, onAdd }: {
+export function ExplorerAddFilter({ partition, request, onAdd }: {
   partition: string | null;
   request: ExplorerSearchRequest & { filters: ExplorerFilter[] };
-  open: boolean;
-  /** The text a condition opened by the search box starts with. */
-  startValue: string;
-  onOpenChange: (open: boolean) => void;
   onAdd: (filter: ExplorerFilter) => void;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" title="Narrow the records by what one property holds: its words, its value, a range, or whether it holds one" data-testid="explorer-add-filter">
           <ListFilter />
@@ -36,15 +33,12 @@ export function ExplorerAddFilter({ partition, request, open, startValue, onOpen
       <PopoverContent align="end" className={`${EDITOR_WIDTH} p-0`} data-testid="explorer-add-filter-panel">
         {open && (
           <ExplorerFilterEditor
-            // A new ask (the search box's text) starts the editor afresh.
-            key={startValue}
             partition={partition}
             base={request}
             initial={null}
-            startValue={startValue}
             applyLabel="Add"
-            onApply={(filter) => { onAdd(filter); onOpenChange(false); }}
-            onCancel={() => onOpenChange(false)}
+            onApply={(filter) => { onAdd(filter); setOpen(false); }}
+            onCancel={() => setOpen(false)}
           />
         )}
       </PopoverContent>

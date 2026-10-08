@@ -545,7 +545,8 @@ function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, sho
     <div className="flex flex-col">
       {node.children.slice(0, shown).map((child) => (
         <div key={child.path} className={cn("flex min-w-0 items-baseline gap-3 border-b px-3 py-1.5 last:border-b-0", hits.has(child.path) && "bg-warning/10")}>
-          <span className="w-56 shrink-0 truncate font-mono text-[12px] text-muted-foreground">
+          {/* The name takes its share of a narrow panel (a dimension's builder docked beside it) and no more, so the value keeps room. */}
+          <span className="w-[40%] min-w-24 max-w-56 shrink-0 truncate font-mono text-[12px] text-muted-foreground">
             <Highlight text={node.kind === "array" ? `[${child.key}]` : child.key} term={term} />
           </span>
           <span className="min-w-0 flex-1">

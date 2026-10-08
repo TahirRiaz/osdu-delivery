@@ -46,8 +46,7 @@ window as the browse view does: **Recently opened**, the records opened lately a
 every type** and the types browsed lately, over **Search syntax**, what the search field takes with an example of each.
 Both lists are kept in the browser. Each group of types has its glyph (master data, reference data, work product
 components, datasets), the same in these lists and in the list of types. `/` anywhere on the page but in a field puts
-the cursor in the search that is the list's (the type's when one is picked, else the header's), and the field shows the
-key while it is empty. OSDU is read only once the reader asks: Browse types reads the types alone and waits for one to be
+the cursor in the search field, which shows the key while it is empty. OSDU is read only once the reader asks: Browse types reads the types alone and waits for one to be
 picked, a type picked reads its records, a search reads what it finds, and a record opened reads that record and
 nothing behind it. While a read is under way, a slim bar sweeps along the top of the pane it will fill, and what is
 already shown stays readable.
@@ -57,11 +56,15 @@ Once asked, the records of the place picked stand beside the kinds of the partit
 - **Types.** One search aggregation over `kind` across every kind (`*:*:*:*`) counts the records of each, and the list
   groups them as OSDU names them: the group (`master-data`, `reference-data`, `work-product-component`, `dataset`, ...),
   the type in it, and under a type kept in several kinds (versions, authorities) each kind. A count past a hundred
-  thousand reads compact (1.3M), the exact number on hover. A group of more than 24 types starts folded, and a filter
-  finds a type among hundreds. Picking a group, a type or a kind narrows the records to it (`*:*:master-data--*:*`,
+  thousand reads compact (1.3M), the exact number on hover. The groups start folded, so the list opens as a short list
+  of groups, but for the one holding the place picked; while a search or a condition is in view, the groups it finds
+  something in open (but for one of more than 24 types), so the list says where it found records. A group opened or
+  folded by hand stays so until the search changes, and a filter finds a type among hundreds, opening every group it
+  finds one in. Picking a group, a type or a kind narrows the records to it (`*:*:master-data--*:*`,
   `*:*:master-data--Wellbore:*`, or the kind). The counts follow the text and the values narrowed to, so the list also
-  says where else a search finds something. When the service names fewer groups than there are kinds, the foot of the
-  list counts the records in kinds not listed.
+  says where else a search finds something; the type or kind picked stays listed where the search finds nothing in it,
+  with no records. When the service names fewer groups than there are kinds, the foot of the list counts the records in
+  kinds not listed.
 - **Records.** A grid of one row per record: its name (`data.FacilityName`, `data.Name`, `data.ProjectName`,
   `data.Code` or its file's name, the first it holds; else the unique part of its id), its type and kind version when
   every type is in view, its id cut from the start so the end that tells ids apart stays visible (a copy on hover), and
@@ -69,14 +72,12 @@ Once asked, the records of the place picked stand beside the kinds of the partit
   so the grid shows why each record is there: the first value a record holds there, and how many more on hover. The grid
   fits its panel and scrolls inside it under a fixed header; only the rows in view are
   drawn, so ten thousand rows scroll as lightly as a hundred. Rows load a hundred at a time as the grid is scrolled. The
-  arrow keys, Page Up and Down, Home and End move through the rows, and Enter opens one. The records of a group, a type
-  or a kind have a search field of their own over them, in line with the filter over the types, which searches inside
-  it ([Searching](#searching)).
+  arrow keys, Page Up and Down, Home and End move through the rows, and Enter opens one.
 - **The place.** One line over the grid says where the records are (the partition, the group, the type, the kind, each a
   step back), how many there are (the index's exact count, `trackTotalCount`), how the search was read, and what the
-  service made the explorer do (an order it would not sort by, a clause it refused), with the query sent one copy away.
-  At its end stand the order, **Filter** and **Group by**, then as glyphs **Referenced by**, **Validate** and the
-  refresh, so the line fits a narrow panel.
+  service made the explorer do (an order it would not sort by, a clause it refused). At its end stand the order,
+  **Filter** and **Group by**, then as glyphs the query sent, **Referenced by**, **Validate** and the refresh, so the line
+  fits a narrow panel and nothing technical stands over the records unasked.
 - **Order.** Index order (best match once something is typed), last modified or last created, newest first. An order
   the service refuses is dropped with a note.
 - **Group by.** Any property of the records in view, grouped by its distinct values with their counts, and a value
@@ -91,16 +92,14 @@ every page is one query of the index.
 
 ## Searching
 
-Each search field searches the list it stands over. The field in the page's header searches every type (and opens an
-id); the filter over the types finds a type in the list; and once a group, a type or a kind is picked, a field over its
-records, in line with the filter, searches inside it ("Search Wellbore by id, name or any text"). The search shows in the
-field whose place it searches: a search of every type moves into the type's field when a type is then picked, and back
-to the header when **All types** or the partition is picked again. Searching from the header while a type is picked
-searches every type, the values narrowed to kept; Enter on its empty field there asks nothing, so the type keeps its
-search. Clearing a field clears the search it shows, not only what it holds: its cross, Escape, or Enter on the field
-emptied (the hint then says **clear**) lists every record of the type again, or of every type from the header. A search
-sent leaves the cursor in the field. Both fields read what is typed the same way. Enter reads it, and a hint at the end
-of the field says what Enter will do:
+One search field, in the page's header, searches the place in view and keeps it: the group, type or kind picked
+("Search Wellbore by id, name or any text"), or every type ("Search every type by id, name or any text"), on the
+welcome, under **All types**, and while a record is open. Every type is one click away from a type: **All types** in the
+list, the partition in the place's line, or **Search every type** when a type holds nothing that matches. The filter
+over the types only finds a type in the list. Clearing the field clears the search it shows, not only what it holds:
+its cross, Escape, or Enter on the field emptied (the hint then says **clear**) lists every record of the place again. A
+search sent leaves the cursor in the field. Enter reads what is typed, and a hint at the end of the field says what
+Enter will do:
 
 | Typed | Read as | Query |
 | --- | --- | --- |
@@ -119,38 +118,49 @@ the clause the reading added beyond its core (the id clauses), each with a note,
 page's answer with the service's words. Anything else that keeps an answer from coming fails the read, since an empty
 page would say OSDU holds nothing.
 
-Under the place, every list says what it is read by, exactly as the explorer sends it to the search service: the
-`kind` and the Lucene `query` (none where the list is every record of the kind). The search box, the place and the
-conditions all make it, so it is the expression to reuse: copied as written or as a search request, or taken as a
-Lucene query (**Edit**) into the field that shows the search (the type's, or the header's for every type) with the
-cursor at its end, to be changed there, the place kept.
+The query glyph in the place's line shows what the list is read by, exactly as the explorer sends it to the search
+service: the `kind` and the Lucene `query` (none where the list is every record of the kind). The search field, the
+place and the conditions all make it, so it is the expression to reuse: copied as written or as a search request, or
+taken as a Lucene query (**Edit**) into the search field with the cursor at its end, to be changed there, the place
+kept.
 
 ## Searching a property
 
-What is typed in a search field is searched in every property of a record. It can be searched in one property instead,
-and any property can be asked a condition of its own; every condition holds, together with what is searched in every
-property, and each is a chip over the grid that reads as a sentence (`Equinor.WellboreName starts with NO 34/10`).
+What is typed in the search field is searched in every property of a record. It can be searched in one property or
+source column instead, and any of them can be asked a condition of its own; every condition holds, together with what
+is searched in every property, and each is a chip over the grid that reads as a sentence
+(`Equinor.WellboreName starts with NO 34/10`).
 
-- **From the search field.** As text is typed in the field that is the list's (the type's, or the header's while no
-  place is picked), the options under it say where it is searched: **every property** (what Enter does, as ever), one
-  of the properties offered (those searched in lately for the type, kept in the browser, then the record's name
-  properties; across every type, the name properties alone, which most kinds hold), or **another property**, which
-  opens the condition editor with the text. The arrow keys move among the options and Enter takes the one lit; Escape
-  closes them. Text searched in one property is a condition from then on, and the field empties: its words for text
-  (**contains**), its start for a keyword (**starts with**), its whole value otherwise (**is**).
+- **Where to search.** The field starts with where it searches: **In every property**, as it always does, or one
+  property or source column picked there, from the list the condition editor uses (the type's source columns first,
+  found by any part of their name). Picked, the field says so (`Type a value of FacilityName`), and as a value is
+  typed, the options under it are the value searched in it (Enter: its words for text, its start for a keyword, its
+  whole value otherwise, or as a source column's route allows) and the values it holds that hold the text, the
+  commonest first with their counts, any of them picked whole with a click. A value searched in it is a condition that
+  replaces the one it had, so searching it again changes the value; the choice holds while the place is in view, and
+  **Every property** at the head of the list goes back. On a narrow window the field shows the choice by its glyph
+  alone until one is picked.
+- **From the search field.** As text is typed with no choice made, the options under it say where it is searched:
+  **every property** (what Enter does), one of the properties offered (those searched in lately for the type, kept in
+  the browser, then the record's name properties; across every type, the name properties alone, which most kinds hold),
+  one of the source columns searched in lately, or **another property or source column**, which opens the choice of
+  where to search with the text kept. Only the arrow keys light the option Enter takes, so a pointer resting over the
+  options never changes what Enter does; a click takes the option clicked. Escape closes them. Text searched in one
+  property is a condition from then on, and the field empties.
 - **Filter.** Beside **Group by**, it opens the condition editor: the property (found by any part of its path or title),
   what it must hold, and the value. Under the value, the values the records in view hold there, the commonest first,
   each with how many records hold it; as a value is typed, those that start with it (in its case, as the index keeps
-  the whole value) and those listed that hold it anywhere (in any case). A value listed is picked with a click (for
-  **is one of** and **is none of**, each click adds or drops one), and Enter in the value applies the condition.
+  the whole value) and those listed that hold it anywhere (in any case). A value listed is a whole value: picked under
+  **contains** or **starts with**, the condition becomes **is**; for **is one of** and **is none of**, each click adds or
+  drops one. Enter in the value applies the condition.
 - **A chip.** A click opens the editor on the condition to change it, the cross drops it, and **Clear all** drops every
   one. The conditions are part of the address, so a link brings them back.
 - **Source columns.** For a type or a kind, the editor lists first the columns of the source systems its delivery flows
   read ([search-terms.md](search-terms.md)), by the names given them on the Search terms page: Recall's
   `wellbore_uwi`, say, searched in `WellboreID`. A value is typed as the source holds it, and the control plane carries it
   through the mapping (through the wellbore search the mapping makes, for `wellbore_uwi`) before OSDU is asked. Its chip
-  names the column, and the search field offers the columns searched in lately beside the properties. The record's
-  properties are offered as ever, after them.
+  names the column; the field's choice of where to search lists the columns too, and the field offers those searched in
+  lately beside the properties. The record's properties are offered as ever, after them.
 
 Each condition is written by `OsduQuery`, as the module's own lookups and filters are, the way the platform indexes the
 property:
@@ -392,8 +402,10 @@ OSDU to write it.
 
 **Build a dimension**, in the explorer's header, turns the explorer into a dimension's workbench: the builder docks beside
 the records, and everything else stays as it is. The workbench's side bar folds while the builder is docked, so the
-records and the builder share the width; the activity bar opens it meanwhile, and it comes back as it was left when the
-builder closes. The records are browsed, searched and drilled into as ever, and each
+records and the builder share the width, the records the larger share (the builder starts at 45 percent and takes at
+most 55), since a dimension is built by opening records and following their links; a record's field names take no more
+than their share of a narrow panel, so its values stay readable. The activity bar opens the side bar meanwhile, and it
+comes back as it was left when the builder closes. The records are browsed, searched and drilled into as ever, and each
 part of the dimension is picked on the value it is read from, in the record where it is. The output is the item a
 dimension flow lists under `dimensions:` ([dimension-plan.md](dimension-plan.md), The document).
 
