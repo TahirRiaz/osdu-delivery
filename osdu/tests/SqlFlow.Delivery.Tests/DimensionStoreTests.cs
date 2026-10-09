@@ -385,4 +385,41 @@ public sealed class DimensionStoreTests : IDisposable
         Assert.Single(members);
         Assert.Equal(5_000, (await ledger.GetDimensionAsync(dimension.DimensionId))!.Originals);
     }
+
+    [Fact]
+    public async Task A_write_runs_as_long_as_it_takes_and_stops_when_its_run_is_cancelled_writing_nothing()
+    {
+        // A write has no time limit, since one of millions of curves takes as long as its rows do: the run's cancellation
+        // is what stops it, here while another session holds the dimension's row, which the write has to change.
+        var ledger = await LedgerAsync();
+        var (dimension, run) = await ledger.StartDimensionRunAsync(Declaration(), null, "tests", _clock.GetUtcNow().UtcDateTime);
+        await using var holder = new Microsoft.Data.SqlClient.SqlConnection(OsduTestServer.ConnectionString);
+        await holder.OpenAsync();
+        await using var held = (Microsoft.Data.SqlClient.SqlTransaction)await holder.BeginTransactionAsync();
+        await using (var hold = new Microsoft.Data.SqlClient.SqlCommand("UPDATE [osdu].[Dimension] SET [Members] = [Members] WHERE [DimensionId] = @d;", holder, held))
+        {
+            hold.Parameters.AddWithValue("@d", dimension.DimensionId);
+            Assert.Equal(1, await hold.ExecuteNonQueryAsync());
+        }
+
+        using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ledger.WriteDimensionAsync(new DimensionWrite
+        {
+            DimensionRunId = run.DimensionRunId,
+            DimensionId = dimension.DimensionId,
+            FlowId = FlowId,
+            Field = Field,
+            Originals = [Original("GR", "GR")],
+            Members = [Member("GR", 1, 1)],
+            Read = DimensionReadCounts.None,
+            CompletedUtc = _clock.GetUtcNow().UtcDateTime,
+        }, cancel.Token));
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(60), $"the cancelled write ended after {watch.Elapsed}");
+        Assert.Equal(cancel.Token, cancelled.CancellationToken);
+        await held.RollbackAsync();
+        Assert.Equal(0, (await ledger.GetDimensionAsync(dimension.DimensionId))!.Originals);
+        Assert.Empty(await MembersAsync(ledger, dimension.DimensionId, includeRemoved: true));
+    }
 }

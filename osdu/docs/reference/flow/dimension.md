@@ -585,7 +585,9 @@ For each dimension, in the run's partition:
    value, marked unfilterable.
 5. **The write**, in one transaction under a lock per dimension: new keys and values are added, changed ones rewritten,
    what the build no longer found marked removed (keeping its id should a later build find it again), every key that
-   arrived, left, moved or came back logged, and the dimension's table brought to the same rows.
+   arrived, left, moved or came back logged, and the dimension's table brought to the same rows. The write has no time
+   limit: it grows with the dimension (one of well log curves stages a row for every field of every curve), so it takes
+   as long as its rows do, and cancelling the run stops it with nothing written.
 
 Dimensions build `concurrency` at a time. A dimension that fails keeps what the build before it wrote, and the run ends
 failed with every other dimension built. A second build of the same dimension waits for the first's lock and fails after

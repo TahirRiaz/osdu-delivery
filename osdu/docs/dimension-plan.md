@@ -698,8 +698,11 @@ A build writes in one transaction: its values are copied into temporary tables, 
 mark removed, give each attribute its number, and bring the dimension's own table to what was kept. The attribute values
 read are staged under their key's and their attribute's numbers and matched to the rows kept on those numbers and the
 value, one row to one row: matched by the value alone, every key sharing a value (a country) would meet every other.
-A build's duration counts its write; an application lock
-per dimension keeps two builds of it from interleaving. Only the table's schema is settled before the transaction: a
+A build's duration counts its write. The write has no time limit, as SQLFlow's loads have none: it grows with the
+dimension (one of well log curves stages a row for every field of every curve, tens of millions), and a fixed limit
+fails a build that was only large, so it is bounded by its run, whose cancellation stops it with nothing written. An
+application lock per dimension keeps two builds of it from interleaving, and bounds the wait for another build's write.
+Only the table's schema is settled before the transaction: a
 table made or a column added stays when the write does not, empty, and the next write finds it there. A failed build writes nothing
 but its run row. Nothing is deleted: a value or key a build no longer finds is marked removed, and one that comes back
 keeps its id. A key whose label, value or filter changed is rewritten, and a move to another value is logged.

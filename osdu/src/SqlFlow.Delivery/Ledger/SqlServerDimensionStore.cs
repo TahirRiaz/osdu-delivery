@@ -27,8 +27,17 @@ namespace SqlFlow.Delivery.Ledger;
 /// </summary>
 internal static class SqlServerDimensionStore
 {
-    /// <summary>How long one statement of a write may run: a dimension may hold millions of originals.</summary>
+    /// <summary>How long one statement reading a dimension's table, or making it ready, may run.</summary>
     private const int CommandTimeoutSeconds = 900;
+
+    /// <summary>
+    /// How long a statement or a copy of a write, or of a removal, may run: as long as its rows take (0). A write grows with
+    /// its dimension (one of well log curves stages a row for every field of every curve, tens of millions of them), so
+    /// no fixed bound suits every dimension, and one too short fails a build that was only large. As SQLFlow's own loads
+    /// are, it is bounded by its run instead, whose cancellation stops the statement running; the wait for another write
+    /// of the dimension is bounded by the write lock's own timeout.
+    /// </summary>
+    private const int WriteTimeoutSeconds = 0;
 
     /// <summary>How long a write waits for another build of the same dimension to finish writing.</summary>
     private const int LockTimeoutMs = 120_000;
@@ -1158,7 +1167,7 @@ internal static class SqlServerDimensionStore
             var transaction = (SqlTransaction)tx.GetDbTransaction();
             await LockAsync(connection, transaction, partitionId, dimensionId, ct).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, "DROP TABLE IF EXISTS #DimName;\n" + NameStageSql, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, table.Columns, NameRow, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, table.Columns.Select(NameRow), null, ct).ConfigureAwait(false);
             await using (var command = Command(connection, transaction, EnsureTableSql))
             {
                 command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
@@ -1169,6 +1178,11 @@ internal static class SqlServerDimensionStore
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
             return prepared.Changed;
+        }
+        catch (Exception ex) when (StoppedBy(ex, ct))
+        {
+            throw new OperationCanceledException(
+                string.Create(CultureInfo.InvariantCulture, $"Writing the table of dimension {dimensionId} again was cancelled, and wrote no row."), ex, ct);
         }
         finally
         {
@@ -1191,7 +1205,7 @@ internal static class SqlServerDimensionStore
         try
         {
             var connection = (SqlConnection)db.Database.GetDbConnection();
-            await using var command = new SqlCommand(RemoveSql, connection) { CommandTimeout = CommandTimeoutSeconds };
+            await using var command = new SqlCommand(RemoveSql, connection) { CommandTimeout = WriteTimeoutSeconds };
             command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
             command.Parameters.Add(new SqlParameter("@batch", SqlDbType.Int) { Value = RemoveBatch });
@@ -1213,6 +1227,12 @@ internal static class SqlServerDimensionStore
             return new Removed(
                 reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6),
                 await reader.IsDBNullAsync(7, ct).ConfigureAwait(false) ? null : reader.GetString(7));
+        }
+        catch (Exception ex) when (StoppedBy(ex, ct))
+        {
+            // Each batch is its own statement, so the batches deleted stay deleted and the dimension stays listed.
+            throw new OperationCanceledException(
+                string.Create(CultureInfo.InvariantCulture, $"Removing dimension {dimensionId} was cancelled part way; removing it again finishes the work."), ex, ct);
         }
         finally
         {
@@ -1246,6 +1266,11 @@ internal static class SqlServerDimensionStore
             {
                 return await WriteOnceAsync(db, partitionId, partition, write, close, ct).ConfigureAwait(false);
             }
+            catch (Exception ex) when (StoppedBy(ex, ct))
+            {
+                throw new OperationCanceledException(
+                    string.Create(CultureInfo.InvariantCulture, $"The write of dimension {write.DimensionId} was cancelled with its run, and wrote nothing."), ex, ct);
+            }
             catch (Exception ex) when (attempt < DeadlockAttempts && SqlServerLedgerBulk.IsDeadlock(ex))
             {
                 db.ChangeTracker.Clear();
@@ -1269,12 +1294,12 @@ internal static class SqlServerDimensionStore
             var transaction = (SqlTransaction)tx.GetDbTransaction();
             await LockAsync(connection, transaction, partitionId, write.DimensionId, ct).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, StageSql, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimValue", ValueColumns, ValueTypes, ValuesOf(write), (value, _) => value, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimMember", MemberColumns, MemberTypes, write.Members, (member, _) => MemberRow(member), ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimAttr", AttributeColumns, AttributeTypes, AttributesOf(write), (attribute, _) => attribute, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimText", TextColumns, TextTypes, TextsOf(write), (text, _) => text, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimElem", ElementColumns, ElementTypes, ElementsOf(write), (element, _) => element, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, write.Table?.Columns ?? [], NameRow, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimValue", ValueColumns, ValueTypes, ValuesOf(write), ValueOrder, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimMember", MemberColumns, MemberTypes, write.Members.Select(MemberRow), null, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimAttr", AttributeColumns, AttributeTypes, AttributesOf(write), null, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimText", TextColumns, TextTypes, TextsOf(write), null, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimElem", ElementColumns, ElementTypes, ElementsOf(write), ElementOrder, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, (write.Table?.Columns ?? []).Select(NameRow), null, ct).ConfigureAwait(false);
 
             Written written;
             await using (var command = Command(connection, transaction, MergeSql))
@@ -1318,6 +1343,13 @@ internal static class SqlServerDimensionStore
         }
     }
 
+    /// <summary>
+    /// Whether <paramref name="ex"/> is a statement the run's cancellation stopped, which SqlClient reports as a severe error
+    /// on the command: told as a cancellation, the run says its build was cancelled, not that it failed.
+    /// </summary>
+    private static bool StoppedBy(Exception ex, CancellationToken ct)
+        => ct.IsCancellationRequested && ex is SqlException or InvalidOperationException;
+
     private static async Task LockAsync(SqlConnection connection, SqlTransaction transaction, short partitionId, int dimensionId, CancellationToken ct)
     {
         await using var command = Command(connection, transaction, LockSql);
@@ -1337,6 +1369,9 @@ internal static class SqlServerDimensionStore
 
     private static readonly Type[] ValueTypes =
         [typeof(int), typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(long), typeof(bool)];
+
+    /// <summary>The key of the originals' staging table, which <see cref="ValuesOf"/> lists them in.</summary>
+    private static readonly string[] ValueOrder = ["OriginalHash"];
 
     /// <summary>
     /// The build's originals as staging rows, in the order of their hashes, which is the order the staging table keeps
@@ -1369,13 +1404,12 @@ internal static class SqlServerDimensionStore
     private static readonly Type[] AttributeTypes = [typeof(byte[]), typeof(string), typeof(string), typeof(string), typeof(long)];
 
     /// <summary>
-    /// Every attribute value of every original of <paramref name="write"/>, a row each, as the staging table takes them: the
-    /// value cut to what a row keeps, a value named twice for one original under one attribute kept once (its first), an
-    /// empty one left out.
+    /// Every attribute value of every original of <paramref name="write"/>, a row each, as the staging table takes them and
+    /// as they are copied, never held a second time: the value cut to what a row keeps, a value named twice for one
+    /// original under one attribute kept once (its first), an empty one left out.
     /// </summary>
-    private static List<object?[]> AttributesOf(DimensionWrite write)
+    private static IEnumerable<object?[]> AttributesOf(DimensionWrite write)
     {
-        var rows = new List<object?[]>();
         foreach (var original in write.Originals)
         {
             if (original.Attributes is not { Count: > 0 } attributes)
@@ -1395,12 +1429,10 @@ internal static class SqlServerDimensionStore
                 var value = OsduLedger.Truncate(attribute.Value, DeliveryDimensionAttributeValue.MaxValueLength)!;
                 if (seen.Add((attribute.Name, value)))
                 {
-                    rows.Add([hash, attribute.Name, value, OsduLedger.Truncate(attribute.From, DeliveryDimensionValue.MaxOriginalLength), attribute.Records]);
+                    yield return [hash, attribute.Name, value, OsduLedger.Truncate(attribute.From, DeliveryDimensionValue.MaxOriginalLength), attribute.Records];
                 }
             }
         }
-
-        return rows;
     }
 
     private static readonly string[] TextColumns = ["Name", "TextHash", "Text", "Value", "Records"];
@@ -1433,47 +1465,65 @@ internal static class SqlServerDimensionStore
 
     private static readonly Type[] ElementTypes = [typeof(byte[]), typeof(int), typeof(string), typeof(string)];
 
+    /// <summary>The key of the elements' staging table, which <see cref="ElementsOf"/> lists them in.</summary>
+    private static readonly string[] ElementOrder = ["OriginalHash", "Seq", "Name"];
+
     /// <summary>
     /// Every field of every element of every original of <paramref name="write"/>, a row each, as the staging table takes
     /// them: an element holding none of its fields one row of its first field with no value, so it is still a row of the
-    /// table. Only a write whose table has element columns stages any.
+    /// table. Only a write whose table has element columns stages any. A dimension of well log curves stages tens of
+    /// millions, so they are listed as they are copied, never held a second time, and in the order the staging table
+    /// keeps them (the key's hash, the element's place, the field's name, which is ASCII and so compares ordinally as the
+    /// table compares it), so the server appends them as they come.
     /// </summary>
-    private static List<object?[]> ElementsOf(DimensionWrite write)
+    private static IEnumerable<object?[]> ElementsOf(DimensionWrite write)
     {
-        var rows = new List<object?[]>();
         if (write.Table is not { HasElements: true } table || write.Elements.Count == 0)
         {
-            return rows;
+            yield break;
         }
 
-        var first = table.Columns.First(c => c.Element).Name;
+        var keys = new List<(byte[] Hash, IReadOnlyList<DimensionElementState> Elements)>();
         foreach (var original in write.Originals)
         {
-            if (!write.Elements.TryGetValue(original.Original, out var elements) || elements.Count == 0)
+            if (write.Elements.TryGetValue(original.Original, out var held) && held.Count > 0)
             {
-                continue;
+                keys.Add((HashOf(original.Original), held));
             }
+        }
 
-            var hash = HashOf(original.Original);
-            foreach (var element in elements)
+        keys.Sort((left, right) => ByBytes(left.Hash, right.Hash));
+        var first = table.Columns.First(c => c.Element).Name;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var fields = new List<KeyValuePair<string, string>>();
+        foreach (var (hash, elements) in keys)
+        {
+            foreach (var element in elements.OrderBy(e => e.Seq))
             {
-                var seen = new HashSet<string>(StringComparer.Ordinal);
+                // A field named twice in one element keeps its first value; the names left are then put in order.
+                seen.Clear();
+                fields.Clear();
                 foreach (var (name, value) in element.Values)
                 {
                     if (name.Length <= DeliveryDimensionAttributeValue.MaxNameLength && !string.IsNullOrEmpty(value) && seen.Add(name))
                     {
-                        rows.Add([hash, element.Seq, name, OsduLedger.Truncate(value, DeliveryDimensionAttributeValue.MaxValueLength)]);
+                        fields.Add(new KeyValuePair<string, string>(name, value));
                     }
                 }
 
-                if (seen.Count == 0)
+                if (fields.Count == 0)
                 {
-                    rows.Add([hash, element.Seq, first, null]);
+                    yield return [hash, element.Seq, first, null];
+                    continue;
+                }
+
+                fields.Sort((left, right) => string.CompareOrdinal(left.Key, right.Key));
+                foreach (var (name, value) in fields)
+                {
+                    yield return [hash, element.Seq, name, OsduLedger.Truncate(value, DeliveryDimensionAttributeValue.MaxValueLength)];
                 }
             }
         }
-
-        return rows;
     }
 
     private static readonly string[] NameColumns = ["Name", "Ordinal", "Collected"];
@@ -1491,14 +1541,16 @@ internal static class SqlServerDimensionStore
         => [member.Value, member.Records, member.RecordsExact, member.Originals, member.Unfilterable, member.Filter, member.FilterParts];
 
     /// <summary>
-    /// Copies <paramref name="items"/> into a temporary table a row at a time, never holding a second copy of them; each row is
-    /// given its place in the list.
+    /// Copies <paramref name="rows"/> into a temporary table as they are listed, never holding a second copy of them; nothing
+    /// is sent when there is none. <paramref name="order"/> names the table's key when the rows come in its order, so the
+    /// server appends them as they come instead of sorting them first.
     /// </summary>
-    private static async Task CopyAsync<T>(
-        SqlConnection connection, SqlTransaction transaction, string table, string[] columns, Type[] types, IReadOnlyList<T> items, Func<T, int, object?[]> row,
+    private static async Task CopyAsync(
+        SqlConnection connection, SqlTransaction transaction, string table, string[] columns, Type[] types, IEnumerable<object?[]> rows, string[]? order,
         CancellationToken ct)
     {
-        if (items.Count == 0)
+        using var listed = rows.GetEnumerator();
+        if (!listed.MoveNext())
         {
             return;
         }
@@ -1508,34 +1560,43 @@ internal static class SqlServerDimensionStore
         {
             DestinationTableName = table,
             BatchSize = 10_000,
-            BulkCopyTimeout = CommandTimeoutSeconds,
+            BulkCopyTimeout = WriteTimeoutSeconds,
+            EnableStreaming = true,
         };
         foreach (var column in columns)
         {
             bulk.ColumnMappings.Add(column, column);
         }
 
-        await using var reader = new StreamingDataReader(columns, types, Rows(items, row, ct).GetAsyncEnumerator(ct));
+        foreach (var column in order ?? [])
+        {
+            bulk.ColumnOrderHints.Add(column, SortOrder.Ascending);
+        }
+
+        await using var reader = new StreamingDataReader(columns, types, Rows(listed, ct).GetAsyncEnumerator(ct));
         await bulk.WriteToServerAsync(reader, ct).ConfigureAwait(false);
     }
 
-    private static async IAsyncEnumerable<object?[]> Rows<T>(IReadOnlyList<T> items, Func<T, int, object?[]> row, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    /// <summary>The rows <paramref name="listed"/> lists, from the one it stands on.</summary>
+    private static async IAsyncEnumerable<object?[]> Rows(IEnumerator<object?[]> listed, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        for (var i = 0; i < items.Count; i++)
+        var count = 0;
+        do
         {
-            if (i % 50_000 == 49_999)
+            if (++count % 50_000 == 0)
             {
                 // A long copy lets other work on the thread pool run, and notices a cancellation, now and then.
                 ct.ThrowIfCancellationRequested();
                 await Task.Yield();
             }
 
-            yield return row(items[i], i);
+            yield return listed.Current;
         }
+        while (listed.MoveNext());
     }
 
     private static SqlCommand Command(SqlConnection connection, SqlTransaction transaction, string sql)
-        => new(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
+        => new(sql, connection, transaction) { CommandTimeout = WriteTimeoutSeconds };
 
     private static async Task ExecuteAsync(SqlConnection connection, SqlTransaction transaction, string sql, CancellationToken ct)
     {
