@@ -862,7 +862,7 @@ public sealed class DimensionRunner
     internal static string? AttributesText(IReadOnlyList<DimensionAttributeSpec> attributes)
         => attributes.Count == 0
             ? null
-            : JsonSerializer.Serialize(attributes.Select(a => new AttributeText(a.Name, a.IsCollected ? null : a.Steps.ToList(), a.Collect)).ToList(), StepJson);
+            : JsonSerializer.Serialize(attributes.Select(a => new AttributeText(a.Name, a.IsCollected ? null : a.Steps.ToList(), a.Collect, a.KeepKey ? true : null)).ToList(), StepJson);
 
     /// <summary>
     /// The attributes a build kept of its dimension (<see cref="DimensionState.AttributesJson"/>), in the order declared; none
@@ -879,7 +879,9 @@ public sealed class DimensionRunner
         {
             return (JsonSerializer.Deserialize<List<AttributeText>>(attributesJson, StepJson) ?? [])
                 .Where(a => DimensionAttributeSpec.IsName(a.Name) && (a.Steps is { Count: > 0 } || !string.IsNullOrWhiteSpace(a.Collect)))
-                .Select(a => string.IsNullOrWhiteSpace(a.Collect) ? new DimensionAttributeSpec(a.Name, a.Steps!) : new DimensionAttributeSpec(a.Name, [], a.Collect))
+                .Select(a => string.IsNullOrWhiteSpace(a.Collect)
+                    ? new DimensionAttributeSpec(a.Name, a.Steps!, null, a.KeepKey == true)
+                    : new DimensionAttributeSpec(a.Name, [], a.Collect, a.KeepKey == true))
                 .ToList();
         }
         catch (JsonException)
@@ -888,8 +890,8 @@ public sealed class DimensionRunner
         }
     }
 
-    /// <summary>An attribute as its dimension's row keeps it: the steps it is read through, or the path it collects.</summary>
-    private sealed record AttributeText(string Name, List<string>? Steps, string? Collect = null);
+    /// <summary>An attribute as its dimension's row keeps it: the steps it is read through, or the path it collects, and whether it keeps the key.</summary>
+    private sealed record AttributeText(string Name, List<string>? Steps, string? Collect = null, bool? KeepKey = null);
 
     /// <summary>
     /// What the last build read of a dimension's collected attributes (<see cref="DimensionState.CollectedJson"/>); none when it holds

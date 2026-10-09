@@ -79,9 +79,11 @@ public sealed record DeliveryDimensionTableDto(
 
 /// <summary>
 /// An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names, or
-/// the path of the dimension's own records whose values it collects (<c>collect</c>, with no steps).
+/// the path of the dimension's own records whose values it collects (<c>collect</c>, with no steps). <c>keep</c> is
+/// <c>key</c> where each value is kept exactly as the record holds it, so the column joins to the dimension keyed by it,
+/// and <c>value</c> where it is shown as a value.
 /// </summary>
-public sealed record DeliveryDimensionAttributeSpecDto(string Name, IReadOnlyList<string> Steps, string? Collect);
+public sealed record DeliveryDimensionAttributeSpecDto(string Name, IReadOnlyList<string> Steps, string? Collect, string Keep);
 
 /// <summary>
 /// A value of an attribute of a key: the value, where it was read (the id of the record it was read from, or the text the
@@ -992,7 +994,7 @@ public static partial class DeliveryDimensionEndpoints
             spec?.Path ?? state!.Path,
             spec?.Label ?? DimensionRunner.LabelOf(state?.LabelJson),
             spec?.Unlabelled,
-            (spec?.Attributes ?? DimensionRunner.AttributesOf(state?.AttributesJson)).Select(a => new DeliveryDimensionAttributeSpecDto(a.Name, a.Steps, a.Collect)).ToList(),
+            (spec?.Attributes ?? DimensionRunner.AttributesOf(state?.AttributesJson)).Select(a => new DeliveryDimensionAttributeSpecDto(a.Name, a.Steps, a.Collect, a.KeepKey ? "key" : "value")).ToList(),
             steps.Select(s => s.Describe()).ToList(),
             spec?.CountRecords ?? false,
             spec?.MaxValues ?? DimensionSpec.DefaultMaxValues,

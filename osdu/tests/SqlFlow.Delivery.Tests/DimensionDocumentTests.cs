@@ -230,16 +230,61 @@ public class DimensionDocumentTests
 
     [Theory]
     [InlineData("attributes: { Source: { collect: data.Source }, Type: { collect: data.LogType } }", "is a second collected attribute beside Source")]
-    [InlineData("attributes: { Source: { collected: data.Source } }", "or { collect: <path> }")]
+    [InlineData("attributes: { Source: { collected: data.Source } }", "it names collected")]
     [InlineData("attributes: { Source: { collect: data.Source, from: logs } }", "it names from")]
-    [InlineData("attributes: { Source: { collect: '' } }", "or { collect: <path> }")]
-    [InlineData("attributes: { Source: { collect: [data.Source] } }", "or { collect: <path> }")]
+    [InlineData("attributes: { Source: { collect: data.Source, path: data.Source } }", "it names both")]
+    [InlineData("attributes: { Source: { keep: key } }", "it names neither")]
+    [InlineData("attributes: { Source: { collect: '' } }", "collect is the path of the dimension's own records")]
+    [InlineData("attributes: { Source: { collect: [data.Source] } }", "collect is the path of the dimension's own records")]
     [InlineData("attributes: { Source: { collect: 'data.Log Source' } }", "is not a property path")]
+    [InlineData("attributes: { Source: { path: 'data.Log Source' } }", "is not a property path")]
+    [InlineData("attributes: { Source: { path: [] } }", "path reads nothing")]
+    [InlineData("attributes: { Source: { path: data.Source, keep: id } }", "keep is 'id'")]
     public void A_collected_attribute_that_breaks_a_rule_is_refused_naming_the_rule(string attributes, string reason)
     {
         var refused = Refused(Head + Curves + "\n    " + attributes);
         Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);
         Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_attribute_keeps_the_key_so_its_column_joins_to_the_dimension_keyed_by_it()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: WellLog
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: id
+                columns: { key: WellLogID, value: WellLogName }
+                attributes:
+                  WellboreID: { path: ' data.WellboreID ', keep: key }
+                  Wellbore: { path: [data.WellboreID, data.FacilityName] }
+                  CurveType: { collect: data.Curves.LogCurveTypeID, keep: key }
+            """);
+
+        var join = flow.Dimensions[0].Attribute("wellboreid")!;
+        Assert.True(join.KeepKey);
+        Assert.Equal(["data.WellboreID"], join.Steps);
+
+        // path with no keep reads exactly as the bare form does, and keeps the value as a value shows it.
+        var read = flow.Dimensions[0].Attribute("Wellbore")!;
+        Assert.False(read.KeepKey);
+        Assert.Equal(["data.WellboreID", "data.FacilityName"], read.Steps);
+        Assert.Equal(
+            Parse(Head + Curves + "\n    attributes: { W: [data.WellboreID, data.FacilityName] }").Dimensions[0].Attribute("W")!.Steps,
+            read.Steps);
+
+        // A collected attribute keeps the key too.
+        Assert.True(flow.Dimensions[0].Attribute("CurveType")!.IsCollected);
+        Assert.True(flow.Dimensions[0].Attribute("CurveType")!.KeepKey);
+
+        // Keeping the key is another declaration than showing the value, so a build knows the dimension changed.
+        Assert.NotEqual(
+            Parse(Head + Curves + "\n    attributes: { Source: data.Source }").Dimensions[0].DefinitionHash,
+            Parse(Head + Curves + "\n    attributes: { Source: { path: data.Source, keep: key } }").Dimensions[0].DefinitionHash);
+        Assert.Equal(
+            Parse(Head + Curves + "\n    attributes: { Source: data.Source }").Dimensions[0].DefinitionHash,
+            Parse(Head + Curves + "\n    attributes: { Source: { path: data.Source, keep: value } }").Dimensions[0].DefinitionHash);
     }
 
     [Fact]

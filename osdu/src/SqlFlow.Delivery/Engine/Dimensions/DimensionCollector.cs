@@ -69,6 +69,7 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
         // and its records count as holding none, as a search for none of the values finds them.
         var shown = new Dictionary<string, string>(StringComparer.Ordinal);
         var unfilterable = new List<string>();
+        var uncut = 0;
         foreach (var text in texts.Values.Keys.Order(StringComparer.Ordinal))
         {
             if (!DimensionFilters.Filterable(field, text))
@@ -77,13 +78,22 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
                 continue;
             }
 
-            if (ShownAs(text) is { } value)
+            if (ShownAs(text, attribute.KeepKey) is { } value)
             {
                 shown[text] = value;
+            }
+            else if (attribute.KeepKey && text.Trim().Length > DimensionSpec.MaxAttributeValueLength)
+            {
+                uncut++;
             }
         }
 
         var notes = new List<string>();
+        if (uncut > 0)
+        {
+            notes.Add(string.Create(CultureInfo.InvariantCulture,
+                $"{attribute.Name}: {uncut} value(s) are longer than the {DimensionSpec.MaxAttributeValueLength} characters a dimension keeps, and are left out rather than cut, since a key cut joins to nothing."));
+        }
         if (unfilterable.Count > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
@@ -314,11 +324,19 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
     /// <summary>
     /// A text the dimension's records hold at a collected path, as a key shows it: as a label is (a reference by the code its
     /// id ends with, its escapes decoded), trimmed, and cut at the longest attribute value; null when that leaves nothing,
-    /// which is no value. A build and the dimension builder's example show it the same way.
+    /// which is no value. An attribute that keeps the key keeps the text as the record holds it, and is no value when it is
+    /// longer than a dimension keeps, since a key cut joins to nothing. A build and the dimension builder's example show it
+    /// the same way.
     /// </summary>
-    internal static string? ShownAs(string text)
+    internal static string? ShownAs(string text, bool keepKey = false)
     {
         ArgumentNullException.ThrowIfNull(text);
+        if (keepKey)
+        {
+            var kept = text.Trim();
+            return kept.Length is > 0 and <= DimensionSpec.MaxAttributeValueLength ? kept : null;
+        }
+
         var value = DimensionLabeler.DisplayOf(text).Trim();
         if (value.Length > DimensionSpec.MaxAttributeValueLength)
         {

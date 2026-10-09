@@ -390,7 +390,11 @@ public sealed record DimensionSpec
 /// <param name="Name">A letter, then letters, digits and underscores, at most 64; unique in its dimension ignoring case.</param>
 /// <param name="Steps">The paths read from the record a key names, one to <see cref="DimensionSpec.MaxLabelSteps"/>; empty for a collected attribute.</param>
 /// <param name="Collect">The path of the dimension's own records whose values the attribute collects; null for one read from a key's record.</param>
-public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null)
+/// <param name="KeepKey">
+/// Whether the value is kept exactly as the record holds it rather than as a value shows it, so a reference stays the whole
+/// id (<c>dev:master-data--Wellbore:WB-0001:</c>) and the column joins to the key column of the dimension keyed by it.
+/// </param>
+public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null, bool KeepKey = false)
 {
     /// <summary>Whether the attribute's values are collected from the dimension's own records rather than read from a key's record.</summary>
     public bool IsCollected => Collect is not null;

@@ -534,6 +534,59 @@ public sealed class DimensionRunTests : IDisposable
     }
 
     [Fact]
+    public async Task An_attribute_that_keeps_the_key_joins_its_table_to_the_dimension_keyed_by_it()
+    {
+        foreach (var (name, country) in new[] { ("A", "Mexico"), ("B", "Canada") })
+        {
+            _platform.Add($"dev:master-data--Wellbore:{name}", Wellbore, new JsonObject { ["FacilityName"] = $"{country} {name}" });
+        }
+
+        foreach (var (log, wellbore) in new[] { ("1", "A"), ("2", "A"), ("3", "B") })
+        {
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject
+            {
+                ["Name"] = "LOG-" + log,
+                ["WellboreID"] = $"dev:master-data--Wellbore:{wellbore}:",
+            });
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: JoinedLog
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: id
+                label: data.Name
+                columns: { key: WellLogID, value: WellLogName }
+                attributes:
+                  WellboreID: { path: data.WellboreID, keep: key }
+                  WellboreUWI: [data.WellboreID, data.FacilityName]
+              - name: JoinedWellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+
+            """);
+
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        // The kept key is the reference exactly as the index holds it, the text the other dimension keys by; the attribute
+        // read through it is the value a person reads.
+        Assert.Equal(
+            ["dev:master-data--Wellbore:A:|Mexico A", "dev:master-data--Wellbore:A:|Mexico A", "dev:master-data--Wellbore:B:|Canada B"],
+            await SqlAsync("SELECT [WellboreID], [WellboreUWI] FROM [osdu].[dim_JoinedLog] ORDER BY [WellLogName];"));
+
+        // So the two tables join on it, with no normalising on either side.
+        Assert.Equal(
+            ["LOG-1|Mexico A", "LOG-2|Mexico A", "LOG-3|Canada B"],
+            await SqlAsync("""
+                SELECT l.[WellLogName], w.[FacilityName]
+                FROM [osdu].[dim_JoinedLog] AS l
+                INNER JOIN [osdu].[dim_JoinedWellbore] AS w ON w.[partition] = l.[partition] AND w.[WellboreID] = l.[WellboreID]
+                ORDER BY l.[WellLogName];
+                """));
+    }
+
+    [Fact]
     public async Task A_dimension_is_one_table_whose_columns_follow_its_declaration_and_whose_rows_keep_their_numbers()
     {
         _platform.Add("dev:master-data--GeoPoliticalEntity:MX", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Mexico" });

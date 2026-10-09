@@ -346,26 +346,35 @@ internal static class DimensionMapper
 
             if (steps is IDictionary<object, object?> settings)
             {
-                // Two collected attributes would pair values no record holds together (one log's source with another's
-                // type), so a row of the dimension's table is a key and one collected value, counted exactly.
-                if (attributes.FirstOrDefault(a => a.IsCollected) is { } first)
+                var (collect, read, keepKey) = MapAttributeSettings(settings, $"attributes.{trimmed}", where, source);
+                if (collect is not null)
                 {
-                    throw new FlowValidationException(
-                        $"{source}: {where}: attributes.{trimmed} is a second collected attribute beside {first.Name}; a dimension collects one, so each row of its table is a key and one value its records hold. Collect {trimmed} in a dimension of its own with the same path.");
+                    // Two collected attributes would pair values no record holds together (one log's source with another's
+                    // type), so a row of the dimension's table is a key and one collected value, counted exactly.
+                    if (attributes.FirstOrDefault(a => a.IsCollected) is { } first)
+                    {
+                        throw new FlowValidationException(
+                            $"{source}: {where}: attributes.{trimmed} is a second collected attribute beside {first.Name}; a dimension collects one, so each row of its table is a key and one value its records hold. Collect {trimmed} in a dimension of its own with the same path.");
+                    }
+
+                    attributes.Add(new DimensionAttributeSpec(trimmed, [], collect, keepKey));
+                }
+                else
+                {
+                    attributes.Add(new DimensionAttributeSpec(trimmed, read!, null, keepKey));
                 }
 
-                attributes.Add(new DimensionAttributeSpec(trimmed, [], MapCollect(settings, $"attributes.{trimmed}", where, source)));
                 continue;
             }
 
-            var read = MapSteps(steps, $"attributes.{trimmed}", where, source);
-            if (read.Count == 0)
+            var paths = MapSteps(steps, $"attributes.{trimmed}", where, source);
+            if (paths.Count == 0)
             {
                 throw new FlowValidationException(
                     $"{source}: {where}: attributes.{trimmed} reads nothing; give the path of the record the key names it is read from (attributes: {{ {trimmed}: data.Name }}).");
             }
 
-            attributes.Add(new DimensionAttributeSpec(trimmed, read));
+            attributes.Add(new DimensionAttributeSpec(trimmed, paths));
         }
 
         return attributes;
@@ -443,21 +452,63 @@ internal static class DimensionMapper
     }
 
     /// <summary>
-    /// A collected attribute, <c>{ collect: data.Source }</c>: the path of the dimension's own records whose values each key
-    /// collects, a path a search matches exactly, as the dimension's own path is.
+    /// An attribute written as settings: either <c>{ collect: data.Source }</c>, the path of the dimension's own records
+    /// whose values each key collects, or <c>{ path: data.WellboreID }</c>, the paths it is read through as the bare form
+    /// gives them; either with <c>keep: key</c>, which keeps each value exactly as the record holds it so the column joins
+    /// to the dimension keyed by it. A path is one a search matches exactly, as the dimension's own path is.
     /// </summary>
-    private static string MapCollect(IDictionary<object, object?> settings, string at, string where, string source)
+    private static (string? Collect, IReadOnlyList<string>? Steps, bool KeepKey) MapAttributeSettings(
+        IDictionary<object, object?> settings, string at, string where, string source)
     {
-        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k != "collect").ToList();
-        if (unknown.Count > 0 || !settings.TryGetValue("collect", out var declared) || declared is not string collect || string.IsNullOrWhiteSpace(collect))
+        var name = at.Split('.')[1];
+        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k is not ("collect" or "path" or "keep")).ToList();
+        var collects = settings.TryGetValue("collect", out var declaredCollect);
+        var reads = settings.TryGetValue("path", out var declaredPath);
+        if (unknown.Count > 0 || collects == reads)
         {
             throw new FlowValidationException(
-                $"{source}: {where}: {at} is a path or a list of paths read from the record the key names ({at.Split('.')[1]}: data.Name), or {{ collect: <path> }} to collect the values of the dimension's own records ({at.Split('.')[1]}: {{ collect: data.Source }}){(unknown.Count > 0 ? $"; it names {string.Join(", ", unknown)}" : string.Empty)}.");
+                $"{source}: {where}: {at} is a path or a list of paths read from the record the key names ({name}: data.Name), or settings naming one of path and collect ({name}: {{ path: data.WellboreID, keep: key }}, {name}: {{ collect: data.Source }})"
+                + (unknown.Count > 0 ? $"; it names {string.Join(", ", unknown)}" : collects ? "; it names both" : "; it names neither") + ".");
         }
 
-        var path = collect.Trim();
-        CheckPath(path, $"{where}: {at}.collect", source);
-        return path;
+        var keepKey = MapKeep(settings, at, where, source);
+        if (collects)
+        {
+            if (declaredCollect is not string collect || string.IsNullOrWhiteSpace(collect))
+            {
+                throw new FlowValidationException($"{source}: {where}: {at}.collect is the path of the dimension's own records whose values each key collects ({name}: {{ collect: data.Source }}).");
+            }
+
+            var path = collect.Trim();
+            CheckPath(path, $"{where}: {at}.collect", source);
+            return (path, null, keepKey);
+        }
+
+        var steps = MapSteps(declaredPath, $"{at}.path", where, source);
+        return steps.Count > 0
+            ? (null, steps, keepKey)
+            : throw new FlowValidationException(
+                $"{source}: {where}: {at}.path reads nothing; give the path of the record the key names it is read from ({name}: {{ path: data.WellboreID }}).");
+    }
+
+    /// <summary>
+    /// How an attribute's values are kept: <c>key</c>, exactly as the record holds them, so a reference stays a whole id and
+    /// the column joins to the dimension keyed by it; <c>value</c> (the default), as a value shows them.
+    /// </summary>
+    private static bool MapKeep(IDictionary<object, object?> settings, string at, string where, string source)
+    {
+        if (!settings.TryGetValue("keep", out var declared))
+        {
+            return false;
+        }
+
+        return declared?.ToString()?.Trim() switch
+        {
+            "key" => true,
+            "value" => false,
+            var other => throw new FlowValidationException(
+                $"{source}: {where}: {at}.keep is '{other}'; it is key, to keep each value exactly as the record holds it so the column joins to the dimension keyed by it, or value, as a value shows it."),
+        };
     }
 
     /// <summary>

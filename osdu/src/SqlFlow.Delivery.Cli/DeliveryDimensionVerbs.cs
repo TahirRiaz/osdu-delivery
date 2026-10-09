@@ -155,8 +155,13 @@ internal static class DeliveryDimensionVerbs
                         ["path"] = spec.Path,
                         ["label"] = spec.Label.Count == 0 ? null : new JsonArray(spec.Label.Select(l => (JsonNode)JsonValue.Create(l)!).ToArray()),
                         ["attributes"] = new JsonArray(spec.Attributes.Select(a => (JsonNode)(a.IsCollected
-                            ? new JsonObject { ["name"] = a.Name, ["collect"] = a.Collect }
-                            : new JsonObject { ["name"] = a.Name, ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()) })).ToArray()),
+                            ? new JsonObject { ["name"] = a.Name, ["collect"] = a.Collect, ["keep"] = a.KeepKey ? "key" : "value" }
+                            : new JsonObject
+                            {
+                                ["name"] = a.Name,
+                                ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()),
+                                ["keep"] = a.KeepKey ? "key" : "value",
+                            })).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
                         ["table"] = dimension?.TableName is { } table ? DimensionTables.Shown(table) : null,
                         ["keyColumn"] = spec.KeyColumn,

@@ -96,8 +96,19 @@ public static class DimensionYamlSource
                             case YamlScalarNode or YamlSequenceNode:
                                 text.Items(target, attribute, spans);
                                 break;
-                            case YamlMappingNode collect:
-                                text.Entries(target, collect, spans);
+                            case YamlMappingNode settings:
+                                text.Entries(target, settings, spans);
+
+                                // The paths of { path: ... } are the attribute's own steps, so they are indexed by place as
+                                // the bare form's are, and the blueprint points at the same lines either way.
+                                foreach (var (settingKey, setting) in settings.Children)
+                                {
+                                    if (settingKey is YamlScalarNode { Value: "path" })
+                                    {
+                                        text.Items(target, setting, spans);
+                                    }
+                                }
+
                                 break;
                         }
                     }

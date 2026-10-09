@@ -266,6 +266,23 @@ An attribute's name is a letter, then letters, digits and underscores, at most 6
 `value`, `keys`, `key`, `key_id`, `records`, `filter`, `label`, `id`, `partition`, and not the name of the dimension's
 key or value column.
 
+**Keeping the key, so tables join.** An attribute is written as settings to give it a `keep`:
+`WellboreID: { path: data.WellboreID, keep: key }`. `keep: value`, the default, shows each value as a value: a record
+reference becomes the code its id ends with, its escapes decoded (`dev:master-data--Wellbore:WB-0001:` is `WB-0001`).
+`keep: key` keeps the text exactly as the record holds it, so the reference stays the whole id, which is what the key
+column of the dimension keyed by that reference holds. That is what joins two dimension tables:
+
+```sql
+SELECT l.WellLogName, w.WellboreUWI, w.Country
+FROM osdu.dim_WellLog AS l
+LEFT JOIN osdu.dim_LogWellbore AS w
+    ON w.partition = l.partition AND w.WellboreID = l.WellboreID
+```
+
+`path` takes a path or a list of paths, exactly as the bare form does, and `keep` works on a collected attribute too
+(`{ collect: data.Curves.LogCurveTypeID, keep: key }`). A value longer than the 256 characters a dimension keeps is cut
+under `keep: value` and left out under `keep: key`, since a key cut joins to nothing; the build's notes count them.
+
 **Collected attributes.** `{ collect: <path> }` collects the values of the dimension's own records instead of reading
 the record a key names: `LoggingService: { collect: data.LoggingService }` on a dimension keyed by the well logs'
 `data.WellboreID` gives each wellbore every logging service its logs name, with how many logs hold each. Picking a
