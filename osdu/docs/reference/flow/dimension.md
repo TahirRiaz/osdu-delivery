@@ -2,7 +2,7 @@
 id: delivery-flow-dimension
 title: "Dimension flow (flowType: dimension): every distinct value of an OSDU property, labelled and cleaned for filtering search"
 type: flow-reference
-summary: "The flowType: dimension document: read every distinct value of an OSDU property, label and clean it, and keep keys, values and filters for search."
+summary: "The flowType: dimension document: every distinct value of an OSDU property, labelled and cleaned for search, its tables joined into views with typed columns."
 keywords:
   - dimension flow
   - distinct values
@@ -17,6 +17,13 @@ keywords:
   - maxvalues
   - "osdu.dim_"
   - search filter
+  - views
+  - join dimension tables
+  - typed columns
+  - "osdu.dimv_"
+  - target.connection
+  - datatype
+  - key_hash
 yamlPath: "(root, flowType: dimension)"
 related:
   - delivery-guide-dimensions
@@ -49,6 +56,11 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/DimensionTables.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Dimensions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.cs
+  - osdu/src/SqlFlow.Delivery/Documents/DimensionViewMapper.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViews.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViewExpressions.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViewRemoval.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionViewStore.cs
   - osdu/docs/census/keys.dimension.json
   - osdu/specs/core/INTEGRATION.md
 ---
@@ -171,6 +183,8 @@ type ...`).
 | `partitions` | list | none | The partitions the flow builds in, each a literal `data-partition-id`. See [Partitions](#partitions). |
 | `source` | map | required | The OSDU platform the dimensions are read from. See [source](#source). |
 | `dimensions` | list | required | The dimensions, at least 1 and at most 100, names unique ignoring case. |
+| `target` | map | none | `connection`: the module's database, as the pipelines reading the flow's tables and views name it. Required with `views`. See [Views](#views). |
+| `views` | list | none | Views over the flow's dimension tables, at most 50. See [Views](#views). |
 | `reliability` | map | delivery defaults | The HTTP settings a delivery flow takes ([delivery flow](delivery.md)), and `concurrency` (default 8, at least 1): how many dimensions build at once, and how many requests each asks of the search at once (value ranges, label and attribute searches, cursors). `parallelInterfaces` is refused. |
 | `schedule`, `mode`, `lifecycle` | | none | SQLFlow's envelope keys ([schedule](../../../../sqlflow/docs/reference/flow/schedule.md), [flow overview](../../../../sqlflow/docs/reference/flow/overview.md)). A schedule's `values` may name the partition (`partition: dev`) and the flow's parameters. |
 
@@ -404,12 +418,139 @@ partition's rows are written again under new numbers.
 The table is read through two indexes the build makes: `IX_key` (`partition`, `key_id`) and `IX_value` (`partition`, the
 value's column, `id`).
 
+## Views
+
+A view puts dimensions of one flow side by side at the grain of one of them, so a pipeline, a report or a person reads
+one table instead of writing the joins. A build writes each as `osdu.dimv_<name>` after the flow's dimensions, checks it,
+and drops a view the flow no longer declares.
+
+```yaml
+target:
+  connection: ${env:SQLFLOW_OSDU_DB}      # the module's database, named as the pipelines reading the views name it
+views:
+  - name: Curve                           # osdu.dimv_Curve
+    description: Every curve of every well log, with its log and the curve's unit.
+    from: LogCurve                        # a row of the view for each row of dim_LogCurve
+    join:
+      - { on: WellLogID, to: WellLog, as: Log }       # the same key: the log's own row
+      - { on: CurveUnitID, to: RefUnitOfMeasure, as: Unit }
+      - { on: Log.SamplingDomainTypeID, to: RefSamplingDomainType, as: Domain }   # through the log
+    columns:
+      WellLogID: WellLogID
+      Log: Log.WellLogName
+      Curve: Mnemonic
+      Unit: Unit.UnitCode
+      Domain: Domain.SamplingDomainTypeName
+      TopDepth: { expression: TopDepth, dataType: float }
+      Interval: { expression: "TRY_CAST(BaseDepth AS float) - TRY_CAST(TopDepth AS float)", dataType: "decimal(18,3)" }
+      Created:
+        expression: Log.CreationDateTime
+        dataType: datetime2(0)
+        description: When the log was made, in UTC.
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `target.connection` | required with `views` | The module's database, written as a delivery flow's `source.connection` is: a `${env:...}` or `${keyvault:...}` reference, or a connection string whose password is one. |
+| `views[].name` | required | A letter, then letters, digits and underscores, at most 64; unique among the views of a database, ignoring case. |
+| `views[].description` | none | What the view holds, shown with it. |
+| `views[].from` | required | The dimension of the flow whose rows the view's rows are. |
+| `views[].join[]` | none | `{ on, to, as }`: the column joined on (bare for a column of `from`, `alias.column` for one of an earlier join), the dimension of the flow joined, and the alias its columns are read by (the dimension's name unless given). At most 16. |
+| `views[].columns.<name>` | every column | An expression, or `{ expression, dataType, description }`. At most 256, beside `partition` and `id`. |
+
+**What a view holds.** Every view begins with `partition` and `id`, the number of the `from` row each of its rows stands
+for, which stays the same for as long as the dimension holds the row: a pipeline merges on it. Then its `columns`, in
+order. A view that lists none holds every column of `from` but its numbers, partition and filter, then every column of
+each join prefixed by its alias (`Unit_UnitCode`, `Unit_id`), as the tables hold them. Every join is a left join that
+meets at most one row, so a row of `from` is a row of the view.
+
+**Joins**, refused where the document is read, naming the view and the join:
+
+- A join is on a key: a dimension's key column, or an attribute or an element's field kept as `key` or `id`
+  ([keeping a key](#labels-and-attributes)). A key's column or a `keep: key` column joins a dimension keyed by the same
+  path; a `keep: id` column joins a dimension keyed by `id`; two dimensions keyed by `id` read kinds of one entity type.
+- A dimension with `elements` or a collected attribute holds several rows a key, and is refused as a join: it would
+  repeat the view's rows. Make it the view's `from`.
+- Joins stay inside one flow, so one run settles every table a view reads. Each compares the partition, the key's
+  SHA-256 (`key_hash`, which every dimension table keeps and indexes) and the key's text under a binary collation, so
+  ids that differ only in case never meet, whatever the database's collation.
+
+**Expressions.** A column is a T-SQL scalar expression, read by SQL Server's own parser and written into the view by the
+module from what it read. It uses numbers, `'text'`, `N'text'`, `NULL`, `+ - * / %`, comparisons, `AND`, `OR`, `NOT`,
+`IS NULL`, `LIKE`, `IN` a list, `BETWEEN`, `CASE`, and the functions `COALESCE`, `NULLIF`, `ISNULL`, `IIF`, `TRY_CAST`,
+`TRY_CONVERT`, `CAST`, `CONVERT` (no style), `LEFT`, `RIGHT`, `SUBSTRING`, `LEN`, `UPPER`, `LOWER`, `TRIM`, `LTRIM`,
+`RTRIM`, `REPLACE`, `CHARINDEX`, `CONCAT`, `CONCAT_WS`, `ABS`, `ROUND`, `FLOOR`, `CEILING`, `POWER`, `SQRT`, `EXP`, `LOG`,
+`LOG10`, `SIGN`, `DATEADD`, `DATEDIFF`, `DATEPART`, `YEAR`, `MONTH`, `DAY` and `EOMONTH`. A subquery, a variable, a
+window, `COLLATE`, a value of the clock (`GETDATE()`) and any other function are refused. Every column of a dimension's
+table is text but `id`, `key_id`, `records` and `element`; where SQL Server would convert implicitly (`BaseDepth -
+TopDepth`, text compared with a number, `CONCAT` of a number) the expression is refused, saying to convert first. A
+division by zero, a root or a logarithm outside its domain and a negative length are null. Quote an expression that
+starts with `[`, and a type with a comma in a flow mapping (`dataType: "decimal(18,3)"`).
+
+**Data types.** `dataType` converts by the module's conversion, which never fails a read: a value it cannot convert is
+null, and the build counts it. The types are `bit`, `tinyint`, `smallint`, `int`, `bigint`, `decimal(p,s)`,
+`numeric(p,s)`, `float`, `real`, `date`, `time(n)`, `datetime2(n)`, `datetimeoffset(n)`, `uniqueidentifier`,
+`nvarchar(n)` and `nvarchar(max)`; `varchar`, `char`, `datetime` and `smalldatetime` are refused. The same conversion
+runs for `CAST`, `CONVERT`, `TRY_CAST` and `TRY_CONVERT` inside an expression.
+
+| To | Reads | Unlike `TRY_CAST` |
+| --- | --- | --- |
+| `float`, `real` | `203.149`, `-999.25`, `1.5E3`; not `12,5` or `NaN` | The same. |
+| `decimal`, `numeric` | The same, rounded to its scale | Reads an exponent (`1.5E3`), through `float`. |
+| `tinyint` to `bigint` | A whole number: `7`, `7.0`, `7E0` | Reads `7.0`; a fraction (`7.5`) is null, never cut. |
+| `bit` | `true`, `false`, `1`, `0`, ignoring case | `2` and `yes` are null. |
+| `datetime2(n)` | ISO 8601, as the instant in UTC (`11:16:03+02:00` is `09:16:03`); no offset is UTC | Applies the offset, which a cast drops; reads ISO 8601 alone, whatever the session's date format (`03/04/2013` is null). |
+| `datetimeoffset(n)`, `date`, `time(n)` | ISO 8601, keeping the offset, or the date or time of day as written | ISO 8601 alone. |
+| `nvarchar(n)` | A text of at most `n` characters; a number with every digit, a date as ISO 8601 | A longer text is null, never cut. |
+| `uniqueidentifier` | A GUID's text | The same. |
+
+**The check.** After writing its views, a build reads each one's rows of the run's partition: the rows, for each join
+how many rows found theirs and some values that found none, and for each converted column how many values did not
+convert, with examples (the row's `id` and the text). The run's result says so (`CurveUnitID: 1,204 of 88,310 rows name
+no row of RefUnitOfMeasure`, `TopDepth: 37 value(s) did not convert, for example '12,5'`). A value no expression could be
+written around (an arithmetic overflow) fails the build, naming the view and the column, so the pipelines ordered after
+the flow do not read a view that cannot be read.
+
+**Writing.** A build writes each view in one transaction under a lock of its own, only when its statement changed, with
+its column list (never `*`), making a table it reads that no build has made yet (empty, so its join finds nothing). A
+view whose name another flow's view holds, or an object no build made, is refused, naming it, and nothing is written
+over. A build that renames a key's or a value's column drops the views reading that table in the same transaction, and
+the run writes them again at its end. A dimension a view reads is not removed until the flow's next build has written
+the view without it.
+
+**Lineage.** With `target.connection`, the flow declares that it writes each `osdu.dim_<dimension>` table and each
+`osdu.dimv_<view>` view on that connection, so a pipeline reading them through the same reference is ordered after it.
+SQLFlow tells servers apart by the reference as written, so the two name it alike. A build and a plan ask the server
+which database the reference reaches and refuse one other than the module's own, naming the reference and never what it
+resolves to. A table of facts for analytical queries is an ingestion flow reading the view (keyed by `partition` and
+`id`) into a table with a clustered columnstore index:
+
+```yaml
+flowType: ing
+name: welldb-welllog-08-curve-table-ing
+connections:
+  osduDelivery: ${env:SQLFLOW_OSDU_DB}    # the same reference as the dimension flow's target.connection
+  warehouse: ${env:WAREHOUSE_DB}
+source:
+  server: osduDelivery
+  object: OsduDelivery.osdu.dimv_Curve
+target:
+  server: warehouse
+  object: Warehouse.arc.Curve
+  columnStoreIndex: true                  # made when the run first creates the table
+load:
+  keyColumns: [partition, id]
+  matchKeysInSourceAndTarget: true
+matchKeys:
+  action: delete                          # a curve the view no longer holds leaves the table
+```
+
 ## Operations
 
 | Operation | What it does |
 | --- | --- |
 | `build` (default) | Reads every distinct key of each dimension, reads labels and attributes, cleans keys into values, and keeps what changed. |
-| `plan` | Settles each dimension's field from the templates and counts the records it would read; reads no value and keeps nothing. |
+| `plan` | Settles each dimension's field from the templates and counts the records it would read, and gives each view's statement and what would stop a build writing it; reads no value and keeps nothing. |
 
 The run payload takes one field, `dimensions`, the names of the dimensions to build; a run naming none builds every
 one. A name the flow does not declare fails the run, listing the flow's dimensions. Anything else in the payload is
@@ -462,7 +603,10 @@ values, keys, keys of no value, unfilterable keys, labelled keys, what it change
 restored, keys moved), requests, the field it aggregated, its error, and its first 5 notes. Every note is on the build in
 the ledger (`sqlflow dimensions history`). A plan's result is, per dimension, the query, the field it would read,
 whether a record holds it more than once, the records it would read, the kinds with their records and templates, and
-what stops it.
+what stops it. Both say, per view, what the build did or would do: a build's `views` give each view's status
+(`written`, `unchanged` or `failed`), its check (`passed` or `failed`), its rows and its first notes, and `viewsDropped`
+the views it dropped; a plan's `views` give each view's tables, its statement, what stops it and what a build will do. A
+view that cannot be written or read fails the run, every dimension still built.
 
 ## Removing a dimension
 
@@ -471,13 +615,18 @@ ids and history back. An admin removes it for good with **Remove** on the GUI, `
 or [`sqlflow dimensions remove`](../cli/dimensions.md#remove). A removal is refused for a dimension the flow still
 declares and for one a cache flow of its partition captures, takes everything of the dimension in its partition (its
 rows in its table, which is dropped when no partition writes it any more), and is recorded as a `remove-dimension`
-activity of the flow with who asked.
+activity of the flow with who asked. A dimension a view reads is refused too, naming the view.
+
+A view the flow no longer declares is dropped by its next build. One whose flow is gone is removed by an admin with
+**Remove** on the view's page, `DELETE /api/v1/delivery/dimensions/views/{name}`, or
+[`sqlflow dimensions remove-view`](../cli/dimensions.md), recorded as a `remove-view` activity.
 
 ## Lineage, the GUI and the cache
 
 - **Lineage.** A dimension flow reads each dimension's kind on its platform and partition, the dictionary files its
   `map` steps name, and writes each dimension. It is ordered after the delivery flows writing the kinds it reads, and a
-  cache flow holding one of its dimensions is ordered after it ([lineage](../concepts/lineage.md)).
+  cache flow holding one of its dimensions is ordered after it ([lineage](../concepts/lineage.md)). With
+  `target.connection` it also writes its tables and views on that connection ([Views](#views)).
 - **The GUI.** A dimension flow's pipeline has a **Dimensions** tab. **OSDU**, **In OSDU**, **Dimensions** lists every
   dimension with the search builder; a dimension's page has the tabs Table, Values, Keys, Changes, Builds and
   Definition (the YAML beside a diagram of how each column is read).
@@ -500,6 +649,13 @@ activity of the flow with who asked.
 | `query uses '{logSource}', which is not declared under parameters.` | An undeclared token. |
 | `source.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it builds in. Remove the header.` | Both ways of naming a partition. |
 | `source.aggregationSize is 20000; ... between 10 and 10000.` | Out of range. |
+| `views needs target.connection: the module's database as the pipelines reading the views name it ...` | Views without `target.connection`. |
+| `views[0] 'Curve': join[0].on 'Mnemonic' holds no key: Mnemonic is a field kept as a value ...` | A join on a column holding no key. |
+| `views[0] 'Curve': join[0] joins 'WellLogID' to RefUnitOfMeasure, and it holds the id of a work-product-component--WellLog and the dimension is keyed by the id of a reference-data--UnitOfMeasure, ...` | Keys that never meet. |
+| `views[0] 'Curve': join[0] joins Wellbore, whose table holds a row per value it collects of each key, so a join to it would repeat the view's rows. ...` | A join to a dimension of several rows a key. |
+| `views[0] 'Curve': columns.Interval: the expression 'BaseDepth - TopDepth' gives the operator - text (BaseDepth), where it takes a number; ...` | An implicit conversion. |
+| `views[0] 'Curve': columns.Curve: the expression '...' uses a subquery, which a view's expression may not: ...` | Something an expression may not use. |
+| `views[0] 'Curve': columns.Depth: dataType converts to 'varchar(10)'; varchar and char would turn every character outside their code page into ? ...` | A type a view does not convert to. |
 
 ## Errors when a dimension builds
 
@@ -511,3 +667,7 @@ activity of the flow with who asked.
 | `Dimension <name> of <flow> would write the table osdu.dim_<name>, which dimension <name> of <other flow> writes: ... Rename one of them.` | Dimension names are unique across the flows of a database. |
 | `Dimension <name> could not read dictionary <dictionary>: ...` | Add or fix `dictionaries/<name>.yaml`. |
 | `The dimension's table osdu.dim_<name> has a column <name> already ... Drop that column, or name the <role>'s column otherwise in the flow: columns: { <role>: <name> }.` | A rename would take a name another column holds. |
+| `Dimension flow '<flow>': target.connection ${env:<NAME>} reaches another database than this host's module database, ... Point it at the module's database.` | Point the reference at the module's database. Nothing was built. |
+| `View <name> is declared by dimension flow '<other>' as well, and a view's name is unique among the flows of a database, so osdu.dimv_<name> was not written. ...` | Rename one of the views, or remove the other flow's. |
+| `osdu.dimv_<name> is in the database, and no build of a dimension flow made it, so it is not written over. ...` | Drop the object, or name the view otherwise. |
+| `Column <column> of view <name> could not be computed for every row of partition '<partition>': Arithmetic overflow ...` | Write the expression around the value. |

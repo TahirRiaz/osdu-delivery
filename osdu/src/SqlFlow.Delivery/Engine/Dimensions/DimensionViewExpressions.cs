@@ -420,8 +420,7 @@ public static class DimensionViewExpressions
             var args = Arguments(name, parameters, 2, 2, depth);
             Require(args[0], ViewValue.Text, name);
             Require(args[1], ViewValue.Number, name);
-            return new CompiledViewExpression(
-                $"CASE WHEN {args[1].Sql} < 0 THEN NULL ELSE {name}({args[0].Sql}, {args[1].Sql}) END", ViewValue.Text, null);
+            return new CompiledViewExpression($"{name}({args[0].Sql}, {NotNegative(args[1].Sql)})", ViewValue.Text, null);
         }
 
         private CompiledViewExpression Function(FunctionCall call, int depth)
@@ -478,8 +477,7 @@ public static class DimensionViewExpressions
                     Require(args[0], ViewValue.Text, name);
                     Require(args[1], ViewValue.Number, name);
                     Require(args[2], ViewValue.Number, name);
-                    return new CompiledViewExpression(
-                        $"CASE WHEN {args[2].Sql} < 0 THEN NULL ELSE SUBSTRING({args[0].Sql}, {args[1].Sql}, {args[2].Sql}) END", ViewValue.Text, null);
+                    return new CompiledViewExpression($"SUBSTRING({args[0].Sql}, {args[1].Sql}, {NotNegative(args[2].Sql)})", ViewValue.Text, null);
                 }
 
                 case "CHARINDEX":
@@ -515,17 +513,20 @@ public static class DimensionViewExpressions
                 {
                     var args = Arguments(name, parameters, 1, 1, depth);
                     Require(args[0], ViewValue.Number, name);
-                    return new CompiledViewExpression($"CASE WHEN {args[0].Sql} >= 0 THEN SQRT({args[0].Sql}) END", ViewValue.Number, null);
+                    return new CompiledViewExpression($"SQRT(CASE WHEN {args[0].Sql} >= 0 THEN {args[0].Sql} END)", ViewValue.Number, null);
                 }
 
                 case "LOG" or "LOG10":
                 {
                     var args = Arguments(name, parameters, 1, name == "LOG" ? 2 : 1, depth);
                     args.ForEach(a => Require(a, ViewValue.Number, name));
-                    var guard = args.Count == 2
-                        ? $"{args[0].Sql} > 0 AND {args[1].Sql} > 0 AND {args[1].Sql} <> 1"
-                        : $"{args[0].Sql} > 0";
-                    return new CompiledViewExpression($"CASE WHEN {guard} THEN {name}({string.Join(", ", args.Select(a => a.Sql))}) END", ViewValue.Number, null);
+                    var value = $"CASE WHEN {args[0].Sql} > 0 THEN {args[0].Sql} END";
+                    return new CompiledViewExpression(
+                        args.Count == 2
+                            ? $"{name}({value}, CASE WHEN {args[1].Sql} > 0 AND {args[1].Sql} <> 1 THEN {args[1].Sql} END)"
+                            : $"{name}({value})",
+                        ViewValue.Number,
+                        null);
                 }
 
                 case "POWER":
@@ -534,7 +535,7 @@ public static class DimensionViewExpressions
                     args.ForEach(a => Require(a, ViewValue.Number, name));
                     var (x, y) = (args[0].Sql, args[1].Sql);
                     return new CompiledViewExpression(
-                        $"CASE WHEN {x} = 0 AND {y} < 0 THEN NULL WHEN {x} < 0 AND {y} <> FLOOR({y}) THEN NULL ELSE POWER({x}, {y}) END", ViewValue.Number, null);
+                        $"POWER(CASE WHEN ({x} = 0 AND {y} < 0) OR ({x} < 0 AND {y} <> FLOOR({y})) THEN NULL ELSE {x} END, {y})", ViewValue.Number, null);
                 }
 
                 case "ROUND":
@@ -708,6 +709,13 @@ public static class DimensionViewExpressions
 
             return parameters.Select(p => Scalar(p, depth)).ToList();
         }
+
+        /// <summary>
+        /// A length a call takes, null where it is negative: the call then gives null. The argument is guarded, not the call,
+        /// since SQL Server folds a call of constants when it compiles the statement, and raises there, whatever a CASE
+        /// around it says.
+        /// </summary>
+        private static string NotNegative(string length) => $"CASE WHEN {length} < 0 THEN NULL ELSE {length} END";
 
         private static ViewExpressionException Count(string name, int min, int max, int given)
             => new(string.Create(CultureInfo.InvariantCulture,

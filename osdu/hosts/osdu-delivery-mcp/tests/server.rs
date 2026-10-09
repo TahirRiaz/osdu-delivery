@@ -512,6 +512,7 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("well log curves bulk data wellbore ddms", &["delivery-guide-bulk-data", "delivery-flow-ddms"]),
     ("data quality tests", &["delivery-guide-data-quality-tests", "delivery-flow-assertion"]),
     ("distinct values of a field", &["delivery-flow-dimension", "delivery-guide-dimensions"]),
+    ("join dimension tables into one view with typed columns", &["delivery-flow-dimension"]),
     ("find orphan records in osdu", &["delivery-guide-finding-orphans", "delivery-flow-inventory"]),
     ("check a flow before running it", &["delivery-cli-check", "delivery-concept-preflight"]),
     ("getting started first delivery", &["delivery-guide-getting-started"]),

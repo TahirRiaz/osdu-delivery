@@ -948,7 +948,7 @@ internal static class SqlServerDimensionStore
                 if (moves.Count > 0)
                 {
                     var renamed = string.Join(" and ", moves.Select(m => $"{m.From} to {m.To}"));
-                    await SqlServerDimensionViewStore.DropViewsReadingAsync(
+                    await SqlServerDimensionViewStore.ClearViewsReadingAsync(
                         connection, transaction, declared.Name,
                         $"Dropped when a build renamed {renamed} in {shown}; the next build of its flow writes it again.", ct).ConfigureAwait(false);
                 }

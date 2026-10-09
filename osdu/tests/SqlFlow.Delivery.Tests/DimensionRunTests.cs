@@ -517,6 +517,9 @@ public sealed class DimensionRunTests : IDisposable
     private async Task<IReadOnlyList<string>> ColumnsAsync(string table)
         => await SqlAsync($"SELECT c.[name] FROM sys.columns AS c WHERE c.[object_id] = OBJECT_ID(N'[osdu].[{table}]', N'U') ORDER BY c.[column_id];");
 
+    /// <summary>The hash a table keeps of a key, as a view's join computes it: SHA-256 of the key's UTF-16 bytes, as SQL Server's HASHBYTES gives it.</summary>
+    private static string KeyHash(string key) => "0x" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.Unicode.GetBytes(key)));
+
     private async Task<List<string>> SqlAsync(string sql)
     {
         await using var connection = new SqlConnection(_db.ConnectionString);
@@ -527,7 +530,9 @@ public sealed class DimensionRunTests : IDisposable
         await using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            rows.Add(string.Join("|", Enumerable.Range(0, reader.FieldCount).Select(i => reader.IsDBNull(i) ? "(null)" : Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture))));
+            rows.Add(string.Join("|", Enumerable.Range(0, reader.FieldCount).Select(i => reader.IsDBNull(i)
+                ? "(null)"
+                : reader.GetValue(i) is byte[] bytes ? "0x" + Convert.ToHexString(bytes) : Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture))));
         }
 
         return rows;
@@ -716,9 +721,12 @@ public sealed class DimensionRunTests : IDisposable
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
         var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
         Assert.Equal(Table, wellbores.TableName);
-        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "Country"], await ColumnsAsync(Table));
+        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "key_hash", "Country"], await ColumnsAsync(Table));
         Assert.Equal(
-            ["PK_" + Table + "|CLUSTERED|1|id|1", "IX_key|NONCLUSTERED|0|partition, key_id|0", "IX_value|NONCLUSTERED|0|partition, FacilityName, id|1"],
+            [
+                "PK_" + Table + "|CLUSTERED|1|id|1", "IX_key|NONCLUSTERED|0|partition, key_id|0", "IX_value|NONCLUSTERED|0|partition, FacilityName, id|1",
+                "IX_key_hash|NONCLUSTERED|0|partition, key_hash|0",
+            ],
             await SqlAsync($"""
                 SELECT i.[name], i.[type_desc], CAST(i.[is_primary_key] AS int),
                     STRING_AGG(c.[name], ', ') WITHIN GROUP (ORDER BY ic.[key_ordinal]), MAX(CAST(c.[is_identity] AS int))
@@ -731,9 +739,9 @@ public sealed class DimensionRunTests : IDisposable
             .ToDictionary(k => k.Original[^2..^1], StringComparer.Ordinal);
         Assert.Equal(
             [
-                $"1|dev|{keys["C"].ValueId}|dev:master-data--Wellbore:C:|CA C|1|{keys["C"].Filter}|Canada",
-                $"2|dev|{keys["A"].ValueId}|dev:master-data--Wellbore:A:|MX A|3|{keys["A"].Filter}|Mexico",
-                $"3|dev|{keys["B"].ValueId}|dev:master-data--Wellbore:B:|MX B|1|{keys["B"].Filter}|Mexico",
+                $"1|dev|{keys["C"].ValueId}|dev:master-data--Wellbore:C:|CA C|1|{keys["C"].Filter}|{KeyHash("dev:master-data--Wellbore:C:")}|Canada",
+                $"2|dev|{keys["A"].ValueId}|dev:master-data--Wellbore:A:|MX A|3|{keys["A"].Filter}|{KeyHash("dev:master-data--Wellbore:A:")}|Mexico",
+                $"3|dev|{keys["B"].ValueId}|dev:master-data--Wellbore:B:|MX B|1|{keys["B"].Filter}|{KeyHash("dev:master-data--Wellbore:B:")}|Mexico",
             ],
             await SqlAsync($"SELECT * FROM [osdu].[{Table}] ORDER BY [id];"));
 
@@ -778,7 +786,7 @@ public sealed class DimensionRunTests : IDisposable
                   Source: { collect: data.Source }
             """);
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
-        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "Country", "UUID", "Source"], await ColumnsAsync(Table));
+        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "key_hash", "Country", "UUID", "Source"], await ColumnsAsync(Table));
         Assert.Equal(
             ["CA C|Canada|uuid-C|PETREL|1", "MX A|Mexico|uuid-A|PETREL|1", "MX A|Mexico|uuid-A|WELLDB|2", "MX B|Mexico|uuid-B|WELLDB|1"],
             await SqlAsync($"SELECT [FacilityName], [Country], [UUID], [Source], [records] FROM [osdu].[{Table}] WHERE [partition] = N'dev' ORDER BY [FacilityName], [Source];"));
@@ -805,7 +813,7 @@ public sealed class DimensionRunTests : IDisposable
                   Source: { collect: data.Source }
             """);
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
-        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "Country", "UUID", "Source", "Notes"], await ColumnsAsync(Table));
+        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "key_hash", "Country", "UUID", "Source", "Notes"], await ColumnsAsync(Table));
         Assert.Equal(["CA C|(null)|PETREL|mine", "MX A|(null)|WELLDB|mine", "MX B|(null)|WELLDB|mine"], await SqlAsync($"SELECT [FacilityName], [UUID], [Source], [Notes] FROM [osdu].[{Table}] ORDER BY [FacilityName];"));
         wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
         Assert.Equal(["Country", "Source"], (await DimensionTable.ShapeAsync(ledger, wellbores, CancellationToken.None)).Attributes);
@@ -819,7 +827,7 @@ public sealed class DimensionRunTests : IDisposable
             """);
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
         Assert.Empty(await ColumnsAsync("dim_wells_dimensions_Wellbore"));
-        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "Country", "Source"], await ColumnsAsync(Table));
+        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "key_hash", "Country", "Source"], await ColumnsAsync(Table));
         Assert.Equal(["CA C|PETREL", "MX A|WELLDB", "MX B|WELLDB"], await SqlAsync($"SELECT [FacilityName], [Source] FROM [osdu].[{Table}] ORDER BY [FacilityName];"));
         wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
         Assert.Equal(Table, wellbores.TableName);
@@ -828,7 +836,7 @@ public sealed class DimensionRunTests : IDisposable
         // built before dimensions had one, which names none.
         await SqlAsync($"DROP TABLE [osdu].[{Table}];");
         Assert.Equal(3, (await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(), CancellationToken.None)).Total);
-        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "Country", "Source"], await ColumnsAsync(Table));
+        Assert.Equal(["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "key_hash", "Country", "Source"], await ColumnsAsync(Table));
         await SqlAsync($"DROP TABLE [osdu].[{Table}]; UPDATE [osdu].[Dimension] SET [TableName] = NULL;");
         wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
         Assert.Null(wellbores.TableName);
@@ -876,7 +884,7 @@ public sealed class DimensionRunTests : IDisposable
             WHERE i.[object_id] = OBJECT_ID(N'[osdu].[{Table}]') AND i.[name] = N'IX_value';
             """;
         string Rows(string key, string value) => $"SELECT [id], [key_id], [{key}], [{value}], [records] FROM [osdu].[{Table}] ORDER BY [id];";
-        string[] Columns(string key, string value, params string[] more) => ["id", "partition", "key_id", key, value, "records", "filter", .. more];
+        string[] Columns(string key, string value, params string[] more) => ["id", "partition", "key_id", key, value, "records", "filter", "key_hash", .. more];
 
         // The columns are named after what the dimension reads: the property its path ends with, and its label's.
         var (runner, ledger, flow) = await RunnerAsync(Head + Declared);
@@ -982,7 +990,7 @@ public sealed class DimensionRunTests : IDisposable
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
 
         // The dimension is named after the property it reads: its value's column keeps the name, and its key's takes Key.
-        Assert.Equal(["id", "partition", "key_id", "SourceKey", "Source", "records", "filter"], await ColumnsAsync("dim_Source"));
+        Assert.Equal(["id", "partition", "key_id", "SourceKey", "Source", "records", "filter", "key_hash"], await ColumnsAsync("dim_Source"));
 
         // A table is named after its dimension alone, so a dimension's name is unique among flows: another flow declaring
         // one of the same name would write the first one's table.

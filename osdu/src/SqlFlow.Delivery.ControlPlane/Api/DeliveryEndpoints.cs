@@ -555,6 +555,9 @@ public static class DeliveryEndpoints
         // The dimensions of dimension flows: boards, members and originals, builds, the change log, filters and exports.
         DeliveryDimensionEndpoints.MapReads(delivery);
 
+        // The views dimension flows declare over their tables: every view, a flow's, and one with its checks, SQL and YAML.
+        DeliveryDimensionViewEndpoints.MapReads(delivery);
+
         // The inventories of inventory flows: what OSDU serves set against the ledgers, by finding, a page at a time, and exports.
         DeliveryInventoryEndpoints.MapReads(delivery);
         delivery.MapGet("/caches", ListCachesAsync).WithName("ListDeliveryCaches");
@@ -613,6 +616,7 @@ public static class DeliveryEndpoints
         DeliveryInventoryEndpoints.MapWrites(delivery);
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
         DeliveryDimensionEndpoints.MapWrites(delivery);
+        DeliveryDimensionViewEndpoints.MapWrites(delivery);
         return group;
     }
 

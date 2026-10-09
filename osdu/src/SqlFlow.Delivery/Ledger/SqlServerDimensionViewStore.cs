@@ -70,7 +70,7 @@ internal static class SqlServerDimensionViewStore
                 outcomes.Add(await WriteOneAsync(connection, write, item, partitionId, ct).ConfigureAwait(false));
             }
 
-            var dropped = await DropUndeclaredAsync(connection, write.Flow, write.Views.Select(v => v.View.Name).ToList(), ct).ConfigureAwait(false);
+            var dropped = await RemoveUndeclaredAsync(connection, write.Flow, write.Views.Select(v => v.View.Name).ToList(), ct).ConfigureAwait(false);
             return new DimensionViewsWritten(outcomes, dropped);
         }
         finally
@@ -395,7 +395,7 @@ internal static class SqlServerDimensionViewStore
     }
 
     /// <summary>Drops every view <paramref name="flow"/> made and no longer declares, each under its lock, and its record with its checks.</summary>
-    private static async Task<IReadOnlyList<string>> DropUndeclaredAsync(SqlConnection connection, string flow, IReadOnlyList<string> declared, CancellationToken ct)
+    private static async Task<IReadOnlyList<string>> RemoveUndeclaredAsync(SqlConnection connection, string flow, IReadOnlyList<string> declared, CancellationToken ct)
     {
         var made = new List<(string Name, string ViewName)>();
         await using (var read = new SqlCommand("SELECT [Name], [ViewName], [FlowName] FROM [osdu].[DimensionView];", connection) { CommandTimeout = CommandTimeoutSeconds })
@@ -414,7 +414,7 @@ internal static class SqlServerDimensionViewStore
         var dropped = new List<string>(made.Count);
         foreach (var (name, viewName) in made.OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase))
         {
-            _ = await DropAsync(connection, name, viewName, flow, ct).ConfigureAwait(false);
+            _ = await RemoveViewAsync(connection, name, viewName, flow, ct).ConfigureAwait(false);
             dropped.Add(name);
         }
 
@@ -422,7 +422,7 @@ internal static class SqlServerDimensionViewStore
     }
 
     // A view the module made, dropped with its record and checks; the object is dropped only when it is a view.
-    private const string DropSql = """
+    private const string RemoveViewSql = """
         DECLARE @dropped bit = 0;
         IF OBJECT_ID(@view, N'V') IS NOT NULL
         BEGIN
@@ -438,13 +438,13 @@ internal static class SqlServerDimensionViewStore
         SELECT @dropped, @checks, CASE WHEN @id IS NULL THEN 0 ELSE 1 END;
         """;
 
-    private static async Task<(bool Dropped, long Checks, bool Found)> DropAsync(SqlConnection connection, string name, string viewName, string flow, CancellationToken ct)
+    private static async Task<(bool Dropped, long Checks, bool Found)> RemoveViewAsync(SqlConnection connection, string name, string viewName, string flow, CancellationToken ct)
     {
         var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
         await using (transaction.ConfigureAwait(false))
         {
             await LockAsync(connection, transaction, name, $"while it dropped view {name}", ct).ConfigureAwait(false);
-            await using var command = Command(connection, transaction, DropSql);
+            await using var command = Command(connection, transaction, RemoveViewSql);
             command.Parameters.Add(new SqlParameter("@view", SqlDbType.NVarChar, 300) { Value = Qualified(viewName) });
             command.Parameters.Add(new SqlParameter("@name", SqlDbType.NVarChar, DeliveryDimensionView.MaxNameLength) { Value = name });
             command.Parameters.Add(new SqlParameter("@flow", SqlDbType.NVarChar, DeliveryLedger.MaxFlowNameLength) { Value = flow });
@@ -471,7 +471,7 @@ internal static class SqlServerDimensionViewStore
     /// wait on each other.
     /// </summary>
     /// <returns>The names of the views dropped.</returns>
-    internal static async Task<IReadOnlyList<string>> DropViewsReadingAsync(
+    internal static async Task<IReadOnlyList<string>> ClearViewsReadingAsync(
         SqlConnection connection, SqlTransaction transaction, string table, string note, CancellationToken ct)
     {
         var reading = new List<(string Name, string ViewName)>();
@@ -524,7 +524,7 @@ internal static class SqlServerDimensionViewStore
         try
         {
             var connection = (SqlConnection)db.Database.GetDbConnection();
-            var (dropped, checks, found) = await DropAsync(connection, record.Name, record.ViewName, record.FlowName, ct).ConfigureAwait(false);
+            var (dropped, checks, found) = await RemoveViewAsync(connection, record.Name, record.ViewName, record.FlowName, ct).ConfigureAwait(false);
             return found ? new DimensionViewRemoved(record.Name, record.ViewName, record.FlowName, dropped, checks) : null;
         }
         finally

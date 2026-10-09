@@ -335,7 +335,7 @@
       "path": "cli/dimensions.md",
       "title": "sqlflow dimensions: read a dimension flow's values, keys, table, filters and composed searches",
       "type": "cli-command",
-      "summary": "sqlflow dimensions list, table, values, keys, attributes, filter, search, history, changes, export and remove: what a dimension flow built, from a terminal.",
+      "summary": "Read a dimension flow's values, keys, table, filters, searches, builds and views from a terminal, and remove a dimension or a view.",
       "keywords": [
         "sqlflow dimensions",
         "dimension values",
@@ -347,6 +347,8 @@
         "export dimension",
         "remove dimension",
         "change log",
+        "dimension views",
+        "remove-view",
         "--pick",
         "--attr"
       ],
@@ -368,6 +370,8 @@
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionSearch.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionExport.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViewRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionViewStore.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/DimensionStates.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Dimensions.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.cs",
@@ -2728,7 +2732,7 @@
       "path": "flow/dimension.md",
       "title": "Dimension flow (flowType: dimension): every distinct value of an OSDU property, labelled and cleaned for filtering search",
       "type": "flow-reference",
-      "summary": "The flowType: dimension document: read every distinct value of an OSDU property, label and clean it, and keep keys, values and filters for search.",
+      "summary": "The flowType: dimension document: every distinct value of an OSDU property, labelled and cleaned for search, its tables joined into views with typed columns.",
       "keywords": [
         "dimension flow",
         "distinct values",
@@ -2742,7 +2746,14 @@
         "aggregationsize",
         "maxvalues",
         "osdu.dim_",
-        "search filter"
+        "search filter",
+        "views",
+        "join dimension tables",
+        "typed columns",
+        "osdu.dimv_",
+        "target.connection",
+        "datatype",
+        "key_hash"
       ],
       "yamlPath": "(root, flowType: dimension)",
       "related": [
@@ -2777,6 +2788,11 @@
         "osdu/src/SqlFlow.Delivery/Ledger/DimensionTables.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Dimensions.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DimensionViewMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViews.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViewExpressions.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViewRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionViewStore.cs",
         "osdu/docs/census/keys.dimension.json",
         "osdu/specs/core/INTEGRATION.md"
       ]

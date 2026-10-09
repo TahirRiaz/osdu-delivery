@@ -307,6 +307,10 @@ See [the explorer](explorer.md) and [search terms](search-terms.md).
 | `POST /dimensions/{dimensionId}/filter` | read | body `valueIds`, `values` | The search filter of the values named. Reads only. |
 | `POST /dimensions/search` | read | body `picks`, `kind`, `within` | The OSDU search finding records that hold the picked values. Nothing is sent to OSDU. |
 | `DELETE /dimensions/{dimensionId}` | admin | | Removes a dimension its flow no longer declares, and everything kept of it. 409 for one the flow declares. |
+| `GET /dimensions/views` | read | | Every view: those the active dimension flows declare, and those builds wrote that no flow declares any more. |
+| `GET /flows/{pipelineId}/dimensions/views` | read | | One dimension flow's views; 409 for another kind. |
+| `GET /dimensions/views/{name}` | read | | One view: what its flow declares and what a build recorded, its newest checks, its SQL as written and as declared, and its YAML. |
+| `DELETE /dimensions/views/{name}` | admin | | Removes a view no flow declares any more: the view and its record. 409 for one its flow declares. |
 | `GET /inventories` | read | `partition` | The inventories of the partition, or of every partition. |
 | `GET /inventories/lookup` | read | `id`, `partition` | What every inventory of the partition holds of one OSDU id; 400 when no partition is named or sent. |
 | `GET /flows/{pipelineId}/inventories` | read | `partition` | An inventory flow's inventories; 409 for another kind. |

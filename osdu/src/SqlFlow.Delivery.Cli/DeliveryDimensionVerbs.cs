@@ -22,7 +22,8 @@ namespace SqlFlow.Delivery.Cli;
 /// the same code as the API's; <c>attributes</c> lists the values an attribute of a dimension's keys holds (among the keys
 /// the other picks leave, for a cascade of selects), <c>--attr</c> narrows values and keys by them, and <c>export --set
 /// table</c> writes the table a cascade of selects is read from; <c>remove</c> removes a dimension the flow no longer
-/// declares, and everything kept of it, for good. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
+/// declares, and everything kept of it, for good; <c>views</c> lists the flow's views (docs/dimension-plan.md, Views), or
+/// shows one with its columns, checks and SQL, and <c>remove-view</c> removes a view the flow no longer declares. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
 /// </summary>
 internal static class DeliveryDimensionVerbs
 {
@@ -62,9 +63,19 @@ internal static class DeliveryDimensionVerbs
             return await RemoveAsync(context, ledger, flow, engine.Time, ct).ConfigureAwait(false);
         }
 
+        if (verb == "views")
+        {
+            return await ViewsAsync(context, ledger, flow, ct).ConfigureAwait(false);
+        }
+
+        if (verb == "remove-view")
+        {
+            return await RemoveViewAsync(context, ledger, flow, engine.Time, ct).ConfigureAwait(false);
+        }
+
         if (verb is not ("table" or "values" or "keys" or "attributes" or "filter" or "history" or "changes" or "export"))
         {
-            return context.UsageError("say what to do: list, table, values, keys, attributes, filter, search, history, changes, export or remove.");
+            return context.UsageError("say what to do: list, table, values, keys, attributes, filter, search, history, changes, export, remove, views or remove-view.");
         }
 
         var dimension = await DimensionAsync(context, ledger, flow, ct).ConfigureAwait(false);
@@ -121,6 +132,234 @@ internal static class DeliveryDimensionVerbs
                 ["attributes"] = removed.Attributes,
                 ["texts"] = removed.Texts,
                 ["tableDropped"] = removed.TableDropped is { } dropped ? DimensionTables.Shown(dropped) : null,
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(removed.Describe());
+        return 0;
+    }
+
+    /// <summary>
+    /// The flow's views (docs/dimension-plan.md, Views): each it declares, with whether a build wrote it as declared and its
+    /// last check, then each a build of it wrote that it no longer declares; with --view, one view with its joins, its
+    /// columns, its newest checks and its SQL.
+    /// </summary>
+    private static async Task<int> ViewsAsync(CliVerbContext context, ILedger ledger, DimensionFlowDefinition flow, CancellationToken ct)
+    {
+        var recorded = await ledger.ListDimensionViewsAsync(flow.Name, ct).ConfigureAwait(false);
+        if (context.Arguments.GetOption("--view") is { } asked && !string.IsNullOrWhiteSpace(asked))
+        {
+            var name = asked.Trim();
+            var declared = flow.Views.FirstOrDefault(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+            var detail = recorded.Any(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase))
+                ? await ledger.GetDimensionViewAsync(name, ct).ConfigureAwait(false)
+                : null;
+            if (declared is null && detail is null)
+            {
+                throw new FlowValidationException(
+                    $"{flow.Name} declares no view named '{name}', and no build of it wrote one{(flow.Views.Count == 0 ? string.Empty : $"; it declares {string.Join(", ", flow.Views.Select(v => v.Name))}")}.");
+            }
+
+            return ShowView(context, declared, detail);
+        }
+
+        var rows = flow.Views
+            .Select(v => (v.Name, Declared: (DimensionViewSpec?)v, State: recorded.FirstOrDefault(r => string.Equals(r.Name, v.Name, StringComparison.OrdinalIgnoreCase))))
+            .Concat(recorded
+                .Where(r => flow.Views.All(v => !string.Equals(v.Name, r.Name, StringComparison.OrdinalIgnoreCase)))
+                .Select(r => (r.Name, Declared: (DimensionViewSpec?)null, State: (DimensionViewState?)r)))
+            .ToList();
+        var checks = new Dictionary<string, DimensionViewCheckState>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows.Where(r => r.State is not null))
+        {
+            if ((await ledger.GetDimensionViewAsync(row.Name, ct).ConfigureAwait(false))?.Checks is { Count: > 0 } held)
+            {
+                checks[row.Name] = held[0];
+            }
+        }
+
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["flow"] = flow.Name,
+                ["views"] = new JsonArray(rows.Select(r => (JsonNode)new JsonObject
+                {
+                    ["view"] = r.Name,
+                    ["viewName"] = DimensionTables.Shown(r.Declared?.ViewName ?? r.State!.ViewName),
+                    ["declared"] = r.Declared is not null,
+                    ["written"] = r.State?.Written ?? false,
+                    ["changed"] = r.Declared is not null && r.State is not null && !string.Equals(r.State.Sql, r.Declared.Definition.CreateSql, StringComparison.Ordinal),
+                    ["from"] = r.Declared?.From ?? r.State!.From,
+                    ["joins"] = new JsonArray((r.Declared?.Joins.Select(j => j.As) ?? r.State!.Joins.Select(j => j.Alias)).Select(a => (JsonNode)JsonValue.Create(a)!).ToArray()),
+                    ["note"] = r.State?.Note,
+                    ["lastCheck"] = checks.TryGetValue(r.Name, out var check) ? CheckJson(check) : null,
+                }).ToArray()),
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{flow.Name}: {flow.Views.Count} view(s)"));
+        foreach (var (name, declared, state) in rows)
+        {
+            var shown = DimensionTables.Shown(declared?.ViewName ?? state!.ViewName);
+            var status = declared is null
+                ? "no longer declared: remove it with sqlflow dimensions remove-view <flow.yaml> --view " + name
+                : state is null ? "not written yet: a build of the flow writes it"
+                : !state.Written ? state.Note ?? "dropped; the next build writes it again"
+                : !string.Equals(state.Sql, declared.Definition.CreateSql, StringComparison.Ordinal) ? "changed: the next build writes it again"
+                : "written as declared";
+            context.Out.WriteLine($"  {name}  {shown}  from {declared?.From ?? state!.From}{Joined(declared, state)}  {status}");
+            if (checks.TryGetValue(name, out var check))
+            {
+                context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                    $"      last check {check.Status} in '{check.Partition}' at {Stamp(check.CheckedUtc)}: {check.Rows} row(s){(check.Error is null ? string.Empty : ". " + check.Error)}"));
+                foreach (var note in check.Notes().Where(n => !string.Equals(n, check.Error, StringComparison.Ordinal)))
+                {
+                    context.Out.WriteLine("      " + note);
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>The joins of a view as a line of the list names them.</summary>
+    private static string Joined(DimensionViewSpec? declared, DimensionViewState? state)
+    {
+        var joins = declared?.Joins.Select(j => $"{j.To} as {j.As}").ToList() ?? state?.Joins.Select(j => $"{j.To} as {j.Alias}").ToList() ?? [];
+        return joins.Count == 0 ? string.Empty : " joining " + string.Join(", ", joins);
+    }
+
+    private static int ShowView(CliVerbContext context, DimensionViewSpec? declared, DimensionViewDetail? detail)
+    {
+        var state = detail?.View;
+        var name = declared?.Name ?? state!.Name;
+        var columns = declared?.Definition.Columns.Select(c => new DimensionViewColumnState(c.Name, c.Type, c.Expression, c.DataType, c.Description)).ToList()
+            ?? state!.Columns.ToList();
+        var joins = declared?.Definition.Joins.Select(j => (j.Alias, j.To, j.On, j.Table)).ToList()
+            ?? state!.Joins.Select(j => (j.Alias, j.To, j.On, j.Table)).ToList();
+        var checks = detail?.Checks ?? [];
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["view"] = name,
+                ["viewName"] = DimensionTables.Shown(declared?.ViewName ?? state!.ViewName),
+                ["description"] = declared?.Description ?? state?.Description,
+                ["declared"] = declared is not null,
+                ["written"] = state?.Written ?? false,
+                ["from"] = declared?.From ?? state!.From,
+                ["joins"] = new JsonArray(joins.Select(j => (JsonNode)new JsonObject
+                {
+                    ["alias"] = j.Alias, ["to"] = j.To, ["on"] = j.On, ["table"] = DimensionTables.Shown(j.Table),
+                }).ToArray()),
+                ["columns"] = new JsonArray(columns.Select(c => (JsonNode)new JsonObject
+                {
+                    ["name"] = c.Name, ["type"] = c.Type, ["expression"] = c.Expression, ["dataType"] = c.DataType, ["description"] = c.Description,
+                }).ToArray()),
+                ["note"] = state?.Note,
+                ["checks"] = new JsonArray(checks.Select(c => (JsonNode)CheckJson(c)).ToArray()),
+                ["sql"] = state?.Sql,
+                ["declaredSql"] = declared?.Definition.CreateSql,
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine($"{name}  {DimensionTables.Shown(declared?.ViewName ?? state!.ViewName)}  from {declared?.From ?? state!.From}{Joined(declared, state)}");
+        if ((declared?.Description ?? state?.Description) is { } description)
+        {
+            context.Out.WriteLine("  " + description);
+        }
+
+        context.Out.WriteLine("  columns:");
+        foreach (var column in columns)
+        {
+            var computed = column.Expression is null ? string.Empty : $" = {column.Expression}";
+            context.Out.WriteLine($"    {column.Name} {column.Type}{computed}{(column.Description is null ? string.Empty : "  (" + column.Description + ")")}");
+        }
+
+        if (state?.Note is { } note)
+        {
+            context.Out.WriteLine("  " + note);
+        }
+
+        foreach (var check in checks)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  check {check.Status} in '{check.Partition}' at {Stamp(check.CheckedUtc)}: {check.Rows} row(s){(check.Error is null ? string.Empty : ". " + check.Error)}"));
+            foreach (var line in check.Notes().Where(n => !string.Equals(n, check.Error, StringComparison.Ordinal)))
+            {
+                context.Out.WriteLine("    " + line);
+            }
+        }
+
+        context.Out.WriteLine(state is null ? "  not written yet; a build writes:" : "  as last written:");
+        context.Out.WriteLine(state?.Sql ?? declared!.Definition.CreateSql);
+        return 0;
+    }
+
+    private static JsonObject CheckJson(DimensionViewCheckState check) => new()
+    {
+        ["partition"] = check.Partition,
+        ["runId"] = check.RunId,
+        ["status"] = check.Status,
+        ["rows"] = check.Rows,
+        ["checkedUtc"] = check.CheckedUtc,
+        ["error"] = check.Error,
+        ["joins"] = new JsonArray(check.Joins.Select(j => (JsonNode)new JsonObject
+        {
+            ["alias"] = j.Alias, ["to"] = j.To, ["on"] = j.On, ["matched"] = j.Matched, ["unmatched"] = j.Unmatched,
+            ["examples"] = new JsonArray(j.Examples.Select(e => (JsonNode)JsonValue.Create(e)!).ToArray()),
+        }).ToArray()),
+        ["unconverted"] = new JsonArray(check.Columns.Where(c => c.Unconverted > 0).Select(c => (JsonNode)new JsonObject
+        {
+            ["column"] = c.Name, ["values"] = c.Unconverted,
+            ["examples"] = new JsonArray(c.Examples.Select(e => (JsonNode)new JsonObject { ["id"] = e.Id, ["value"] = e.Value }).ToArray()),
+        }).ToArray()),
+        ["notes"] = new JsonArray(check.Notes().Select(n => (JsonNode)JsonValue.Create(n)!).ToArray()),
+    };
+
+    /// <summary>
+    /// Removes the view --view names, which the flow file no longer declares, for good (<see cref="DimensionViewRemoval"/>):
+    /// the view from the database and its record with its checks. One the file declares is refused: its next build would
+    /// write it again. The removal is an activity of the flow's ledger, recorded under the operating system user and machine
+    /// that ran it.
+    /// </summary>
+    private static async Task<int> RemoveViewAsync(CliVerbContext context, ILedger ledger, DimensionFlowDefinition flow, TimeProvider clock, CancellationToken ct)
+    {
+        if (context.Arguments.GetOption("--view") is not { } asked || string.IsNullOrWhiteSpace(asked))
+        {
+            return context.UsageError("name the view to remove with --view <name>: one the flow no longer declares.");
+        }
+
+        var name = asked.Trim();
+        if (flow.Views.FirstOrDefault(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase)) is { } declared)
+        {
+            throw new FlowValidationException(
+                $"{flow.Name} declares view {declared.Name}, so it is not removed: its next build would write it again. Take it out of the flow's file and build the flow, which drops it.");
+        }
+
+        var detail = await ledger.GetDimensionViewAsync(name, ct).ConfigureAwait(false);
+        if (detail is null || !string.Equals(detail.View.FlowName, flow.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException(
+                detail is null
+                    ? $"No build wrote a view named '{name}'."
+                    : $"View {detail.View.Name} was written by flow {detail.View.FlowName}, not {flow.Name}; remove it with that flow's file.");
+        }
+
+        var removed = await DimensionViewRemoval.RemoveAsync(ledger, detail.View, RunActors.LocalAccount(), clock, ct).ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["view"] = removed.Name,
+                ["viewName"] = DimensionTables.Shown(removed.ViewName),
+                ["flow"] = removed.FlowName,
+                ["dropped"] = removed.Dropped,
+                ["checks"] = removed.Checks,
             }));
             return 0;
         }

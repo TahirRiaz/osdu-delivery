@@ -2,7 +2,7 @@
 id: delivery-cli-dimensions
 title: "sqlflow dimensions: read a dimension flow's values, keys, table, filters and composed searches"
 type: cli-command
-summary: "sqlflow dimensions list, table, values, keys, attributes, filter, search, history, changes, export and remove: what a dimension flow built, from a terminal."
+summary: "Read a dimension flow's values, keys, table, filters, searches, builds and views from a terminal, and remove a dimension or a view."
 keywords:
   - sqlflow dimensions
   - dimension values
@@ -14,6 +14,8 @@ keywords:
   - export dimension
   - remove dimension
   - change log
+  - dimension views
+  - remove-view
   - "--pick"
   - "--attr"
 cliCommand: dimensions
@@ -33,6 +35,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionSearch.cs
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionExport.cs
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRemoval.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionViewRemoval.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionViewStore.cs
   - osdu/src/SqlFlow.Delivery/Ledger/DimensionStates.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Dimensions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.cs
@@ -46,7 +50,8 @@ sourceRefs:
 
 `sqlflow dimensions` reads what a [dimension flow](../flow/dimension.md) built: each dimension's values and keys, its
 table, the values an attribute holds, the search filter of the values picked, the search composed across dimensions,
-its builds and change log; it exports a dimension whole and removes one the flow no longer declares. It is one of the
+its builds and change log, and the flow's views; it exports a dimension whole and removes a dimension or a view the
+flow no longer declares. It is one of the
 verbs OSDU Delivery adds to SQLFlow's command line (`SqlFlow.Delivery.Cli.Host`, published as `sqlflow`). It reads the
 module's database only: it needs no control plane and sends nothing to OSDU.
 
@@ -70,6 +75,8 @@ sqlflow dimensions history    <flow.yaml> --dimension <name> [--max <n>]
 sqlflow dimensions changes    <flow.yaml> --dimension <name> [--build <n>] [--value <value>] [--change added|removed|moved|restored] [--max <n>]
 sqlflow dimensions export     <flow.yaml> --dimension <name> [--set values|keys|table] [--format csv|jsonl] [--out <file>]
 sqlflow dimensions remove     <flow.yaml> --dimension <name>
+sqlflow dimensions views      <flow.yaml> [--view <name>]
+sqlflow dimensions remove-view <flow.yaml> --view <name>
 ```
 
 Every form also takes `--partition <id>`, `--db <conn-ref>`, `--json` and `-v`.
@@ -80,7 +87,7 @@ Every form also takes `--partition <id>`, `--db <conn-ref>`, `--json` and `-v`.
 | --- | --- |
 | `<flow.yaml>` | The dimension flow's file. Its dimensions are named as it declares them now. |
 | `--partition <id>` | The partition whose dimensions are read. Left out, it is settled as a run settles it: the registry's default among the flow's partitions, else its only partition. A named partition is taken as it is, so a partition taken out of the registry keeps its dimensions readable; for a flow that names its partitions, it has to be one of them. A flow whose partition is its `source.headers` takes none. |
-| `--dimension <name>` | The dimension, by its name in the flow (ignoring case). Required by every form but `list` and `search`. |
+| `--dimension <name>` | The dimension, by its name in the flow (ignoring case). Required by every form but `list`, `search`, `views` and `remove-view`. |
 | `--db <conn-ref>` | The database the module's tables live in: the catalog's (`--db`, else `${env:SQLFLOW_CATALOG_DB}`) unless `SQLFLOW_OSDU_DB` gives the module its own. |
 | `--json` | Writes exactly one JSON document to the console; notes go to the error stream. |
 | `--max <n>` | The most rows a page lists, 1 to 1,000; 50 when left out. |
@@ -322,6 +329,35 @@ Removed dimension CurveUnit of welldb-welllog-05-dimensions in dev: 38 value(s),
 
 The control plane offers the same to an admin alone (`DELETE /api/v1/delivery/dimensions/{dimensionId}`); this form is
 for whoever holds the module database's credentials.
+
+## views
+
+The flow's [views](../flow/dimension.md#views): each it declares, as `osdu.dimv_<view>`, with its `from` dimension, its
+joins, whether a build wrote it as the file declares it (`written as declared`, `changed: the next build writes it
+again`, `not written yet`, or why a build dropped it), and its last check (the partition, the rows, what each join found
+and each conversion could not read); then each view a build of the flow wrote that the file no longer declares.
+
+```text
+welldb-welllog-07-metadata-dimensions: 1 view(s)
+  Curve  osdu.dimv_Curve  from LogCurve joining WellLog as Log, RefUnitOfMeasure as Unit  written as declared
+      last check passed in 'dev' at 2026-10-09 21:14:02Z: 88310 row(s)
+      CurveUnitID: 1,204 of 88,310 rows name no row of RefUnitOfMeasure, for example 'dev:reference-data--UnitOfMeasure:ft%2Fs'.
+```
+
+`--view <name>` shows one view: its columns with their types and expressions, its newest checks, and the statement a
+build last wrote it with (or, before any build, the one a build writes). With `--json`, the view, its joins, columns,
+checks, and both statements.
+
+## remove-view
+
+Removes a view the flow file no longer declares, for good: the view from the database and its record with its checks. It
+is refused for a view the file declares (its next build would write it again; take it out of the file and build the
+flow, which drops it) and for one another flow wrote. It is recorded as a `remove-view` activity of the flow under
+`cli:<user>@<machine>`.
+
+```text
+View Curve of welldb-welllog-07-metadata-dimensions removed: osdu.dimv_Curve dropped, 12 check(s) taken with its record.
+```
 
 ## Exit codes and errors
 

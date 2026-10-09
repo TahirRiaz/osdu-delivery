@@ -259,11 +259,13 @@ public class DimensionViewDocumentTests
 
         var sql = flow.Views[0].Definition.Columns.Skip(2).Select(c => c.Sql).ToList();
         Assert.Contains("/ NULLIF(", sql[0], StringComparison.Ordinal);
-        Assert.StartsWith("CASE WHEN ", sql[1], StringComparison.Ordinal);
-        Assert.Contains(">= 0 THEN SQRT(", sql[1], StringComparison.Ordinal);
-        Assert.Contains("> 0 AND 10 > 0 AND 10 <> 1 THEN LOG(", sql[2], StringComparison.Ordinal);
-        Assert.Contains("< 0 THEN NULL ELSE LEFT(", sql[3], StringComparison.Ordinal);
-        Assert.Contains("<> FLOOR(0.5) THEN NULL ELSE POWER(", sql[4], StringComparison.Ordinal);
+        Assert.StartsWith("SQRT(CASE WHEN ", sql[1], StringComparison.Ordinal);
+        Assert.Contains(">= 0 THEN ", sql[1], StringComparison.Ordinal);
+        Assert.StartsWith("LOG(CASE WHEN ", sql[2], StringComparison.Ordinal);
+        Assert.EndsWith(", CASE WHEN 10 > 0 AND 10 <> 1 THEN 10 END)", sql[2], StringComparison.Ordinal);
+        Assert.StartsWith("LEFT([b].[Mnemonic], CASE WHEN ", sql[3], StringComparison.Ordinal);
+        Assert.StartsWith("POWER(CASE WHEN ", sql[4], StringComparison.Ordinal);
+        Assert.Contains("<> FLOOR(0.5)) THEN NULL ELSE ", sql[4], StringComparison.Ordinal);
 
         // Every conversion written, in whichever of the four forms, is the module's: none fails, none reads a style.
         Assert.All(sql, s => Assert.DoesNotContain("CAST(TopDepth", s, StringComparison.Ordinal));
