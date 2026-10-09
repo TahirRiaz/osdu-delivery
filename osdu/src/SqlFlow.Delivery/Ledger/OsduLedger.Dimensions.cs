@@ -47,6 +47,7 @@ public sealed partial class OsduLedger
             dimension.CleanJson = declaration.CleanJson;
             dimension.LabelJson = declaration.LabelJson;
             dimension.AttributesJson = declaration.AttributesJson;
+            dimension.ElementsJson = declaration.ElementsJson;
             dimension.DefinitionHash = declaration.DefinitionHash;
             try
             {
@@ -1110,6 +1111,7 @@ public sealed partial class OsduLedger
         CleanJson = d.CleanJson,
         LabelJson = d.LabelJson,
         AttributesJson = d.AttributesJson,
+        ElementsJson = d.ElementsJson,
         CollectedJson = d.CollectedJson,
         DefinitionHash = d.DefinitionHash,
         TableName = d.TableName,

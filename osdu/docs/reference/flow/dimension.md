@@ -212,6 +212,7 @@ partitions, and a build elsewhere skips it. See [partitions](../concepts/partiti
 | `label` | path or list | none | Where a key's value is read: a path of the record the key names, or up to 3 paths, each but the last reading the reference the next record is found by. |
 | `unlabelled` | text | none | The value of whatever is not read, at most 256 characters, for a dimension that reads a label or attributes: a key whose label is not read, an attribute a key has none of, and a collected attribute's records holding none of its values. |
 | `attributes` | map | none | Further facts of each key, by name, at most 20. See [Labels and attributes](#labels-and-attributes). |
+| `elements` | map | none | The objects of a nested array of each record, a row each with its fields. See [Elements](#elements). |
 | `columns` | map | from the paths | `{ key: <name>, value: <name> }`: the names of the two columns of the dimension's table holding the key and its value. |
 | `clean` | list | none | The steps each value is cleaned by, at most 20. See [Clean steps](#clean-steps). |
 | `countRecords` | boolean | `false` | Count each value's records exactly, with one count of the search per value whose keys could share a record. Without it, a value's count is exact where a record holds the path once, and otherwise the sum of its keys' counts. |
@@ -266,22 +267,27 @@ An attribute's name is a letter, then letters, digits and underscores, at most 6
 `value`, `keys`, `key`, `key_id`, `records`, `filter`, `label`, `id`, `partition`, and not the name of the dimension's
 key or value column.
 
-**Keeping the key, so tables join.** An attribute is written as settings to give it a `keep`:
-`WellboreID: { path: data.WellboreID, keep: key }`. `keep: value`, the default, shows each value as a value: a record
-reference becomes the code its id ends with, its escapes decoded (`dev:master-data--Wellbore:WB-0001:` is `WB-0001`).
-`keep: key` keeps the text exactly as the record holds it, so the reference stays the whole id, which is what the key
-column of the dimension keyed by that reference holds. That is what joins two dimension tables:
+**Keeping a key, so tables join.** An attribute is written as settings to give it a `keep`:
+`WellboreID: { path: data.WellboreID, keep: key }`. There are three:
+
+| `keep` | Kept as | `dev:reference-data--UnitOfMeasure:us%2Fft:` becomes | Joins to |
+| --- | --- | --- | --- |
+| `value` (default) | As a value shows it: a record reference by the code its id ends with, its escapes decoded | `us/ft` | nothing; it is for reading |
+| `key` | Exactly as the record holds it | `dev:reference-data--UnitOfMeasure:us%2Fft:` | the key column of a dimension keyed by the same path |
+| `id` | A reference as the id of the record it names, its version (or the latest's trailing colon) taken off | `dev:reference-data--UnitOfMeasure:us%2Fft` | the key column of a dimension keyed by `id` |
 
 ```sql
-SELECT l.WellLogName, w.WellboreUWI, w.Country
+SELECT l.WellLogName, w.Country, s.SamplingDomainTypeName
 FROM osdu.dim_WellLog AS l
-LEFT JOIN osdu.dim_LogWellbore AS w
+LEFT JOIN osdu.dim_Wellbore AS w                 -- keyed by data.WellboreID; l.WellboreID is keep: key
     ON w.partition = l.partition AND w.WellboreID = l.WellboreID
+LEFT JOIN osdu.dim_RefSamplingDomainType AS s    -- keyed by id; l.SamplingDomainTypeID is keep: id
+    ON s.partition = l.partition AND s.SamplingDomainTypeID = l.SamplingDomainTypeID
 ```
 
-`path` takes a path or a list of paths, exactly as the bare form does, and `keep` works on a collected attribute too
-(`{ collect: data.Curves.LogCurveTypeID, keep: key }`). A value longer than the 256 characters a dimension keeps is cut
-under `keep: value` and left out under `keep: key`, since a key cut joins to nothing; the build's notes count them.
+`path` takes a path or a list of paths, exactly as the bare form does, and `keep` works on a collected attribute and an
+element's field too. A value longer than the 256 characters a dimension keeps is cut under `keep: value` and left out
+under `key` and `id`, since a key cut joins to nothing; the build's notes count them.
 
 **Collected attributes.** `{ collect: <path> }` collects the values of the dimension's own records instead of reading
 the record a key names: `LoggingService: { collect: data.LoggingService }` on a dimension keyed by the well logs'
@@ -290,6 +296,48 @@ collected value in a search finds the records holding it, not every record of th
 values the cheaper way: a read per value when there are few, or one pass over the records through the search cursor,
 split into ranges read side by side. A collected path is a path search matches exactly, like the dimension's own. A
 dimension collects one attribute: a second is refused, since two would pair values no record holds together.
+
+### Elements
+
+`elements` makes a row of every object of a nested array, beside the key of the record holding it, with every field of
+one object on its row: what a collected attribute cannot do, since it collects one value a row. On a dimension keyed by a
+well log's `id`, `elements: { path: data.Curves, ... }` is a table of curves, each curve's mnemonic, unit and depths
+together:
+
+```yaml
+- name: LogCurve
+  kind: osdu:wks:work-product-component--WellLog:1.4.0
+  path: id
+  label: data.Name
+  columns: { key: WellLogID, value: WellLogName }
+  elements:
+    path: data.Curves
+    fields:
+      Mnemonic: Mnemonic
+      CurveUnit: CurveUnit                          # m, gAPI: the code a person reads
+      CurveUnitID: { path: CurveUnit, keep: id }    # joins dim_RefUnitOfMeasure, keyed by id
+      TopDepth: TopDepth
+      LogVersion: { path: LogVersion, up: 1 }       # the log's own, on every curve's row
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `path` | required | The array, from the record's root, written as a label's path is. Every array on the way is stepped into, so `data.Curves.Columns` makes a row of every object of every curve's `Columns`; any segment can filter the objects it holds (`data.GeoContexts[GeoTypeID$=:Field:]`). What it ends at is the element: an object, or a plain value. |
+| `fields` | required | The columns, each under its name: a path inside the element (`CurveUnit`, `Quantity.Code`, `Values[Type=Top].Depth`), `@` for the element itself (an array of plain values), or settings. |
+| `fields.<name>.keep` | `value` | As an attribute's `keep`. |
+| `fields.<name>.up` | 0 | How many objects up the element's path the field is read from: 1 the object holding the array, as many as the path has segments for the record. Not with `@`. |
+| `fields.<name>.many` | `first` | A path reaching several values in one element: `first`, the first that is not empty, or `join`, each once, in order, joined by `; `. |
+
+The table gains an `element` column: each key's objects numbered from 1, in the order of the records' ids and then of
+the objects in each record, so the same records number the same way build after build and a row keeps its `id`. A key
+whose records hold no object is one row with no element. A field reaching no value is null on its row; a number reads
+as written (`203.149`), a boolean as `true` or `false`; a null in the array is no element.
+
+A build reads the elements in one pass over the dimension's records through the search cursor, asking only for the
+fields read (and the properties the filters compare), cut into ranges of keys read side by side; at most 5,000,000
+objects a build, past which it fails before writing. Attributes and fields together are at most 20 columns, field names
+are unlike every attribute's and `element`, and a dimension with elements collects no attribute, since both make a row
+per value.
 
 ### Clean steps
 

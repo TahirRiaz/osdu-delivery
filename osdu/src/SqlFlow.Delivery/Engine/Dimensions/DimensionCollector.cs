@@ -78,11 +78,11 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
                 continue;
             }
 
-            if (ShownAs(text, attribute.KeepKey) is { } value)
+            if (ShownAs(text, attribute.Keep) is { } value)
             {
                 shown[text] = value;
             }
-            else if (attribute.KeepKey && text.Trim().Length > DimensionSpec.MaxAttributeValueLength)
+            else if (DimensionKeeping.Keep(text, attribute.Keep, DimensionSpec.MaxAttributeValueLength).TooLong)
             {
                 uncut++;
             }
@@ -324,27 +324,11 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
     /// <summary>
     /// A text the dimension's records hold at a collected path, as a key shows it: as a label is (a reference by the code its
     /// id ends with, its escapes decoded), trimmed, and cut at the longest attribute value; null when that leaves nothing,
-    /// which is no value. An attribute that keeps the key keeps the text as the record holds it, and is no value when it is
-    /// longer than a dimension keeps, since a key cut joins to nothing. A build and the dimension builder's example show it
-    /// the same way.
+    /// which is no value. An attribute that keeps a key or an id keeps it whole, and is no value when it is longer than a
+    /// dimension keeps, since a key cut joins to nothing. A build and the dimension builder's example show it the same way.
     /// </summary>
-    internal static string? ShownAs(string text, bool keepKey = false)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-        if (keepKey)
-        {
-            var kept = text.Trim();
-            return kept.Length is > 0 and <= DimensionSpec.MaxAttributeValueLength ? kept : null;
-        }
-
-        var value = DimensionLabeler.DisplayOf(text).Trim();
-        if (value.Length > DimensionSpec.MaxAttributeValueLength)
-        {
-            value = value[..DimensionSpec.MaxAttributeValueLength];
-        }
-
-        return value.Length > 0 ? value : null;
-    }
+    internal static string? ShownAs(string text, DimensionValueKeep keep = DimensionValueKeep.Value)
+        => DimensionKeeping.Keep(text, keep, DimensionSpec.MaxAttributeValueLength).Value;
 
     private static bool Bounds(OsduField keyField, string key)
     {
@@ -363,7 +347,7 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
     /// The texts a hit holds at <paramref name="field"/>, each once, in the text the read keeps a value under: a text longer
     /// than the keyword keeps is no value, as no aggregation or exact match reaches it.
     /// </summary>
-    private static HashSet<string> TextsOf(JsonElement hit, OsduField field)
+    internal static HashSet<string> TextsOf(JsonElement hit, OsduField field)
     {
         var texts = new HashSet<string>(StringComparer.Ordinal);
         foreach (var unit in SearchDistinctSource.Units(hit, field))

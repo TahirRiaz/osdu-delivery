@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/dimension.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 86,
+  "keyCount": 95,
   "keys": [
     {
       "path": "batch",
@@ -55,9 +55,57 @@
       "path": "dimensions[].attributes.<name>.keep",
       "type": "string",
       "required": false,
-      "allowed": ["key", "value"],
+      "allowed": ["value", "key", "id"],
       "default": "value",
-      "description": "How each value is kept. `value` (the default) shows it as a value: a record reference becomes the code its id ends with, its escapes decoded (`dev:master-data--Wellbore:WB-0001:` is `WB-0001`). `key` keeps the text exactly as the record holds it, so a reference stays the whole id and the attribute's column holds what the key column of the dimension keyed by that reference holds: that is what joins two dimension tables (`dim_WellLog.WellboreID = dim_LogWellbore.WellboreID`). A value longer than the 256 characters a dimension keeps is cut under `value` and left out under `key`, since a key cut joins to nothing."
+      "description": "How each value is kept. `value` (the default) shows it as a value: a record reference becomes the code its id ends with, its escapes decoded (`dev:master-data--Wellbore:WB-0001:` is `WB-0001`). `key` keeps the text exactly as the record holds it, the text the key column of a dimension keyed by the same path holds (`dim_WellLog.WellboreID = dim_Wellbore.WellboreID`). `id` keeps a reference as the id of the record it names (its version, or the trailing colon of the latest, taken off), the text the key column of a dimension keyed by `id` holds. `key` and `id` are what join dimension tables. A value longer than the 256 characters a dimension keeps is cut under `value` and left out under `key` and `id`, since a key cut joins to nothing."
+    },
+    {
+      "path": "dimensions[].elements",
+      "type": "map",
+      "required": false,
+      "description": "The objects of a nested array of each record, a row each in the dimension's table beside the key of the record holding them, each object's fields on its row: `elements: { path: data.Curves, fields: { Mnemonic: Mnemonic, CurveUnitID: { path: CurveUnit, keep: id } } }` on a dimension keyed by a log's `id` makes a row per curve. The table gains an `element` column numbering each key's objects from 1, in the order of the records' ids and then of the objects in each record; a key whose records hold none is one row with no element. Read in one pass over the records through the search cursor, at most 5,000,000 objects a build. Not with a collected attribute, since both make a row per value. Attributes and fields together are at most 20 columns."
+    },
+    {
+      "path": "dimensions[].elements.path",
+      "type": "string",
+      "required": true,
+      "description": "The array, as a path from the record's root, written as a label's path is: every array on the way is stepped into (`data.Curves.Columns` makes a row of every object of every curve's `Columns`), and any segment can filter the objects it holds (`data.GeoContexts[GeoTypeID$=:Field:]`). What the path ends at is the element: an object, whose fields are read inside it, or a plain value, which the field `@` reads."
+    },
+    {
+      "path": "dimensions[].elements.fields",
+      "type": "map",
+      "required": true,
+      "description": "The columns read from each element, each under its name, named as an attribute is and unlike every attribute and the `element` column. Each is a path inside the element (`CurveUnit`, `Quantity.Code`, `Values[Type=Top].Depth`), `@` for the element itself, or settings `{ path, keep, up, many }`."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One field: a path inside the element, written as a label's path is, `@` for the element itself, or settings `{ path, keep, up, many }` (`CurveUnitID: { path: CurveUnit, keep: id }`).",
+      "freeForm": true
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.keep",
+      "type": "string",
+      "required": false,
+      "allowed": ["value", "key", "id"],
+      "default": "value",
+      "description": "How the field's value is kept, as an attribute's `keep` says: `id` makes the column join to the dimension keyed by the id of the record it names."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.up",
+      "type": "integer",
+      "required": false,
+      "default": "0",
+      "description": "How many objects up the element's path the field is read from: 0 the element, 1 the object holding its array, as many as the path has segments for the record itself. `LogVersion: { path: LogVersion, up: 1 }` beside `path: data.Curves` reads the log's `data.LogVersion` onto every curve's row. Not with `@`."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.many",
+      "type": "string",
+      "required": false,
+      "allowed": ["first", "join"],
+      "default": "first",
+      "description": "How a field whose path reaches several values in one element is kept: `first`, the first that is not empty; `join`, every one that is not empty, each once, in order, joined by `; `."
     },
     {
       "path": "dimensions[].attributes.<name>.collect",

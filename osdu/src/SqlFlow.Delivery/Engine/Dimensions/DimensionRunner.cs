@@ -285,6 +285,7 @@ public sealed class DimensionRunner
                 CleanJson = JsonSerializer.Serialize(dimension.Clean, StepJson),
                 LabelJson = dimension.Label.Count == 0 ? null : JsonSerializer.Serialize(dimension.Label),
                 AttributesJson = AttributesText(dimension.Attributes),
+                ElementsJson = ElementsText(dimension.Elements),
                 DefinitionHash = dimension.DefinitionHash,
             },
             runId, actor, Now, ct).ConfigureAwait(false);
@@ -343,14 +344,24 @@ public sealed class DimensionRunner
 
             read = Counts(values, templatesJson, 0, [], labels, collected);
 
+            // The objects of the dimension's nested array, a row each, read in a pass of their own once the keys are known.
+            ElementRead? elements = null;
+            if (dimension.Elements is not null)
+            {
+                elements = await new DimensionElementReader(search, _log, Math.Max(1, _flow.Reliability.Concurrency))
+                    .ReadAsync(dimension, query, field, values, ct).ConfigureAwait(false);
+            }
+
             var cleaner = Cleaner(dimension);
             var attributes = KeyAttributes(dimension, values.Values.Keys, labels, collected.Attributes);
             var (originals, members, notes, countQueries) = await GroupAsync(search, dimension, query, field, resolved.Repeats, cleaner, values, labels, attributes, ct).ConfigureAwait(false);
             notes.AddRange(collected.Notes);
+            notes.AddRange(elements?.Notes ?? []);
             read = Counts(values, templatesJson, countQueries, notes, labels, collected);
+            read = read with { ScanPages = read.ScanPages + (elements?.Pages ?? 0) };
             var written = await ledger.WriteDimensionAsync(
                 Write(run, dimension, FieldState(field, resolved.Repeats), originals, members, read,
-                    collected.States.Count == 0 ? null : JsonSerializer.Serialize(collected.States, StepJson), collected.Texts),
+                    collected.States.Count == 0 ? null : JsonSerializer.Serialize(collected.States, StepJson), collected.Texts, elements?.Keys),
                 ct).ConfigureAwait(false);
             _log.LogInformation(
                 "dimension {Dimension}: {Values} value(s) from {Keys} key(s), {LeftOut} of none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
@@ -736,7 +747,8 @@ public sealed class DimensionRunner
 
     private DimensionWrite Write(
         DimensionRunState run, DimensionSpec dimension, DimensionFieldState? field, List<DimensionOriginalWrite> originals, List<DimensionMemberWrite> members,
-        DimensionReadCounts read, string? collectedJson = null, IReadOnlyList<DimensionCollectedText>? collectedTexts = null)
+        DimensionReadCounts read, string? collectedJson = null, IReadOnlyList<DimensionCollectedText>? collectedTexts = null,
+        IReadOnlyDictionary<string, IReadOnlyList<DimensionElementState>>? elements = null)
         => new()
         {
             DimensionRunId = run.DimensionRunId,
@@ -745,7 +757,8 @@ public sealed class DimensionRunner
             Field = field,
             CollectedJson = collectedJson,
             CollectedTexts = collectedTexts ?? [],
-            Table = DimensionTables.Of(dimension.Name, dimension.KeyColumn, dimension.ValueColumn, dimension.Attributes),
+            Elements = elements ?? new Dictionary<string, IReadOnlyList<DimensionElementState>>(StringComparer.Ordinal),
+            Table = DimensionTables.Of(dimension.Name, dimension.KeyColumn, dimension.ValueColumn, dimension.Attributes, dimension.Elements),
             Originals = originals,
             Members = members,
             Read = read,
@@ -862,7 +875,8 @@ public sealed class DimensionRunner
     internal static string? AttributesText(IReadOnlyList<DimensionAttributeSpec> attributes)
         => attributes.Count == 0
             ? null
-            : JsonSerializer.Serialize(attributes.Select(a => new AttributeText(a.Name, a.IsCollected ? null : a.Steps.ToList(), a.Collect, a.KeepKey ? true : null)).ToList(), StepJson);
+            : JsonSerializer.Serialize(
+                attributes.Select(a => new AttributeText(a.Name, a.IsCollected ? null : a.Steps.ToList(), a.Collect, KeepText(a.Keep))).ToList(), StepJson);
 
     /// <summary>
     /// The attributes a build kept of its dimension (<see cref="DimensionState.AttributesJson"/>), in the order declared; none
@@ -880,8 +894,8 @@ public sealed class DimensionRunner
             return (JsonSerializer.Deserialize<List<AttributeText>>(attributesJson, StepJson) ?? [])
                 .Where(a => DimensionAttributeSpec.IsName(a.Name) && (a.Steps is { Count: > 0 } || !string.IsNullOrWhiteSpace(a.Collect)))
                 .Select(a => string.IsNullOrWhiteSpace(a.Collect)
-                    ? new DimensionAttributeSpec(a.Name, a.Steps!, null, a.KeepKey == true)
-                    : new DimensionAttributeSpec(a.Name, [], a.Collect, a.KeepKey == true))
+                    ? new DimensionAttributeSpec(a.Name, a.Steps!, null, KeepOf(a.Keep))
+                    : new DimensionAttributeSpec(a.Name, [], a.Collect, KeepOf(a.Keep)))
                 .ToList();
         }
         catch (JsonException)
@@ -890,8 +904,54 @@ public sealed class DimensionRunner
         }
     }
 
-    /// <summary>An attribute as its dimension's row keeps it: the steps it is read through, or the path it collects, and whether it keeps the key.</summary>
-    private sealed record AttributeText(string Name, List<string>? Steps, string? Collect = null, bool? KeepKey = null);
+    /// <summary>An attribute as its dimension's row keeps it: the steps it is read through, or the path it collects, and how its values are kept.</summary>
+    private sealed record AttributeText(string Name, List<string>? Steps, string? Collect = null, string? Keep = null);
+
+    /// <summary>The elements a build keeps of its dimension, as JSON (<see cref="DimensionState.ElementsJson"/>); null for none.</summary>
+    internal static string? ElementsText(DimensionElementsSpec? elements)
+        => elements is null
+            ? null
+            : JsonSerializer.Serialize(
+                new ElementsJson(elements.Path, elements.Fields.Select(f => new ElementFieldText(
+                    f.Name, f.Path, KeepText(f.Keep), f.Up == 0 ? null : f.Up, f.Many == DimensionElementMany.First ? null : "join")).ToList()),
+                StepJson);
+
+    /// <summary>
+    /// The elements a build kept of its dimension (<see cref="DimensionState.ElementsJson"/>); null when it reads none or the
+    /// text is not what a build writes.
+    /// </summary>
+    public static DimensionElementsSpec? ElementsOf(string? elementsJson)
+    {
+        if (string.IsNullOrWhiteSpace(elementsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            var read = JsonSerializer.Deserialize<ElementsJson>(elementsJson, StepJson);
+            var fields = (read?.Fields ?? [])
+                .Where(f => DimensionAttributeSpec.IsName(f.Name) && !string.IsNullOrWhiteSpace(f.Path))
+                .Select(f => new DimensionElementField(
+                    f.Name, f.Path, KeepOf(f.Keep), Math.Max(0, f.Up ?? 0), f.Many == "join" ? DimensionElementMany.Join : DimensionElementMany.First))
+                .ToList();
+            return read is null || string.IsNullOrWhiteSpace(read.Path) || fields.Count == 0 ? null : new DimensionElementsSpec(read.Path, fields);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The elements as their dimension's row keeps them: the array, and each field with its path inside the object and how it is kept.</summary>
+    private sealed record ElementsJson(string Path, List<ElementFieldText>? Fields);
+
+    private sealed record ElementFieldText(string Name, string Path, string? Keep = null, int? Up = null, string? Many = null);
+
+    /// <summary>How a keep is written in the JSON a build keeps: nothing for a value, so a declaration that keeps none reads as it always did.</summary>
+    private static string? KeepText(DimensionValueKeep keep) => keep == DimensionValueKeep.Value ? null : DimensionKeeping.Named(keep);
+
+    private static DimensionValueKeep KeepOf(string? keep) => DimensionKeeping.Parse(keep) ?? DimensionValueKeep.Value;
 
     /// <summary>
     /// What the last build read of a dimension's collected attributes (<see cref="DimensionState.CollectedJson"/>); none when it holds

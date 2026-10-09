@@ -1449,6 +1449,9 @@ internal sealed class DimensionYaml
     // Each attribute by its name, read as a label is: a path, or a list of paths; read by the mapper.
     public Dictionary<string, object?>? Attributes { get; set; }
 
+    // The objects of a nested array of each record, a row each with a column per field.
+    public DimensionElementsYaml? Elements { get; set; }
+
     // The names of the table's key and value columns, when not the ones the path and the label give.
     public DimensionColumnsYaml? Columns { get; set; }
 
@@ -1461,6 +1464,15 @@ internal sealed class DimensionYaml
 
     /// <summary>The partitions of the flow this dimension is built in; every partition of the flow when left out.</summary>
     public List<string>? Partitions { get; set; }
+}
+
+internal sealed class DimensionElementsYaml
+{
+    /// <summary>The nested array whose objects are rows, as a path from the record's root (data.Curves).</summary>
+    public string? Path { get; set; }
+
+    // Each field by its column: a path inside the object, or { path, keep }; read by the mapper.
+    public Dictionary<string, object?>? Fields { get; set; }
 }
 
 internal sealed class DimensionColumnsYaml

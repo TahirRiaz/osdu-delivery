@@ -587,6 +587,98 @@ public sealed class DimensionRunTests : IDisposable
     }
 
     [Fact]
+    public async Task Elements_are_a_row_each_with_their_fields_together_and_join_to_the_dimension_keyed_by_the_id_they_name()
+    {
+        const string Unit = "osdu:wks:reference-data--UnitOfMeasure:1.0.0";
+        _platform.Add("dev:reference-data--UnitOfMeasure:m", Unit, new JsonObject { ["Code"] = "m" });
+        _platform.Add("dev:reference-data--UnitOfMeasure:gAPI", Unit, new JsonObject { ["Code"] = "gAPI" });
+        JsonObject Curve(string mnemonic, string unit, double? top = null)
+        {
+            var curve = new JsonObject { ["Mnemonic"] = mnemonic, ["CurveUnit"] = $"dev:reference-data--UnitOfMeasure:{unit}:" };
+            if (top is { } depth)
+            {
+                curve["TopDepth"] = depth;
+            }
+
+            return curve;
+        }
+
+        _platform.Add("dev:work-product-component--WellLog:1", WellLog, new JsonObject
+        {
+            ["Name"] = "LOG-1", ["Curves"] = new JsonArray(Curve("MD", "m", 203.1), Curve("GR", "gAPI", 210)),
+        });
+        _platform.Add("dev:work-product-component--WellLog:2", WellLog, new JsonObject { ["Name"] = "LOG-2", ["Curves"] = new JsonArray(Curve("MD", "m")) });
+        _platform.Add("dev:work-product-component--WellLog:3", WellLog, new JsonObject { ["Name"] = "LOG-3" });
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: TestCurve
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: id
+                label: data.Name
+                columns: { key: WellLogID, value: WellLogName }
+                elements:
+                  path: data.Curves
+                  fields:
+                    Mnemonic: Mnemonic
+                    CurveUnitID: { path: CurveUnit, keep: id }
+                    TopDepth: TopDepth
+              - name: TestUnit
+                kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                path: id
+                label: data.Code
+                columns: { key: UnitID, value: UnitCode }
+
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal((2, 0), (outcome.Built, outcome.Failed));
+
+        // A row per object, numbered within its log, its fields side by side; a log holding none is one row with no element.
+        Assert.Equal(
+            [
+                "LOG-1|1|MD|dev:reference-data--UnitOfMeasure:m|203.1",
+                "LOG-1|2|GR|dev:reference-data--UnitOfMeasure:gAPI|210",
+                "LOG-2|1|MD|dev:reference-data--UnitOfMeasure:m|(null)",
+                "LOG-3|(null)|(null)|(null)|(null)",
+            ],
+            await SqlAsync("SELECT [WellLogName], [element], [Mnemonic], [CurveUnitID], [TopDepth] FROM [osdu].[dim_TestCurve] ORDER BY [WellLogName], [element];"));
+
+        // A field kept as an id is the key of the dimension keyed by id, so the tables join with no normalising.
+        Assert.Equal(
+            ["LOG-1|GR|gAPI", "LOG-1|MD|m", "LOG-2|MD|m"],
+            await SqlAsync("""
+                SELECT c.[WellLogName], c.[Mnemonic], u.[UnitCode]
+                FROM [osdu].[dim_TestCurve] AS c
+                INNER JOIN [osdu].[dim_TestUnit] AS u ON u.[partition] = c.[partition] AND u.[UnitID] = c.[CurveUnitID]
+                ORDER BY c.[WellLogName], c.[Mnemonic];
+                """));
+
+        // The table's page reads the fields as it reads attributes.
+        var curves = (await ledger.FindDimensionAsync(flow.LedgerId, "TestCurve"))!;
+        var page = await DimensionTable.ReadAsync(ledger, curves, new DimensionTableQuery(), CancellationToken.None);
+        Assert.Equal(["Mnemonic", "CurveUnitID", "TopDepth"], page.Attributes);
+        Assert.Equal(4L, page.Total);
+
+        // A second build that finds one curve fewer drops its row and keeps the numbers of the others.
+        var before = await SqlAsync("SELECT CONCAT([WellLogName], N'/', [element], N'=', [id]) FROM [osdu].[dim_TestCurve] WHERE [element] = 1 ORDER BY [WellLogName];");
+        _platform.Records.Single(r => r["id"]!.GetValue<string>() == "dev:work-product-component--WellLog:1")["data"]!["Curves"] = new JsonArray(Curve("MD", "m", 203.1));
+        await runner.BuildAsync(["TestCurve"], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(before, await SqlAsync("SELECT CONCAT([WellLogName], N'/', [element], N'=', [id]) FROM [osdu].[dim_TestCurve] WHERE [element] = 1 ORDER BY [WellLogName];"));
+        Assert.Equal(
+            ["LOG-1|1|MD", "LOG-2|1|MD", "LOG-3|(null)|(null)"],
+            await SqlAsync("SELECT [WellLogName], [element], [Mnemonic] FROM [osdu].[dim_TestCurve] ORDER BY [WellLogName], [element];"));
+
+        // The ledger keeps each field that holds a value, a row each: three of LOG-1's curve, two of LOG-2's.
+        Assert.Equal(5, await ElementRowsAsync(curves.DimensionId));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    private async Task<int> ElementRowsAsync(int dimensionId)
+        => int.Parse((await SqlAsync(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"SELECT COUNT(*) FROM [osdu].[DimensionElement] WHERE [DimensionId] = {dimensionId};")))[0], System.Globalization.CultureInfo.InvariantCulture);
+
+    [Fact]
     public async Task A_dimension_is_one_table_whose_columns_follow_its_declaration_and_whose_rows_keep_their_numbers()
     {
         _platform.Add("dev:master-data--GeoPoliticalEntity:MX", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Mexico" });

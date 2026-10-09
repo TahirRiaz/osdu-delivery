@@ -76,6 +76,9 @@ public sealed record DimensionDeclaration
     /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps", "collect" }</c>; null when none.</summary>
     public string? AttributesJson { get; init; }
 
+    /// <summary>The objects of a nested array each key's records hold, as JSON; null when the dimension reads none.</summary>
+    public string? ElementsJson { get; init; }
+
     public required string DefinitionHash { get; init; }
 }
 
@@ -118,6 +121,9 @@ public sealed record DimensionState
 
     /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps", "collect" }</c>; null when none.</summary>
     public string? AttributesJson { get; init; }
+
+    /// <summary>The objects of a nested array each key's records hold, as JSON; null when the dimension reads none.</summary>
+    public string? ElementsJson { get; init; }
 
     /// <summary>What the last build read of each collected attribute, as JSON (<see cref="DimensionCollectedState"/>); null when none.</summary>
     public string? CollectedJson { get; init; }
@@ -256,6 +262,12 @@ public sealed record DimensionOriginalWrite(
 /// for a collected attribute the text the key's records hold), and for a collected attribute how many of the key's records hold it.
 /// </summary>
 public sealed record DimensionAttributeState(string Name, string Value, string? From, long? Records = null);
+
+/// <summary>
+/// One object of a nested array a key's records hold, as a build read it: its place among the key's objects, from 1, and
+/// each field that holds a value, by the field's name, as the field keeps it.
+/// </summary>
+public sealed record DimensionElementState(int Seq, IReadOnlyList<KeyValuePair<string, string>> Values);
 
 /// <summary>
 /// What a build read of one collected attribute: its name and path, how the index stores the path, and the value records
@@ -417,6 +429,13 @@ public sealed record DimensionWrite
 
     /// <summary>Every text the build collected, with the value it is shown as; empty when the dimension collects nothing.</summary>
     public IReadOnlyList<DimensionCollectedText> CollectedTexts { get; init; } = [];
+
+    /// <summary>
+    /// The objects each key's records hold in the dimension's nested array, by key, in their order; empty when the dimension
+    /// reads none. Written only with a <see cref="Table"/> that has element columns.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<DimensionElementState>> Elements { get; init; } =
+        new Dictionary<string, IReadOnlyList<DimensionElementState>>(StringComparer.Ordinal);
 
     /// <summary>
     /// The dimension's table, from the declaration the build read with: made when it is missing, given the column of an

@@ -23,10 +23,12 @@ public static class DimensionTable
     {
         ArgumentNullException.ThrowIfNull(dimension);
         var attributes = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var elements = DimensionRunner.ElementsOf(dimension.ElementsJson);
+        var columns = attributes.Select(a => a.Name).Concat(elements?.Fields.Select(f => f.Name) ?? []);
         var (key, value) = dimension is { KeyColumn: { } keyColumn, ValueColumn: { } valueColumn }
             ? (keyColumn, valueColumn)
-            : DimensionColumnNames.Settled(dimension.Path, DimensionRunner.LabelOf(dimension.LabelJson), dimension.Name, attributes.Select(a => a.Name));
-        return DimensionTables.Of(dimension.Name, key, value, attributes);
+            : DimensionColumnNames.Settled(dimension.Path, DimensionRunner.LabelOf(dimension.LabelJson), dimension.Name, columns);
+        return DimensionTables.Of(dimension.Name, key, value, attributes, elements);
     }
 
     /// <summary>Makes sure the dimension has its table with its rows, and answers whether the table had to be made or widened.</summary>

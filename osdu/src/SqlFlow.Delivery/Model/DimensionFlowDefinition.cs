@@ -340,6 +340,9 @@ public sealed record DimensionSpec
     public DimensionAttributeSpec? Attribute(string name)
         => Attributes.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>The objects of a nested array of each record, a row each with its fields; null when the dimension reads none.</summary>
+    public DimensionElementsSpec? Elements { get; init; }
+
     /// <summary>
     /// The column of the dimension's table that holds each key, exactly as the index holds it: named after the property
     /// the path ends with (<c>data.WellboreID</c> is <c>WellboreID</c>), with <c>Key</c> at its end where the value's
@@ -390,11 +393,8 @@ public sealed record DimensionSpec
 /// <param name="Name">A letter, then letters, digits and underscores, at most 64; unique in its dimension ignoring case.</param>
 /// <param name="Steps">The paths read from the record a key names, one to <see cref="DimensionSpec.MaxLabelSteps"/>; empty for a collected attribute.</param>
 /// <param name="Collect">The path of the dimension's own records whose values the attribute collects; null for one read from a key's record.</param>
-/// <param name="KeepKey">
-/// Whether the value is kept exactly as the record holds it rather than as a value shows it, so a reference stays the whole
-/// id (<c>dev:master-data--Wellbore:WB-0001:</c>) and the column joins to the key column of the dimension keyed by it.
-/// </param>
-public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null, bool KeepKey = false)
+/// <param name="Keep">How each value is kept: as a value shows it, or as a key another dimension's table is joined on.</param>
+public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null, DimensionValueKeep Keep = DimensionValueKeep.Value)
 {
     /// <summary>Whether the attribute's values are collected from the dimension's own records rather than read from a key's record.</summary>
     public bool IsCollected => Collect is not null;
@@ -413,6 +413,100 @@ public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> S
     /// <summary>Whether <paramref name="name"/> is an attribute name: a letter, then letters, digits and underscores.</summary>
     public static bool IsName(string? name)
         => name is { Length: > 0 and <= MaxNameLength } && char.IsAsciiLetter(name[0]) && name.All(c => char.IsAsciiLetterOrDigit(c) || c == '_');
+}
+
+/// <summary>How a value read for an attribute or an element's field is kept in the dimension's table.</summary>
+public enum DimensionValueKeep
+{
+    /// <summary>As a value shows it: a record reference by the code its id ends with, its escapes decoded; a longer text cut.</summary>
+    Value,
+
+    /// <summary>Exactly as the record holds it, so it is the text the key column of a dimension keyed by the same path holds.</summary>
+    Key,
+
+    /// <summary>
+    /// A record reference as the id of the record it names (its version, or the trailing colon of the latest, taken off), so
+    /// it is the text the key column of a dimension keyed by <c>id</c> holds; any other text as the record holds it.
+    /// </summary>
+    Id,
+}
+
+/// <summary>
+/// The objects of a nested array of each record (<c>data.Curves</c>), a row each in the dimension's table beside the key
+/// of the record that holds them, with a column per field read from the object: so a dimension keyed by a well log's id
+/// lists every curve of the log with its id, mnemonic, unit and depths, each curve's fields kept together.
+/// </summary>
+/// <remarks>
+/// The path is read as a label's is (<see cref="DimensionPath"/>): every array on the way is stepped into, so a path through
+/// two arrays (<c>data.Curves.Columns</c>) makes a row of every object of the inner one, and any segment can filter the
+/// objects it holds (<c>data.GeoContexts[GeoTypeID$=:Field:]</c>). What the path reaches at its end is the element: an
+/// object, whose fields are read inside it, or a plain value, which the field <c>@</c> reads.
+/// </remarks>
+/// <param name="Path">The array, as a path from the record's root, filters allowed.</param>
+/// <param name="Fields">The fields read from each element, in their order, each a column of the table.</param>
+public sealed record DimensionElementsSpec(string Path, IReadOnlyList<DimensionElementField> Fields)
+{
+    /// <summary>
+    /// The column of the table that tells the rows of one key apart: each object's place among the key's, from 1, in the order
+    /// of the records' ids and then of the objects in each record.
+    /// </summary>
+    public const string Column = "element";
+
+    /// <summary>The most objects one build reads: a build holds them in memory while it writes them.</summary>
+    public const long MaxElements = 5_000_000;
+
+    /// <summary>The field path that reads the element itself, for an array of plain values.</summary>
+    public const string Self = "@";
+
+    /// <summary>The path, parsed; the document mapper refuses one that does not parse.</summary>
+    public DimensionPath Parsed => DimensionPath.Parse(Path).Path ?? throw new InvalidOperationException($"'{Path}' is not an elements path.");
+
+    /// <summary>
+    /// What a search is asked to return to read every field: for each field, the property names of the path down to the object
+    /// it is read from, then the field's own path, and the property each filter on the way compares.
+    /// </summary>
+    public IReadOnlyList<string> ReturnedFields()
+    {
+        var path = Parsed;
+        var names = path.Segments.Select(s => s.Name).ToList();
+        var fields = new List<string>(path.ReturnedFields.Skip(1));
+        foreach (var field in Fields)
+        {
+            var at = string.Join('.', names.Take(names.Count - field.Up));
+            if (field.Path == Self)
+            {
+                fields.Add(at);
+                continue;
+            }
+
+            fields.AddRange(DimensionPath.Parse(field.Path).Path!.ReturnedFields.Select(f => at.Length == 0 ? f : at + "." + f));
+        }
+
+        return fields.Distinct(StringComparer.Ordinal).ToList();
+    }
+}
+
+/// <summary>How a field reached several times inside one element is kept.</summary>
+public enum DimensionElementMany
+{
+    /// <summary>The first value that is not empty.</summary>
+    First,
+
+    /// <summary>Every value that is not empty, each once, in order, joined by <see cref="DimensionElementField.Separator"/>.</summary>
+    Join,
+}
+
+/// <summary>One field of a dimension's elements: the column it is kept in, its path, and how it is read and kept.</summary>
+/// <param name="Name">The column, named as an attribute is.</param>
+/// <param name="Path">The path inside the element (<c>CurveUnit</c>, <c>Quantity.Code</c>, filters allowed), or <c>@</c> for the element itself.</param>
+/// <param name="Keep">How each value is kept: as a value shows it, or as a key another dimension's table is joined on.</param>
+/// <param name="Up">How many objects up the element's path the field is read from: 0 the element, 1 the object holding its array.</param>
+/// <param name="Many">How a field the path reaches several times is kept.</param>
+public sealed record DimensionElementField(
+    string Name, string Path, DimensionValueKeep Keep = DimensionValueKeep.Value, int Up = 0, DimensionElementMany Many = DimensionElementMany.First)
+{
+    /// <summary>What joins several values of one field.</summary>
+    public const string Separator = "; ";
 }
 
 /// <summary>What a clean step does.</summary>

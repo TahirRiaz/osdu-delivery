@@ -101,7 +101,7 @@ public sealed class DimensionLabeler
             chains.Add(new Chain(LabelChain, label, IsLabel: true));
         }
 
-        chains.AddRange(attributes.Where(a => a.Steps.Count > 0).Select(a => new Chain(a.Name, a.Steps, IsLabel: false, a.KeepKey)));
+        chains.AddRange(attributes.Where(a => a.Steps.Count > 0).Select(a => new Chain(a.Name, a.Steps, IsLabel: false, a.Keep)));
         if (chains.Count == 0 || keys.Count == 0)
         {
             return KeyLabels.None;
@@ -174,39 +174,32 @@ public sealed class DimensionLabeler
 
                     if (last)
                     {
-                        // The first record reached that holds a value at the path gives it.
+                        // The first record reached that holds a value at the path gives it, kept as the chain keeps it.
+                        var longest = chain.IsLabel ? MaxLabelLength : DimensionSpec.MaxAttributeValueLength;
                         string? text = null;
                         string? from = null;
+                        var over = false;
                         foreach (var id in held)
                         {
-                            var read = path.Read(records[id]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))?.Trim();
+                            var read = path.Read(records[id]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
                             if (read is null)
                             {
                                 continue;
                             }
 
-                            // A chain that keeps the key keeps the text as the record holds it, so it still names the record
-                            // it points at; any other shows it as a value does.
-                            var shown = chain.KeepKey ? read : DisplayOf(read).Trim();
-                            if (shown.Length > 0)
+                            var (kept, wasCut, tooLong) = DimensionKeeping.Keep(read, chain.Keep, longest);
+                            over |= tooLong;
+                            if (kept is not null)
                             {
-                                (text, from) = (shown, id);
+                                (text, from) = (kept, id);
+                                cut += wasCut ? 1 : 0;
                                 break;
                             }
                         }
 
-                        var longest = chain.IsLabel ? MaxLabelLength : DimensionSpec.MaxAttributeValueLength;
-                        var over = text is not null && text.Length > longest;
-                        if (over && chain.KeepKey)
+                        if (text is null && over)
                         {
-                            // A key cut in half names no record, and would join to nothing or to the wrong row.
                             uncut++;
-                            (text, from) = (null, null);
-                        }
-                        else if (over)
-                        {
-                            text = text![..longest];
-                            cut++;
                         }
 
                         found[chain][key] = text is null
@@ -378,8 +371,8 @@ public sealed class DimensionLabeler
 
     private static string Shown(string value) => value.Length > 60 ? value[..60] + "..." : value;
 
-    /// <summary>One label or attribute: its name, the paths it is read through, whether it is the label, and whether it keeps the key.</summary>
-    private sealed record Chain(string Name, IReadOnlyList<string> Steps, bool IsLabel, bool KeepKey = false)
+    /// <summary>One label or attribute: its name, the paths it is read through, whether it is the label, and how its value is kept.</summary>
+    private sealed record Chain(string Name, IReadOnlyList<string> Steps, bool IsLabel, DimensionValueKeep Keep = DimensionValueKeep.Value)
     {
         /// <summary>
         /// Each step's path, parsed; a step the document mapper would have refused reads nothing, never the wrong thing.

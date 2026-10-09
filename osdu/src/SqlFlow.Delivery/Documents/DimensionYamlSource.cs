@@ -81,6 +81,17 @@ public static class DimensionYamlSource
                 case "columns" when value is YamlMappingNode columns:
                     text.Entries(field, columns, spans);
                     break;
+                case "elements" when value is YamlMappingNode elements:
+                    text.Entries(field, elements, spans);
+                    foreach (var (elementsKey, fields) in elements.Children)
+                    {
+                        if (elementsKey is YamlScalarNode { Value: "fields" } && fields is YamlMappingNode named)
+                        {
+                            text.Entries(field + ".fields", named, spans);
+                        }
+                    }
+
+                    break;
                 case "attributes" when value is YamlMappingNode attributes:
                     foreach (var (attributeKey, attribute) in attributes.Children)
                     {

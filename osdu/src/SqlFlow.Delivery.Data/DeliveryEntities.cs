@@ -1917,6 +1917,13 @@ public sealed class DeliveryDimension
     public string? AttributesJson { get; set; }
 
     /// <summary>
+    /// The objects of a nested array each key's records hold, as JSON <c>{ "path", "fields": [{ "name", "path", "keep" }] }</c>:
+    /// a row each in the dimension's table, its fields kept as rows of <see cref="DeliveryDimensionElement"/>. Null when the
+    /// dimension reads none.
+    /// </summary>
+    public string? ElementsJson { get; set; }
+
+    /// <summary>
     /// What the last build that settled the field read of each collected attribute, as a JSON array: the attribute's name and
     /// path, how the index stores its field, and the value records holding none of its values were given. The texts its
     /// values stand for are rows of <see cref="DeliveryDimensionCollectedText"/>. Null when the dimension collects nothing.
@@ -2224,6 +2231,35 @@ public sealed class DeliveryDimensionAttributeValue
     /// key names, which is every record of the key's.
     /// </summary>
     public long? Records { get; set; }
+}
+
+/// <summary>
+/// One field of one object of a nested array a key's records hold (a curve of a well log): the key, the object's place among
+/// the key's (from 1, in the order of the records' ids and then of the objects in each record), the field, and the value
+/// read. An object holding none of its fields is one row of its first field with no value, so it is still a row of the
+/// dimension's table. A build rewrites the rows of the keys it found; a key no build finds any more keeps what its last
+/// build read.
+/// </summary>
+public sealed class DeliveryDimensionElement
+{
+    public short PartitionId { get; set; }
+
+    /// <summary>The row's own number, which the table is stored in the order of.</summary>
+    public long ElementValueId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The original the object belongs to (<see cref="DeliveryDimensionValue.ValueId"/>).</summary>
+    public long ValueId { get; set; }
+
+    /// <summary>The object's place among the original's, from 1.</summary>
+    public int Seq { get; set; }
+
+    /// <summary>The field, by its number (<see cref="DeliveryDimensionAttributeName.AttributeId"/>), as an attribute is named.</summary>
+    public int AttributeId { get; set; }
+
+    /// <summary>The value read, as the field keeps it, compared exactly; null for an object holding none of its fields.</summary>
+    public string? Value { get; set; }
 }
 
 /// <summary>
@@ -3222,6 +3258,17 @@ public static class DeliveryModel
             e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.AttributeId, a.Value }).IsUnique();
             // The keys an attribute value holds (Country is US), and an attribute's values: one seek either way.
             e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.AttributeId, a.Value });
+        });
+
+        modelBuilder.Entity<DeliveryDimensionElement>(e =>
+        {
+            e.ToTable("DimensionElement", SchemaName);
+            e.HasKey(x => new { x.PartitionId, x.ElementValueId });
+            e.Property(x => x.ElementValueId).ValueGeneratedOnAdd();
+            OptionalOsduId(e.Property(x => x.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength);
+            e.HasIndex(x => x.ElementValueId).IsUnique();
+            // A key's objects in their order, each field once: what a build matches its rows by and its table is laid out from.
+            e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.ValueId, x.Seq, x.AttributeId }).IsUnique();
         });
 
         modelBuilder.Entity<DeliveryDimensionAttributeName>(e =>

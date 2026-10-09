@@ -6,8 +6,11 @@ using SqlFlow.SqlServer.Schema;
 
 namespace SqlFlow.Delivery.Ledger;
 
-/// <summary>An attribute column of a dimension's table: its name, and whether it is collected, so a key holds several.</summary>
-public sealed record DimensionTableColumn(string Name, bool Collected);
+/// <summary>
+/// An attribute column of a dimension's table: its name, whether it is collected, so a key holds several, and whether it is
+/// a field of the dimension's elements, so a key holds a row per element.
+/// </summary>
+public sealed record DimensionTableColumn(string Name, bool Collected, bool Element = false);
 
 /// <summary>
 /// A dimension's table as a build keeps it: its name, the names of the columns that hold its key and its value, and its
@@ -16,8 +19,12 @@ public sealed record DimensionTableColumn(string Name, bool Collected);
 /// <param name="Name">The table's name in the module's schema, without the schema.</param>
 /// <param name="KeyColumn">The column that holds each key, named as the dimension names it (<see cref="DimensionColumnNames"/>).</param>
 /// <param name="ValueColumn">The column that holds each key's value, named as the dimension names it.</param>
-/// <param name="Columns">The attribute columns, in the order the dimension declares them.</param>
-public sealed record DimensionTableSpec(string Name, string KeyColumn, string ValueColumn, IReadOnlyList<DimensionTableColumn> Columns);
+/// <param name="Columns">The attribute columns, in the order the dimension declares them, then the fields of its elements.</param>
+public sealed record DimensionTableSpec(string Name, string KeyColumn, string ValueColumn, IReadOnlyList<DimensionTableColumn> Columns)
+{
+    /// <summary>Whether the dimension reads elements: a row per object of a nested array, numbered in the <c>element</c> column.</summary>
+    public bool HasElements => Columns.Any(c => c.Element);
+}
 
 /// <summary>
 /// A dimension's table as a reader names it: the table, and the two columns whose names are the dimension's own, as the
@@ -81,10 +88,11 @@ public static class DimensionTables
 
     /// <summary>
     /// The table of dimension <paramref name="dimension"/>, its key in <paramref name="keyColumn"/> and its value in
-    /// <paramref name="valueColumn"/>, reading <paramref name="attributes"/>.
+    /// <paramref name="valueColumn"/>, reading <paramref name="attributes"/> and the fields of <paramref name="elements"/>.
     /// </summary>
-    /// <exception cref="DeliveryException">The dimension declares more attributes than a build lays out.</exception>
-    public static DimensionTableSpec Of(string dimension, string keyColumn, string valueColumn, IReadOnlyList<DimensionAttributeSpec> attributes)
+    /// <exception cref="DeliveryException">The dimension declares more columns than a build lays out.</exception>
+    public static DimensionTableSpec Of(
+        string dimension, string keyColumn, string valueColumn, IReadOnlyList<DimensionAttributeSpec> attributes, DimensionElementsSpec? elements = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(keyColumn);
         ArgumentException.ThrowIfNullOrWhiteSpace(valueColumn);
@@ -95,7 +103,16 @@ public static class DimensionTables
                 string.Create(CultureInfo.InvariantCulture, $"Dimension {dimension} declares {attributes.Count} attributes, and a dimension's table holds {DimensionSpec.MaxAttributes}."));
         }
 
-        return new DimensionTableSpec(NameOf(dimension), keyColumn, valueColumn, attributes.Select(a => new DimensionTableColumn(a.Name, a.IsCollected)).ToList());
+        var fields = elements?.Fields ?? [];
+        if (attributes.Count + fields.Count > DimensionSpec.MaxAttributes)
+        {
+            throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                $"Dimension {dimension} declares {attributes.Count} attributes and {fields.Count} element fields, and a dimension's table holds {DimensionSpec.MaxAttributes} beside its key and value."));
+        }
+
+        return new DimensionTableSpec(
+            NameOf(dimension), keyColumn, valueColumn,
+            [.. attributes.Select(a => new DimensionTableColumn(a.Name, a.IsCollected)), .. fields.Select(f => new DimensionTableColumn(f.Name, false, Element: true))]);
     }
 
     /// <summary>A table's name with its schema, as a statement names it: <c>[osdu].[dim_...]</c>.</summary>
@@ -121,6 +138,11 @@ public static class DimensionTables
             new() { Name = "records", DataType = Type("bigint"), IsNullable = false },
             new() { Name = "filter", DataType = Text(DeliveryDimensionValue.MaxFilterLength), IsNullable = true },
         };
+        if (table.HasElements)
+        {
+            columns.Add(new SqlColumn { Name = DimensionElementsSpec.Column, DataType = Type("int"), IsNullable = true });
+        }
+
         columns.AddRange(table.Columns.Select(c => new SqlColumn { Name = c.Name, DataType = Text(DeliveryDimensionAttributeValue.MaxValueLength), IsNullable = true }));
         return columns;
     }
@@ -161,11 +183,14 @@ public static class DimensionTables
         var value = Quoted(table.ValueColumn);
         var attributes = table.Columns.Select((column, index) => (Column: Quoted(column.Name), Slot: $"[{Slot(index + 1)}]", column.Collected)).ToList();
         var collected = attributes.FirstOrDefault(a => a.Collected).Column;
+        var element = Quoted(DimensionElementsSpec.Column);
 
-        // A row is a key and the value it collects, each compared exactly, whatever the database compares text by.
-        var same = collected is null
-            ? "s.[ValueId] = t.[key_id]"
-            : $"s.[ValueId] = t.[key_id] AND s.[Part] = ISNULL(t.{collected}, N'') COLLATE {Exact}";
+        // A row is a key and the value it collects, or the element it holds, each compared exactly, whatever the database compares text by.
+        var same = table.HasElements
+            ? $"s.[ValueId] = t.[key_id] AND ISNULL(s.[Element], -1) = ISNULL(t.{element}, -1)"
+            : collected is null
+                ? "s.[ValueId] = t.[key_id]"
+                : $"s.[ValueId] = t.[key_id] AND s.[Part] = ISNULL(t.{collected}, N'') COLLATE {Exact}";
         var sql = new StringBuilder();
         sql.Append(CultureInfo.InvariantCulture, $"IF @rewrite = 1\n    DELETE FROM {target} WHERE [partition] = @partition;\n\n");
         sql.Append(CultureInfo.InvariantCulture, $"DELETE t\nFROM {target} AS t\nWHERE t.[partition] = @partition\n  AND NOT EXISTS (SELECT 1 FROM #DimRow AS s WHERE {same});\n\n");
@@ -202,20 +227,31 @@ public static class DimensionTables
 
         sql.Append(");\n\n");
 
-        // New rows take their numbers in the table's own order: by value, then key, then the value collected.
+        // New rows take their numbers in the table's own order: by value, then key, then the value collected or the element.
         sql.Append(CultureInfo.InvariantCulture, $"INSERT INTO {target} ([partition], [key_id], {key}, {value}, [records], [filter]");
+        if (table.HasElements)
+        {
+            sql.Append(CultureInfo.InvariantCulture, $", {element}");
+        }
+
         foreach (var attribute in attributes)
         {
             sql.Append(CultureInfo.InvariantCulture, $", {attribute.Column}");
         }
 
         sql.Append(")\nSELECT @partition, s.[ValueId], s.[Key], s.[Value], s.[Records], s.[Filter]");
+        if (table.HasElements)
+        {
+            sql.Append(", s.[Element]");
+        }
+
         foreach (var attribute in attributes)
         {
             sql.Append(CultureInfo.InvariantCulture, $", s.{attribute.Slot}");
         }
 
-        sql.Append(CultureInfo.InvariantCulture, $"\nFROM #DimRow AS s\nWHERE NOT EXISTS (SELECT 1 FROM {target} AS t WHERE t.[partition] = @partition AND {same})\nORDER BY s.[Value], s.[Key], s.[Part];");
+        sql.Append(CultureInfo.InvariantCulture,
+            $"\nFROM #DimRow AS s\nWHERE NOT EXISTS (SELECT 1 FROM {target} AS t WHERE t.[partition] = @partition AND {same})\nORDER BY s.[Value], s.[Key], {(table.HasElements ? "s.[Element]" : "s.[Part]")};");
         return sql.ToString();
     }
 

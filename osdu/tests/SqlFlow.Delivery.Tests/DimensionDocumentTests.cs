@@ -3,6 +3,7 @@ using SqlFlow.Core.Lineage;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Yaml;
@@ -239,7 +240,7 @@ public class DimensionDocumentTests
     [InlineData("attributes: { Source: { collect: 'data.Log Source' } }", "is not a property path")]
     [InlineData("attributes: { Source: { path: 'data.Log Source' } }", "is not a property path")]
     [InlineData("attributes: { Source: { path: [] } }", "path reads nothing")]
-    [InlineData("attributes: { Source: { path: data.Source, keep: id } }", "keep is 'id'")]
+    [InlineData("attributes: { Source: { path: data.Source, keep: ref } }", "keep is 'ref'")]
     public void A_collected_attribute_that_breaks_a_rule_is_refused_naming_the_rule(string attributes, string reason)
     {
         var refused = Refused(Head + Curves + "\n    " + attributes);
@@ -259,16 +260,18 @@ public class DimensionDocumentTests
                 attributes:
                   WellboreID: { path: ' data.WellboreID ', keep: key }
                   Wellbore: { path: [data.WellboreID, data.FacilityName] }
+                  CompanyID: { path: data.ServiceCompanyID, keep: id }
                   CurveType: { collect: data.Curves.LogCurveTypeID, keep: key }
             """);
 
         var join = flow.Dimensions[0].Attribute("wellboreid")!;
-        Assert.True(join.KeepKey);
+        Assert.Equal(DimensionValueKeep.Key, join.Keep);
         Assert.Equal(["data.WellboreID"], join.Steps);
+        Assert.Equal(DimensionValueKeep.Id, flow.Dimensions[0].Attribute("CompanyID")!.Keep);
 
         // path with no keep reads exactly as the bare form does, and keeps the value as a value shows it.
         var read = flow.Dimensions[0].Attribute("Wellbore")!;
-        Assert.False(read.KeepKey);
+        Assert.Equal(DimensionValueKeep.Value, read.Keep);
         Assert.Equal(["data.WellboreID", "data.FacilityName"], read.Steps);
         Assert.Equal(
             Parse(Head + Curves + "\n    attributes: { W: [data.WellboreID, data.FacilityName] }").Dimensions[0].Attribute("W")!.Steps,
@@ -276,7 +279,7 @@ public class DimensionDocumentTests
 
         // A collected attribute keeps the key too.
         Assert.True(flow.Dimensions[0].Attribute("CurveType")!.IsCollected);
-        Assert.True(flow.Dimensions[0].Attribute("CurveType")!.KeepKey);
+        Assert.Equal(DimensionValueKeep.Key, flow.Dimensions[0].Attribute("CurveType")!.Keep);
 
         // Keeping the key is another declaration than showing the value, so a build knows the dimension changed.
         Assert.NotEqual(
@@ -285,6 +288,110 @@ public class DimensionDocumentTests
         Assert.Equal(
             Parse(Head + Curves + "\n    attributes: { Source: data.Source }").Dimensions[0].DefinitionHash,
             Parse(Head + Curves + "\n    attributes: { Source: { path: data.Source, keep: value } }").Dimensions[0].DefinitionHash);
+    }
+
+    [Fact]
+    public void A_dimension_reads_the_objects_of_a_nested_array_as_rows_with_their_fields_together()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: LogCurve
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: id
+                columns: { key: WellLogID, value: WellLogName }
+                label: data.Name
+                attributes:
+                  WellboreID: { path: data.WellboreID, keep: id }
+                elements:
+                  path: data.Curves
+                  fields:
+                    Mnemonic: Mnemonic
+                    CurveUnitID: { path: CurveUnit, keep: id }
+                    TopDepth: ' TopDepth '
+            """);
+
+        var elements = flow.Dimensions[0].Elements!;
+        Assert.Equal("data.Curves", elements.Path);
+        Assert.Equal(
+            [("Mnemonic", "Mnemonic", DimensionValueKeep.Value), ("CurveUnitID", "CurveUnit", DimensionValueKeep.Id), ("TopDepth", "TopDepth", DimensionValueKeep.Value)],
+            elements.Fields.Select(f => (f.Name, f.Path, f.Keep)));
+        Assert.Equal(["data.Curves.Mnemonic", "data.Curves.CurveUnit", "data.Curves.TopDepth"], elements.ReturnedFields());
+
+        // The table has the attributes, then the fields, and numbers each key's objects.
+        var table = DimensionTables.Of("LogCurve", "WellLogID", "WellLogName", flow.Dimensions[0].Attributes, elements);
+        Assert.True(table.HasElements);
+        Assert.Equal([("WellboreID", false), ("Mnemonic", true), ("CurveUnitID", true), ("TopDepth", true)], table.Columns.Select(c => (c.Name, c.Element)));
+
+        // Reading elements is part of the declaration, so a build knows the dimension changed.
+        Assert.NotEqual(
+            Parse(Head + Curves).Dimensions[0].DefinitionHash,
+            Parse(Head + Curves + "\n    elements: { path: data.Curves, fields: { Unit: CurveUnit } }").Dimensions[0].DefinitionHash);
+    }
+
+    [Theory]
+    [InlineData("elements: { fields: { Unit: CurveUnit } }", "elements.path")]
+    [InlineData("elements: { path: 'data.Cur ves', fields: { Unit: CurveUnit } }", "is not a path the elements can be read through")]
+    [InlineData("elements: { path: 'data.Curves[Type]', fields: { Unit: CurveUnit } }", "is not a path the elements can be read through")]
+    [InlineData("elements: { path: data.Curves }", "elements.fields names no field")]
+    [InlineData("elements: { path: data.Curves, fields: { 1Unit: CurveUnit } }", "is not a field name")]
+    [InlineData("elements: { path: data.Curves, fields: { element: CurveUnit } }", "takes a name a dimension's rows hold already")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: CurveUnit, unit: DepthUnit } }", "is named as another field or an attribute is")]
+    [InlineData("attributes: { Unit: data.A }\n    elements: { path: data.Curves, fields: { Unit: CurveUnit } }", "is named as another field or an attribute is")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: 'Curve Unit' } }", "is not a path inside the element")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, up: 3 } } }", "up is 3, and elements.path passes 2 object(s)")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, up: -1 } } }", "up is '-1'")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: '@', up: 1 } } }", "reads @, the element itself")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, many: all } } }", "many is 'all'")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { keep: id } } }", "it names no path")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, keep: ref } } }", "keep is 'ref'")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: [CurveUnit] } }", "is the path inside each element")]
+    [InlineData("attributes: { Source: { collect: data.Source } }\n    elements: { path: data.Curves, fields: { Unit: CurveUnit } }", "would each make a row of the table per value")]
+    [InlineData("columns: { key: element }\n    elements: { path: data.Curves, fields: { Unit: CurveUnit } }", "would be the element column")]
+    public void Elements_that_break_a_rule_are_refused_naming_the_rule(string declared, string reason)
+    {
+        var refused = Refused(Head + Curves + "\n    " + declared);
+        Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);
+        Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Attributes_and_element_fields_together_hold_no_more_columns_than_a_table_lays_out()
+    {
+        var attributes = string.Join(", ", Enumerable.Range(0, 15).Select(i => $"A{i}: data.A{i}"));
+        var fields = string.Join(", ", Enumerable.Range(0, 6).Select(i => $"F{i}: F{i}"));
+        var refused = Refused(Head + Curves + "\n    attributes: { " + attributes + " }\n    elements: { path: data.Curves, fields: { " + fields + " } }");
+        Assert.Contains("attributes and elements.fields name 21 columns", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Elements_read_through_filters_and_nested_arrays_ask_the_search_for_exactly_what_they_read()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: LogCurveColumn
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: id
+                columns: { key: WellLogID, value: WellLogName }
+                elements:
+                  path: 'data.Curves[CurveType*=Array].Columns'
+                  fields:
+                    Column: '@'
+                    Mnemonic: { path: Mnemonic, up: 1 }
+                    LogName: { path: data.Name, up: 3 }
+                    Aliases: { path: 'Aliases[Kind=Short].Text', up: 1, many: join }
+            """);
+
+        var elements = flow.Dimensions[0].Elements!;
+        Assert.Equal(
+            [("Column", "@", 0, DimensionElementMany.First), ("Mnemonic", "Mnemonic", 1, DimensionElementMany.First),
+             ("LogName", "data.Name", 3, DimensionElementMany.First), ("Aliases", "Aliases[Kind=Short].Text", 1, DimensionElementMany.Join)],
+            elements.Fields.Select(f => (f.Name, f.Path, f.Up, f.Many)));
+
+        // The filters' properties come back with what each field reads; the arrays themselves are never asked for whole
+        // except where the element itself is the value.
+        Assert.Equal(
+            ["data.Curves.CurveType", "data.Curves.Columns", "data.Curves.Mnemonic", "data.Name", "data.Curves.Aliases.Text", "data.Curves.Aliases.Kind"],
+            elements.ReturnedFields());
     }
 
     [Fact]

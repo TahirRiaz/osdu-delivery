@@ -83,6 +83,18 @@ internal static class SqlServerDimensionStore
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Records] bigint NOT NULL,
             PRIMARY KEY ([Name], [TextHash]));
+        CREATE TABLE #DimElem (
+            [OriginalHash] binary(32) NOT NULL,
+            [Seq] int NOT NULL,
+            [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,
+            PRIMARY KEY ([OriginalHash], [Seq], [Name]));
+        CREATE TABLE #DimElemKeyed (
+            [ValueId] bigint NOT NULL,
+            [Seq] int NOT NULL,
+            [AttributeId] int NOT NULL,
+            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,
+            PRIMARY KEY ([ValueId], [Seq], [AttributeId]));
         """ + "\n" + NameStageSql;
 
     // The attributes the dimension declares, each with its place among them: what a write that knows the declaration
@@ -150,6 +162,7 @@ internal static class SqlServerDimensionStore
         CREATE TABLE #DimRow (
             [ValueId] bigint NOT NULL,
             [Part] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Element] int NULL,
             [Key] nvarchar(1024) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             {Slots(slot => $"[{slot}] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,", "\n    ")}
@@ -157,10 +170,11 @@ internal static class SqlServerDimensionStore
             [Filter] nvarchar(4000) COLLATE Latin1_General_100_BIN2 NULL,
             PRIMARY KEY ([ValueId], [Part]));
 
-        INSERT INTO #DimRow ([ValueId], [Part], [Key], [Value], {Slots(slot => $"[{slot}]", ", ")}, [Records], [Filter])
-        SELECT k.[ValueId], ISNULL(c.[Value], N''), k.[Original], m.[Value],
-            {Slots((i, slot) => $"CASE WHEN @collectedOrdinal = {i} THEN c.[Value] ELSE x.[{slot}] END", ",\n    ")},
-            ISNULL(c.[Records], k.[Count]), k.[Filter]
+        -- An element is a row of its own, the key's other attributes beside each; a key holding none is one row.
+        INSERT INTO #DimRow ([ValueId], [Part], [Element], [Key], [Value], {Slots(slot => $"[{slot}]", ", ")}, [Records], [Filter])
+        SELECT k.[ValueId], COALESCE(c.[Value], CONVERT(nvarchar(256), el.[Seq]), N''), el.[Seq], k.[Original], m.[Value],
+            {Slots((i, slot) => $"CASE WHEN @collectedOrdinal = {i} THEN c.[Value] ELSE COALESCE(x.[{slot}], el.[{slot}]) END", ",\n    ")},
+            COALESCE(c.[Records], CASE WHEN el.[Seq] IS NULL THEN k.[Count] ELSE 1 END), k.[Filter]
         FROM [osdu].[DimensionValue] AS k
         INNER JOIN [osdu].[DimensionMember] AS m ON m.[PartitionId] = k.[PartitionId] AND m.[MemberId] = k.[MemberId]
         LEFT JOIN (
@@ -170,6 +184,13 @@ internal static class SqlServerDimensionStore
             INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = a.[PartitionId] AND n.[AttributeId] = a.[AttributeId]
             WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND n.[Ordinal] IS NOT NULL AND n.[Collected] = 0
             GROUP BY a.[ValueId]) AS x ON x.[ValueId] = k.[ValueId]
+        LEFT JOIN (
+            SELECT e.[ValueId], e.[Seq],
+                {Slots((i, slot) => $"MAX(CASE WHEN n.[Ordinal] = {i} THEN e.[Value] END) AS [{slot}]", ",\n        ")}
+            FROM [osdu].[DimensionElement] AS e
+            INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = e.[PartitionId] AND n.[AttributeId] = e.[AttributeId]
+            WHERE e.[PartitionId] = @p AND e.[DimensionId] = @d AND n.[Ordinal] IS NOT NULL AND @elements = 1
+            GROUP BY e.[ValueId], e.[Seq]) AS el ON el.[ValueId] = k.[ValueId]
         LEFT JOIN [osdu].[DimensionAttribute] AS c
             ON c.[PartitionId] = @p AND c.[DimensionId] = @d AND c.[AttributeId] = @collectedId AND c.[ValueId] = k.[ValueId]
         WHERE k.[PartitionId] = @p AND k.[DimensionId] = @d AND k.[RemovedRunId] IS NULL;
@@ -185,7 +206,16 @@ internal static class SqlServerDimensionStore
         BEGIN
 
         """ + RowsSql + "\n\n" + """
-            DECLARE @rewrite bit = CASE WHEN ISNULL(@collectedWas, N'') <> ISNULL(@collectedNow, N'') THEN 1 ELSE 0 END;
+            -- A table whose rows were made per element, written by a declaration that reads none, has no row to match one by.
+            DECLARE @elementRows bit = 0;
+            IF @elements = 0 AND COL_LENGTH(N'[osdu].' + QUOTENAME(@tableName), N'element') IS NOT NULL
+            BEGIN
+                DECLARE @elementCheck nvarchar(max) = N'SELECT @found = CASE WHEN EXISTS (SELECT 1 FROM [osdu].' + QUOTENAME(@tableName)
+                    + N' WHERE [partition] = @partition AND [element] IS NOT NULL) THEN 1 ELSE 0 END;';
+                EXEC sys.sp_executesql @elementCheck, N'@partition nvarchar(256), @found bit OUTPUT', @partition = @partitionName, @found = @elementRows OUTPUT;
+            END;
+
+            DECLARE @rewrite bit = CASE WHEN ISNULL(@collectedWas, N'') <> ISNULL(@collectedNow, N'') OR @elementRows = 1 THEN 1 ELSE 0 END;
             EXEC sys.sp_executesql @applySql, N'@partition nvarchar(256), @rewrite bit', @partition = @partitionName, @rewrite = @rewrite;
             DROP TABLE #DimRow;
 
@@ -344,6 +374,48 @@ internal static class SqlServerDimensionStore
         ORDER BY t.[ValueId], t.[AttributeId], t.[Value];
         SET @attributesChanged += @@ROWCOUNT;
 
+        -- The elements of every key the build found are what it read, matched on the key, the element's place and the
+        -- field: one no longer read is dropped, one read otherwise rewritten, a new one added. A declaration that reads no
+        -- elements keeps none of them. A write that carries no declaration leaves them as they are.
+        IF @tableName IS NOT NULL
+        BEGIN
+            INSERT INTO #DimElemKeyed ([ValueId], [Seq], [AttributeId], [Value])
+            SELECT v.[ValueId], t.[Seq], dn.[AttributeId], t.[Value]
+            FROM #DimElem AS t
+            INNER JOIN #DimName AS dn ON dn.[Name] = t.[Name]
+            INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[OriginalHash] = t.[OriginalHash];
+
+            IF @elements = 0
+                DELETE FROM [osdu].[DimensionElement] WHERE [PartitionId] = @p AND [DimensionId] = @d;
+            ELSE
+            BEGIN
+                DELETE e
+                FROM [osdu].[DimensionElement] AS e
+                INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = e.[PartitionId] AND v.[ValueId] = e.[ValueId]
+                INNER JOIN #DimValue AS s ON s.[OriginalHash] = v.[OriginalHash]
+                WHERE e.[PartitionId] = @p AND e.[DimensionId] = @d
+                  AND NOT EXISTS (
+                      SELECT 1 FROM #DimElemKeyed AS t
+                      WHERE t.[ValueId] = e.[ValueId] AND t.[Seq] = e.[Seq] AND t.[AttributeId] = e.[AttributeId]);
+
+                UPDATE e SET e.[Value] = t.[Value]
+                FROM [osdu].[DimensionElement] AS e
+                INNER JOIN #DimElemKeyed AS t ON t.[ValueId] = e.[ValueId] AND t.[Seq] = e.[Seq] AND t.[AttributeId] = e.[AttributeId]
+                WHERE e.[PartitionId] = @p AND e.[DimensionId] = @d
+                  AND (ISNULL(e.[Value], N'') COLLATE Latin1_General_100_BIN2 <> ISNULL(t.[Value], N'') COLLATE Latin1_General_100_BIN2
+                       OR (e.[Value] IS NULL AND t.[Value] IS NOT NULL)
+                       OR (e.[Value] IS NOT NULL AND t.[Value] IS NULL));
+
+                INSERT INTO [osdu].[DimensionElement] ([PartitionId], [DimensionId], [ValueId], [Seq], [AttributeId], [Value])
+                SELECT @p, @d, t.[ValueId], t.[Seq], t.[AttributeId], t.[Value]
+                FROM #DimElemKeyed AS t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM [osdu].[DimensionElement] AS e
+                    WHERE e.[PartitionId] = @p AND e.[DimensionId] = @d AND e.[ValueId] = t.[ValueId] AND e.[Seq] = t.[Seq] AND e.[AttributeId] = t.[AttributeId])
+                ORDER BY t.[ValueId], t.[Seq], t.[AttributeId];
+            END;
+        END;
+
         -- The texts a build collected replace those the dimension had, unless it could not settle the field (and so read none).
         IF @fieldIndex IS NOT NULL
         BEGIN
@@ -411,6 +483,7 @@ internal static class SqlServerDimensionStore
 
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionCollectedText] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @texts += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionAttribute] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @attributes += @n; IF @n < @batch BREAK; END;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionElement] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @attributes += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionChange] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @changes += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionValue] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @keys += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionMember] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @values += @n; IF @n < @batch BREAK; END;
@@ -987,6 +1060,7 @@ internal static class SqlServerDimensionStore
         command.Parameters.Add(new SqlParameter("@tableName", SqlDbType.NVarChar, 128) { Value = (object?)table?.Name ?? DBNull.Value });
         command.Parameters.Add(new SqlParameter("@applySql", SqlDbType.NVarChar, -1) { Value = (object?)prepared?.ApplySql ?? DBNull.Value });
         command.Parameters.Add(new SqlParameter("@partitionName", SqlDbType.NVarChar, 256) { Value = partition });
+        command.Parameters.Add(new SqlParameter("@elements", SqlDbType.Bit) { Value = table?.HasElements ?? false });
     }
 
     /// <summary>
@@ -1124,6 +1198,7 @@ internal static class SqlServerDimensionStore
             await CopyAsync(connection, transaction, "#DimMember", MemberColumns, MemberTypes, write.Members, (member, _) => MemberRow(member), ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimAttr", AttributeColumns, AttributeTypes, AttributesOf(write), (attribute, _) => attribute, ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimText", TextColumns, TextTypes, TextsOf(write), (text, _) => text, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimElem", ElementColumns, ElementTypes, ElementsOf(write), (element, _) => element, ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, write.Table?.Columns ?? [], NameRow, ct).ConfigureAwait(false);
 
             Written written;
@@ -1274,6 +1349,53 @@ internal static class SqlServerDimensionStore
             }
 
             rows.Add([text.Name, HashOf(text.Text), text.Text, OsduLedger.Truncate(text.Value, DeliveryDimensionAttributeValue.MaxValueLength), text.Records]);
+        }
+
+        return rows;
+    }
+
+    private static readonly string[] ElementColumns = ["OriginalHash", "Seq", "Name", "Value"];
+
+    private static readonly Type[] ElementTypes = [typeof(byte[]), typeof(int), typeof(string), typeof(string)];
+
+    /// <summary>
+    /// Every field of every element of every original of <paramref name="write"/>, a row each, as the staging table takes
+    /// them: an element holding none of its fields one row of its first field with no value, so it is still a row of the
+    /// table. Only a write whose table has element columns stages any.
+    /// </summary>
+    private static List<object?[]> ElementsOf(DimensionWrite write)
+    {
+        var rows = new List<object?[]>();
+        if (write.Table is not { HasElements: true } table || write.Elements.Count == 0)
+        {
+            return rows;
+        }
+
+        var first = table.Columns.First(c => c.Element).Name;
+        foreach (var original in write.Originals)
+        {
+            if (!write.Elements.TryGetValue(original.Original, out var elements) || elements.Count == 0)
+            {
+                continue;
+            }
+
+            var hash = HashOf(original.Original);
+            foreach (var element in elements)
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var (name, value) in element.Values)
+                {
+                    if (name.Length <= DeliveryDimensionAttributeValue.MaxNameLength && !string.IsNullOrEmpty(value) && seen.Add(name))
+                    {
+                        rows.Add([hash, element.Seq, name, OsduLedger.Truncate(value, DeliveryDimensionAttributeValue.MaxValueLength)]);
+                    }
+                }
+
+                if (seen.Count == 0)
+                {
+                    rows.Add([hash, element.Seq, first, null]);
+                }
+            }
         }
 
         return rows;

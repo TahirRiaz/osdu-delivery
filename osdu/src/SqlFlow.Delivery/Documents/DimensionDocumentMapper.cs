@@ -223,7 +223,17 @@ internal static class DimensionMapper
 
         var label = MapLabel(d.Label, where, source);
         var attributes = MapAttributes(d.Attributes, where, source);
-        var (keyColumn, valueColumn) = MapColumns(d.Columns, name, path, label, attributes, where, source);
+        var elements = MapElements(d.Elements, attributes, where, source);
+
+        // An element's field is a column of the table as an attribute is, so the key's and the value's columns are named apart from both.
+        var columns = elements is null ? attributes : [.. attributes, .. elements.Fields.Select(f => new DimensionAttributeSpec(f.Name, [f.Path]))];
+        var (keyColumn, valueColumn) = MapColumns(d.Columns, name, path, label, columns, where, source);
+        if (elements is not null && new[] { keyColumn, valueColumn }.FirstOrDefault(c => string.Equals(c, DimensionElementsSpec.Column, StringComparison.OrdinalIgnoreCase)) is { } taken)
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: the table's column '{taken}' would be the {DimensionElementsSpec.Column} column a dimension with elements numbers each key's objects by. Name it otherwise: columns: {{ key: <name>, value: <name> }}.");
+        }
+
         var dimension = new DimensionSpec
         {
             Name = name,
@@ -234,6 +244,7 @@ internal static class DimensionMapper
             Label = label,
             Unlabelled = MapUnlabelled(d.Unlabelled, label.Count > 0 || d.Attributes is { Count: > 0 }, where, source),
             Attributes = attributes,
+            Elements = elements,
             KeyColumn = keyColumn,
             ValueColumn = valueColumn,
             Clean = MapClean(d.Clean, where, source),
@@ -346,7 +357,7 @@ internal static class DimensionMapper
 
             if (steps is IDictionary<object, object?> settings)
             {
-                var (collect, read, keepKey) = MapAttributeSettings(settings, $"attributes.{trimmed}", where, source);
+                var (collect, read, keep) = MapAttributeSettings(settings, $"attributes.{trimmed}", where, source);
                 if (collect is not null)
                 {
                     // Two collected attributes would pair values no record holds together (one log's source with another's
@@ -357,11 +368,11 @@ internal static class DimensionMapper
                             $"{source}: {where}: attributes.{trimmed} is a second collected attribute beside {first.Name}; a dimension collects one, so each row of its table is a key and one value its records hold. Collect {trimmed} in a dimension of its own with the same path.");
                     }
 
-                    attributes.Add(new DimensionAttributeSpec(trimmed, [], collect, keepKey));
+                    attributes.Add(new DimensionAttributeSpec(trimmed, [], collect, keep));
                 }
                 else
                 {
-                    attributes.Add(new DimensionAttributeSpec(trimmed, read!, null, keepKey));
+                    attributes.Add(new DimensionAttributeSpec(trimmed, read!, null, keep));
                 }
 
                 continue;
@@ -454,10 +465,10 @@ internal static class DimensionMapper
     /// <summary>
     /// An attribute written as settings: either <c>{ collect: data.Source }</c>, the path of the dimension's own records
     /// whose values each key collects, or <c>{ path: data.WellboreID }</c>, the paths it is read through as the bare form
-    /// gives them; either with <c>keep: key</c>, which keeps each value exactly as the record holds it so the column joins
-    /// to the dimension keyed by it. A path is one a search matches exactly, as the dimension's own path is.
+    /// gives them; either with a <c>keep</c> (<see cref="MapKeep"/>). A path is one a search matches exactly, as the
+    /// dimension's own path is.
     /// </summary>
-    private static (string? Collect, IReadOnlyList<string>? Steps, bool KeepKey) MapAttributeSettings(
+    private static (string? Collect, IReadOnlyList<string>? Steps, DimensionValueKeep Keep) MapAttributeSettings(
         IDictionary<object, object?> settings, string at, string where, string source)
     {
         var name = at.Split('.')[1];
@@ -467,11 +478,11 @@ internal static class DimensionMapper
         if (unknown.Count > 0 || collects == reads)
         {
             throw new FlowValidationException(
-                $"{source}: {where}: {at} is a path or a list of paths read from the record the key names ({name}: data.Name), or settings naming one of path and collect ({name}: {{ path: data.WellboreID, keep: key }}, {name}: {{ collect: data.Source }})"
+                $"{source}: {where}: {at} is a path or a list of paths read from the record the key names ({name}: data.Name), or settings naming one of path and collect ({name}: {{ path: data.WellboreID, keep: id }}, {name}: {{ collect: data.Source }})"
                 + (unknown.Count > 0 ? $"; it names {string.Join(", ", unknown)}" : collects ? "; it names both" : "; it names neither") + ".");
         }
 
-        var keepKey = MapKeep(settings, at, where, source);
+        var keep = MapKeep(settings, at, where, source);
         if (collects)
         {
             if (declaredCollect is not string collect || string.IsNullOrWhiteSpace(collect))
@@ -481,34 +492,165 @@ internal static class DimensionMapper
 
             var path = collect.Trim();
             CheckPath(path, $"{where}: {at}.collect", source);
-            return (path, null, keepKey);
+            return (path, null, keep);
         }
 
         var steps = MapSteps(declaredPath, $"{at}.path", where, source);
         return steps.Count > 0
-            ? (null, steps, keepKey)
+            ? (null, steps, keep)
             : throw new FlowValidationException(
                 $"{source}: {where}: {at}.path reads nothing; give the path of the record the key names it is read from ({name}: {{ path: data.WellboreID }}).");
     }
 
     /// <summary>
-    /// How an attribute's values are kept: <c>key</c>, exactly as the record holds them, so a reference stays a whole id and
-    /// the column joins to the dimension keyed by it; <c>value</c> (the default), as a value shows them.
+    /// How an attribute's or an element field's values are kept: <c>value</c> (the default), as a value shows them; <c>key</c>,
+    /// exactly as the record holds them, so the column joins to the dimension keyed by the same path; <c>id</c>, a reference
+    /// as the id of the record it names, so the column joins to the dimension keyed by <c>id</c>.
     /// </summary>
-    private static bool MapKeep(IDictionary<object, object?> settings, string at, string where, string source)
+    private static DimensionValueKeep MapKeep(IDictionary<object, object?> settings, string at, string where, string source)
     {
         if (!settings.TryGetValue("keep", out var declared))
         {
-            return false;
+            return DimensionValueKeep.Value;
         }
 
-        return declared?.ToString()?.Trim() switch
+        return DimensionKeeping.Parse(declared?.ToString()) ?? throw new FlowValidationException(
+            $"{source}: {where}: {at}.keep is '{declared}'; it is value, to keep each value as a value shows it; key, exactly as the record holds it, so the column joins to the dimension keyed by the same path; or id, a reference as the id of the record it names, so the column joins to the dimension keyed by id.");
+    }
+
+    /// <summary>
+    /// The objects of a nested array of each record, a row each in the dimension's table: <c>elements: { path: data.Curves,
+    /// fields: { CurveID: CurveID, CurveUnitID: { path: CurveUnit, keep: id } } }</c>. The array's path is a property path
+    /// from the record's root; each field is a path inside the object, or settings naming one with its <c>keep</c>. A field
+    /// is named as an attribute is, and no field shares a name with an attribute or the table's <c>element</c> column.
+    /// </summary>
+    private static DimensionElementsSpec? MapElements(
+        DimensionElementsYaml? declared, IReadOnlyList<DimensionAttributeSpec> attributes, string where, string source)
+    {
+        if (declared is null)
         {
-            "key" => true,
-            "value" => false,
-            var other => throw new FlowValidationException(
-                $"{source}: {where}: {at}.keep is '{other}'; it is key, to keep each value exactly as the record holds it so the column joins to the dimension keyed by it, or value, as a value shows it."),
-        };
+            return null;
+        }
+
+        var path = FlowMapper.Require(declared.Path, $"{where}: elements.path", source).Trim();
+        if (DimensionPath.Parse(path) is { Path: null, Problem: var problem })
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: elements.path '{path}' is not a path the elements can be read through: {problem}. Write it as a label's path is, such as data.Curves or data.GeoContexts[GeoTypeID$=:Field:].");
+        }
+
+        var depth = DimensionPath.Parse(path).Path!.Segments.Count;
+
+        if (attributes.FirstOrDefault(a => a.IsCollected) is { } collected)
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: elements and the collected attribute {collected.Name} would each make a row of the table per value, and a row cannot be both; read {collected.Name} as a field of the elements, or in a dimension of its own.");
+        }
+
+        if (declared.Fields is not { Count: > 0 } fieldsDeclared)
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: elements.fields names no field; give each column and the path inside the object it is read from (fields: {{ CurveID: CurveID, Mnemonic: Mnemonic }}).");
+        }
+
+        if (attributes.Count + fieldsDeclared.Count > DimensionSpec.MaxAttributes)
+        {
+            throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                $"{source}: {where}: attributes and elements.fields name {attributes.Count + fieldsDeclared.Count} columns; a dimension's table holds {DimensionSpec.MaxAttributes} beside its key and value. Read the rest in a dimension of its own."));
+        }
+
+        var fields = new List<DimensionElementField>(fieldsDeclared.Count);
+        foreach (var (name, declaredField) in fieldsDeclared)
+        {
+            var trimmed = name.Trim();
+            var at = $"elements.fields.{trimmed}";
+            if (!DimensionAttributeSpec.IsName(trimmed))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: elements.fields.{name} is not a field name: a letter, then letters, digits and underscores, at most {DimensionAttributeSpec.MaxNameLength}.");
+            }
+
+            if (DimensionAttributeSpec.Reserved.Contains(trimmed) || string.Equals(trimmed, DimensionElementsSpec.Column, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: {at} takes a name a dimension's rows hold already ({string.Join(", ", DimensionAttributeSpec.Reserved.Append(DimensionElementsSpec.Column).Order(StringComparer.Ordinal))}); name it after what it holds.");
+            }
+
+            if (fields.Any(f => string.Equals(f.Name, trimmed, StringComparison.OrdinalIgnoreCase))
+                || attributes.Any(a => string.Equals(a.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: {at} is named as another field or an attribute is, ignoring case; each is a column of the table, and a table has one column of a name.");
+            }
+
+            var (fieldPath, keep, up, many) = declaredField switch
+            {
+                string text => (text, DimensionValueKeep.Value, 0, DimensionElementMany.First),
+                IDictionary<object, object?> settings => MapFieldSettings(settings, at, where, source),
+                _ => throw new FlowValidationException(
+                    $"{source}: {where}: {at} is the path inside each element it is read from ({trimmed}: CurveUnit), @ for the element itself, or settings ({trimmed}: {{ path: CurveUnit, keep: id }})."),
+            };
+
+            fieldPath = fieldPath.Trim();
+            if (fieldPath != DimensionElementsSpec.Self && DimensionPath.Parse(fieldPath) is { Path: null, Problem: var fieldProblem })
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: {at} '{fieldPath}' is not a path inside the element: {fieldProblem}. Write it as a label's path is (CurveUnit, Quantity.Code, Values[Type=Top].Depth), or @ for the element itself.");
+            }
+
+            if (up > depth)
+            {
+                throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                    $"{source}: {where}: {at}.up is {up}, and elements.path passes {depth} object(s) on the way to an element; up is 0 for the element, 1 for the object holding its array, {depth} for the record."));
+            }
+
+            if (fieldPath == DimensionElementsSpec.Self && up > 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: {at} reads @, the element itself, which up cannot move from; read the object up the path by its property's path instead.");
+            }
+
+            fields.Add(new DimensionElementField(trimmed, fieldPath, keep, up, many));
+        }
+
+        return new DimensionElementsSpec(path, fields);
+    }
+
+    /// <summary>
+    /// An element's field written as settings: <c>{ path: CurveUnit, keep: id }</c>, with <c>up</c>, how many objects up the
+    /// element's path it is read from, and <c>many</c>, <c>first</c> or <c>join</c> for a path that reaches several values.
+    /// </summary>
+    private static (string Path, DimensionValueKeep Keep, int Up, DimensionElementMany Many) MapFieldSettings(
+        IDictionary<object, object?> settings, string at, string where, string source)
+    {
+        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k is not ("path" or "keep" or "up" or "many")).ToList();
+        if (unknown.Count > 0 || !settings.TryGetValue("path", out var declared) || declared is not string path || string.IsNullOrWhiteSpace(path))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: {at} names the path inside each element it is read from, and how it is read and kept ({{ path: CurveUnit, keep: id, up: 1, many: join }})"
+                + (unknown.Count > 0 ? $"; it names {string.Join(", ", unknown)}" : "; it names no path") + ".");
+        }
+
+        var up = 0;
+        if (settings.TryGetValue("up", out var declaredUp)
+            && !(int.TryParse(declaredUp?.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out up) && up >= 0))
+        {
+            throw new FlowValidationException($"{source}: {where}: {at}.up is '{declaredUp}'; it is a whole number from 0, how many objects up the element's path the field is read from.");
+        }
+
+        var many = DimensionElementMany.First;
+        if (settings.TryGetValue("many", out var declaredMany))
+        {
+            many = declaredMany?.ToString()?.Trim().ToLowerInvariant() switch
+            {
+                "first" => DimensionElementMany.First,
+                "join" => DimensionElementMany.Join,
+                _ => throw new FlowValidationException(
+                    $"{source}: {where}: {at}.many is '{declaredMany}'; it is first, the first value the path reaches, or join, every value it reaches, each once, joined by '{DimensionElementField.Separator}'."),
+            };
+        }
+
+        return (path, MapKeep(settings, at, where, source), up, many);
     }
 
     /// <summary>

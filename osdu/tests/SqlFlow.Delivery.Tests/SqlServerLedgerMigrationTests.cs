@@ -68,7 +68,7 @@ public sealed class SqlServerLedgerMigrationTests
 
     /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] DimensionTables =
-        ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute", "DimensionCollectedText", "DimensionAttributeName"];
+        ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute", "DimensionCollectedText", "DimensionAttributeName", "DimensionElement"];
 
     private static readonly Guid Mixed = FlowId.Of("wells-mixed-delivery");
 
@@ -601,7 +601,7 @@ public sealed class SqlServerLedgerMigrationTests
 
         await database.MigrateAsync(null);
 
-        Assert.Equal(8L, await database.ScalarAsync(Tables));
+        Assert.Equal(9L, await database.ScalarAsync(Tables));
         foreach (var table in DimensionTables)
         {
             Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
@@ -619,7 +619,7 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(BeforeDimensions);
         Assert.Equal(0L, await database.ScalarAsync(Tables));
         await database.MigrateAsync(null);
-        Assert.Equal(8L, await database.ScalarAsync(Tables));
+        Assert.Equal(9L, await database.ScalarAsync(Tables));
     }
 
     [Fact]
