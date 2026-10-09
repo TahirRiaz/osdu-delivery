@@ -943,6 +943,16 @@ internal static class SqlServerDimensionStore
                     }
                 }
 
+                // A view naming a column renamed would fail, or read the other column where two swap names: the views a
+                // build made over the table go in the same transaction, and the run's view step writes them again.
+                if (moves.Count > 0)
+                {
+                    var renamed = string.Join(" and ", moves.Select(m => $"{m.From} to {m.To}"));
+                    await SqlServerDimensionViewStore.DropViewsReadingAsync(
+                        connection, transaction, declared.Name,
+                        $"Dropped when a build renamed {renamed} in {shown}; the next build of its flow writes it again.", ct).ConfigureAwait(false);
+                }
+
                 var crossing = moves.Any(m => moves.Any(o => string.Equals(o.From, m.To, StringComparison.OrdinalIgnoreCase)));
                 if (crossing)
                 {
@@ -1053,6 +1063,71 @@ internal static class SqlServerDimensionStore
                 ex);
         }
     }
+
+    /// <summary>
+    /// Makes a table a view reads ready for the view (docs/dimension-plan.md, Views, Writing a view): one no build has made
+    /// yet is made, empty, as a build makes it, so the view's join finds nothing until its dimension is built; one a build
+    /// made is given the key's hash column and its index when it was made before tables kept one. Its other columns are
+    /// its builds' to settle: a column the document names that the table does not have yet fails the view's write, saying so.
+    /// </summary>
+    /// <exception cref="DeliveryException">The table cannot be made or given the column.</exception>
+    internal static async Task EnsureViewTableAsync(SqlConnection connection, DimensionTableSpec table, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(table);
+        var qualified = DimensionTables.Qualified(table.Name);
+        try
+        {
+            bool exists;
+            await using (var probe = new SqlCommand("SELECT CASE WHEN OBJECT_ID(@table, N'U') IS NULL THEN 0 ELSE 1 END;", connection) { CommandTimeout = CommandTimeoutSeconds })
+            {
+                probe.Parameters.Add(new SqlParameter("@table", SqlDbType.NVarChar, 300) { Value = qualified });
+                exists = Convert.ToInt32(await probe.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture) == 1;
+            }
+
+            if (!exists)
+            {
+                var target = new RelationalObject { Database = connection.Database, Schema = DeliveryModel.SchemaName, Name = table.Name };
+                var plan = await new SchemaSyncService(new SqlServerCatalogReader())
+                    .PlanAsync(connection, target, DimensionTables.Desired(table), DimensionTables.KeyColumns, ct).ConfigureAwait(false);
+                await SqlServerSchemaProvider.ApplyDdlAsync(connection, EvolutionDdlGenerator.Generate(target, plan, allowTableRewrite: false), new SchemaApplyOptions(), ct)
+                    .ConfigureAwait(false);
+                await using var indexes = new SqlCommand(DimensionTables.IndexSql(table), connection) { CommandTimeout = CommandTimeoutSeconds };
+                await indexes.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                return;
+            }
+
+            var literal = qualified.Replace("'", "''", StringComparison.Ordinal);
+            await using var column = new SqlCommand(
+                $"""
+                IF COL_LENGTH(N'{literal}', N'{DimensionTables.KeyHashColumn}') IS NULL
+                    ALTER TABLE {qualified} ADD [{DimensionTables.KeyHashColumn}] binary(32) NULL;
+                """,
+                connection) { CommandTimeout = CommandTimeoutSeconds };
+            await column.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            await using var index = new SqlCommand(DimensionTables.KeyHashIndexSql(table.Name), connection) { CommandTimeout = CommandTimeoutSeconds };
+            await index.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        catch (SqlException ex) when (ex.Number is ObjectExists or ColumnExists or IndexExists)
+        {
+            // A build made the table, or gave it the column or the index, between the look and the change: it is there.
+        }
+        catch (Exception ex) when (ex is SqlException or SqlFlowException)
+        {
+            throw new DeliveryException(
+                $"The table {DimensionTables.Shown(table.Name)} a view reads could not be made ready: {ex.Message.Trim()} The database user the module connects as needs CREATE TABLE in the database and ALTER on the osdu schema.",
+                ex);
+        }
+    }
+
+    /// <summary>What SQL Server answers a statement making an object that is already there.</summary>
+    private const int ObjectExists = 2714;
+
+    /// <summary>What SQL Server answers a statement adding a column a table has already.</summary>
+    private const int ColumnExists = 2705;
+
+    /// <summary>What SQL Server answers a statement making an index a table has already.</summary>
+    private const int IndexExists = 1913;
 
     /// <summary>The parameters a statement that writes a dimension's table takes; all null leaves the table as it is.</summary>
     private static void AddTable(SqlCommand command, DimensionTableSpec? table, PreparedTable? prepared, string partition)

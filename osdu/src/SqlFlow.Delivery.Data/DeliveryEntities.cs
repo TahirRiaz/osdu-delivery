@@ -2263,6 +2263,109 @@ public sealed class DeliveryDimensionElement
 }
 
 /// <summary>
+/// A view a dimension flow declares (docs/dimension-plan.md, Views), as its builds last wrote it: what the module made in
+/// its schema, so a build writes only views it recorded and drops only those its flow no longer declares. A view spans
+/// every partition its tables hold, so it belongs to no ledger partition; its checks do.
+/// </summary>
+public sealed class DeliveryDimensionView
+{
+    /// <summary>The longest name a view takes, as the document gives it.</summary>
+    public const int MaxNameLength = 64;
+
+    /// <summary>The longest description of a view.</summary>
+    public const int MaxDescriptionLength = 1000;
+
+    public int ViewId { get; set; }
+
+    /// <summary>The view's name as the document gives it, unique ignoring case among the views of the database.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The view's name in the module's schema (<c>dimv_&lt;name&gt;</c>).</summary>
+    public string ViewName { get; set; } = string.Empty;
+
+    /// <summary>The dimension flow that declares the view, by its name.</summary>
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The ledger of the build that last wrote the view, which a removal of the view is recorded under.</summary>
+    public Guid LedgerId { get; set; }
+
+    public string? Description { get; set; }
+
+    /// <summary>The view as its document declares it: its from dimension, its joins and its columns, as JSON.</summary>
+    public string DeclarationJson { get; set; } = string.Empty;
+
+    /// <summary>The statement the view was last written with.</summary>
+    public string Sql { get; set; } = string.Empty;
+
+    /// <summary>
+    /// SHA-256 of <see cref="Sql"/>, hex: a build that would write the same statement writes nothing. Null when the view is
+    /// to be written again: a build renamed a column of a table it reads and dropped it.
+    /// </summary>
+    public string? SqlHash { get; set; }
+
+    /// <summary>The dimension tables the view reads, its from table first, as a JSON list of names.</summary>
+    public string TablesJson { get; set; } = string.Empty;
+
+    /// <summary>The view's columns with their types, expressions and descriptions, as JSON.</summary>
+    public string ColumnsJson { get; set; } = string.Empty;
+
+    /// <summary>Why the view is not in the database now, when it is not: what dropped it, and what writes it again.</summary>
+    public string? Note { get; set; }
+
+    /// <summary>The platform run whose build last wrote the view.</summary>
+    public Guid? WrittenRunId { get; set; }
+
+    /// <summary>Who started that run.</summary>
+    public string WrittenBy { get; set; } = string.Empty;
+
+    public DateTime WrittenUtc { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+}
+
+/// <summary>
+/// What a build's check of a view found in one partition (docs/dimension-plan.md, Views, The check): the rows, what each
+/// join found, and the values each conversion could not read, with examples; or why the view could not be read. A view
+/// keeps its newest checks of each partition.
+/// </summary>
+public sealed class DeliveryDimensionViewCheck
+{
+    /// <summary>The most checks a view keeps of each partition.</summary>
+    public const int Kept = 50;
+
+    public short PartitionId { get; set; }
+
+    /// <summary>The row's own number.</summary>
+    public long CheckId { get; set; }
+
+    /// <summary>The view checked (<see cref="DeliveryDimensionView.ViewId"/>).</summary>
+    public int ViewId { get; set; }
+
+    /// <summary>The platform run whose build checked it.</summary>
+    public Guid? RunId { get; set; }
+
+    /// <summary><c>passed</c>, or <c>failed</c> when the view could not be read.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>The rows the view holds of the partition.</summary>
+    public long Rows { get; set; }
+
+    /// <summary>What each join found: the rows that found their row, those whose value found none, and some of those values, as JSON.</summary>
+    public string? JoinsJson { get; set; }
+
+    /// <summary>The values each column holds, and the values each converted column could not read with examples, as JSON.</summary>
+    public string? ColumnsJson { get; set; }
+
+    /// <summary>Why the view could not be read, redacted.</summary>
+    public string? Error { get; set; }
+
+    public DateTime CheckedUtc { get; set; }
+
+    /// <summary>How long the check read the view.</summary>
+    public int DurationMs { get; set; }
+}
+
+/// <summary>
 /// One text a dimension's records hold at a collected attribute's path, as the last build that settled the field read it:
 /// the text exactly as the index holds it, the value it is shown as (several texts shown alike are one value), and the
 /// records holding it. A search picking a collected value asks for every text shown as it; a pick of the value for what is
@@ -3269,6 +3372,40 @@ public static class DeliveryModel
             e.HasIndex(x => x.ElementValueId).IsUnique();
             // A key's objects in their order, each field once: what a build matches its rows by and its table is laid out from.
             e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.ValueId, x.Seq, x.AttributeId }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryDimensionView>(e =>
+        {
+            e.ToTable("DimensionView", SchemaName);
+            e.HasKey(v => v.ViewId);
+            e.Property(v => v.Name).HasMaxLength(DeliveryDimensionView.MaxNameLength).IsRequired();
+            e.Property(v => v.ViewName).HasMaxLength(128).IsRequired();
+            e.Property(v => v.FlowName).HasMaxLength(DeliveryLedger.MaxFlowNameLength).IsRequired();
+            e.Property(v => v.Description).HasMaxLength(DeliveryDimensionView.MaxDescriptionLength);
+            e.Property(v => v.DeclarationJson).IsRequired();
+            e.Property(v => v.Sql).IsRequired();
+            e.Property(v => v.SqlHash).HasMaxLength(64);
+            e.Property(v => v.TablesJson).IsRequired();
+            e.Property(v => v.ColumnsJson).IsRequired();
+            e.Property(v => v.Note).HasMaxLength(1000);
+            e.Property(v => v.WrittenBy).HasMaxLength(200).IsRequired();
+            // A view by its name, once in the database: what a build finds its record by, and what refuses a second flow's.
+            e.HasIndex(v => v.Name).IsUnique();
+            e.HasIndex(v => v.ViewName).IsUnique();
+            // A flow's views: what a build drops the undeclared ones of.
+            e.HasIndex(v => v.FlowName);
+        });
+
+        modelBuilder.Entity<DeliveryDimensionViewCheck>(e =>
+        {
+            e.ToTable("DimensionViewCheck", SchemaName);
+            e.HasKey(c => new { c.PartitionId, c.CheckId });
+            e.Property(c => c.CheckId).ValueGeneratedOnAdd();
+            e.Property(c => c.Status).HasMaxLength(16).IsRequired();
+            e.Property(c => c.Error).HasMaxLength(4000);
+            e.HasIndex(c => c.CheckId).IsUnique();
+            // A view's checks of a partition, newest first: its page, and what a build prunes past the newest it keeps.
+            e.HasIndex(c => new { c.ViewId, c.PartitionId, c.CheckedUtc });
         });
 
         modelBuilder.Entity<DeliveryDimensionAttributeName>(e =>

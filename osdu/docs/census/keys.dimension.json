@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/dimension.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 95,
+  "keyCount": 112,
   "keys": [
     {
       "path": "batch",
@@ -644,6 +644,110 @@
       "required": false,
       "description": "The search service's cursor search, which a build scans the records of a range through when an aggregation cannot answer it (openapi search v2, POST /query_with_cursor).",
       "default": "/api/search/v2/query_with_cursor"
+    },
+    {
+      "path": "target",
+      "type": "object",
+      "required": false,
+      "description": "Where the pipelines that read the flow's dimension tables and views find them: the module's database, named by the connection those pipelines name it by. With it, the flow's lineage declares that it writes every `osdu.dim_<dimension>` table and every `osdu.dimv_<view>` view, so a pipeline reading one is ordered after the flow. Required when the flow declares `views`."
+    },
+    {
+      "path": "target.connection",
+      "type": "string",
+      "required": true,
+      "description": "The module's database, as a `${env:NAME}` or `${keyvault:vault/secret}` reference, or a SQL Server connection string whose password is one, written exactly as the pipelines reading the tables and views write it: SQLFlow tells two servers apart by the reference as written. A build and a plan open it and ask the server which database it is; one that reaches another database than the module's own is refused before anything is built, naming the reference and never what it resolves to."
+    },
+    {
+      "path": "views",
+      "type": "list",
+      "required": false,
+      "description": "Views over the flow's dimension tables, at most 50, names unique ignoring case. Each puts dimensions of this flow side by side at the grain of one of them (`from`), joined on the keys they share (`join`), with the columns the document lists (`columns`), each an expression converted to a data type. A build writes each as `osdu.dimv_<name>` after the flow's dimensions, checks it in the run's partition, and drops a view the flow no longer declares. Needs `target.connection`."
+    },
+    {
+      "path": "views[]",
+      "type": "object",
+      "required": true,
+      "description": "One view: `name`, `from`, optional `description`, `join` and `columns`. Every view begins with `partition` and `id`, the number of the `from` row each of its rows stands for, which is its key."
+    },
+    {
+      "path": "views[].name",
+      "type": "string",
+      "required": true,
+      "description": "The view's name: a letter, then letters, digits and underscores, at most 64, unique among the views of a database ignoring case. The view is `osdu.dimv_<name>`. A name another flow's view holds, or an object no build made, is refused when the build writes it."
+    },
+    {
+      "path": "views[].description",
+      "type": "string",
+      "required": false,
+      "description": "What the view holds, at most 1,000 characters, shown with it."
+    },
+    {
+      "path": "views[].from",
+      "type": "string",
+      "required": true,
+      "description": "The dimension of this flow whose rows the view's rows are: a row of the view for each row of its table, every join a left join that meets at most one row."
+    },
+    {
+      "path": "views[].join",
+      "type": "list",
+      "required": false,
+      "description": "The joins, at most 16, read in order, so one can follow another and none comes back on itself: `{ on: <column>, to: <dimension>, as: <alias> }`. Each compares the partition and the key exactly (the key's hash, then the text under a binary collation), so ids that differ only in case never meet."
+    },
+    {
+      "path": "views[].join[]",
+      "type": "object",
+      "required": false,
+      "description": "One join. Refused when the document is read: `to` not a dimension of the flow; `on` not a key (a key's column, or an attribute or element field kept as `key` or `id`); keys that would not meet (a key's column or a `keep: key` column joins the dimension keyed by the same path, a `keep: id` column a dimension keyed by `id`, two dimensions keyed by `id` read kinds of one entity type); and a dimension with `elements` or a collected attribute, whose table holds several rows a key and would repeat the view's rows."
+    },
+    {
+      "path": "views[].join[].on",
+      "type": "string",
+      "required": true,
+      "description": "The column joined on: a column of the `from` dimension's table, bare (`CurveUnitID`), or of an earlier join's, by its alias (`WellLog.SamplingDomainTypeID`)."
+    },
+    {
+      "path": "views[].join[].to",
+      "type": "string",
+      "required": true,
+      "description": "The dimension of this flow joined to. A dimension can be joined twice under two aliases."
+    },
+    {
+      "path": "views[].join[].as",
+      "type": "string",
+      "required": false,
+      "description": "The alias the joined dimension's columns are named by in expressions (`Unit.Name`), and the prefix of its columns in a view that lists none (`Unit_Name`). Left out, the dimension's name. A letter, then letters, digits and underscores, at most 64, unique among the view's joins."
+    },
+    {
+      "path": "views[].columns",
+      "type": "map",
+      "required": false,
+      "description": "The view's columns after `partition` and `id`, each under its name, in order, at most 256: an expression alone (`Curve: Mnemonic`), or `{ expression, dataType, description }`. A name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and neither `partition` nor `id`. Left out, the view holds every column of `from` but its numbers, partition and filter, then every column of each join prefixed by its alias and an underscore, with the joined row's number as `<alias>_id`, all as their tables hold them."
+    },
+    {
+      "path": "views[].columns.<name>",
+      "type": "string",
+      "required": false,
+      "freeForm": true,
+      "description": "One column: a T-SQL scalar expression over the view's tables, read by SQL Server's own parser and written into the view by the module, or settings `{ expression, dataType, description }`. Columns are named bare for `from`'s, `alias.column` for a join's. The expression uses numbers, `'text'`, `N'text'`, `NULL`, the operators `+ - * / %`, comparisons, `AND`, `OR`, `NOT`, `IS NULL`, `LIKE`, `IN`, `BETWEEN`, `CASE`, and the functions `COALESCE`, `NULLIF`, `ISNULL`, `IIF`, `TRY_CAST`, `TRY_CONVERT`, `CAST`, `CONVERT` (no style), `LEFT`, `RIGHT`, `SUBSTRING`, `LEN`, `UPPER`, `LOWER`, `TRIM`, `LTRIM`, `RTRIM`, `REPLACE`, `CHARINDEX`, `CONCAT`, `CONCAT_WS`, `ABS`, `ROUND`, `FLOOR`, `CEILING`, `POWER`, `SQRT`, `EXP`, `LOG`, `LOG10`, `SIGN`, `DATEADD`, `DATEDIFF`, `DATEPART`, `YEAR`, `MONTH`, `DAY`, `EOMONTH`; anything else (a subquery, a variable, a window, `COLLATE`, `GETDATE()`) is refused. Every column of a dimension's table is text but `id`, `key_id`, `records` and `element`, and an implicit conversion is refused: convert first (`TRY_CAST(TopDepth AS float)`). A division by zero, a root or a logarithm outside its domain and a negative length are null. An expression that starts with `[` is quoted in YAML."
+    },
+    {
+      "path": "views[].columns.<name>.expression",
+      "type": "string",
+      "required": true,
+      "description": "The T-SQL scalar expression the column is computed by, at most 4,000 characters, as the bare form gives it."
+    },
+    {
+      "path": "views[].columns.<name>.dataType",
+      "type": "string",
+      "required": false,
+      "allowed": ["bit", "tinyint", "smallint", "int", "bigint", "decimal(p,s)", "numeric(p,s)", "float", "real", "date", "time(n)", "datetime2(n)", "datetimeoffset(n)", "uniqueidentifier", "nvarchar(n)", "nvarchar(max)"],
+      "description": "The type the value is converted to, by the module's conversion, which never fails a read: a value it cannot convert is null, and each build counts them with examples. A whole number reads `7`, `7.0` and `7E0` but no fraction; a decimal reads an exponent; a date is read as ISO 8601 alone, whatever the reading session's date format, and `datetime2` is the instant in UTC; `bit` reads `true`, `false`, `1`, `0`; `nvarchar(n)` is null for a longer text rather than cut. `varchar`, `char`, `datetime` and `smalldatetime` are refused. Left out, the column keeps its expression's type. Quote a type with a comma in a flow mapping: `dataType: \"decimal(18,3)\"`."
+    },
+    {
+      "path": "views[].columns.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "What the column holds, at most 1,000 characters, shown with the view."
     }
   ]
 }

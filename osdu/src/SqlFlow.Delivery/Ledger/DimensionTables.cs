@@ -71,6 +71,9 @@ public static class DimensionTables
     /// <summary>The collation text is matched exactly by, whatever the database compares by.</summary>
     internal const string Exact = "Latin1_General_100_BIN2";
 
+    /// <summary>The column every dimension table keeps its key's hash in: SHA-256 of the key's text as SQL Server's <c>HASHBYTES</c> gives it.</summary>
+    public const string KeyHashColumn = "key_hash";
+
     /// <summary>The key SQLFlow's schema evolution holds a table to: a change to it is refused, never applied.</summary>
     internal static readonly IReadOnlySet<string> KeyColumns = new HashSet<string>(["id"], StringComparer.OrdinalIgnoreCase);
 
@@ -137,6 +140,10 @@ public static class DimensionTables
             new() { Name = table.ValueColumn, DataType = Text(256), IsNullable = false },
             new() { Name = "records", DataType = Type("bigint"), IsNullable = false },
             new() { Name = "filter", DataType = Text(DeliveryDimensionValue.MaxFilterLength), IsNullable = true },
+
+            // The key's hash, which a view's join finds a row by (docs/dimension-plan.md, Views): the key itself is too long
+            // for an index key. A column the build writes, not a computed one, so the key's column can still be renamed.
+            new() { Name = KeyHashColumn, DataType = new SqlDataType { BaseType = "binary", Length = 32 }, IsNullable = true },
         };
         if (table.HasElements)
         {
@@ -149,9 +156,9 @@ public static class DimensionTables
 
     /// <summary>
     /// The indexes a table is read through, made when it has none of the name: a key's rows, which a build matches the
-    /// rows it writes by and a join on the key's number seeks; and the rows of a partition in value order, which a page
-    /// reads and a count counts. An index follows a column that is renamed, so each is named after what its column is
-    /// for, not after the column.
+    /// rows it writes by and a join on the key's number seeks; the rows of a partition in value order, which a page
+    /// reads and a count counts; and a key's row by its hash, which a view's join seeks. An index follows a column that is
+    /// renamed, so each is named after what its column is for, not after the column.
     /// </summary>
     internal static string IndexSql(DimensionTableSpec spec)
     {
@@ -163,8 +170,31 @@ public static class DimensionTables
                 CREATE INDEX [IX_key] ON {table} ([partition], [key_id]);
             IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [object_id] = OBJECT_ID(N'{literal}', N'U') AND [name] = N'IX_value')
                 CREATE INDEX [IX_value] ON {table} ([partition], {Quoted(spec.ValueColumn)}, [id]);
+            {KeyHashIndexSql(spec.Name)}
             """;
     }
+
+    /// <summary>The index a view's join finds a key's row by, made when the table has none of the name.</summary>
+    internal static string KeyHashIndexSql(string name)
+    {
+        var table = Qualified(name);
+        var literal = table.Replace("'", "''", StringComparison.Ordinal);
+        return $"""
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [object_id] = OBJECT_ID(N'{literal}', N'U') AND [name] = N'IX_key_hash')
+                CREATE INDEX [IX_key_hash] ON {table} ([partition], [{KeyHashColumn}]);
+            """;
+    }
+
+    /// <summary>
+    /// The statement that gives every row of <paramref name="table"/> without a key hash its hash, in every partition or in
+    /// <c>@partition</c>'s alone: rows a build wrote before tables kept one. <paramref name="keyColumn"/> is the key's column
+    /// as the table names it now.
+    /// </summary>
+    internal static string FillKeyHashSql(string table, string keyColumn, bool onePartition)
+        => $"UPDATE {Qualified(table)} SET [{KeyHashColumn}] = {KeyHash(Quoted(keyColumn))} WHERE [{KeyHashColumn}] IS NULL{(onePartition ? " AND [partition] = @partition" : string.Empty)};";
+
+    /// <summary>The hash of a key's text, as a view's join computes the hash of the value it joins on.</summary>
+    internal static string KeyHash(string keySql) => $"CAST(HASHBYTES('SHA2_256', {keySql}) AS binary(32))";
 
     /// <summary>
     /// The statements that bring the rows of one partition in <paramref name="table"/> to the rows a build laid out in
@@ -195,7 +225,8 @@ public static class DimensionTables
         sql.Append(CultureInfo.InvariantCulture, $"IF @rewrite = 1\n    DELETE FROM {target} WHERE [partition] = @partition;\n\n");
         sql.Append(CultureInfo.InvariantCulture, $"DELETE t\nFROM {target} AS t\nWHERE t.[partition] = @partition\n  AND NOT EXISTS (SELECT 1 FROM #DimRow AS s WHERE {same});\n\n");
 
-        sql.Append(CultureInfo.InvariantCulture, $"UPDATE t SET t.{key} = s.[Key], t.{value} = s.[Value], t.[records] = s.[Records], t.[filter] = s.[Filter]");
+        sql.Append(CultureInfo.InvariantCulture,
+            $"UPDATE t SET t.{key} = s.[Key], t.[{KeyHashColumn}] = {KeyHash("s.[Key]")}, t.{value} = s.[Value], t.[records] = s.[Records], t.[filter] = s.[Filter]");
         foreach (var attribute in attributes)
         {
             sql.Append(CultureInfo.InvariantCulture, $", t.{attribute.Column} = s.{attribute.Slot}");
@@ -228,7 +259,7 @@ public static class DimensionTables
         sql.Append(");\n\n");
 
         // New rows take their numbers in the table's own order: by value, then key, then the value collected or the element.
-        sql.Append(CultureInfo.InvariantCulture, $"INSERT INTO {target} ([partition], [key_id], {key}, {value}, [records], [filter]");
+        sql.Append(CultureInfo.InvariantCulture, $"INSERT INTO {target} ([partition], [key_id], {key}, [{KeyHashColumn}], {value}, [records], [filter]");
         if (table.HasElements)
         {
             sql.Append(CultureInfo.InvariantCulture, $", {element}");
@@ -239,7 +270,7 @@ public static class DimensionTables
             sql.Append(CultureInfo.InvariantCulture, $", {attribute.Column}");
         }
 
-        sql.Append(")\nSELECT @partition, s.[ValueId], s.[Key], s.[Value], s.[Records], s.[Filter]");
+        sql.Append(CultureInfo.InvariantCulture, $")\nSELECT @partition, s.[ValueId], s.[Key], {KeyHash("s.[Key]")}, s.[Value], s.[Records], s.[Filter]");
         if (table.HasElements)
         {
             sql.Append(", s.[Element]");
@@ -252,6 +283,7 @@ public static class DimensionTables
 
         sql.Append(CultureInfo.InvariantCulture,
             $"\nFROM #DimRow AS s\nWHERE NOT EXISTS (SELECT 1 FROM {target} AS t WHERE t.[partition] = @partition AND {same})\nORDER BY s.[Value], s.[Key], {(table.HasElements ? "s.[Element]" : "s.[Part]")};");
+        sql.Append("\n\n").Append(FillKeyHashSql(table.Name, table.KeyColumn, onePartition: true));
         return sql.ToString();
     }
 

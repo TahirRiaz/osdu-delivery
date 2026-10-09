@@ -1409,7 +1409,46 @@ internal sealed class DimensionFlowYaml
 
     public List<DimensionYaml>? Dimensions { get; set; }
 
+    /// <summary>The module's database as the pipelines reading the flow's tables and views name it.</summary>
+    public DimensionTargetYaml? Target { get; set; }
+
+    /// <summary>The views over the flow's dimension tables, each joining them at the grain of one.</summary>
+    public List<DimensionViewYaml>? Views { get; set; }
+
     public FlowReliabilityYaml? Reliability { get; set; }
+}
+
+internal sealed class DimensionTargetYaml
+{
+    /// <summary>A ${env:...} or ${keyvault:...} reference, or a connection string whose password is one.</summary>
+    public string? Connection { get; set; }
+}
+
+internal sealed class DimensionViewYaml
+{
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    /// <summary>The dimension whose rows the view's rows are.</summary>
+    public string? From { get; set; }
+
+    public List<DimensionViewJoinYaml>? Join { get; set; }
+
+    // Each column by its name: an expression, or { expression, dataType, description }; read by the mapper.
+    public Dictionary<string, object?>? Columns { get; set; }
+}
+
+internal sealed class DimensionViewJoinYaml
+{
+    /// <summary>The column joined on: a column of the from dimension, bare, or alias.column of an earlier join.</summary>
+    public string? On { get; set; }
+
+    /// <summary>The dimension joined to.</summary>
+    public string? To { get; set; }
+
+    /// <summary>The alias its columns are read by; the dimension's name when left out.</summary>
+    public string? As { get; set; }
 }
 
 internal sealed class DimensionSourceYaml

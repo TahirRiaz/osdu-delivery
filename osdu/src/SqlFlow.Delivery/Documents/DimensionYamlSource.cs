@@ -19,11 +19,13 @@ public sealed record DimensionYamlSpan(string Target, int Line, int Column, int 
 public sealed record DimensionYamlBlock(int FirstLine, IReadOnlyList<string> Lines, IReadOnlyList<DimensionYamlSpan> Spans, bool Cut);
 
 /// <summary>
-/// Finds a dimension in its flow document, so a page can show the YAML a person wrote beside what it does. The targets a
-/// span names are the dimension's own keys (<c>kind</c>, <c>path</c>, <c>label</c>, ...), an item of a list by its place
-/// (<c>label.0</c>, <c>clean.1</c>), an attribute by its name (<c>attributes.Country</c>, its paths
+/// Finds a dimension or a view in its flow document, so a page can show the YAML a person wrote beside what it does. The
+/// targets a span of a dimension names are its own keys (<c>kind</c>, <c>path</c>, <c>label</c>, ...), an item of a list
+/// by its place (<c>label.0</c>, <c>clean.1</c>), an attribute by its name (<c>attributes.Country</c>, its paths
 /// <c>attributes.Country.0</c>, a collected one's path <c>attributes.Source.collect</c>), and a column's name
-/// (<c>columns.key</c>, <c>columns.value</c>). The document is read for its layout only; what it means is the loader's.
+/// (<c>columns.key</c>, <c>columns.value</c>). Those of a view are its keys (<c>from</c>, ...), each join by its place and
+/// its settings (<c>join.0</c>, <c>join.0.on</c>), and each column by its name and its settings (<c>columns.TopDepth</c>,
+/// <c>columns.TopDepth.dataType</c>). The document is read for its layout only; what it means is the loader's.
 /// </summary>
 public static class DimensionYamlSource
 {
@@ -35,6 +37,68 @@ public static class DimensionYamlSource
     /// flow names its dimensions), or null when the document does not parse or declares no such dimension.
     /// </summary>
     public static DimensionYamlBlock? Locate(string yaml, string name)
+        => Block(yaml, "dimensions", name, DimensionSpans);
+
+    /// <summary>
+    /// The block of <paramref name="yaml"/> that declares the view <paramref name="name"/> (compared ignoring case), or null
+    /// when the document does not parse or declares no such view.
+    /// </summary>
+    public static DimensionYamlBlock? LocateView(string yaml, string name)
+        => Block(yaml, "views", name, ViewSpans);
+
+    /// <summary>The spans of a view's item: its keys, each join and its settings, each column and its settings.</summary>
+    private static void ViewSpans(Text text, YamlMappingNode item, List<DimensionYamlSpan> spans)
+    {
+        foreach (var (key, value) in item.Children)
+        {
+            if (key is not YamlScalarNode { Value: { } field })
+            {
+                continue;
+            }
+
+            spans.Add(text.Entry(field, key, value));
+            switch (field)
+            {
+                case "join" when value is YamlSequenceNode joins:
+                    var index = 0;
+                    foreach (var join in joins.Children)
+                    {
+                        var target = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"join.{index}");
+                        if (join is YamlMappingNode settings)
+                        {
+                            text.Entries(target, settings, spans);
+                        }
+
+                        index++;
+                    }
+
+                    text.Items(field, value, spans);
+                    break;
+                case "columns" when value is YamlMappingNode columns:
+                    foreach (var (columnKey, column) in columns.Children)
+                    {
+                        if (columnKey is not YamlScalarNode { Value: { } columnName })
+                        {
+                            continue;
+                        }
+
+                        spans.Add(text.Entry("columns." + columnName, columnKey, column));
+                        if (column is YamlMappingNode settings)
+                        {
+                            text.Entries("columns." + columnName, settings, spans);
+                        }
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The block of <paramref name="yaml"/> that declares the item named <paramref name="name"/> of the list
+    /// <paramref name="section"/>, its spans laid out by <paramref name="spanned"/>.
+    /// </summary>
+    private static DimensionYamlBlock? Block(string yaml, string section, string name, Action<Text, YamlMappingNode, List<DimensionYamlSpan>> spanned)
     {
         ArgumentNullException.ThrowIfNull(yaml);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -51,12 +115,12 @@ public static class DimensionYamlSource
 
         if (stream.Documents.Count == 0
             || stream.Documents[0].RootNode is not YamlMappingNode root
-            || Value(root, "dimensions") is not YamlSequenceNode dimensions)
+            || Value(root, section) is not YamlSequenceNode items)
         {
             return null;
         }
 
-        var item = dimensions.Children.OfType<YamlMappingNode>()
+        var item = items.Children.OfType<YamlMappingNode>()
             .FirstOrDefault(d => Value(d, "name") is YamlScalarNode n && string.Equals(n.Value?.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
         if (item is null)
         {
@@ -65,6 +129,37 @@ public static class DimensionYamlSource
 
         var text = new Text(yaml.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'));
         var spans = new List<DimensionYamlSpan>();
+        spanned(text, item, spans);
+        var lines = text.Lines;
+        var first = (int)item.Start.Line;
+        var last = Math.Min(lines.Count, Math.Max(first, spans.Count == 0 ? first : spans.Max(s => s.EndLine)));
+
+        // The comments written just above the item, as deep as its dash, are about it; so are those after its last value and
+        // deeper than its dash, up to the next item.
+        var dash = Indent(lines[first - 1]);
+        while (first > 1 && IsComment(lines[first - 2]) && Indent(lines[first - 2]) >= dash)
+        {
+            first--;
+        }
+
+        while (last < lines.Count && IsComment(lines[last]) && Indent(lines[last]) > dash)
+        {
+            last++;
+        }
+
+        var cut = last - first + 1 > MaxLines;
+        if (cut)
+        {
+            last = first + MaxLines - 1;
+        }
+
+        var shown = lines.Skip(first - 1).Take(last - first + 1).ToList();
+        return new DimensionYamlBlock(first, shown, spans.Where(s => s.Line <= last).ToList(), cut);
+    }
+
+    /// <summary>The spans of a dimension's item: its keys, each item of its lists, each attribute and its paths, each column's name.</summary>
+    private static void DimensionSpans(Text text, YamlMappingNode item, List<DimensionYamlSpan> spans)
+    {
         foreach (var (key, value) in item.Children)
         {
             if (key is not YamlScalarNode { Value: { } field })
@@ -127,32 +222,6 @@ public static class DimensionYamlSource
                     break;
             }
         }
-
-        var lines = text.Lines;
-        var first = (int)item.Start.Line;
-        var last = Math.Min(lines.Count, Math.Max(first, spans.Count == 0 ? first : spans.Max(s => s.EndLine)));
-
-        // The comments written just above the item, as deep as its dash, are about it; so are those after its last value and
-        // deeper than its dash, up to the next item.
-        var dash = Indent(lines[first - 1]);
-        while (first > 1 && IsComment(lines[first - 2]) && Indent(lines[first - 2]) >= dash)
-        {
-            first--;
-        }
-
-        while (last < lines.Count && IsComment(lines[last]) && Indent(lines[last]) > dash)
-        {
-            last++;
-        }
-
-        var cut = last - first + 1 > MaxLines;
-        if (cut)
-        {
-            last = first + MaxLines - 1;
-        }
-
-        var shown = lines.Skip(first - 1).Take(last - first + 1).ToList();
-        return new DimensionYamlBlock(first, shown, spans.Where(s => s.Line <= last).ToList(), cut);
     }
 
     /// <summary>The value of <paramref name="key"/> in a mapping, or null.</summary>

@@ -61,6 +61,15 @@ public sealed record DimensionFlowDefinition
 
     public FlowReliability Reliability { get; init; } = new();
 
+    /// <summary>
+    /// The module's database as the pipelines reading the flow's tables and views name it (docs/dimension-plan.md, Views),
+    /// so SQLFlow's lineage orders them after the flow; null when the flow names none, which a flow declaring views must.
+    /// </summary>
+    public DimensionTarget? Target { get; init; }
+
+    /// <summary>The views over the flow's dimension tables, in the order the document declares them; names are unique ignoring case.</summary>
+    public IReadOnlyList<DimensionViewSpec> Views { get; init; } = [];
+
     /// <summary>True when a dimension cleans its values through a dictionary document, which the run reads at its commit.</summary>
     public bool ReadsDictionaries => Dimensions.Any(d => d.Clean.Any(s => s.Kind == CleanStepKind.Map));
 
@@ -225,6 +234,11 @@ public sealed record DimensionFlowDefinition
             {
                 yield return new($"source.auth.token.body.{name}", value);
             }
+        }
+
+        if (Target is { } target && IsReference(target.Connection))
+        {
+            yield return new("target.connection", target.Connection);
         }
     }
 

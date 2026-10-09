@@ -31,6 +31,14 @@ public static class DimensionRemoval
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         ArgumentNullException.ThrowIfNull(clock);
 
+        // A view reading the dimension's table would read a table that is gone: its flow's next build writes it without the
+        // dimension, once the flow no longer joins it.
+        if (dimension.TableName is { } table && await ledger.DimensionViewsReadingAsync(table, ct).ConfigureAwait(false) is { Count: > 0 } views)
+        {
+            throw new DeliveryException(
+                $"Dimension {dimension.Name} of {dimension.FlowName} is read by view{(views.Count == 1 ? string.Empty : "s")} {string.Join(", ", views)}, so it is not removed: the view would read a table that is gone. Take the dimension out of the view's joins and build the flow, which writes the view without it, then remove the dimension.");
+        }
+
         var captures = await ledger.DimensionCapturesAsync(dimension.DimensionId, ct).ConfigureAwait(false);
         if (captures.Count > 0)
         {

@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Engine.Dimensions;
@@ -55,23 +56,53 @@ public sealed record DimensionBuildSummary(
     IReadOnlyList<string> Notes);
 
 /// <summary>
-/// The <c>result</c> of a build run of a dimension flow: every dimension the run selected, built, failed or skipped. The whole
-/// of every build is in the ledger; the run's own result stays small enough for the run list to show it.
+/// One view as a build run left it (docs/dimension-plan.md, Views): written, unchanged or failed, why it failed, and what
+/// its check found in the run's partition: the rows, whether it could be read, and what it has to say.
+/// </summary>
+public sealed record DimensionViewSummary(string View, string ViewName, string Status, string? Error, string? Check, long? Rows, IReadOnlyList<string> Notes)
+{
+    /// <summary>Whether the view stopped the run: it could not be written, or its check could not read it.</summary>
+    public bool Failed => Status == DimensionViewWriteStatus.Failed || Check == DimensionViewCheckStatus.Failed;
+
+    /// <summary>A view's outcome as the run's result carries it.</summary>
+    public static DimensionViewSummary Of(DimensionViewOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        return new DimensionViewSummary(
+            outcome.Name, outcome.ViewName, outcome.Status, outcome.Error ?? outcome.Check?.Error, outcome.Check?.Status, outcome.Check?.Rows,
+            (outcome.Check?.Notes() ?? []).Take(DimensionBuildOutcome.MaxNotes).ToList());
+    }
+}
+
+/// <summary>
+/// The <c>result</c> of a build run of a dimension flow: every dimension the run selected, built, failed or skipped, and
+/// every view of the flow, written and checked, with those the flow no longer declares dropped. The whole of every build
+/// is in the ledger; the run's own result stays small enough for the run list to show it.
 /// </summary>
 public sealed record DimensionBuildOutcome(string Operation, string Flow, string Partition, int Built, int Failed, int Skipped, IReadOnlyList<DimensionBuildSummary> Dimensions)
 {
     /// <summary>The most notes a dimension's summary carries in the run's result; every note is on its build in the ledger.</summary>
     public const int MaxNotes = 5;
 
+    /// <summary>The flow's views as the run wrote and checked them, in the order the document declares them.</summary>
+    public IReadOnlyList<DimensionViewSummary> Views { get; init; } = [];
+
+    /// <summary>The views the flow made before and no longer declares, which the run dropped.</summary>
+    public IReadOnlyList<string> ViewsDropped { get; init; } = [];
+
+    /// <summary>The views that stopped the run.</summary>
+    public int ViewsFailed => Views.Count(v => v.Failed);
+
     /// <summary>The keys the run's builds hold, which the run list shows beside the run as the work it did.</summary>
     public long RowsLoaded => Dimensions.Sum(d => d.Keys);
 
-    /// <summary>What the run came to, as a run's error states it when a build failed it.</summary>
+    /// <summary>What the run came to, as a run's error states it when a build or a view failed it.</summary>
     public string Describe()
     {
         var failed = Dimensions.Where(d => d.Status == DimensionRunStatus.Failed).Select(d => $"{d.Dimension} ({d.Error})").Take(5).ToList();
+        var views = Views.Where(v => v.Failed).Select(v => $"{v.View} ({v.Error})").Take(5).ToList();
         return string.Create(CultureInfo.InvariantCulture,
-            $"dimension flow '{Flow}' in partition '{Partition}': {Built} dimension(s) built, {Failed} failed{(failed.Count > 0 ? ": " + string.Join("; ", failed) : string.Empty)}{(Skipped > 0 ? $", {Skipped} not built in this partition" : string.Empty)}.");
+            $"dimension flow '{Flow}' in partition '{Partition}': {Built} dimension(s) built, {Failed} failed{(failed.Count > 0 ? ": " + string.Join("; ", failed) : string.Empty)}{(Skipped > 0 ? $", {Skipped} not built in this partition" : string.Empty)}{(Views.Count > 0 ? $"; {Views.Count - ViewsFailed} view(s) written and checked, {ViewsFailed} failed{(views.Count > 0 ? ": " + string.Join("; ", views) : string.Empty)}" : string.Empty)}.");
     }
 }
 
@@ -92,9 +123,18 @@ public sealed record DimensionPlanSummary(
     string Dimension, string Kind, string? Query, string Path, string? AggregateBy, bool? Repeats, long? Records, IReadOnlyList<DimensionKind> Kinds,
     IReadOnlyList<string> Problems, string? Skipped);
 
-/// <summary>The <c>result</c> of a plan run of a dimension flow: every dimension selected, checked and counted, nothing read or kept.</summary>
+/// <summary>
+/// What a plan found of one view: the tables it reads, the statement a build writes it with, what stops a build writing it,
+/// and what a build will do with it.
+/// </summary>
+public sealed record DimensionViewPlanSummary(string View, string ViewName, IReadOnlyList<string> Tables, string Sql, IReadOnlyList<string> Problems, IReadOnlyList<string> Notes);
+
+/// <summary>The <c>result</c> of a plan run of a dimension flow: every dimension selected, checked and counted, and every view laid out, nothing read or kept.</summary>
 public sealed record DimensionPlanOutcome(string Operation, string Flow, string Partition, IReadOnlyList<DimensionPlanSummary> Dimensions)
 {
+    /// <summary>The flow's views as a build would write them.</summary>
+    public IReadOnlyList<DimensionViewPlanSummary> Views { get; init; } = [];
+
     /// <summary>The dimensions the plan checked, which the run list shows beside the run.</summary>
     public long RowsLoaded => Dimensions.Count;
 }
@@ -169,6 +209,13 @@ public sealed class DimensionRunner
             },
             ct).ConfigureAwait(false);
 
+        // A flow declaring views names the module's database as the pipelines reading them do; a build that would declare
+        // tables it does not write stops before it builds anything.
+        if (_flow.Views.Count > 0 && await TargetProblemAsync(ledger, ct).ConfigureAwait(false) is { } refused)
+        {
+            throw new DeliveryException(refused);
+        }
+
         var skipped = selected.Where(d => !d.BuildsIn(partition)).ToList();
         var building = selected.Where(d => d.BuildsIn(partition)).ToList();
         _log.LogInformation(
@@ -203,10 +250,90 @@ public sealed class DimensionRunner
 
         var order = selected.Select((d, i) => (d.Name, i)).ToDictionary(p => p.Name, p => p.i, StringComparer.Ordinal);
         var ordered = summaries.OrderBy(s => order[s.Dimension]).ToList();
+
+        // The flow's views are written after its dimensions, whichever the run built and even when one failed (its table
+        // holds its last build), and those it no longer declares are dropped.
+        var views = await WriteViewsAsync(ledger, partition, runId, actor, ct).ConfigureAwait(false);
         var outcome = new DimensionBuildOutcome(
             DeliveryOperations.Build, _flow.Name, partition,
-            ordered.Count(s => s.Status == DimensionRunStatus.Completed), ordered.Count(s => s.Status == DimensionRunStatus.Failed), skipped.Count, ordered);
-        return outcome.Failed > 0 ? throw new DimensionBuildsFailedException(outcome) : outcome;
+            ordered.Count(s => s.Status == DimensionRunStatus.Completed), ordered.Count(s => s.Status == DimensionRunStatus.Failed), skipped.Count, ordered)
+        {
+            Views = views.Views.Select(DimensionViewSummary.Of).ToList(),
+            ViewsDropped = views.Dropped,
+        };
+        return outcome.Failed > 0 || outcome.ViewsFailed > 0 ? throw new DimensionBuildsFailedException(outcome) : outcome;
+    }
+
+    /// <summary>
+    /// Writes and checks the flow's views in the run's partition (docs/dimension-plan.md, Views, Writing a view) and drops
+    /// those it no longer declares, logging each.
+    /// </summary>
+    private async Task<DimensionViewsWritten> WriteViewsAsync(ILedger ledger, string partition, Guid runId, string actor, CancellationToken ct)
+    {
+        var written = await ledger.WriteDimensionViewsAsync(
+            new DimensionViewWrite
+            {
+                Flow = _flow.Name,
+                FlowLedgerId = _flow.LedgerId,
+                Partition = partition,
+                Views = _flow.Views.Select(v => new DimensionViewToWrite(v, DimensionViews.TablesOf(_flow, v))).ToList(),
+                RunId = runId,
+                Actor = actor,
+                Now = Now,
+            },
+            ct).ConfigureAwait(false);
+        foreach (var view in written.Views)
+        {
+            if (view.Failed)
+            {
+                _log.LogError("view {View}: {Status}{Check}: {Error}", view.Name, view.Status, view.Check is null ? string.Empty : ", check " + view.Check.Status, view.Error ?? view.Check?.Error);
+                continue;
+            }
+
+            _log.LogInformation(
+                "view {View} ({ViewName}): {Status}, {Rows} row(s) in partition '{Partition}'{Notes}", view.Name, DimensionTables.Shown(view.ViewName), view.Status,
+                view.Check?.Rows ?? 0, partition, view.Check?.Notes() is { Count: > 0 } notes ? "; " + string.Join(" ", notes) : string.Empty);
+        }
+
+        foreach (var name in written.Dropped)
+        {
+            _log.LogInformation("view {View}: dropped, the flow no longer declares it", name);
+        }
+
+        return written;
+    }
+
+    /// <summary>
+    /// Why the flow's <c>target.connection</c> cannot stand for the module's database, or null when it reaches it: the
+    /// server is asked on both connections for its name, the database's and when the database was made, so two spellings
+    /// of one server agree. The message names the reference, never what it resolves to.
+    /// </summary>
+    private async Task<string?> TargetProblemAsync(ILedger ledger, CancellationToken ct)
+    {
+        if (_flow.Target is not { } target)
+        {
+            return $"Dimension flow '{_flow.Name}' declares views and no target.connection, the module's database as the pipelines reading the views name it.";
+        }
+
+        var named = target.Connection.StartsWith("${", StringComparison.Ordinal) ? $"target.connection {target.Connection}" : "target.connection";
+        DatabaseIdentity module;
+        DatabaseIdentity declared;
+        try
+        {
+            module = await ledger.DatabaseIdentityAsync(ct).ConfigureAwait(false);
+            await using var connection = await IngestionConnection.OpenAsync(target.Connection, _flow.Name, _context.Secrets, ct).ConfigureAwait(false);
+            declared = await SqlServerDimensionViewStore.IdentityAsync(connection, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is DeliveryException or SqlFlowException or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
+        {
+            return $"Dimension flow '{_flow.Name}': {named} could not be opened to check that it reaches the module's database, so no view was written: {SecretHygiene.RedactedMessage(ex.InnerException ?? ex)}";
+        }
+
+        return string.Equals(module.Server, declared.Server, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(module.Database, declared.Database, StringComparison.OrdinalIgnoreCase)
+            && module.CreatedUtc == declared.CreatedUtc
+                ? null
+                : $"Dimension flow '{_flow.Name}': {named} reaches another database than this host's module database, so the lineage it declares would name tables and views the build does not write; nothing was built. Point it at the module's database.";
     }
 
     /// <summary>Settles the field of every dimension the run selects and counts the records each would read, reading no value.</summary>
@@ -265,7 +392,47 @@ public sealed class DimensionRunner
                 resolved?.Kinds ?? [], problems, null));
         }
 
-        return new DimensionPlanOutcome(DeliveryOperations.Plan, _flow.Name, partition, plans);
+        return new DimensionPlanOutcome(DeliveryOperations.Plan, _flow.Name, partition, plans) { Views = await PlanViewsAsync(ct).ConfigureAwait(false) };
+    }
+
+    /// <summary>
+    /// The flow's views as a build would write them, writing nothing: the statement of each, what stops a build writing it
+    /// (a <c>target.connection</c> that does not reach the module's database, a name another flow's view or an object no
+    /// build made holds), and what a build will do.
+    /// </summary>
+    private async Task<IReadOnlyList<DimensionViewPlanSummary>> PlanViewsAsync(CancellationToken ct)
+    {
+        if (_flow.Views.Count == 0)
+        {
+            return [];
+        }
+
+        var ledger = _context.Ledger;
+        string? target;
+        IReadOnlyList<DimensionViewProbe> probes;
+        if (ledger is null)
+        {
+            target = DeliveryServices.NoLedgerMessage;
+            probes = [];
+        }
+        else
+        {
+            target = await TargetProblemAsync(ledger, ct).ConfigureAwait(false);
+            probes = await ledger.ProbeDimensionViewsAsync(_flow.Name, _flow.Views, ct).ConfigureAwait(false);
+        }
+
+        return _flow.Views.Select(view =>
+        {
+            var probe = probes.FirstOrDefault(p => string.Equals(p.Name, view.Name, StringComparison.OrdinalIgnoreCase));
+            var problems = new List<string>();
+            if (target is not null)
+            {
+                problems.Add(target);
+            }
+
+            problems.AddRange(probe?.Problems ?? []);
+            return new DimensionViewPlanSummary(view.Name, view.ViewName, view.Definition.Tables, view.Definition.CreateSql, problems, probe?.Notes ?? []);
+        }).ToList();
     }
 
     private async Task<DimensionBuildSummary> BuildOneAsync(

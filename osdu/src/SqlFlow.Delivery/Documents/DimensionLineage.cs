@@ -1,4 +1,6 @@
 using SqlFlow.Core.Lineage;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Yaml;
 
@@ -8,7 +10,8 @@ namespace SqlFlow.Delivery.Documents;
 /// What a dimension flow contributes to SQLFlow's lineage (docs/lineage-design.md section 3): it reads the kind (wildcards
 /// allowed) of each of its dimensions on its platform and partition, and the dictionary file each map step names, and writes
 /// each dimension in its partition. A dimension flow is so ordered after the delivery flows writing the kinds it reads, and
-/// a cache flow holding one of its dimensions after it.
+/// a cache flow holding one of its dimensions after it. A flow naming its <c>target.connection</c> also writes each
+/// dimension's table and each of its views on that connection, so a pipeline reading them is ordered after it.
 /// </summary>
 public static class DimensionLineage
 {
@@ -63,6 +66,41 @@ public static class DimensionLineage
             }
         }
 
-        return new RegisteredFlowLineage { Datasets = datasets, Files = files, Warnings = warnings };
+        return new RegisteredFlowLineage { Objects = Objects(flow), Datasets = datasets, Files = files, Warnings = warnings };
+    }
+
+    /// <summary>
+    /// The database objects the flow writes (docs/dimension-plan.md, Views, Lineage and the module's database): each
+    /// dimension's table and each view, in the module's schema, on the connection <c>target.connection</c> names, so a
+    /// pipeline reading either through the same reference is ordered after the flow. A flow naming no target declares none.
+    /// </summary>
+    private static List<DeclaredDataObject> Objects(DimensionFlowDefinition flow)
+    {
+        if (flow.Target is not { } target)
+        {
+            return [];
+        }
+
+        var objects = flow.Dimensions
+            .Select(d => DimensionTables.NameOf(d.Name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(table => new DeclaredDataObject
+            {
+                Relation = LineageRelation.Writes,
+                ConnectionReference = target.Connection,
+                Schema = DeliveryModel.SchemaName,
+                Name = table,
+                Kind = LineageNodeKind.Table,
+            })
+            .ToList();
+        objects.AddRange(flow.Views.Select(view => new DeclaredDataObject
+        {
+            Relation = LineageRelation.Writes,
+            ConnectionReference = target.Connection,
+            Schema = DeliveryModel.SchemaName,
+            Name = view.ViewName,
+            Kind = LineageNodeKind.View,
+        }));
+        return objects;
     }
 }

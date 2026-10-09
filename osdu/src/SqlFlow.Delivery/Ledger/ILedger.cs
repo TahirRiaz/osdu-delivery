@@ -2587,6 +2587,36 @@ public interface ILedger
     Task<DimensionRemoved?> RemoveDimensionAsync(int dimensionId, CancellationToken ct = default);
 
     /// <summary>
+    /// Writes a build run's views (docs/dimension-plan.md, Views, Writing a view): each view its flow declares, in one
+    /// transaction under the view's lock, written where its statement changed and checked in the run's partition, and each
+    /// view the flow made before and no longer declares, dropped. A view that cannot be written keeps its last definition
+    /// and says why; the others are still written.
+    /// </summary>
+    Task<DimensionViewsWritten> WriteDimensionViewsAsync(DimensionViewWrite write, CancellationToken ct = default);
+
+    /// <summary>The views builds made, of one flow when <paramref name="flowName"/> names one, by name.</summary>
+    Task<IReadOnlyList<DimensionViewState>> ListDimensionViewsAsync(string? flowName, CancellationToken ct = default);
+
+    /// <summary>The view named <paramref name="name"/>, ignoring case, with its newest checks; null when no build made one.</summary>
+    Task<DimensionViewDetail?> GetDimensionViewAsync(string name, CancellationToken ct = default);
+
+    /// <summary>The views builds made that read the dimension table <paramref name="table"/>, by name: what refuses the removal of its dimension.</summary>
+    Task<IReadOnlyList<string>> DimensionViewsReadingAsync(string table, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the view named <paramref name="name"/> for good: the view from the database when it is there, and its record
+    /// with its checks. Null when no build made one. Whether it may go (no flow declares it) is the caller's to settle
+    /// (<see cref="Engine.Dimensions.DimensionViewRemoval"/>).
+    /// </summary>
+    Task<DimensionViewRemoved?> RemoveDimensionViewAsync(string name, CancellationToken ct = default);
+
+    /// <summary>What a build of flow <paramref name="flowName"/> would do with each of <paramref name="views"/>, writing nothing: what a plan says of them.</summary>
+    Task<IReadOnlyList<DimensionViewProbe>> ProbeDimensionViewsAsync(string flowName, IReadOnlyList<Model.DimensionViewSpec> views, CancellationToken ct = default);
+
+    /// <summary>The module's database as its server names it, which a dimension flow's <c>target.connection</c> has to reach.</summary>
+    Task<DatabaseIdentity> DatabaseIdentityAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// The texts a collected attribute's values stand for, as the dimension's last build that settled its field read them:
     /// those shown as one of <paramref name="values"/>, or every one when null; at most <paramref name="limit"/>, by value
     /// then text. The name compares exactly, as the dimension declares it.

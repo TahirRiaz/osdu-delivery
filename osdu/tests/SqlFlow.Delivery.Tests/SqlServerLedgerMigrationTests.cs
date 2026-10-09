@@ -601,7 +601,7 @@ public sealed class SqlServerLedgerMigrationTests
 
         await database.MigrateAsync(null);
 
-        Assert.Equal(9L, await database.ScalarAsync(Tables));
+        Assert.Equal(11L, await database.ScalarAsync(Tables));
         foreach (var table in DimensionTables)
         {
             Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
@@ -619,7 +619,7 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(BeforeDimensions);
         Assert.Equal(0L, await database.ScalarAsync(Tables));
         await database.MigrateAsync(null);
-        Assert.Equal(9L, await database.ScalarAsync(Tables));
+        Assert.Equal(11L, await database.ScalarAsync(Tables));
     }
 
     [Fact]

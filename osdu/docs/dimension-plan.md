@@ -20,10 +20,11 @@ value and key. A dimension's own table goes one step further: its two columns ar
 table).
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 14 are built; the WellDB estate
-(a local estate repository) holds a demo flow, `welldb/flows/welldb-welllog-05-dimensions.yaml`, whose one dimension,
-Wellbore, carries the filters of the facade service's log explorer (country, field, UUID, and the sources its logs
-collect) as its attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 14 are built, and stage 15 (Views)
+is planned; the WellDB estate (a local estate repository) holds a demo flow,
+`welldb/flows/welldb-welllog-05-dimensions.yaml`, whose one dimension, Wellbore, carries the filters of the facade
+service's log explorer (country, field, UUID, and the sources its logs collect) as its attributes, the table its
+cascading selects read. The live check listed under Close-out has not been run.
 
 ## Decisions
 
@@ -39,6 +40,11 @@ collect) as its attributes, the table its cascading selects read. The live check
 | How values are read | The search's `aggregateBy`, paged by value ranges; a cursor scan where aggregation cannot answer | `aggregateBy` returns at most `aggregationSize` buckets (1000 by default, a platform setting, not a request parameter) and has no paging of its own [19 SRC/config/SearchConfigurationProperties.java:23; SRC/util/AggregationParserUtil.java:65-71]. |
 | What cannot be a key | Values search cannot match exactly | A text value longer than 256 characters is not in the `keyword` sub-field at all (`ignore_above: 256`), and a null text is indexed there as the text `null` (`null_value`) [25 IC/util/TypeMapper.java:262-268]. Neither can be filtered on exactly, so both are counted and reported, never stored as keys. |
 | Operation names | `build` (the default) and `plan` | `plan` reads templates and counts, as every kind's plan does, and writes nothing. |
+| Views | Declared in the flow, joins and columns alike, and checked against the saved templates; never inferred | A view is what a pipeline reads: it changes only when its document does, the same on every host and in every partition, whichever templates are saved. |
+| Where a view lives | `osdu.dimv_<view>`, beside the dimension tables it reads, the second exception to "only migration-owned objects in `osdu`" | It reads nothing but dimension tables and comes and goes with them; a schema of its own would be one the module makes at run time, outside its migrations. |
+| A view's columns | A T-SQL scalar expression and a data type each, read by SQL Server's own parser and written back by the module from a listed set of operators and functions | SQL Server is the module's only provider, so a person writes what they know; a view written from the parsed tree reads the dimensions it joins and nothing else, which text passed through could not promise. |
+| How a join compares keys | The partition, a SHA-256 of the key (`key_hash`), and the text under `Latin1_General_100_BIN2` | A key is up to 1,024 characters, over SQL Server's 1,700-byte index key, and the database's collation may equate ids that differ only in case, which OSDU holds as different records. |
+| What orders a pipeline reading a view | `target.connection`, the module's database as the pipeline names it, required with views and checked against the module's own connection | SQLFlow identifies a server by its reference as written, and the module's connection is configured per host, so only a reference the flow declares meets the pipeline's. |
 
 Sources, read on 2026-09-30 through the GitLab API at the head of `master`:
 
@@ -405,6 +411,223 @@ any more, an admin removes it for good (`DELETE /dimensions/{dimensionId}`, the 
 - Recorded as a `remove-dimension` activity of its flow, before anything is deleted, with the actor (`user:<name>` from
   the API, `cli:<user>@<machine>` from a workstation) and, as it ends, what went or why it failed.
 
+## Views
+
+A view puts dimensions of one flow side by side at the grain of one of them, so a pipeline, a report or a person reads
+one table instead of writing the joins: each curve with its log, the log's sampling domain and the curve's unit. A flow
+declares its views by name, with their joins and their columns, each column an expression converted to a data type. A
+build writes each as `osdu.dimv_<view>` and keeps it in step with the tables it reads.
+
+```yaml
+# The flow's dimensions, abridged (the reference's Elements example, with a BaseDepth field):
+#   LogCurve               keyed by the log's id, a row a curve: WellLogID, WellLogName, element, Mnemonic,
+#                          CurveUnitID (keep: id), TopDepth, BaseDepth
+#   WellLog                keyed by id: WellLogID, WellLogName, SamplingDomainTypeID (keep: id), CreationDateTime
+#   RefSamplingDomainType  keyed by id, valued by data.Name
+#   RefUnitOfMeasure       keyed by id, valued by data.Name
+target:
+  connection: ${env:WELLDB_OSDU_DB}       # the module's database, named as the pipelines reading the views name it
+views:
+  - name: Curve                           # osdu.dimv_Curve
+    description: Every curve of every well log, with its log, the log's sampling domain and the curve's unit.
+    from: LogCurve                        # the grain: a row of the view for each row of dim_LogCurve
+    join:
+      - { on: WellLogID, to: WellLog }                                              # the same key: the log's row
+      - { on: WellLog.SamplingDomainTypeID, to: RefSamplingDomainType, as: Domain }  # through the log
+      - { on: CurveUnitID, to: RefUnitOfMeasure, as: Unit }
+    columns:
+      WellLogID: WellLogID                # an expression alone: here a column, kept as text
+      WellLog: WellLog.WellLogName
+      Curve: Mnemonic
+      Unit: Unit.Name
+      Domain: Domain.Name
+      TopDepth: { expression: TopDepth, dataType: float }
+      BaseDepth: { expression: "NULLIF(TRY_CAST(BaseDepth AS float), -999.25)", dataType: float }
+      Interval: { expression: "TRY_CAST(BaseDepth AS float) - TRY_CAST(TopDepth AS float)", dataType: "decimal(18,3)" }
+      Created:
+        expression: WellLog.CreationDateTime
+        dataType: datetime2(3)
+        description: When the log was made, in UTC.
+```
+
+A build writes it as (abridged to the first join and two columns):
+
+```sql
+CREATE OR ALTER VIEW [osdu].[dimv_Curve] (
+    [partition], [id], [WellLogID], [WellLog], ..., [Created]) AS
+SELECT b.[partition], b.[id], b.[WellLogID], j1.[WellLogName], ...,
+       CAST(SWITCHOFFSET(TRY_CAST(j1.[CreationDateTime] AS datetimeoffset(7)), '+00:00') AS datetime2(3))
+FROM [osdu].[dim_LogCurve] AS b
+LEFT JOIN [osdu].[dim_WellLog] AS j1
+       ON j1.[partition] = b.[partition]
+      AND j1.[key_hash] = CAST(HASHBYTES('SHA2_256', b.[WellLogID]) AS binary(32))
+      AND j1.[WellLogID] COLLATE Latin1_General_100_BIN2 = b.[WellLogID] COLLATE Latin1_General_100_BIN2
+...
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `target.connection` | none | The module's database, as a `${env:...}`, `${keyvault:...}` or `@alias` reference, never a connection string. Required when the flow declares views. |
+| `views[].name` | required | The view's name: a letter, then letters, digits and underscores, at most 64; unique among the views of a database, ignoring case. The view is `osdu.dimv_<name>`. |
+| `views[].description` | none | What the view holds, shown with it. |
+| `views[].from` | required | The dimension whose rows the view's rows are. |
+| `views[].join[]` | none | `{ on, to, as }`: the column joined on, the dimension joined to, and the alias its columns are read by (the dimension's name unless given). At most 16. |
+| `views[].columns` | every column, as text | Each column under its name, in order: an expression, or `{ expression, dataType, description }`. At most 256. |
+
+### What a view holds
+
+- Every view begins with `partition` and `id`: the partition, and the number of the `from` row the view's row stands for.
+  `id` is the view's key, the same for as long as the dimension holds the row, so a pipeline merges on it.
+- Then its `columns`, in the order written. A view that lists none has every column of `from` but `id`, `partition`,
+  `key_id` and `filter`, under the names the table gives them, then every column of each join the same way, prefixed by
+  the join's alias and an underscore (`Unit_Name`), with the joined row's number as `<alias>_id`, all as text. The prefix
+  is always given, so a dimension that gains an attribute adds a column and never renames or collides with another.
+- A row of `from` is a row of the view: every join is a left join, and no join meets more than one row.
+- A column's name follows the rules of a view's name, unlike every other column of the view ignoring case, and is neither
+  `partition` nor `id`.
+
+### Joins
+
+A join names the column it joins `on` (a column of `from`, bare, or of an earlier join, `alias.column`), the dimension it
+joins `to`, and its alias. Joins are read in order, so one can follow another and none can come back on itself; a
+dimension can be joined twice under two aliases. Joins stay inside one flow, so one run settles every table a view reads.
+Refused where the document is read, naming the view and the join:
+
+- `to` not a dimension of the flow, or an alias used twice.
+- `on` not a column of the table it names, or a column kept as `value`: shown as a value, it matches no key.
+- Keys that would not meet. A key's column or a column kept as `key` joins a dimension keyed by the same path; a column
+  kept as `id` joins a dimension keyed by `id`; two dimensions keyed by `id` have to read kinds of one entity type.
+- A dimension holding more than one row a key: one with `elements` or a collected attribute. Joined, it would repeat the
+  row of `from`; the refusal says to view it as `from`, or to join a dimension of the same key without them.
+
+Every join compares the partition and the key exactly. `key_hash` finds the row through an index, and the text is
+compared under `Latin1_General_100_BIN2`, since the database's own collation may equate ids that differ only in case: on
+a `Latin1_General_CI_AS` database, `...:Wellbore:A:` equals `...:Wellbore:a:`, and a join on the text alone would give
+a row both, or the wrong one (the local SQL Server, 2026-10-09).
+
+A join is declared, never inferred, so a view is its document's alone. The saved templates check it: where the template
+of the column's kind marks `on` with `x-osdu-relationship` (or an id pattern, `SchemaRelationships`), the blueprint shows
+the entity types it names and marks a join whose dimension reads another. A join of the wrong type finds nothing rather
+than a wrong row, since an id carries its entity type, and the check counts what each join found. The explorer's builder
+proposes a view's joins from the same relationships, and writes them into the item for a person to keep or change.
+
+### Expressions
+
+A column's `expression` is a T-SQL scalar expression. SQL Server's own parser reads it (ScriptDom, which SQLFlow's lineage
+already uses), and the module writes the view from what the parser read, never from the text as written. It can use:
+
+- **Columns**: bare for `from`'s, `alias.column` for a join's, named as the document names them: the key's and the
+  value's columns, an attribute, an element field, `element`, `records` and `id`.
+- **Literals**: numbers, `'text'`, `N'text'` and `NULL`.
+- **Operators**: `+ - * / %`, comparisons, `AND`, `OR`, `NOT`, `IS [NOT] NULL`, `[NOT] LIKE`, `[NOT] IN` a list of
+  values, `[NOT] BETWEEN`, `CASE`, and parentheses.
+- **Functions**: `COALESCE`, `NULLIF`, `ISNULL`, `IIF`; `TRY_CAST`, `TRY_CONVERT`, `CAST` and `CONVERT` without a style;
+  `LEFT`, `RIGHT`, `SUBSTRING`, `LEN`, `UPPER`, `LOWER`, `TRIM`, `LTRIM`, `RTRIM`, `REPLACE`, `CHARINDEX`, `CONCAT`,
+  `CONCAT_WS`; `ABS`, `ROUND`, `FLOOR`, `CEILING`, `POWER`, `SQRT`, `EXP`, `LOG`, `LOG10`, `SIGN`; `DATEADD`, `DATEDIFF`,
+  `DATEPART`, `YEAR`, `MONTH`, `DAY`, `DATEFROMPARTS`, `EOMONTH`.
+
+Anything else is refused where the document is read, naming the column and what was found there: a subquery, a table, a
+variable, a function not listed, a window (`OVER`), `COLLATE`, a value that moves with the clock (`GETDATE()`). So a
+view reads the dimensions it joins and nothing else in the database, and gives the same rows for the same tables. An
+expression is at most 4,000 characters.
+
+An expression is typed as it is read: every column of a dimension's table is text but `id`, `key_id`, `records` and
+`element`. Where SQL Server would convert implicitly, it is refused, since such a conversion fails the whole read at the
+first value it cannot convert: `BaseDepth - TopDepth` is refused, saying to convert first
+(`TRY_CAST(BaseDepth AS float) - TRY_CAST(TopDepth AS float)`), and so is text compared with a number. Text compared with
+text follows the database's collation, as any query of the tables does.
+
+What could fail a read is written so that it cannot:
+
+- `/` and `%` divide by `NULLIF(<divisor>, 0)`: a division by zero is null.
+- `SQRT`, `LOG` and `LOG10` outside their domain, and `LEFT`, `RIGHT` and `SUBSTRING` of a negative length, are null.
+- Every conversion, whichever of the four forms is written, is the module's (Data types, below).
+
+What is left, an arithmetic overflow or a `DATEADD` past the year 9999, the check finds (The check, below).
+
+### Data types
+
+`dataType` converts the column's value to a type as SQLFlow's schema evolution names it (`SqlDataType`): `bit`,
+`tinyint`, `smallint`, `int`, `bigint`, `decimal(p,s)` and `numeric(p,s)`, `float`, `real`, `date`, `time(n)`,
+`datetime2(n)`, `datetimeoffset(n)`, `uniqueidentifier`, and `nvarchar(n)` or `nvarchar(max)`. Left out, the column
+keeps its expression's type: text for a column of a table. Any other type is refused where the document is read:
+`varchar` and `char` would turn characters outside their code page into `?` without a word, `datetime` and
+`smalldatetime` round and stop at 1753 where `datetime2` does neither, and no other type is one a dimension's text
+converts to.
+
+A conversion never fails a read and never changes a value without saying so: a value it cannot convert is null, and the
+check counts it. Each is written for the text dimensions hold, as the local SQL Server answered on 2026-10-09:
+
+| To | Reads | Where plain `TRY_CAST` differs |
+| --- | --- | --- |
+| `float`, `real` | `203.149`, `-999.25`, `1.5E3`; not `12,5` or `NaN` | It does not. |
+| `decimal(p,s)`, `numeric(p,s)` | The same, rounded to `s` places: `203.149` as `decimal(18,2)` is `203.15` | `TRY_CAST` reads no exponent (`1.5E3` is null); a value it cannot read is read through `float`. |
+| `tinyint` to `bigint` | A whole number in any of those forms: `7`, `7.0`, `7E0` | `TRY_CAST` reads `7.0` as null. A fraction (`7.5`) is null, never cut to `7`. |
+| `bit` | `true`, `false`, `1` and `0`, ignoring case | It does not (`yes` is null). |
+| `datetime2(n)` | ISO 8601 (`2013-03-22T11:16:03.123Z`, `...+02:00`), as the instant in UTC; no offset is UTC | `TRY_CAST` drops an offset without applying it (`11:16:03+02:00` is `11:16:03`); the text is read as `datetimeoffset` and moved to UTC. |
+| `datetimeoffset(n)` | The same, keeping the offset | It does not. |
+| `date`, `time(n)` | The date or the time of day as written, its offset aside | Read through `datetimeoffset`, so a text with an offset converts. |
+| `nvarchar(n)` | A text of at most `n` characters | A cast cuts a longer text without a word; here it is null and counted. |
+| `uniqueidentifier` | A GUID in its usual text forms | It does not. |
+
+### The check
+
+After writing its views, a build reads each once, the rows of the run's partition: how many rows it holds, for each join
+how many rows found theirs, and for each converted column how many values did not convert, with three examples each
+(the row's `id` and the text). They are kept with the build (`DimensionViewCheck`), shown with the view and counted in
+the run's notes: `Unit: 1,204 of 88,310 rows name no row of RefUnitOfMeasure`, `TopDepth: 37 values are no float, for
+example '12,5'`. A join that finds no row at all is a warning in the notes.
+
+A read that fails (an overflow no expression could be written around) fails the build, naming the view, the column (read
+alone to find it) and SQL Server's message, so the pipelines ordered after the flow do not run against a view that cannot
+be read. The view keeps its definition: what fails is the data, and the next build that reads it whole passes.
+
+### Writing a view
+
+- **One writer.** A build run writes the flow's views at its end, after its dimensions, whichever dimensions it built and
+  even when one failed (its table holds its last build). Each view is written in one transaction under an application
+  lock of its own: every table it reads is made, empty, if no build has made it yet; rows without a `key_hash` are given
+  theirs; the view is written with `CREATE OR ALTER VIEW` and the list of its columns, never `*`; and its row in
+  `DimensionView` is written. A view whose declaration and tables' columns are as they were is not written again (its
+  hash says so); the check still runs. A view that cannot be written keeps its last definition, the run fails naming it,
+  and the next run writes it.
+- **Only what it made.** `DimensionView` records each view a flow made: its name, the flow, the declaration as last
+  written and its hash, the tables it reads, its columns with their types, the SQL, and the run that wrote it. A build
+  writes a view it recorded, or a name no object of the schema holds; a name another flow's view holds, or an object the
+  module did not make, is refused, naming it. A view its flow no longer declares is dropped by the flow's next build.
+- **Never left unreadable.** A build that renames a key's or a value's column (The table) rewrites, in the same
+  transaction, the views of its flow reading that table, taking their locks before the table's, so two builds cannot
+  wait on each other. A column added changes no view, since every view lists its columns. A dimension's removal is
+  refused while a recorded view reads its table, naming the view, until the flow's next build has written the view
+  without it.
+- **`key_hash`.** Every dimension table gains `key_hash binary(32)`, SHA-256 of the key's text as SQL Server's
+  `HASHBYTES` gives it, written with each row by the statements that write the rows and filled where it is missing, and
+  the index `IX_key_hash` (`partition`, `key_hash`). It is a column the build writes and not a computed one: the local
+  SQL Server refuses to rename a column a computed column reads (`participates in enforced dependencies`), and an index on
+  a computed column refuses every write from a session without `QUOTED_IDENTIFIER`.
+- **`plan`** compiles each view, says what would stop it and gives the SQL it would write, and writes nothing.
+
+### Lineage and the module's database
+
+With `target.connection`, the flow declares that it writes each dimension's table and each view (`DeclaredDataObject`
+in the schema `osdu`, a view as `LineageNodeKind.View`), so a pipeline reading either is ordered after the flow. SQLFlow
+identifies a server by its reference as written, so the flow and the pipeline name the database alike. The module's own
+connection cannot stand in for it: it is `Osdu:Database:Connection`, `SQLFLOW_OSDU_DB` or the catalog's depending on the
+host, and would match neither another host nor the pipeline.
+
+Build and plan resolve the reference and ask the server, on it and on the module's connection, for the server's name,
+the database's name and when the database was created, and refuse when the two differ, naming the reference and never
+what it resolves to: `target.connection ${env:WELLDB_OSDU_DB} reaches another database than this host's module
+database, so the lineage it declares would name tables the build does not write. Point it at the module's database.`
+
+### Reading views
+
+`GET /dimensions/views` and `GET /dimensions/views/{name}` (the declaration, the columns with their types and
+expressions, the SQL, the last check), `sqlflow dimensions views` (`list`, `show`), and the GUI: a dimension flow's
+Dimensions tab lists its views, and a view's page shows its columns, its joins with what each found, its conversions with
+their counts and examples, and its SQL. A view whose flow is gone is removed by an admin as a dimension is
+(`DELETE /dimensions/views/{name}`, `sqlflow dimensions remove-view`), recorded as a `remove-view` activity.
+
 ## The filter
 
 A key's filter is the query that finds exactly the records holding it; a value's is the query that finds every record
@@ -452,6 +675,9 @@ is on numbers, never on a text.
 | `DimensionCollectedText` | collected attribute and text | The attribute by its number, the text exactly as the index holds it, the value it is shown as, and the records holding it. |
 | `DimensionChange` | key that moved, left, came back or arrived after the first build | The build, the key, from and to value. |
 | `dim_<dimension>` | key and value it collects | The dimension as one table (The table, above): made and widened by builds, not by migrations. |
+| `DimensionView` | view | The flow, the declaration as last written and its hash, the tables it reads, its columns with their types, the SQL, and the run that wrote it. Keyed by an identity and unique by name: a view spans every partition, so it belongs to no ledger partition. |
+| `DimensionViewCheck` | view, partition and build | The rows, what each join found, and the values each conversion could not read, with examples. |
+| `dimv_<view>` | row of the view's `from` dimension | A view over the dimension tables (Views, above): written by builds, not by migrations. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
 mark removed, give each attribute its number, and bring the dimension's own table to what was kept. The attribute values
@@ -504,6 +730,18 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | A table made before dimensions named their columns | Holds `key` and `value`, is read under those names, and has them renamed by its next build, every row keeping its `id`. |
 | A name another column of the table already holds | The build fails before it renames anything, saying which column to drop or how to name the dimension's otherwise. |
 | A build renames a column while a page of the table is being read | The read is asked again and finds the column under its name; an export that had begun says the table changed. |
+| Two ids that differ only in case, on a case-insensitive database | Never joined to each other: a join compares the text under `Latin1_General_100_BIN2`. |
+| A join to a dimension of more than one row a key | Refused where the document is read, naming the dimension and why. |
+| A table a view reads that no build has made | Made empty by the view's write; its join finds nothing until the dimension is built. |
+| A value a conversion cannot read (`12,5` as `float`, `7.5` as `int`, a text longer than `nvarchar(n)`) | Null; the check counts it, with examples. |
+| An expression that fails on a value the check reads (an overflow) | The build fails, naming the view, the column and SQL Server's message; the view keeps its definition. |
+| A view its flow no longer declares | Dropped by the flow's next build. |
+| A view whose flow is gone | Kept, listed, and removed by an admin as a dimension is. |
+| A view name another flow's view holds, or an object of the schema the module did not make | Refused, naming it; nothing is written. |
+| A key's or a value's column renamed under a view | The views reading it are rewritten in the same transaction. |
+| Removing a dimension a view reads | Refused, naming the view, until the flow's next build has written the view without it. |
+| `target.connection` reaching another database than the module's | Build and plan are refused, naming the reference and never what it resolves to. |
+| An expression using what is not listed (a subquery, `GETDATE()`, a window) or converting implicitly | Refused where the document is read, naming the column and what was found. |
 
 ## Stages
 
@@ -656,6 +894,45 @@ samples README.
   template saved and a country with one; the kinds a build read; no template saved; a key no template calls a reference
   and a path the index cannot read; kind patterns; the API's blueprint with its YAML, columns and coverage, a dimension
   the flow no longer declares, and the refusals (SQL Server).
+
+### Stage 15: views
+
+- The document: `target.connection` and `views` (`DimensionViewSpec`: the name, the description, `from`, the joins, and
+  the columns with their expressions, data types and descriptions); every rule and refusal of Views; the YAML source
+  spans of each view, join and column; the key census.
+- `DimensionViewExpressions`: an expression read by ScriptDom's parser, checked against the listed operators, functions
+  and columns, typed, refused where SQL Server would convert implicitly, and written back with the guards;
+  `DimensionConversions`: each data type's conversion, as the table in Data types gives it.
+- `DimensionTables`: `key_hash` (written with every row, filled where missing) and `IX_key_hash`; `DimensionViews`: a
+  view's SQL from its declaration and the names its tables give their columns.
+- The store: a view's write at the end of a build run (its lock, the tables made, the hashes filled,
+  `CREATE OR ALTER VIEW`, its record); a rename rewriting the flow's views that read the table; the check with its
+  examples; a view no longer declared dropped; `DimensionRemoval` refusing a dimension a view reads.
+- Entities `DimensionView` and `DimensionViewCheck`, and the migration `DimensionViews` with its designer and snapshot
+  (module version 1.36.0).
+- `DimensionLineage`: the tables and the views written on `target.connection`; build and plan refusing a reference that
+  reaches another database than the module's; `plan` giving each view's SQL and what stops it.
+- The blueprint: each view's joins, with what the templates say of each `on`; the explorer's builder proposing a view's
+  joins from the relationships.
+- `GET /dimensions/views`, `GET /dimensions/views/{name}`, `DELETE /dimensions/views/{name}` (admin); `sqlflow
+  dimensions views` and `remove-view`; the GUI's views on a dimension flow's Dimensions tab and a view's page.
+- Documentation: `reference/flow/dimension.md` (Views), `design.md` section 15, the ledger, API and CLI references, and
+  `CLAUDE.md`, whose one exception names the views a dimension flow declares beside a dimension's own table.
+- Tests:
+  - The document: each refusal naming its place (a dimension the flow does not declare, a column kept as `value`, keys
+    that would not meet, a join repeating rows, an alias or a column twice, a construct or function not listed, a
+    subquery, an implicit conversion, a type not listed, `varchar`, a style), and views without `target.connection`.
+  - Expressions: the SQL written for each operator and function, the guards, and every conversion of the Data types
+    table run on SQL Server.
+  - SQL Server: a view over three dimensions with a join through another and a dimension joined twice; ids differing
+    only in case never joined; a table never built made empty and joined to nothing; a build of the same thing not
+    writing the view again; a key's column renamed with the view rewritten in the same transaction; a view no longer
+    declared dropped; a name another flow's view holds, and an object the module did not make, refused; a dimension's
+    removal refused while a view reads it; the check's counts and examples; an overflow failing the build naming the
+    view and the column; `key_hash` filled in a table built before it; the migration up, down and up again.
+  - Lineage: a pipeline reading a view ordered after the dimension flow; a `target.connection` reaching another
+    database refused by build and plan.
+  - The API's views and their refusals; the GUI's build and lint.
 
 ## Close-out
 

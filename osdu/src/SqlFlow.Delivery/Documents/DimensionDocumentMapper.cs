@@ -85,6 +85,8 @@ internal static class DimensionMapper
                 $"{source}: source.aggregationSize is {aggregationSize}; it is how many groups the platform's aggregation returns (its AGGREGATION_SIZE, {DimensionSource.DefaultAggregationSize} unless its operators changed it), between {DistinctReadOptions.MinAggregationSize} and {DistinctReadOptions.MaxAggregationSize}.");
         }
 
+        var dimensions = MapDimensions(y.Dimensions, parameters, partitions, followsRegistry, source);
+        var target = DimensionViewMapper.MapTarget(y.Target, source);
         var flow = new DimensionFlowDefinition
         {
             SourcePath = source == "<inline>" ? null : source,
@@ -103,7 +105,9 @@ internal static class DimensionMapper
             },
             Partitions = partitions,
             FollowsRegistry = followsRegistry,
-            Dimensions = MapDimensions(y.Dimensions, parameters, partitions, followsRegistry, source),
+            Dimensions = dimensions,
+            Target = target,
+            Views = DimensionViewMapper.MapViews(y.Views, target, name, dimensions, source),
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
         };
 
