@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import type { DeliveryDimensionYaml, DimensionYamlSpan } from "../../../api/delivery";
 import { elementsOfTarget, isContainer, keyNameOf, type BlueprintElement, type BlueprintLayout } from "./blueprintModel";
 import type { BlueprintLight } from "./BlueprintDiagram";
+import { TOKEN_CLASS, tokensOf, type Token } from "./yamlTokens";
 
 interface YamlProps {
   yaml: DeliveryDimensionYaml | null;
@@ -15,9 +16,6 @@ interface YamlProps {
   onPoint: (elements: BlueprintElement[] | null) => void;
   onPick: (element: BlueprintElement) => void;
 }
-
-/** How a character of a line is drawn: a key, a value, punctuation or a comment. */
-type Token = "key" | "value" | "mark" | "comment" | "space";
 
 /** One run of a line's characters drawn alike: the text, its token, whether it is lit, and what it declares. */
 interface Run {
@@ -35,96 +33,6 @@ interface Declared {
   keyOnly: boolean;
   size: number;
 }
-
-/** The kind of each character of a YAML line, as a reader tells them apart. */
-function tokensOf(line: string): Token[] {
-  const tokens: Token[] = new Array(line.length).fill("value");
-  let quote: string | null = null;
-  let comment = -1;
-  for (let at = 0; at < line.length; at++) {
-    const c = line[at];
-    if (quote !== null) {
-      if (c === quote) {
-        quote = null;
-      }
-
-      continue;
-    }
-
-    if (c === "'" || c === "\"") {
-      quote = c;
-      continue;
-    }
-
-    if (c === "#" && (at === 0 || /\s/.test(line[at - 1]))) {
-      comment = at;
-      break;
-    }
-  }
-
-  const end = comment < 0 ? line.length : comment;
-  for (let at = end; at < line.length; at++) {
-    tokens[at] = "comment";
-  }
-
-  // A key: what stands before the first colon followed by a space or the end of the line, after an optional dash.
-  const key = /^(\s*)(- )?([A-Za-z_][\w-]*)(:)(?=\s|$)/.exec(line.slice(0, end));
-  let from = 0;
-  if (key !== null) {
-    const [, indent, dash = "", name] = key;
-    for (let at = indent.length; at < indent.length + dash.length; at++) {
-      tokens[at] = "mark";
-    }
-
-    const start = indent.length + dash.length;
-    for (let at = start; at < start + name.length; at++) {
-      tokens[at] = "key";
-    }
-
-    tokens[start + name.length] = "mark";
-    from = start + name.length + 1;
-  } else {
-    const dash = /^(\s*)(- )/.exec(line.slice(0, end));
-    if (dash !== null) {
-      from = dash[1].length + 2;
-      tokens[dash[1].length] = "mark";
-    }
-  }
-
-  // The indentation belongs to nothing written on the line.
-  for (let at = 0; at < end && line[at] === " "; at++) {
-    tokens[at] = "space";
-  }
-
-  // Inside a flow collection the brackets, commas and the colons of its keys are punctuation.
-  quote = null;
-  for (let at = from; at < end; at++) {
-    const c = line[at];
-    if (quote !== null) {
-      if (c === quote) {
-        quote = null;
-      }
-
-      continue;
-    }
-
-    if (c === "'" || c === "\"") {
-      quote = c;
-    } else if ("[]{},".includes(c) || (c === ":" && (line[at + 1] === " " || at + 1 === end))) {
-      tokens[at] = "mark";
-    }
-  }
-
-  return tokens;
-}
-
-const TOKEN_CLASS: Record<Token, string> = {
-  key: "text-primary",
-  value: "text-foreground",
-  mark: "text-muted-foreground",
-  comment: "italic text-muted-foreground/80",
-  space: "",
-};
 
 /**
  * The dimension's YAML as its flow writes it, comments and all, each line numbered as in the file. Each part of a line
@@ -260,7 +168,15 @@ function covers(d: Declared, line: number, column: number): boolean {
   return !(line === span.endLine && column >= span.endColumn);
 }
 
-function YamlHeading({ file, first, last, copy }: { file: string | null; first: number | null; last: number | null; copy: string | null }) {
+/** The heading of a block of a flow's YAML: the file, the lines shown, and a way to copy them. */
+export function YamlHeading({ file, first, last, copy, copyLabel = "Copy the dimension's YAML", copyTestId = "blueprint-yaml-copy" }: {
+  file: string | null;
+  first: number | null;
+  last: number | null;
+  copy: string | null;
+  copyLabel?: string;
+  copyTestId?: string;
+}) {
   return (
     <header className="flex min-w-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-2">
       <FileCode className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -269,7 +185,7 @@ function YamlHeading({ file, first, last, copy }: { file: string | null; first: 
       {first !== null && last !== null && <span className="shrink-0 text-[11.5px] text-muted-foreground">lines {first}–{last}</span>}
       {copy !== null && (
         <span className="ml-auto shrink-0">
-          <CopyButton iconOnly label="Copy the dimension's YAML" text={copy} testId="blueprint-yaml-copy" />
+          <CopyButton iconOnly label={copyLabel} text={copy} testId={copyTestId} />
         </span>
       )}
     </header>

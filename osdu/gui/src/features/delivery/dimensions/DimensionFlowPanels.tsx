@@ -13,6 +13,7 @@ import { useActivePartition } from "../activePartition";
 import { ProblemView } from "../TemplateSheet";
 import { StandingGlyph } from "./DimensionBadges";
 import { DimensionRemoveButton } from "./DimensionRemoveButton";
+import { DimensionViewsSection } from "./DimensionViewList";
 import { STANDING_VISUALS, dimensionRef, standingOf, type DimensionEntry } from "./dimensionFormat";
 
 /** How often the tab reads the ledger again, so a build under way shows its outcome as it lands. */
@@ -23,7 +24,7 @@ const REFRESH_MS = 15000;
  * reads, what it holds and when it was built, with a way to open it on the Dimensions page. The page's own Trigger run
  * runs the pipeline, and its dialog picks the dimensions a run builds, so the tab adds no button of its own for that.
  * The dimensions the flow no longer declares, which keep what their last build wrote, wait behind a toggle, where an
- * admin can remove them.
+ * admin can remove them. Under them, the views the flow declares over its dimensions' tables.
  */
 export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
   const [active] = useActivePartition();
@@ -133,6 +134,7 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
           )}
         </div>
       )}
+      <DimensionViewsSection pipelineId={pipelineId} dimensions={declared.map((entry) => entry.dimension.name)} />
     </div>
   );
 }

@@ -20,8 +20,8 @@ value and key. A dimension's own table goes one step further: its two columns ar
 table).
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 14 are built, and stage 15 (Views)
-is planned; the WellDB estate (a local estate repository) holds a demo flow,
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 15 are built (15: Views); the WellDB
+estate (a local estate repository) holds a demo flow,
 `welldb/flows/welldb-welllog-05-dimensions.yaml`, whose one dimension, Wellbore, carries the filters of the facade
 service's log explorer (country, field, UUID, and the sources its logs collect) as its attributes, the table its
 cascading selects read. The live check listed under Close-out has not been run.

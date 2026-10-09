@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import type { RunDetail } from "@/api/types";
 import { DetailPair } from "@/components/DetailPair";
 import { runResult } from "../runOutcome";
+import { runViewFailed, runViewsOf } from "./dimensionViewFormat";
 
 /** A count a dimension run reported, or a muted dash when it reported none (a plan, a run that stopped before its builds). */
 function Count({ value, testId }: { value: number | null; testId: string }) {
@@ -47,7 +48,36 @@ export function DimensionRunActions() {
   );
 }
 
-/** How the run's dimensions came out, in place of the row counts SQLFlow's own runs carry. */
+/** The views a run reported, with those it could not write or read and those it dropped; the card under the header lists them. */
+function ViewCount({ result }: { result: Record<string, unknown> | null }) {
+  const reported = runViewsOf(result);
+  if (reported === null || (reported.views.length === 0 && reported.dropped.length === 0)) {
+    return null;
+  }
+
+  const failed = reported.views.filter(runViewFailed).length;
+  return (
+    <DetailPair label="Views">
+      <span className="inline-flex flex-wrap items-baseline gap-x-1.5" data-testid="run-dimensions-views">
+        <span className="font-mono tabular-nums">{reported.views.length.toLocaleString("en-US")}</span>
+        {failed > 0 && (
+          <>
+            <span className="text-muted-foreground/50" aria-hidden>·</span>
+            <span className="text-destructive">{failed.toLocaleString("en-US")} failed</span>
+          </>
+        )}
+        {reported.dropped.length > 0 && (
+          <>
+            <span className="text-muted-foreground/50" aria-hidden>·</span>
+            <span className="text-muted-foreground">{reported.dropped.length.toLocaleString("en-US")} dropped</span>
+          </>
+        )}
+      </span>
+    </DetailPair>
+  );
+}
+
+/** How the run's dimensions and views came out, in place of the row counts SQLFlow's own runs carry. */
 export function DimensionRunCounts({ run }: { run: RunDetail }) {
   const result = runResult(run);
   return (
@@ -57,6 +87,7 @@ export function DimensionRunCounts({ run }: { run: RunDetail }) {
       <DetailPair label="Skipped"><Count value={numberOf(result, "skipped")} testId="run-dimensions-skipped" /></DetailPair>
       <DetailPair label="Values"><Count value={sumOf(result, "values")} testId="run-dimensions-values" /></DetailPair>
       <DetailPair label="Keys"><Count value={sumOf(result, "keys")} testId="run-dimensions-keys" /></DetailPair>
+      <ViewCount result={result} />
     </>
   );
 }

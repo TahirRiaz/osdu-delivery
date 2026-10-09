@@ -11,6 +11,7 @@ import { ReversalCard } from "./ReversalCard";
 import { runRequest, runResult, runScope } from "./runOutcome";
 import { undoneFirst, undoRunCounts } from "../../api/artifacts";
 import { UndoneFirst } from "./ArtifactMarks";
+import { DimensionRunViews } from "./dimensions/DimensionRunViews";
 
 const OUTCOME_COPY: Record<string, string> = {
   cache: "What the refresh reported when it finished: the version it wrote (or that nothing changed), each type's record count and changes, and the delivered records those changes reach.",
@@ -31,8 +32,8 @@ const REDELIVER_LABELS: Record<string, string> = {
 };
 
 /**
- * What a delivery, retrieval, cache or assertion run was asked to do (its operation, the payload its trigger sent, the flow parameter
- * values it was given) and, once it finished, what it reported.
+ * What a delivery, retrieval, cache, assertion or dimension run was asked to do (its operation, the payload its trigger sent,
+ * the flow parameter values it was given) and, once it finished, what it reported; for a dimension run, the views it wrote.
  */
 export default function DeliveryRunCard({ run }: { run: RunDetail }) {
   const request = runRequest(run);
@@ -137,6 +138,9 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
           <UndoneFirst undone={sweptUndone} heading="Undone after the run" testId="run-undone-after-counts" />
         </Card>
       )}
+
+      {/* A dimension run's views: what it wrote, checked and dropped, each a way to its page. */}
+      {run.flowKind === "dimension" && <DimensionRunViews run={run} />}
 
       {run.resultJson !== null && (
         <Card className="gap-2 rounded-lg p-3" data-testid="run-result">

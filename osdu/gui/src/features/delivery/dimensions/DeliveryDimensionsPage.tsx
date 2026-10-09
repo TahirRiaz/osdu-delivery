@@ -17,10 +17,12 @@ import { counted } from "../assertions/assertionFormat";
 import { DimensionBuildDialog, type DimensionLaunch } from "./DimensionBuildDialog";
 import { DimensionOverview } from "./DimensionOverview";
 import { DimensionSearchBuilder } from "./DimensionSearchBuilder";
+import { DimensionViewWorkspace } from "./DimensionViewWorkspace";
 import { DimensionWorkspace } from "./DimensionWorkspace";
 import {
   DIMENSION_VIEWS, SEARCH_REF, attributePicksOf, attributePicksText, dimensionEntries, picksOf, picksText, type DimensionEntry, type DimensionView,
 } from "./dimensionFormat";
+import { VIEW_PARAM, VIEW_TABS, VIEW_TAB_PARAM, viewTabOf } from "./dimensionViewFormat";
 
 /** How often the board is read again, so a build under way shows its outcome as it lands. */
 const REFRESH_MS = 15000;
@@ -88,7 +90,8 @@ function viewOf(value: string | null): DimensionView {
  * flow, as cards under the facts they add up to; one dimension, whose grids take the page's whole width and scroll inside
  * it; and the search builder, which picks values across a kind's dimensions to compose the OSDU search that finds their
  * records. The dimension, the tab, the value open in a sheet, and the builder's kind and picks live in the URL, so a link
- * lands on the same view. Dimensions their flows no longer declare are left out of the lists until asked for.
+ * lands on the same view. Dimensions their flows no longer declare are left out of the lists until asked for. A view a
+ * dimension flow declares over its tables opens here too (`v`, its tab `vt`), on the page's whole width.
  */
 export default function DeliveryDimensionsPage() {
   const [params, setParams] = useSearchParams();
@@ -125,7 +128,9 @@ export default function DeliveryDimensionsPage() {
     return next;
   }, { replace: true });
 
-  const open = (ref: string | null) => update({ d: ref, view: null, value: null, kind: null, p: null, a: null });
+  const open = (ref: string | null) => update({ d: ref, view: null, value: null, kind: null, p: null, a: null, [VIEW_PARAM]: null, [VIEW_TAB_PARAM]: null });
+  const openView = (name: string) => update({ [VIEW_PARAM]: name, [VIEW_TAB_PARAM]: null, d: null, view: null, value: null, kind: null, p: null, a: null });
+  const viewName = params.get(VIEW_PARAM);
   const firstNeedingLook = declared.find((entry) => entry.standing === "failed" || entry.standing === "changed") ?? null;
   const searchButton = (
     <Button variant="outline" size="sm" onClick={() => open(SEARCH_REF)} disabled={declared.every((entry) => entry.dimension.dimensionId === null)} data-testid="dimensions-build-search">
@@ -133,6 +138,25 @@ export default function DeliveryDimensionsPage() {
       Build a search
     </Button>
   );
+
+  if (viewName !== null && viewName.trim() !== "") {
+    return (
+      <Page data-testid="page-delivery-dimensions">
+        <DimensionViewWorkspace
+          key={viewName}
+          name={viewName}
+          tab={viewTabOf(params.get(VIEW_TAB_PARAM))}
+          onTab={(tab) => update({ [VIEW_TAB_PARAM]: tab === VIEW_TABS[0] ? null : tab })}
+          onOpen={openView}
+          onBack={() => open(null)}
+          onOpenDimension={open}
+          flows={board.data?.flows ?? []}
+          onLaunch={setLaunch}
+        />
+        <DimensionBuildDialog launch={launch} onClose={() => setLaunch(null)} />
+      </Page>
+    );
+  }
 
   if (board.isError) {
     return (

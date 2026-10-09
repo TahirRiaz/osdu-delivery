@@ -118,7 +118,7 @@ function Attention({ entry, onBuild, onRemoved }: { entry: DimensionEntry; onBui
 }
 
 /** One fact of the line under a dimension's name: a number and what it counts, which opens the tab that explains it. */
-function Fact({ children, hint, tone, onClick, testId }: {
+export function Fact({ children, hint, tone, onClick, testId }: {
   children: ReactNode;
   hint: string;
   tone?: "warning";
