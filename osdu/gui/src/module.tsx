@@ -1,5 +1,5 @@
 import {
-  ClipboardList, CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
+  ClipboardList, CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch,
   ScrollText, Shapes, ShieldCheck, Telescope, TextSearch, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
@@ -339,29 +339,50 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/search-terms", component: SearchTermsPage },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
-  // ones. It sits straight after Workspace, and its entries read in the order the work is done: what has been delivered,
-  // one record, how OSDU stands against the tests, who did what, then the documents a delivery is built from, with the
-  // mapping builder, a tool for writing them, last. The explorer, which reads what OSDU itself holds, follows the records the
-  // ledger holds.
+  // ones, so what is OSDU and what is the platform stays plain. It sits straight after Workspace, where the flows of every
+  // kind are defined and scheduled, these included: no flow is configured here. Its entries are of four sorts, a section
+  // each, in the order an operator reaches for them: the ledger (what was delivered, one record, who did what); what OSDU
+  // holds, read live by the explorer or by the assertion, inventory and dimension flows; what a delivered document is
+  // built from (the mapping, the template it pins, the cache it reads); and the setup kept here rather than in a flow.
+  // The mapping builder is reached from Mappings, which owns its path.
   navGroups: [
-    { id: OSDU_GROUP, label: "OSDU", icon: Layers, after: "workspace" },
+    {
+      id: OSDU_GROUP,
+      label: "OSDU",
+      icon: Layers,
+      after: "workspace",
+      sections: [
+        { id: "ledger", label: "Ledger" },
+        { id: "in-osdu", label: "In OSDU" },
+        { id: "build", label: "Build" },
+        { id: "setup", label: "Setup" },
+      ],
+    },
   ],
   navItems: [
-    { group: OSDU_GROUP, label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
-    { group: OSDU_GROUP, label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
-    { group: OSDU_GROUP, label: "Explorer", to: "/delivery/explorer", icon: Telescope, testId: "nav-delivery-explorer" },
-    { group: OSDU_GROUP, label: "Search terms", to: "/delivery/search-terms", icon: TextSearch, testId: "nav-delivery-search-terms" },
-    { group: OSDU_GROUP, label: "Tests", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
-    { group: OSDU_GROUP, label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
-    { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },
-    { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
-    { group: OSDU_GROUP, label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
-    { group: OSDU_GROUP, label: "Dimensions", to: "/delivery/dimensions", icon: Shapes, testId: "nav-delivery-dimensions" },
-    { group: OSDU_GROUP, label: "Inventories", to: "/delivery/inventories", icon: ClipboardList, testId: "nav-delivery-inventories" },
-    { group: OSDU_GROUP, label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
-    { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
+    { group: OSDU_GROUP, section: "ledger", label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
+    { group: OSDU_GROUP, section: "ledger", label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
+    { group: OSDU_GROUP, section: "ledger", label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
+    { group: OSDU_GROUP, section: "in-osdu", label: "Explorer", to: "/delivery/explorer", icon: Telescope, testId: "nav-delivery-explorer" },
+    { group: OSDU_GROUP, section: "in-osdu", label: "Tests", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
+    { group: OSDU_GROUP, section: "in-osdu", label: "Inventories", to: "/delivery/inventories", icon: ClipboardList, testId: "nav-delivery-inventories" },
+    { group: OSDU_GROUP, section: "in-osdu", label: "Dimensions", to: "/delivery/dimensions", icon: Shapes, testId: "nav-delivery-dimensions" },
+    {
+      group: OSDU_GROUP,
+      section: "build",
+      label: "Mappings",
+      to: "/delivery/documents",
+      icon: FileCode2,
+      testId: "nav-delivery-documents",
+      owns: ["/delivery/mappings/build"],
+    },
+    { group: OSDU_GROUP, section: "build", label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
+    { group: OSDU_GROUP, section: "build", label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
+    { group: OSDU_GROUP, section: "setup", label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
+    { group: OSDU_GROUP, section: "setup", label: "Search terms", to: "/delivery/search-terms", icon: TextSearch, testId: "nav-delivery-search-terms" },
   ],
   detailTitles: [
+    { pattern: /^\/delivery\/mappings\/build/, title: () => "Mapping builder" },
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },
     { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${shortId(match[1])}` },
     { pattern: /^\/delivery\/assertions\/runs\/(\d+)/, title: (match) => `Report #${match[1]}` },

@@ -364,7 +364,9 @@ test.describe.serial("templates and the mapping builder", () => {
   });
 
   test("the builder starts a mapping from a saved template, with what the cache holds prefilled", async ({ adminPage }) => {
-    await adminPage.getByTestId("nav-delivery-mapping-builder").click();
+    // The builder is no entry of the menu: Mappings opens it.
+    await adminPage.getByTestId("nav-delivery-documents").click();
+    await adminPage.getByTestId("delivery-documents-new-mapping").click();
     await expect(adminPage.getByTestId("page-delivery-mapping-builder")).toBeVisible({ timeout: FIRST_VISIT_MS });
     await expect(adminPage.getByTestId("mapping-builder-empty")).toBeVisible();
 

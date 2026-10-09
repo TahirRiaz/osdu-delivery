@@ -701,10 +701,21 @@ read from.
 
 ## The GUI
 
-Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Workspace group:
-Delivery, Records, Explorer, Search terms, Tests, Audit trail, Mappings, Templates, Cache, Dimensions, Partitions and Mapping builder. The platform's own groups (Operate,
-Workspace, Tools, Explore) hold only its generic surfaces, so a delivery flow's own page is still reached through
-Pipelines like any other flow.
+Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Workspace group,
+so what is OSDU and what is the platform is plain from the menu. Its entries are of four sorts, each a labelled section,
+in the order an operator reaches for them:
+
+| Section | Entries | What they are |
+| --- | --- | --- |
+| **Ledger** | Delivery, Records, Audit trail | What the delivery system sent and keeps: each flow's counts, one record's journey, who did what. |
+| **In OSDU** | Explorer, Tests, Inventories, Dimensions | What OSDU holds: read live by the explorer, or by the assertion, inventory and dimension flows, each page every such flow's results on one board. |
+| **Build** | Mappings, Templates, Cache | What a delivered document is built from: the mapping, the template it pins, the cache it reads. The mapping builder opens from Mappings (**New mapping**, **Open in builder**), and Mappings stays lit while it is shown. |
+| **Setup** | Partitions, Search terms | What is kept in the GUI rather than in a flow: the partition registry (also reached from the title bar's partition picker) and the explorer's search terms. |
+
+The platform's own groups (Operate, Workspace, Tools, Explore) hold only its generic surfaces. **Workspace is where
+flows are defined and scheduled, these kinds included: no flow is configured in the OSDU group**, and a flow's own
+page (a delivery, cache, assertion, dimension or inventory flow) is reached through Pipelines like any other flow. The
+command palette lists the same entries, headed `OSDU · Ledger`, `OSDU · In OSDU` and so on.
 
 - **Delivery** (OSDU): every delivery flow with delivered versus total, pending, held, failed, drifted, and
   its last submission, and a field that opens Records looked up for whatever is typed into it.
@@ -1091,12 +1102,12 @@ Pipelines like any other flow.
   relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved
   templates are listed with where each version came from and how many mappings pin it, and a version no mapping pins
   can be deleted.
-- **Mapping builder**: pick the repository, a saved template and the partition whose cache the mapping is checked
-  against (the Partition cache picker lists every partition a synced cache flow fills, with those flows, and defaults
-  to the partition the repository's delivery flow delivers to), and the page lists every template variable, with a
-  cache entry prefilled for each variable outside a repeater that points to an entity type that cache holds. Each
-  entry takes its value from the dataset, a repeater, the cache (one record by `$findBy`, or every matching row by
-  `$findAll`), a lookup, a search, a static value, the first of several alternatives, or for a list a list of values,
+- **Mapping builder** (opened from Mappings): pick the repository, a saved template and the partition whose cache the
+  mapping is checked against (the Partition cache picker lists every partition a synced cache flow fills, with those
+  flows, and defaults to the partition the repository's delivery flow delivers to), and the page lists every template
+  variable, with a cache entry prefilled for each variable outside a repeater that points to an entity type that cache
+  holds. Each entry takes its value from the dataset, a repeater, the cache (one record by `$findBy`, or every matching
+  row by `$findAll`), a lookup, a search, a static value, the first of several alternatives, or for a list a list of values,
   with its modifiers, condition and required flag; the mapping's lookups are edited in a card of their own. The YAML and
   its checks against the template and the cache's current version follow every edit. The mapping is copied, or proposed
   to the repository as a pull request through the proposal endpoint (`POST /api/v1/repos/sources/{id}/proposals`). An
