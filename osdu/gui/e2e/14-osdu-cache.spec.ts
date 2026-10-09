@@ -1,4 +1,5 @@
-import { CACHE, DELIVERY_FLOW, LOOKUPS, REFERENCE, SOURCE } from "./global-setup";
+import { CACHE, DELIVERY_FLOW, LOOKUPS, REFERENCE, REFERENCE_RECORDS, SOURCE } from "./global-setup";
+import { importCacheRecords } from "./delivery-cli";
 import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the files that fill it, a summary row says which version is read
@@ -6,9 +7,10 @@ import { expect, test } from "./helpers";
 // (what it means for the records already in OSDU) and Setup (its cache flows and the OSDU feature flags). The records are
 // browsed from a list of the types beside them; the history keeps a searchable type picker in the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare thirteen types
 // (none asking for approval): the reference data the fixture mappings read and the partition's reference data the well
-// log mapping checks its ids against, both declaring UnitOfMeasure, whose records were imported through the CLI as the
-// first two versions, and the lookup tables the well log mapping translates through, whose refresh (the unit maps and
-// the curve dictionary, loaded from cache/data by their own flows) wrote the third.
+// log mapping checks its ids against, both declaring UnitOfMeasure, whose records were imported through the CLI (the
+// first two versions, on a database no estate was seeded into before), and the lookup tables the well log mapping
+// translates through, whose refresh (the unit maps and the curve dictionary, loaded from cache/data by their own flows)
+// wrote the next.
 
 /** The partition the sample cache flow fills, and so the cache the page shows. */
 const PARTITION = "dev";
@@ -42,7 +44,7 @@ test.describe.serial("osdu cache", () => {
     await expect(rail.getByTestId("delivery-cache-type-all")).toHaveAttribute("aria-current", "true");
     await expect(rail).toContainText("Reference data");
     await expect(rail).toContainText("Lookup tables");
-    for (const name of ["UnitOfMeasure", "TrajectoryStationPropertyType", "LogCurveType", "LogCurveFamily", "RecallUnits", "RecallDepthUnits", "CurveDictionary"]) {
+    for (const name of ["UnitOfMeasure", "TrajectoryStationPropertyType", "LogCurveType", "LogCurveFamily", "UnitAlias", "DepthUnitAlias", "CurveDictionary"]) {
       await expect(rail.locator(`[data-type="${name}"]`)).toBeVisible();
     }
     await expect(rail.locator('[data-type="UnitOfMeasure"]').getByTestId("delivery-cache-type-item-count")).toHaveText(/^\d/);
@@ -101,11 +103,11 @@ test.describe.serial("osdu cache", () => {
     await expect(type.getByTestId("delivery-cache-setup-type-entry")).toContainText("$cache: UnitOfMeasure.id");
 
     // A lookup table says where its rows come from and what they are kept under.
-    await tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^RecallUnits$/ }).first().click();
-    await expect(type).toContainText("[arc].[CacheRecallUnits]");
+    await tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^UnitAlias$/ }).first().click();
+    await expect(type).toContainText("[silver].[UnitAlias]");
     await expect(type).toContainText("source_unit");
     await tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^CurveDictionary$/ }).first().click();
-    await expect(type).toContainText("[arc].[CacheCurveDictionary]");
+    await expect(type).toContainText("[silver].[CurveDictionary]");
 
     // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache; a lookup table
     // is read by a findBy on its key, or translates a value as a replace.
@@ -118,7 +120,8 @@ test.describe.serial("osdu cache", () => {
     // Three flows fill the partition, so Refresh asks which one: a refresh captures what one flow declares. The suite never
     // submits a reference cache's refresh, which searches the OSDU target.
     await adminPage.getByTestId("delivery-cache-refresh").click();
-    await expect(adminPage.getByTestId(`delivery-cache-refresh-${LOOKUPS}`)).toContainText("RecallUnits");
+    // UnitAlias itself, not only the DepthUnitAlias the same flow declares.
+    await expect(adminPage.getByTestId(`delivery-cache-refresh-${LOOKUPS}`)).toContainText(/(?<!Depth)UnitAlias/);
     await expect(adminPage.getByTestId(`delivery-cache-refresh-${REFERENCE}`)).toContainText("LogCurveType");
     await adminPage.getByTestId(`delivery-cache-refresh-${CACHE}`).click();
     const dialog = adminPage.getByTestId("trigger-run-dialog");
@@ -254,15 +257,35 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await adminPage.getByTestId("delivery-cache-tab-history").click();
 
-    // Three versions: the fixture records' import first, then the reference records' import and the lookups flow's
-    // refresh, in whichever order the suite's reused database first saw them, each adding what the one before lacked.
+    // The versions, newest first, each naming the flow that wrote it and how. The suite's database is reused, so it may
+    // also list versions the flows of an estate synced into it before wrote, and those this estate's flows wrote while
+    // its sample records were not yet what they are now. Each of this estate's three cache flows has written the version
+    // that holds what it captures: the two imports, which name the files they read, and the lookups flow's refresh,
+    // which names its run.
     const versions = adminPage.getByTestId("delivery-cache-history-versions").getByTestId("table-row");
-    await expect(versions).toHaveCount(3, { timeout: 30_000 });
+    const writtenBy = (flow: string) => versions.filter({ hasText: `${flow} · ` });
+    await expect(writtenBy(CACHE).first()).toContainText("files under", { timeout: 30_000 });
+    await expect(writtenBy(REFERENCE).first()).toContainText("files under");
+    await expect(writtenBy(LOOKUPS).first().getByTestId("delivery-cache-history-run")).toBeVisible();
+
+    // The newest is the one deliveries read, written by one of this estate's flows; the oldest is the cache's first. A
+    // version is written only when the cache moves, so the newest counts what it changed. Which way it moved depends on
+    // what the database held before (on a fresh one the refresh adds the lookup tables; on a reused one an import may
+    // take out what an estate synced before left), so the count is read whatever its kind.
     await expect(versions.first()).toContainText(/\d{8}T\d{6}Z/);
     await expect(versions.first()).toContainText("current");
-    await expect(versions.first()).toContainText("added");
-    await expect(versions.last()).toContainText("files under");
+    await expect(versions.first()).toContainText(new RegExp(`(${CACHE}|${REFERENCE}|${LOOKUPS}) · `));
+    await expect(versions.first()).toContainText(/\d[\d,]* (changed|added|removed)/);
     await expect(versions.last()).toContainText("first version");
+
+    // Importing records the cache already holds writes no version: the list is what it was, whatever it held before.
+    test.setTimeout(480_000);
+    const listed = await versions.count();
+    expect(importCacheRecords(REFERENCE, REFERENCE_RECORDS)).toContain(REFERENCE);
+    await adminPage.reload();
+    await adminPage.getByTestId("delivery-cache-tab-history").click();
+    await expect(versions.first()).toContainText("current", { timeout: 30_000 });
+    await expect(versions).toHaveCount(listed);
 
     // The newest is compared with the version before it: its records arrived as added.
     await versions.first().click();
@@ -271,7 +294,7 @@ test.describe.serial("osdu cache", () => {
     await expect(detail).toContainText("Changes in");
     await expect(detail.getByTestId("delivery-cache-history-uncomparable")).toHaveCount(0);
 
-    // The fixture import is the first version, so there is nothing before it to compare with.
+    // The first version has nothing before it to compare with.
     await versions.last().click();
     await expect(detail.getByTestId("delivery-cache-history-uncomparable")).toBeVisible();
 
@@ -314,7 +337,14 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-tag-status-all").click();
     await expect(adminPage.getByTestId("delivery-cache-tag-status-all")).toHaveAttribute("data-state", "on");
     await expect(adminPage.getByTestId("delivery-cache-approval-rule")).toHaveText("Every type updates automatically: a change reaches its records on their next delivery.");
-    await expect(adminPage.getByTestId("delivery-cache-tags-table")).toContainText("No refresh of this cache has changed a value", { timeout: 30_000 });
+    // Every change the list holds goes out on its own: each is carried by a rollout, and none waits for a decision. On a
+    // database no estate was refreshed into before, no refresh has changed a value a delivered record was built from; on
+    // the suite's reused one, a refresh of this estate may have changed values an estate synced before had records built
+    // from, and those changes roll out the same way.
+    const changes = adminPage.getByTestId("delivery-cache-tags-table");
+    await expect(changes.getByText("No refresh of this cache has changed a value").or(changes.getByTestId("delivery-cache-tag-rollout").first()))
+      .toBeVisible({ timeout: 30_000 });
+    await expect(changes).not.toContainText("waiting for a decision");
 
     // The approval queue is empty, and says how to switch approval on for a type.
     await adminPage.getByTestId("delivery-cache-tag-status-pending").click();

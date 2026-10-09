@@ -58,7 +58,7 @@ public sealed class DeliveryDimensionApiTests
             description: The curve mnemonics and wellbores the well logs hold.
             partitions: [{{partition}}]
             parameters:
-              logSource: { default: STAT_COMP, description: The log source read. }
+              logSource: { default: COMPOSITE, description: The log source read. }
             source:
               endpoint: http://localhost
             dimensions:
@@ -118,7 +118,7 @@ public sealed class DeliveryDimensionApiTests
             // The wellbores are keyed by the id each log refers to, and valued by the name read from the wellbore; one wellbore
             // the label search did not find is valued by its id.
             var wellbores = await WellboresAsync(ledger, flow, now.AddMinutes(-30),
-                ("dev:master-data--Wellbore:1001:", "15/9-F-1", 7, "Norway"), ("dev:master-data--Wellbore:1002:", "15/9-F-4", 3, "Norway"),
+                ("dev:master-data--Wellbore:1001:", "A/1-F-1", 7, "United States"), ("dev:master-data--Wellbore:1002:", "A/1-F-4", 3, "United States"),
                 ("dev:master-data--Wellbore:9999:", null, 1, null));
             var wellboreId = wellbores.DimensionId;
 
@@ -212,30 +212,30 @@ public sealed class DeliveryDimensionApiTests
             // it by either.
             var wellboreField = OsduField.Text("data.WellboreID");
             var named = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?search=F-4")).GetProperty("items").EnumerateArray());
-            Assert.Equal(("dev:master-data--Wellbore:1002:", "15/9-F-4", "dev:master-data--Wellbore:1002", "15/9-F-4"),
+            Assert.Equal(("dev:master-data--Wellbore:1002:", "A/1-F-4", "dev:master-data--Wellbore:1002", "A/1-F-4"),
                 (named.GetProperty("key").GetString(), named.GetProperty("label").GetString(), named.GetProperty("labelFrom").GetString(), named.GetProperty("value").GetString()));
             Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1002:"])[0], named.GetProperty("filter").GetString());
             var country = Assert.Single(named.GetProperty("attributes").EnumerateArray());
-            Assert.Equal(("Country", "Norway"), (country.GetProperty("name").GetString(), country.GetProperty("value").GetString()));
+            Assert.Equal(("Country", "United States"), (country.GetProperty("name").GetString(), country.GetProperty("value").GetString()));
 
             // Values and keys are looked up by an attribute, and an attribute lists its values: the lookup a drop-down reads.
-            var inNorway = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=country:Norway&order=value");
-            var norwegian = inNorway.GetProperty("items").EnumerateArray().ToList();
-            Assert.Equal(["15/9-F-1", "15/9-F-4"], norwegian.Select(v => v.GetProperty("value").GetString()));
-            Assert.Equal("Norway", norwegian[0].GetProperty("attributes")[0].GetProperty("value").GetString());
-            Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?attr=Country:Norway&search=F-4")).GetProperty("items").EnumerateArray());
+            var inUnitedStates = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=country:United%20States&order=value");
+            var unitedStates = inUnitedStates.GetProperty("items").EnumerateArray().ToList();
+            Assert.Equal(["A/1-F-1", "A/1-F-4"], unitedStates.Select(v => v.GetProperty("value").GetString()));
+            Assert.Equal("United States", unitedStates[0].GetProperty("attributes")[0].GetProperty("value").GetString());
+            Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?attr=Country:United%20States&search=F-4")).GetProperty("items").EnumerateArray());
             var countries = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country");
-            var norway = Assert.Single(countries.EnumerateArray());
-            Assert.Equal(("Norway", 2, 10L), (norway.GetProperty("value").GetString(), norway.GetProperty("keys").GetInt32(), norway.GetProperty("records").GetInt64()));
+            var listedCountry = Assert.Single(countries.EnumerateArray());
+            Assert.Equal(("United States", 2, 10L), (listedCountry.GetProperty("value").GetString(), listedCountry.GetProperty("keys").GetInt32(), listedCountry.GetProperty("records").GetInt64()));
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Basin", HttpStatusCode.NotFound, "reads no attribute 'Basin'; it reads Country");
 
             // An attribute's values among the keys the other picks leave, as a cascade of selects reads them: the keys of the
             // values picked; a pick of the attribute itself does not narrow its own list.
-            var ofOne = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?value={norwegian[0].GetProperty("valueId").GetInt64()}")).EnumerateArray());
-            Assert.Equal(("Norway", 1, 7L), (ofOne.GetProperty("value").GetString(), ofOne.GetProperty("keys").GetInt32(), ofOne.GetProperty("records").GetInt64()));
-            Assert.Equal(countries.GetRawText(), (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?attr=Country:Denmark")).GetRawText());
+            var ofOne = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?value={unitedStates[0].GetProperty("valueId").GetInt64()}")).EnumerateArray());
+            Assert.Equal(("United States", 1, 7L), (ofOne.GetProperty("value").GetString(), ofOne.GetProperty("keys").GetInt32(), ofOne.GetProperty("records").GetInt64()));
+            Assert.Equal(countries.GetRawText(), (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?attr=Country:Canada")).GetRawText());
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?attr=Basin:X", HttpStatusCode.BadRequest, "reads no attribute 'Basin'");
-            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=Norway", HttpStatusCode.BadRequest, "is not Name:value");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=United%20States", HttpStatusCode.BadRequest, "is not Name:value");
             var unnamed = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?search=9999")).GetProperty("items").EnumerateArray());
             Assert.Equal(("dev:master-data--Wellbore:9999:", JsonValueKind.Null), (unnamed.GetProperty("value").GetString(), unnamed.GetProperty("label").ValueKind));
 
@@ -258,13 +258,13 @@ public sealed class DeliveryDimensionApiTests
             Assert.Contains("\"gr\"", searched, StringComparison.Ordinal);
             Assert.Contains("\"DT\"", searched, StringComparison.Ordinal);
 
-            // The search across dimensions: a record holding a key of GR, of a log of wellbore 15/9-F-1, in the kind both read.
+            // The search across dimensions: a record holding a key of GR, of a log of wellbore A/1-F-1, in the kind both read.
             var search = await PostJsonAsync(client, token, "/api/v1/delivery/dimensions/search", new
             {
                 picks = new object[]
                 {
                     new { dimensionId, values = new[] { "GR" } },
-                    new { dimensionId = wellboreId, values = new[] { "15/9-F-1", "15/9-F-9" } },
+                    new { dimensionId = wellboreId, values = new[] { "A/1-F-1", "A/1-F-9" } },
                 },
             });
             var curveFilter = DimensionFilters.Of(field, ["GR", "gr"])[0];
@@ -272,27 +272,27 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(WellLog, search.GetProperty("kind").GetString());
             Assert.Equal($"({curveFilter}) AND ({wellboreFilter})", search.GetProperty("query").GetString());
             Assert.Equal(3, search.GetProperty("clauses").GetInt32());
-            Assert.Equal([wellboreName + ": 15/9-F-9"], search.GetProperty("missing").EnumerateArray().Select(m => m.GetString()));
+            Assert.Equal([wellboreName + ": A/1-F-9"], search.GetProperty("missing").EnumerateArray().Select(m => m.GetString()));
             var request = JsonDocument.Parse(search.GetProperty("request").GetString()!).RootElement;
             Assert.Equal((WellLog, search.GetProperty("query").GetString()), (request.GetProperty("kind").GetString(), request.GetProperty("query").GetString()));
             Assert.Equal(["CurveMnemonic", wellboreName], search.GetProperty("parts").EnumerateArray().Select(p => p.GetProperty("dimension").GetString()));
             var picked = Assert.Single(search.GetProperty("parts")[1].GetProperty("values").EnumerateArray());
-            Assert.Equal(("15/9-F-1", 7L), (picked.GetProperty("value").GetString(), picked.GetProperty("records").GetInt64()));
+            Assert.Equal(("A/1-F-1", 7L), (picked.GetProperty("value").GetString(), picked.GetProperty("records").GetInt64()));
 
-            // A pick by attribute: every wellbore in Norway, with the curve GR.
+            // A pick by attribute: every wellbore in the United States, with the curve GR.
             var byCountry = await PostJsonAsync(client, token, "/api/v1/delivery/dimensions/search", new
             {
                 picks = new object[]
                 {
                     new { dimensionId, values = new[] { "GR" } },
-                    new { dimensionId = wellboreId, attributes = new[] { new { name = "Country", values = new[] { "Norway" } } } },
+                    new { dimensionId = wellboreId, attributes = new[] { new { name = "Country", values = new[] { "United States" } } } },
                 },
             });
-            var norwayFilter = DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:", "dev:master-data--Wellbore:1002:"])[0];
-            Assert.Equal($"({curveFilter}) AND ({norwayFilter})", byCountry.GetProperty("query").GetString());
+            var countryFilter = DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:", "dev:master-data--Wellbore:1002:"])[0];
+            Assert.Equal($"({curveFilter}) AND ({countryFilter})", byCountry.GetProperty("query").GetString());
             var byPart = byCountry.GetProperty("parts")[1];
             Assert.Equal("Country", byPart.GetProperty("attributes")[0].GetProperty("name").GetString());
-            Assert.Equal(["15/9-F-1", "15/9-F-4"], byPart.GetProperty("values").EnumerateArray().Select(v => v.GetProperty("value").GetString()).Order(StringComparer.Ordinal));
+            Assert.Equal(["A/1-F-1", "A/1-F-4"], byPart.GetProperty("values").EnumerateArray().Select(v => v.GetProperty("value").GetString()).Order(StringComparer.Ordinal));
 
             // A search reads one kind: one the dimensions' kind does not cover is refused, and so is a dimension picked twice.
             using (var outside = await PostAsync(client, token, "/api/v1/delivery/dimensions/search", new
@@ -331,7 +331,7 @@ public sealed class DeliveryDimensionApiTests
                 var lines = (await jsonl.Content.ReadAsStringAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
                 Assert.Equal(3, lines.Length);
                 var row = lines.Select(l => JsonDocument.Parse(l).RootElement).Single(r => r.GetProperty("key").GetString() == "dev:master-data--Wellbore:1001:");
-                Assert.Equal(("15/9-F-1", "15/9-F-1"), (row.GetProperty("label").GetString(), row.GetProperty("value").GetString()));
+                Assert.Equal(("A/1-F-1", "A/1-F-1"), (row.GetProperty("label").GetString(), row.GetProperty("value").GetString()));
                 Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:"])[0], row.GetProperty("filter").GetString());
             }
 
@@ -349,7 +349,7 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(("WellboreID", "FacilityName"), (whole.GetProperty("keyColumn").GetString(), whole.GetProperty("valueColumn").GetString()));
             Assert.Equal(["Country"], whole.GetProperty("attributes").EnumerateArray().Select(a => a.GetString()));
             Assert.Equal(
-                [("15/9-F-1", "Norway", 7L), ("15/9-F-4", "Norway", 3L), ("dev:master-data--Wellbore:9999:", null, 1L)],
+                [("A/1-F-1", "United States", 7L), ("A/1-F-4", "United States", 3L), ("dev:master-data--Wellbore:9999:", null, 1L)],
                 whole.GetProperty("rows").EnumerateArray().Select(r => (r.GetProperty("value").GetString(), r.GetProperty("attributes")[0].GetString(), r.GetProperty("records").GetInt64())));
             var firstRow = whole.GetProperty("rows")[0];
             Assert.Equal(
@@ -359,24 +359,24 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(tableName, (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}")).GetProperty("dimension").GetProperty("table").GetString());
 
             // A page of it narrowed by an attribute and ordered by any column, searched, and paged.
-            var norwegianRows = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=country:Norway&order=records&dir=desc");
-            Assert.Equal(2L, norwegianRows.GetProperty("total").GetInt64());
-            Assert.Equal(["15/9-F-1", "15/9-F-4"], norwegianRows.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("value").GetString()));
+            var countryRows = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=country:United%20States&order=records&dir=desc");
+            Assert.Equal(2L, countryRows.GetProperty("total").GetInt64());
+            Assert.Equal(["A/1-F-1", "A/1-F-4"], countryRows.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("value").GetString()));
 
             // The value's column is ordered by under its own name, or under the word value whatever it is named.
             List<string> Values(JsonElement page) => page.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("value").GetString()!).ToList();
             var byName = Values(await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?order=facilityname&dir=desc"));
-            Assert.Equal(["dev:master-data--Wellbore:9999:", "15/9-F-4", "15/9-F-1"], byName);
+            Assert.Equal(["dev:master-data--Wellbore:9999:", "A/1-F-4", "A/1-F-1"], byName);
             Assert.Equal(byName, Values(await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?order=value&dir=desc")));
-            Assert.Equal("15/9-F-4", Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?search=f-4")).GetProperty("rows").EnumerateArray()).GetProperty("value").GetString());
+            Assert.Equal("A/1-F-4", Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?search=f-4")).GetProperty("rows").EnumerateArray()).GetProperty("value").GetString());
             var secondPage = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?offset=1&limit=1");
-            Assert.Equal(("15/9-F-4", true, JsonValueKind.Null), (
+            Assert.Equal(("A/1-F-4", true, JsonValueKind.Null), (
                 Assert.Single(secondPage.GetProperty("rows").EnumerateArray()).GetProperty("value").GetString(), secondPage.GetProperty("more").GetBoolean(),
                 secondPage.GetProperty("total").ValueKind));
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?dir=sideways", HttpStatusCode.BadRequest, "not one of asc, desc");
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?order=Basin", HttpStatusCode.BadRequest, "has no column 'Basin' to order by");
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=Basin:X", HttpStatusCode.BadRequest, "has no attribute column 'Basin'; it has Country");
-            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=Norway", HttpStatusCode.BadRequest, "is not Name:value");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=United%20States", HttpStatusCode.BadRequest, "is not Name:value");
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?offset=-1", HttpStatusCode.BadRequest, "zero or more");
             await ProblemAsync(client, token, "/api/v1/delivery/dimensions/2147483000/table", HttpStatusCode.NotFound, "No dimension");
 
@@ -387,8 +387,8 @@ public sealed class DeliveryDimensionApiTests
                 Assert.Equal("id,partition,key_id,WellboreID,FacilityName,Country,records,filter", lines[0]);
                 Assert.Equal(
                     [
-                        $"{partition},dev:master-data--Wellbore:1001:,15/9-F-1,Norway,7",
-                        $"{partition},dev:master-data--Wellbore:1002:,15/9-F-4,Norway,3",
+                        $"{partition},dev:master-data--Wellbore:1001:,A/1-F-1,United States,7",
+                        $"{partition},dev:master-data--Wellbore:1002:,A/1-F-4,United States,3",
                         $"{partition},dev:master-data--Wellbore:9999:,dev:master-data--Wellbore:9999:,,1",
                     ],
                     lines.Skip(1).Select(l => l.Split(',')).Select(c => string.Join(',', c[1], c[3], c[4], c[5], c[6])));

@@ -7,7 +7,7 @@ namespace SqlFlow.Delivery.Engine.Dimensions;
 
 /// <summary>
 /// What is picked in one dimension: values, by id or as the dimension holds them, and attribute values its keys hold
-/// (<c>Country</c> is <c>Norway</c>). With attributes alone, every key holding them; with both, the keys of the values picked
+/// (<c>Country</c> is <c>United States</c>). With attributes alone, every key holding them; with both, the keys of the values picked
 /// that hold them. A collected attribute's value picks records as well: those holding it, not every record of its keys.
 /// </summary>
 public sealed record DimensionPick(

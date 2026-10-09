@@ -37,7 +37,7 @@ record:
     viewers: ["{$param.aclViewer}"]
   legal:
     legaltags: ["{$param.legalTag}"]
-    otherRelevantDataCountries: [NO]
+    otherRelevantDataCountries: [US]
   tags:
     DeliveredBy: osdu-delivery
 
@@ -51,5 +51,5 @@ record:
       $modifiers: [trim]
       $required: false
     Source:
-      $value: recall
+      $value: welldb
       $description: The system the document came from, carried as provenance.

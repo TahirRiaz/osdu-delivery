@@ -1,4 +1,3 @@
-using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
@@ -16,6 +15,9 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
 {
     /// <summary>What the pipeline row shows as a cache flow's target: the versions a refresh writes live in the module database.</summary>
     public const string CatalogTarget = "catalog";
+
+    /// <summary>What the offline check reads dictionaries with. The loader holds no state, so one serves every document.</summary>
+    private static readonly DeliveryDocumentLoader DictionaryDocuments = new();
 
     public required CacheDefinition Flow { get; init; }
 
@@ -48,6 +50,9 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
         ArgumentNullException.ThrowIfNull(context);
         return CacheLineage.Describe(Flow, context);
     }
+
+    /// <summary>The dictionary each dictionary type holds, found and read as a refresh finds and reads it (<see cref="CompanionFiles.Dictionaries(CacheDefinition, string, DeliveryDocumentLoader)"/>).</summary>
+    public override IReadOnlyList<string> CheckOffline(string documentPath) => CompanionFiles.Dictionaries(Flow, documentPath, DictionaryDocuments);
 }
 
 /// <summary>The <c>flowType: cache</c> document kind, registered in every host next to its executor.</summary>
@@ -83,11 +88,8 @@ public sealed class CacheFlowKind : IFlowDocumentKind
         DeliveryOperations.RefuseBuiltInOverrides(parameters, CacheDefinition.FlowTypeName, "a refresh sweeps every declared type in full.");
 
         // The control plane supplies its central configuration to every run of the module's kinds in the payload; a cache
-        // run takes that and nothing else, since a refresh has no submission, record or slice to name.
-        if (!DeliveryRunPayload.Parse(parameters).CarriesOnlyConfiguration)
-        {
-            throw new SqlFlowException(
-                "A cache flow's payload carries only the central configuration the control plane supplies; a run names its partition and the flow's parameter values under values.");
-        }
+        // run takes that and nothing else, since a refresh has no submission, record or slice to name. A run names its
+        // partition and the flow's parameter values under values.
+        DeliveryRunPayload.Parse(parameters).RefuseOtherThan(CacheDefinition.FlowTypeName, []);
     }
 }

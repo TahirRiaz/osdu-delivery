@@ -336,7 +336,7 @@ public class PayloadFileTests
     [Fact]
     public void A_stored_payload_location_round_trips_through_its_text()
     {
-        var location = new PayloadLocation(@"D:\lake\curves\NO_15_9\L-1001", "chunk_*.parquet");
+        var location = new PayloadLocation(@"D:\lake\curves\PROJECT_A\L-1001", "chunk_*.parquet");
         var parsed = PayloadLocation.Parse(location.ToString());
         Assert.Equal(location.Folder, parsed.Folder);
         Assert.Equal(location.Pattern, parsed.Pattern);
@@ -685,11 +685,11 @@ public sealed class OsduCacheStoreTests : IDisposable
         Assert.Equal(
             [Samples.FixtureCacheFlowName, Samples.SampleReferenceFlowName, Samples.SampleLookupsFlowName],
             (await store.ListVersionsAsync(Samples.SampleCacheScope)).Select(v => v.FlowName));
-        // petrodb-api's translations, loaded from the files in cache/data: the curve unit map, the depth unit map, and the
-        // curve dictionary giving each mnemonic the codes of the records it is filed under.
-        Assert.Equal("source_unit", version.Type("RecallUnits")!.Key);
-        Assert.Equal("v/v", version.Type("RecallUnits")!.Value(version.Type("RecallUnits")!.Match("source_unit", "V/V")!, "osdu_unit")!.Text);
-        Assert.Equal("ft", version.Type("RecallDepthUnits")!.Value(version.Type("RecallDepthUnits")!.Match("source_unit", "FEET")!, "osdu_unit")!.Text);
+        // The well database's translations, loaded from the files in cache/data: the curve unit spellings, the depth unit
+        // spellings, and the curve dictionary giving each mnemonic the codes of the records it is filed under.
+        Assert.Equal("source_unit", version.Type("UnitAlias")!.Key);
+        Assert.Equal("v/v", version.Type("UnitAlias")!.Value(version.Type("UnitAlias")!.Match("source_unit", "V/V")!, "osdu_unit")!.Text);
+        Assert.Equal("ft", version.Type("DepthUnitAlias")!.Value(version.Type("DepthUnitAlias")!.Match("source_unit", "FEET")!, "osdu_unit")!.Text);
         Assert.Equal("Gamma%20Ray", version.Type("CurveDictionary")!.Value(version.Type("CurveDictionary")!.Match("mnemonic", "GR")!, "log_curve_family_id")!.Text);
 
         // The sample well log mapping builds every reference id it writes from these tables and a template, and each id

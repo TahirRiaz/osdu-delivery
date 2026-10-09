@@ -340,15 +340,37 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             throw new FlowValidationException($"{where}: {_keys.Name("source.systemColumns.deleted")} names column '{declaredDeleted}', which the record table {recordName} does not hold.");
         }
 
-        _fileNameColumn = Optional(record, source.SystemColumns.FileName)?.Name;
-        if (_fileNameColumn is not null && record[_fileNameColumn].MaxCharacters > MaxFileNameLength)
+        // A record's origin file and row are what the ledger traces it back to. A column the flow names itself has to be
+        // there, so a misspelt name is refused rather than losing every record's origin without a word; one left at its
+        // default is read when the table carries it.
+        var fileName = Optional(record, source.SystemColumns.FileName);
+        if (source.SystemColumns.FileNameDeclared && source.SystemColumns.FileName is { } declaredFileName && fileName is null)
+        {
+            throw MissingProvenance("source.systemColumns.fileName", declaredFileName, "origin file", recordName, record, where);
+        }
+
+        _fileNameColumn = fileName?.Name;
+        if (fileName is not null && fileName.MaxCharacters > MaxFileNameLength)
         {
             throw new FlowValidationException(
-                $"{where}: {_keys.Name("source.systemColumns.fileName")} names column '{_fileNameColumn}' of {recordName}, which holds up to {record[_fileNameColumn].MaxCharacters.ToString(CultureInfo.InvariantCulture)} characters. "
+                $"{where}: {_keys.Name("source.systemColumns.fileName")} names column '{fileName.Name}' of {recordName}, which holds up to {fileName.MaxCharacters.ToString(CultureInfo.InvariantCulture)} characters. "
                 + $"The ledger stores a record's origin file in {MaxFileNameLength.ToString(CultureInfo.InvariantCulture)} characters; land the files under a shorter root, or opt out with {_keys.Name("source.systemColumns.fileName")}: ~.");
         }
 
-        _rowNumberColumn = Optional(record, source.SystemColumns.RowNumber)?.Name;
+        var rowNumber = Optional(record, source.SystemColumns.RowNumber);
+        if (source.SystemColumns.RowNumberDeclared && source.SystemColumns.RowNumber is { } declaredRowNumber && rowNumber is null)
+        {
+            throw MissingProvenance("source.systemColumns.rowNumber", declaredRowNumber, "origin row", recordName, record, where);
+        }
+
+        if (rowNumber is not null && !rowNumber.IsWholeNumber)
+        {
+            throw new FlowValidationException(
+                $"{where}: {_keys.Name("source.systemColumns.rowNumber")} names column '{rowNumber.Name}' of {recordName}, which is {rowNumber.SqlType}. "
+                + $"A record's origin row is a whole number (SQLFlow's {FlowSystemColumns.DefaultRowNumber} is a bigint); name another, or opt out with {_keys.Name("source.systemColumns.rowNumber")}: ~.");
+        }
+
+        _rowNumberColumn = rowNumber?.Name;
 
         var inserted = Optional(record, source.SystemColumns.Inserted);
         if (source.SystemColumns.InsertedDeclared && source.SystemColumns.Inserted is { } declaredInserted && inserted is null)
@@ -530,6 +552,17 @@ public sealed class SqlServerIngestionSource : IIngestionSource
 
     private static SourceColumn? Optional(IReadOnlyDictionary<string, SourceColumn> columns, string? name)
         => name is not null && columns.TryGetValue(name, out var column) ? column : null;
+
+    /// <summary>
+    /// The refusal of a provenance column the flow named that the record table does not hold: every record read without it
+    /// would reach the ledger with no <paramref name="what"/>, which is what traces a record back to where it came from.
+    /// </summary>
+    private FlowValidationException MissingProvenance(
+        string key, string column, string what, SourceObjectName table, IReadOnlyDictionary<string, SourceColumn> columns, string where)
+        => new(
+            $"{where}: {_keys.Name(key)} names column '{column}', which the record table {table} does not hold, so every record would reach the ledger without its {what}. "
+            + $"Columns: {string.Join(", ", columns.Keys.OrderBy(c => c, StringComparer.Ordinal))}. "
+            + $"Name the column the ingestion flow lands it in, or opt out with {_keys.Name(key)}: ~.");
 
     private async Task<long> CountAsync(SqlConnection connection, IngestionLayout layout, SourceSelection selection, SourceWindow window, CancellationToken ct)
     {
@@ -806,7 +839,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             Scopes = datasets,
             Origin = new SourceOrigin(
                 _fileNameColumn is null ? null : builder.Row.GetString(_fileNameColumn),
-                _rowNumberColumn is null ? null : builder.Row.Get(_rowNumberColumn) as long?,
+                _rowNumberColumn is null ? null : RowNumber(builder.Row.Get(_rowNumberColumn)),
                 updated,
                 _insertedColumn is null ? null : Moment(builder.Row.Get(_insertedColumn))),
             Version = SourceVersion.Of(IngestionFingerprint.Of(updated, versions)),
@@ -832,6 +865,17 @@ public sealed class SqlServerIngestionSource : IIngestionSource
 
         return new SourceRow(values);
     }
+
+    /// <summary>
+    /// A row's position in its file as the record's origin row: a whole number of any integer type (normalised to
+    /// <see cref="long"/>), or of a decimal type without a scale, which the layout allows. Null for a row that holds none.
+    /// </summary>
+    private static long? RowNumber(object? value) => value switch
+    {
+        long whole => whole,
+        decimal exact when exact == decimal.Truncate(exact) && exact is >= long.MinValue and <= long.MaxValue => (long)exact,
+        _ => null,
+    };
 
     private static DateTime? Moment(object? value) => value switch
     {

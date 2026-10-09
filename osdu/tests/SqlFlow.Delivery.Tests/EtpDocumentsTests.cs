@@ -23,7 +23,7 @@ public class EtpDocumentsTests
     {
         var flow = _loader.ParseFlow(Flow("""
               etp:
-                dataspace: volve/study
+                dataspace: field-a/study
                 objectsPerMessage: 25
                 maxMessageBytes: 4000000
                 maxArrayBytes: 8000000
@@ -31,7 +31,7 @@ public class EtpDocumentsTests
             """), "grids.yaml");
 
         Assert.Equal(DeliveryProtocol.Etp, flow.Target.Protocol);
-        Assert.Equal("volve/study", flow.Target.Etp.Dataspace);
+        Assert.Equal("field-a/study", flow.Target.Etp.Dataspace);
         Assert.Equal(25, flow.Target.Etp.ObjectsPerMessage);
         Assert.Equal(4_000_000, flow.Target.Etp.MaxMessageBytes);
         Assert.Equal(8_000_000, flow.Target.Etp.MaxArrayBytes);
@@ -64,7 +64,7 @@ public class EtpDocumentsTests
     public void The_block_belongs_to_the_etp_route_alone()
     {
         var refused = Assert.Throws<FlowValidationException>(
-            () => _loader.ParseFlow(Flow("  etp:\n    dataspace: volve/study").Replace("protocol: etp", "protocol: storage", StringComparison.Ordinal), "grids.yaml"));
+            () => _loader.ParseFlow(Flow("  etp:\n    dataspace: field-a/study").Replace("protocol: etp", "protocol: storage", StringComparison.Ordinal), "grids.yaml"));
         Assert.Contains("target.etp declares the Reservoir DDMS", refused.Message, StringComparison.Ordinal);
         Assert.Contains("this flow's route is storage", refused.Message, StringComparison.Ordinal);
     }
@@ -74,9 +74,9 @@ public class EtpDocumentsTests
     {
         // An interface naming the etp route goes by it, with nothing beside the record: a mapping can render the object's
         // XML and arrays into the document.
-        var source = _loader.ParseSource(Source("  etp:\n    dataspace: volve/study", "route: etp"), "estate.yaml");
+        var source = _loader.ParseSource(Source("  etp:\n    dataspace: field-a/study", "route: etp"), "estate.yaml");
         var grids = Assert.Single(source.Interfaces, i => i.Target.Protocol == DeliveryProtocol.Etp);
-        Assert.Equal("volve/study", grids.Target.Etp.Dataspace);
+        Assert.Equal("field-a/study", grids.Target.Etp.Dataspace);
         Assert.Contains("names the etp route", grids.RouteReason, StringComparison.Ordinal);
         // The storage interface has no use for the Reservoir DDMS, so it keeps the defaults rather than the source's block.
         Assert.Null(Assert.Single(source.Interfaces, i => i.Target.Protocol == DeliveryProtocol.Storage).Target.Etp.Dataspace);
@@ -92,7 +92,7 @@ public class EtpDocumentsTests
         Assert.Contains("its XML and its arrays sent with it", withParts.RouteReason, StringComparison.Ordinal);
 
         var unused = Assert.Throws<FlowValidationException>(
-            () => _loader.ParseSource(Source("  etp:\n    dataspace: volve/study", "route: storage"), "estate.yaml"));
+            () => _loader.ParseSource(Source("  etp:\n    dataspace: field-a/study", "route: storage"), "estate.yaml"));
         Assert.Contains("target.etp declares the Reservoir DDMS", unused.Message, StringComparison.Ordinal);
         Assert.Contains("no interface is delivered by it (route: etp)", unused.Message, StringComparison.Ordinal);
         Assert.StartsWith("estate.yaml:", unused.Message, StringComparison.Ordinal);
@@ -131,7 +131,7 @@ public class EtpDocumentsTests
     [Fact]
     public void The_route_removes_an_object_for_good_and_shows_the_two_scopes_it_refuses()
     {
-        var flow = _loader.ParseFlow(Flow("  etp:\n    dataspace: volve/study"), "grids.yaml");
+        var flow = _loader.ParseFlow(Flow("  etp:\n    dataspace: field-a/study"), "grids.yaml");
         var endpoints = RemovalEndpoints.Of(flow, "energistics:etp:obj_Grid2dRepresentation:2.0.1");
 
         Assert.Equal("Store.DeleteDataObjects {object uri}", endpoints.Everything);

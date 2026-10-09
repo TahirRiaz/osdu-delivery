@@ -39,6 +39,10 @@ public sealed record DimensionFlowDocument : RegisteredFlowDocument
         ArgumentNullException.ThrowIfNull(context);
         return DimensionLineage.Describe(Flow, context);
     }
+
+    /// <summary>The dictionary each map step cleans through, found and read as a build finds and reads it (<see cref="CompanionFiles.Dictionaries(DimensionFlowDefinition, string, DeliveryDocumentLoader)"/>).</summary>
+    public override IReadOnlyList<string> CheckOffline(string documentPath)
+        => CompanionFiles.Dictionaries(Flow, documentPath, new DeliveryDocumentLoader());
 }
 
 /// <summary>The <c>flowType: dimension</c> document kind, registered in every host next to its executor.</summary>
@@ -72,13 +76,9 @@ public sealed class DimensionFlowKind : IFlowDocumentKind
     {
         ArgumentNullException.ThrowIfNull(parameters);
         DeliveryOperations.RefuseBuiltInOverrides(parameters, DimensionFlowDefinition.FlowTypeName, "a build reads every value the index holds; name the dimensions to build in the payload.");
-        var payload = DeliveryRunPayload.Parse(parameters);
-        if (payload.Force || payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Rerender || payload.Slices.Count > 0
-            || payload.Interface is not null || payload.Interfaces.Count > 0 || payload.SelectsTests || payload.SelectsInventories)
-        {
-            throw new SqlFlowException(
-                "A dimension flow's payload names the dimensions a run builds (dimensions) and nothing else; a dimension has no submission, record, slice, interface, test or inventory to name.");
-        }
+
+        // A run names the dimensions it builds or plans, beside the central configuration.
+        DeliveryRunPayload.Parse(parameters).RefuseOtherThan(DimensionFlowDefinition.FlowTypeName, [DeliveryRunPayload.DimensionsProperty]);
     }
 
     /// <summary>The operation a dimension flow runs: build (its default) or plan.</summary>

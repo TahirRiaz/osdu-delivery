@@ -1662,6 +1662,9 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.Property<DateTime?>("ChangedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("CheckedUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("CreateTime")
                         .HasColumnType("datetime2");
 

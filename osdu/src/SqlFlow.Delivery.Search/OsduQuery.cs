@@ -247,7 +247,7 @@ public sealed record OsduQuery
     /// <summary>
     /// Finds the records whose text <paramref name="field"/> holds <paramref name="words"/> as a phrase anywhere in its value,
     /// their case aside: the analysed field, whose words the indexer keeps apart and in lower case, inside the service's
-    /// nested form for a property of a nested array. <c>NO 34/10</c> finds <c>NO 34/10-A-30</c> and <c>Well NO 34/10</c>
+    /// nested form for a property of a nested array. <c>Wellbore A</c> finds <c>Wellbore A-30</c> and <c>Pilot Wellbore A</c>
     /// alike. Only text has its words indexed apart; a keyword, a number, a boolean and a date are compared whole.
     /// </summary>
     /// <exception cref="OsduQueryException">The property is not text, or the words cannot be asked for; the message says which.</exception>

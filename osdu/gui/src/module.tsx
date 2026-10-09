@@ -20,7 +20,7 @@ import { activePartition } from "./features/delivery/activePartition";
 import { PartitionSwitcher } from "./features/delivery/PartitionSwitcher";
 import { shortId } from "./features/delivery/idTail";
 
-// The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval, cache, assertion and dimension kinds on SQLFlow's
+// The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval, cache, assertion, dimension and inventory kinds on SQLFlow's
 // pipeline, run and trigger pages, the delivery records in search, and the product's branding. Everything heavy (the
 // pages, the panels, anything with the code editor) loads with the surface that shows it.
 
@@ -94,7 +94,7 @@ const RecordSearchHits = lazyRoute(
 
 /**
  * The key census of every document this module adds, so the YAML editor documents, colours and checks them as it does
- * SQLFlow's own flows: the delivery, retrieval, cache, assertion and dimension flows by their flowType, the mapping and the dictionary
+ * SQLFlow's own flows: the delivery, retrieval, cache, assertion, dimension and inventory flows by their flowType, the mapping and the dictionary
  * by their documentType. Each file loads when the editor first starts, not with the page.
  */
 const census: GuiModule["census"] = [
@@ -334,7 +334,8 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
     { path: "/delivery/dimensions", component: DeliveryDimensionsPage },
     { path: "/delivery/inventories", component: DeliveryInventoriesPage },
-    // What OSDU holds, read live from it through a flow's credentials, which takes the operate scope.
+    // What OSDU holds, read live from it through a flow's credentials, under the operate policy, which every signed-in
+    // user holds (only admin checks a scope).
     { path: "/delivery/explorer", component: ExplorerPage, requiredScope: "operate" },
     { path: "/delivery/search-terms", component: SearchTermsPage },
   ],

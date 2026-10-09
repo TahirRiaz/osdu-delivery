@@ -4,8 +4,8 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The sample estate as a running flow meets it: the sample logs in the in-memory ingestion tables, with the payload
-/// files they point at written under the test's own root. It is the data the repository holds (the real Recall logs of
-/// osdu/samples/recall, read by <see cref="SampleWellLogs"/>), so what the suites exercise is what an operator would see.
+/// files they point at written under the test's own root. It is the data the repository holds (the synthetic well logs
+/// of osdu/samples/welldb, read by <see cref="SampleWellLogs"/>), so what the suites exercise is what an operator would see.
 /// </summary>
 public static class SampleEstate
 {

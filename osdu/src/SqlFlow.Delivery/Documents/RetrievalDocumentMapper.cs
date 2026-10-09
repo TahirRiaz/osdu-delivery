@@ -47,6 +47,16 @@ internal static class RetrievalMapper
             throw new FlowValidationException($"{source}: source.kinds lists the same kind more than once.");
         }
 
+        // The target probe ("Probe target" and the scheduled probe) asks a delivery flow's route, through the delivery
+        // ledger's audit trail; a retrieval has neither, and its run never calls an info path. Accepting the key would promise
+        // a check nothing makes, so it is refused by name rather than read and ignored.
+        if (src.ProbePath is not null)
+        {
+            throw new FlowValidationException(
+                $"{source}: source.probePath is not a key of a retrieval flow: the target probe covers delivery flows only, and a retrieval run never calls it. "
+                + "A retrieval that cannot reach the search service fails on its first page and says why; remove the key.");
+        }
+
         var flow = new RetrievalDefinition
         {
             SourcePath = source == "<inline>" ? null : source,
@@ -72,7 +82,6 @@ internal static class RetrievalMapper
                 FetchRecords = src.FetchRecords ?? false,
                 RecordQueryPath = string.IsNullOrWhiteSpace(src.RecordQueryPath) ? RetrievalSource.DefaultRecordQueryPath : src.RecordQueryPath!.Trim(),
                 FetchParallelism = src.FetchParallelism ?? 4,
-                ProbePath = string.IsNullOrWhiteSpace(src.ProbePath) ? RetrievalSource.DefaultProbePath : src.ProbePath!.Trim(),
             },
             Target = new RetrievalTarget
             {
@@ -147,7 +156,7 @@ internal static class RetrievalMapper
             throw new FlowValidationException($"{source}: source.incremental.field '{incremental.Field}' must be a field path without whitespace.");
         }
 
-        foreach (var path in new[] { ("source.searchPath", s.SearchPath), ("source.queryPath", s.QueryPath), ("source.recordQueryPath", s.RecordQueryPath), ("source.probePath", s.ProbePath) })
+        foreach (var path in new[] { ("source.searchPath", s.SearchPath), ("source.queryPath", s.QueryPath), ("source.recordQueryPath", s.RecordQueryPath) })
         {
             if (!path.Item2.StartsWith('/'))
             {
@@ -175,6 +184,10 @@ internal static class RetrievalMapper
         {
             throw new FlowValidationException($"{source}: target.manifest is a file name inside the run's directory, not a path.");
         }
+
+        // A location is written out, as every file location of a flow is (SQLFlow's own, and a delivery flow's work and payload
+        // roots): a ${...} reference in it is never resolved, so a run would write under a folder named after the reference.
+        FlowMapper.RefuseLocationReference(t.Location, "target.location", source);
 
         foreach (var token in FlowMapper.Tokens(t.Location))
         {

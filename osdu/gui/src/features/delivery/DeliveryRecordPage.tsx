@@ -252,7 +252,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               disabled={busy || detail.pipelineId === null || !canOperate}
               title={canOperate
                 ? "Read the record's row from its ingestion table and consolidate the ledger with it: its arrival, a change the ledger never saw (planned by the next run), a row that is gone. Nothing is sent."
-                : "A sync runs on a node, which takes the operate scope."}
+                : "A sync runs on a node, which takes a signed-in session."}
               data-testid="record-sync"
             >
               <RefreshCw />

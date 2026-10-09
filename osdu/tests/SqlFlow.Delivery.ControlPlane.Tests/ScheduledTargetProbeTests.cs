@@ -76,8 +76,8 @@ public sealed class ScheduledTargetProbeTests
         // A list of separators alone would silently probe everything, so it is refused instead.
         Assert.Contains("Pipelines names no flow", Invalid(new TargetProbeOptions { Pipelines = " , ," }), StringComparison.Ordinal);
         Assert.Equal(
-            ["recall-welllog-03-header-delivery", "wells-wellbore-03-header-delivery"],
-            new TargetProbeOptions { Pipelines = " recall-welllog-03-header-delivery , wells-wellbore-03-header-delivery ,recall-welllog-03-header-delivery" }.PipelineNames());
+            ["welldb-welllog-03-header-delivery", "wells-wellbore-03-header-delivery"],
+            new TargetProbeOptions { Pipelines = " welldb-welllog-03-header-delivery , wells-wellbore-03-header-delivery ,welldb-welllog-03-header-delivery" }.PipelineNames());
     }
 
     /// <summary>
@@ -108,7 +108,10 @@ public sealed class ScheduledTargetProbeTests
 
         await SeedAsync(cs, repoId, root, flowName, idleName, brokenName, urlName, unsetName, now);
         var store = new DeliveryConfigStore(() => SampleEstate.Context(cs));
-        await store.SetAsync(repoId, null, urlName, "https://osdu.example.com", null, "tests", now);
+        await using (var catalog = CatalogDatabase.Create(cs))
+        {
+            await store.SetAsync(repoId, null, urlName, "https://osdu.example.com", null, "tests", now, catalog);
+        }
 
         // A probe queued for a node before probes ran in the control plane, which no pass will ever hear back from.
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
@@ -270,14 +273,14 @@ public sealed class ScheduledTargetProbeTests
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
-                record: { object: OsduData.arc.Wellbore, key: [facility_name] }
+                record: { object: OsduData.silver.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
+                record: { object: OsduData.silver.WellLog, key: [source_project, log_id] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
               trajectories:
-                record: { object: OsduData.arc.WellboreTrajectory, key: [source_project, trajectory_id] }
+                record: { object: OsduData.silver.WellboreTrajectory, key: [source_project, trajectory_id] }
                 mapping: WellboreTrajectory@1.0.0
                 protocolOptions: { probePath: /api/search/v2/info }
             """;
@@ -287,7 +290,7 @@ public sealed class ScheduledTargetProbeTests
             source:
               connection: ${env:OSDU_DATA_DB}
               work: ../.work/probe-idle
-              record: { object: OsduData.arc.Wellbore, key: [facility_name] }
+              record: { object: OsduData.silver.Wellbore, key: [facility_name] }
             render:
               mapping: Wellbore@1.0.0
               parameters:
@@ -303,7 +306,7 @@ public sealed class ScheduledTargetProbeTests
             source:
               connection: ${env:OSDU_DATA_DB}
               work: ../.work/probe-broken
-              record: { object: OsduData.arc.Wellbore, key: [facility_name] }
+              record: { object: OsduData.silver.Wellbore, key: [facility_name] }
             render:
               mapping: Wellbore@1.0.0
               parameters:

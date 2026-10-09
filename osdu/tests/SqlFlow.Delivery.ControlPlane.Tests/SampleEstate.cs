@@ -13,7 +13,7 @@ using SqlFlow.Delivery.Tests;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The sample delivery estate (<c>osdu/samples/recall</c>) copied to a temp repository, for the API tests that need a
+/// The sample delivery estate (<c>osdu/samples/welldb</c>) copied to a temp repository, for the API tests that need a
 /// real flow: the well log delivery flow with the pre and ing chains that feed it, the mapping it renders with, the
 /// schedule library, and the drop-off folder the pre flows read. The wellbore fixture flow and its mapping are copied in
 /// beside them, for the suites that need a second flow with no payload files. The copy keeps the shape a repository has,
@@ -24,10 +24,10 @@ namespace SqlFlow.ControlPlane.Tests;
 internal static class SampleEstate
 {
     /// <summary>The log source the sample well log flow's schedule fires for; the flow's one required parameter.</summary>
-    public const string LogSource = "STAT_COMP";
+    public const string LogSource = "COMPOSITE";
 
     /// <summary>The well log flow of the sample estate, which streams payload files beside its documents.</summary>
-    public const string FlowName = "recall-welllog-03-header-delivery";
+    public const string FlowName = "welldb-welllog-03-header-delivery";
 
     /// <summary>The wellbore master data fixture flow, which streams no payload files.</summary>
     public const string WellboreFlowName = "wells-wellbore-03-header-delivery";
@@ -50,7 +50,7 @@ internal static class SampleEstate
     /// The folder the source occupies in a repository. A repository is laid out per source: one top-level folder, which
     /// the catalog and the GUI read as a project, holding everything that source needs.
     /// </summary>
-    public const string SourceFolder = "recall";
+    public const string SourceFolder = "welldb";
 
     /// <summary>
     /// What the source folder holds, and so what a copy of the estate is made of: the documents, what they render with,
@@ -167,11 +167,11 @@ internal static class SampleEstate
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         await MigrateModuleAsync(connectionString);
         var loader = new DeliveryDocumentLoader();
-        var flow = loader.LoadCache(Path.Combine(SourceRoot(), "cache", "recall-lookups-00-cache.yaml"));
+        var flow = loader.LoadCache(Path.Combine(SourceRoot(), "cache", "welldb-lookups-00-cache.yaml"));
         var store = new OsduCacheStore(() => Context(connectionString));
         var lookups = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
         await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample unit maps and curve dictionary"), []);
-        var reference = loader.LoadCache(Path.Combine(SourceRoot(), "cache", "recall-reference-00-cache.yaml"));
+        var reference = loader.LoadCache(Path.Combine(SourceRoot(), "cache", "osdu-reference-00-cache.yaml"));
         var references = new SnapshotBuilder(store, reference.Scope, reference.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
         await references.ImportDirectoryAsync(Path.Combine(Locate(), "cache-records"), reference.Types, new CacheCapture(null, "tests", "sample reference files"));
     }

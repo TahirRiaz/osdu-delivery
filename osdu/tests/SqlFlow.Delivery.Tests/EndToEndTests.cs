@@ -183,7 +183,7 @@ public class EndToEndTests : IDisposable
                 MappingReference = "Wellbore@1.3.0",
                 RenderContext = "{}",
                 SourceConnection = "${env:OSDU_DATA_DB}",
-                SourceObject = "OsduData.arc.Wellbore",
+                SourceObject = "OsduData.silver.Wellbore",
             });
             await ledger.UpsertPendingAsync(wellboreFlow, [new RecordState
             {
@@ -281,7 +281,7 @@ public class EndToEndTests : IDisposable
             Assert.Equal(LogCount, records.Count);
             Assert.All(records, r => Assert.Contains("neither the ledger nor OSDU's storage service holds", r.LastError!, StringComparison.Ordinal));
 
-            Assert.All(records, r => Assert.Contains("dev:master-data--Wellbore:NO-", r.LastError!, StringComparison.Ordinal));
+            Assert.All(records, r => Assert.Contains("dev:master-data--Wellbore:Wellbore-", r.LastError!, StringComparison.Ordinal));
 
             // Once storage holds every record they refer to (the wellbores, the units, the curve types), the released
             // records go out.
@@ -450,7 +450,7 @@ public class EndToEndTests : IDisposable
     public async Task Unresolvable_reference_holds_the_record_and_release_requeues_it()
     {
         var tables = await EstateAsync();
-        tables.Records[2].Row["wellbore_uwi"] = "NO 99/9-Z-1";
+        tables.Records[2].Row["wellbore_uwi"] = "Wellbore Z-1";
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
@@ -461,8 +461,8 @@ public class EndToEndTests : IDisposable
             var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(2));
             Assert.Equal(RecordStatus.Held, held!.Status);
             Assert.Contains("no Wellbore on the platform (osdu:wks:master-data--Wellbore:*) matches", held.LastError, StringComparison.Ordinal);
-            Assert.Contains("data.FacilityName 'NO 99/9-Z-1' found no record", held.LastError, StringComparison.Ordinal);
-            Assert.Equal("NO 99/9-Z-1 / STAT_COMP / " + SampleEstate.Logs()[2].LogId, held.Label);
+            Assert.Contains("data.FacilityName 'Wellbore Z-1' found no record", held.LastError, StringComparison.Ordinal);
+            Assert.Equal("Wellbore Z-1 / COMPOSITE / " + SampleEstate.Logs()[2].LogId, held.Label);
             // The held record is traced to the row it was held at.
             Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
 
@@ -516,7 +516,7 @@ public class EndToEndTests : IDisposable
             _clock.Advance(TimeSpan.FromMinutes(10));
             tables.Records[1].UpdatedUtc = Now;
             tables.Records[1].DatasetUpdatedUtc["curves"] = Now;
-            tables.Records[1].FileName = "stat_comp_welllog_next.csv";
+            tables.Records[1].FileName = "welllog_next.csv";
             tables.Records[1].RowNumber = 42;
 
             var (summary, submission) = await RunAsync(runtime, protocol, ledger);
@@ -524,9 +524,9 @@ public class EndToEndTests : IDisposable
             Assert.Empty(protocol.Deliveries);
             var identical = Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(1), 10), a => a.Phase == AttemptPhases.Identical);
             Assert.Equal((AttemptOutcome.Skipped, submission), (identical.Outcome, identical.SubmissionId));
-            Assert.Equal(("stat_comp_welllog_next.csv", 42L, (DateTime?)Now), (identical.SourceFileName, identical.SourceRowNumber, identical.SourceUpdatedUtc));
+            Assert.Equal(("welllog_next.csv", 42L, (DateTime?)Now), (identical.SourceFileName, identical.SourceRowNumber, identical.SourceUpdatedUtc));
             var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1));
-            Assert.Equal(("stat_comp_welllog_next.csv", (DateTime?)Now, arrived), (record!.SourceFileName, record.SourceUpdatedUtc, record.SourceInsertedUtc));
+            Assert.Equal(("welllog_next.csv", (DateTime?)Now, arrived), (record!.SourceFileName, record.SourceUpdatedUtc, record.SourceInsertedUtc));
 
             // The whole source read again changes nothing, and records nothing.
             runtime.Selection = SourceSelection.Full();
@@ -978,18 +978,18 @@ public class EndToEndTests : IDisposable
         var tables = await EstateAsync();
         var protocol = new FakeProtocol();
         // The protocol cannot be built: the failure a missing ${env:...} credential raises, outside the engine's own types.
-        var protocols = new FakeProtocolFactory(protocol) { FailWith = () => new SqlFlowException("Environment variable 'PETRODB_URL' is not set.") };
+        var protocols = new FakeProtocolFactory(protocol) { FailWith = () => new SqlFlowException("Environment variable 'FACADE_API_URL' is not set.") };
         var (runtime, _, ledger) = await RuntimeAsync(tables, protocol: protocol, protocols: protocols);
         using (runtime)
         {
             runtime.Actor = "gui:tahir";
             var thrown = await Assert.ThrowsAsync<SqlFlowException>(() => runtime.VerifyAsync(100, null, reconcile: false));
-            Assert.Equal("Environment variable 'PETRODB_URL' is not set.", thrown.Message);
+            Assert.Equal("Environment variable 'FACADE_API_URL' is not set.", thrown.Message);
 
             var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "verify" }));
             Assert.Equal("failed", activity.Outcome);
             Assert.NotNull(activity.CompletedUtc);
-            Assert.Equal("Environment variable 'PETRODB_URL' is not set.", activity.Summary);
+            Assert.Equal("Environment variable 'FACADE_API_URL' is not set.", activity.Summary);
         }
     }
 
@@ -1062,7 +1062,7 @@ public class EndToEndTests : IDisposable
           version: 58d6bdbd9d066a06
         description: The wellbore each well log was run in, one record per log row.
         dataset:
-          system: recall
+          system: welldb
           key: [source_project, log_id]
           label: "{wellbore_uwi} ({log_id})"
         parameters:
@@ -1078,7 +1078,7 @@ public class EndToEndTests : IDisposable
             viewers: ["{$param.aclViewer}"]
           legal:
             legaltags: ["{$param.legalTag}"]
-            otherRelevantDataCountries: [NO]
+            otherRelevantDataCountries: [US]
           data:
             FacilityName: { $from: wellbore_uwi }
         """;
@@ -1190,7 +1190,7 @@ public class EndToEndTests : IDisposable
                 Assert.Equal(RecordStatus.Held, held!.Status);
                 Assert.True(held.Blocked);
                 Assert.Null(held.TargetId);
-                Assert.Contains("already claimed by flow 'recall-welllog-03-header-delivery'", held.LastError, StringComparison.Ordinal);
+                Assert.Contains("already claimed by flow 'welldb-welllog-03-header-delivery'", held.LastError, StringComparison.Ordinal);
                 Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
                 var attempt = Assert.Single(await ledger.ListAttemptsAsync(copy.Flow.Id, SampleEstate.Key(i), 10));
                 Assert.Equal((AttemptOutcome.Held, "render"), (attempt.Outcome, attempt.Phase));
@@ -1250,9 +1250,9 @@ public class EndToEndTests : IDisposable
         }
     }
 
-    /// <summary>The curve unit map's neutron porosity row, spelled the way Recall writes it (petrodb-api's CurveUnit map).</summary>
-    private static ReferenceType RecallUnits(string osduUnit) => LookupCacheTests.Lookup(
-        "RecallUnits", "source_unit", ("V/V", new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["osdu_unit"] = osduUnit }));
+    /// <summary>The curve unit map's neutron porosity row, spelled the way the well database writes it.</summary>
+    private static ReferenceType UnitAlias(string osduUnit) => LookupCacheTests.Lookup(
+        "UnitAlias", "source_unit", ("V/V", new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["osdu_unit"] = osduUnit }));
 
     [Fact]
     public async Task Records_a_cache_change_holds_back_are_counted_as_awaiting_approval_not_as_unchanged()
@@ -1266,7 +1266,7 @@ public class EndToEndTests : IDisposable
             // The unit the two logs with a neutron porosity matched by moves, and the change waits for a decision, so their sets are
             // gated. The other logs do not read it.
             var impact = await new CacheImpactAnalyzer(ledger, _clock, NullLogger.Instance)
-                .AnalyzeAsync(Samples.SampleCacheScope, RecallUnits("v/v"), RecallUnits("v/v-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
+                .AnalyzeAsync(Samples.SampleCacheScope, UnitAlias("v/v"), UnitAlias("v/v-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
             Assert.NotEqual(0, impact.Changes);
             Assert.NotEmpty(await ledger.GatedCacheSetsAsync());
 

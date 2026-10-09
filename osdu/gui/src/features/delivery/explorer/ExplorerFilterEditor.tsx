@@ -339,7 +339,7 @@ function ValueFields({ field, condition, value, values, to, onValue, onValues, o
       type={type}
       value={value}
       onChange={(event) => onValue(event.target.value)}
-      placeholder={condition === "contains" ? "Words, such as NO 34/10" : condition === "startsWith" ? "The start, in the same case" : "The whole value"}
+      placeholder={condition === "contains" ? "Words, such as Wellbore A" : condition === "startsWith" ? "The start, in the same case" : "The whole value"}
       className="h-8 text-[13px]"
       autoFocus
       data-testid="explorer-filter-value"

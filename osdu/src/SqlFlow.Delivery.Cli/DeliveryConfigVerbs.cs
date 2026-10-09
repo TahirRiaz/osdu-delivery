@@ -1,8 +1,11 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Catalog;
 using SqlFlow.Cli.Hosting;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
+using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Json;
@@ -17,11 +20,22 @@ namespace SqlFlow.Delivery.Cli;
 /// A property holds a non-secret value, or a <c>${env:...}</c> or <c>${keyvault:...}</c> reference the node resolves, so
 /// a deployment can point a whole estate at a secret without this command, this database or a run payload ever holding
 /// one. <c>--partition</c> sets, removes or reads the values of one OSDU partition, which a run bound to it resolves with
-/// first (docs/partitions-design.md section 5).
+/// first (docs/partitions-design.md section 5). What a property may hold is checked by <see cref="DeliveryConfigStore"/>,
+/// exactly as for the API, and a change is recorded under the account the command runs as (<see cref="RunActors.LocalAccount"/>).
 /// </remarks>
 public static class DeliveryConfigVerbs
 {
-    public static async Task<int> ConfigAsync(CliVerbContext context)
+    /// <summary>The catalog connection a command reads when <c>--db</c> names none, as SQLFlow's own database verbs do.</summary>
+    private const string DefaultCatalog = "${env:SQLFLOW_CATALOG_DB}";
+
+    public static Task<int> ConfigAsync(CliVerbContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return RunAsync(ModuleCommand.Of(context));
+    }
+
+    /// <summary>The verb, over the command it runs for.</summary>
+    internal static async Task<int> RunAsync(ModuleCommand context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var ct = context.CancellationToken;
@@ -38,9 +52,7 @@ public static class DeliveryConfigVerbs
         {
             case "list":
             {
-                var rows = repo is null
-                    ? await store.ListAllAsync(ct).ConfigureAwait(false)
-                    : await store.ListAsync(repo, partition, ct).ConfigureAwait(false);
+                var rows = await store.ListAsync(repo, partition, ct).ConfigureAwait(false);
                 if (context.Json)
                 {
                     context.Out.WriteLine(CanonicalJson.Pretty(new JsonArray([.. rows.Select(Describe)])));
@@ -49,7 +61,11 @@ public static class DeliveryConfigVerbs
 
                 if (rows.Count == 0)
                 {
-                    context.Out.WriteLine("no configuration property is set; every reference a flow names is resolved on the node that runs it");
+                    var narrowed = (repo is { } named ? $" for repository {named:D}" : string.Empty)
+                        + (string.IsNullOrWhiteSpace(partition) ? string.Empty : $" in partition {partition.Trim()}");
+                    context.Out.WriteLine(narrowed.Length == 0
+                        ? "no configuration property is set; every reference a flow names is resolved on the node that runs it"
+                        : $"no configuration property is set{narrowed}");
                     return 0;
                 }
 
@@ -104,8 +120,11 @@ public static class DeliveryConfigVerbs
                     return context.UsageError("give the value with --value <value>.");
                 }
 
+                // A property set for a repository is checked against the catalog's repositories, so the catalog is opened
+                // only when one is named.
+                await using var catalog = repo is null ? null : OpenCatalog(context);
                 var row = await store
-                    .SetAsync(repo, partition, name, value, context.Arguments.GetOption("--description"), "cli", DateTime.UtcNow, ct)
+                    .SetAsync(repo, partition, name, value, context.Arguments.GetOption("--description"), RunActors.LocalAccount(), DateTime.UtcNow, catalog, ct)
                     .ConfigureAwait(false);
                 context.Out.WriteLine(context.Json ? CanonicalJson.Pretty(Describe(row)) : $"{row.Name} set");
                 return 0;
@@ -130,16 +149,42 @@ public static class DeliveryConfigVerbs
     }
 
     /// <summary>The repository the command works on, or null for the control plane's own properties.</summary>
-    private static Guid? Repo(CliVerbContext context)
+    private static Guid? Repo(ModuleCommand context)
     {
         if (context.Arguments.GetOption("--repo") is not { } text)
         {
             return null;
         }
 
-        return Guid.TryParse(text, out var id)
+        return Guid.TryParse(text.Trim(), out var id)
             ? id
-            : throw new FlowValidationException($"--repo '{text}' is not a repository id.");
+            : throw new FlowValidationException($"--repo '{text}' is not a repository id (a GUID; 'sqlflow repos show <name>' prints it).");
+    }
+
+    /// <summary>
+    /// The catalog a repository is checked in: the connection the command line names (<c>--db</c>, else
+    /// <c>${env:SQLFLOW_CATALOG_DB}</c>), resolved as SQLFlow's own database verbs resolve it. The module's database may be
+    /// one of its own (<c>SQLFLOW_OSDU_DB</c>), so the catalog is named apart from it.
+    /// </summary>
+    /// <exception cref="FlowValidationException">The reference does not resolve to a connection.</exception>
+    private static CatalogDbContext OpenCatalog(ModuleCommand context)
+    {
+        var reference = context.Arguments.GetOption("--db") ?? DefaultCatalog;
+        string connection;
+        try
+        {
+            connection = context.Services.GetRequiredService<ISecretResolver>().Resolve(reference);
+        }
+        catch (SqlFlowException ex)
+        {
+            throw new FlowValidationException(
+                $"--repo is checked against the catalog's repositories, and the catalog connection {SecretHygiene.RedactedMessage(reference)} did not resolve: {SecretHygiene.RedactedMessage(ex)} Name it with --db <conn-ref>, or set SQLFLOW_CATALOG_DB.");
+        }
+
+        return string.IsNullOrWhiteSpace(connection)
+            ? throw new FlowValidationException(
+                $"--repo is checked against the catalog's repositories, and the catalog connection {SecretHygiene.RedactedMessage(reference)} resolved to nothing. Name it with --db <conn-ref>, or set SQLFLOW_CATALOG_DB.")
+            : CatalogDatabase.Create(connection);
     }
 
     private static JsonObject Describe(DeliveryConfigProperty row) => new()

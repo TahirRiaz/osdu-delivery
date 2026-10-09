@@ -112,7 +112,7 @@ public sealed class DeliveryExplorerApiTests
             // A search runs as asked, through the storage flow, in the partition it was asked in.
             var searched = await RanAsync(client, token, $"/api/v1/delivery/explorer/search?partition={named}", new
             {
-                text = "NO 33",
+                text = "Wellbore B",
                 kind = "*:*:master-data--Wellbore:*",
                 filters = new[] { new { path = "legal.legaltags", index = "keyword", value = "dev-private" } },
                 sort = "Modified",
@@ -123,7 +123,7 @@ public sealed class DeliveryExplorerApiTests
             Assert.Equal((ExploreOperation.OperationName, storage.Name), (searched.Operation, searched.SourceRef));
             Assert.Equal((ExploreOperation.SearchAction, named), (searched.Argument(ExploreOperation.ActionArgument), searched.Argument(DeliveryOperation.PartitionArgument)));
             var search = ExplorerSearch.Parse(searched.Argument(ExploreOperation.SearchArgument));
-            Assert.Equal(("NO 33", "*:*:master-data--Wellbore:*", ExplorerSort.Modified, 100, 100), (search.Text, search.Kind, search.Sort, search.Offset, search.Limit));
+            Assert.Equal(("Wellbore B", "*:*:master-data--Wellbore:*", ExplorerSort.Modified, 100, 100), (search.Text, search.Kind, search.Sort, search.Offset, search.Limit));
             Assert.Equal(new ExplorerFilter { Path = "legal.legaltags", Index = OsduFieldIndex.Keyword, Value = "dev-private" }, Assert.Single(search.Filters));
             Assert.Equal(new ExplorerField { Path = "data.FacilityTypeID", Index = OsduFieldIndex.Text }, search.Facet);
 
@@ -133,52 +133,52 @@ public sealed class DeliveryExplorerApiTests
                 kind = "*:*:master-data--Wellbore:*",
                 filters = new object[]
                 {
-                    new { path = "data.Source", condition = "AnyOf", values = new[] { "Recall", "RECALL" } },
-                    new { path = "data.GeoContexts.FieldID", nested = " data.GeoContexts ", value = "dev:master-data--Field:GULLFAKS:" },
-                    new { path = "data.Equinor.FieldId", condition = "missing" },
+                    new { path = "data.Source", condition = "AnyOf", values = new[] { "WellDB", "WELLDB" } },
+                    new { path = "data.GeoContexts.FieldID", nested = " data.GeoContexts ", value = "dev:master-data--Field:FIELD-A:" },
+                    new { path = "data.Augmented.FieldId", condition = "missing" },
                 },
                 facet = new { path = "data.GeoContexts.FieldID", nested = "data.GeoContexts" },
-                columns = new[] { " data.Equinor.WellboreName " },
+                columns = new[] { " data.Augmented.WellboreName " },
             });
             var conditions = ExplorerSearch.Parse(conditioned.Argument(ExploreOperation.SearchArgument));
             Assert.Equal(
                 [(ExplorerCondition.AnyOf, (string?)null), (ExplorerCondition.Is, "data.GeoContexts"), (ExplorerCondition.Missing, null)],
                 conditions.Filters.Select(f => (f.Condition, f.Nested)));
-            Assert.Equal(["Recall", "RECALL"], conditions.Filters[0].Values!);
+            Assert.Equal(["WellDB", "WELLDB"], conditions.Filters[0].Values!);
             Assert.Equal("nested(data.GeoContexts, FieldID.keyword)", conditions.Facet!.AggregateBy());
-            Assert.Equal(["data.Equinor.WellboreName"], conditions.Columns);
+            Assert.Equal(["data.Augmented.WellboreName"], conditions.Columns);
 
-            var types = await RanAsync(client, token, $"/api/v1/delivery/explorer/types?partition={named}", new { text = "NO 33" });
+            var types = await RanAsync(client, token, $"/api/v1/delivery/explorer/types?partition={named}", new { text = "Wellbore B" });
             Assert.Equal(ExploreOperation.TypesAction, types.Argument(ExploreOperation.ActionArgument));
             var fields = await RanAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = "osdu:wks:master-data--Wellbore:1.1.0" });
             Assert.Equal((ExploreOperation.FieldsAction, "osdu:wks:master-data--Wellbore:1.1.0"), (fields.Argument(ExploreOperation.ActionArgument), fields.Argument(ExploreOperation.KindArgument)));
 
             // A record is checked against what the Schema service holds by default, or a saved template's version asked for.
-            var validated = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:NO-33:", version = 7L });
+            var validated = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:Wellbore-B:", version = 7L });
             Assert.Equal(
-                (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:NO-33", "7", (string?)null, (string?)null),
+                (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:Wellbore-B", "7", (string?)null, (string?)null),
                 (validated.Argument(ExploreOperation.ActionArgument), validated.Argument("targetId"), validated.Argument("version"),
                     validated.Argument(ExploreOperation.SchemaArgument), validated.Argument(ExploreOperation.TemplateVersionArgument)));
-            var againstSaved = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:NO-33", schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
+            var againstSaved = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
             Assert.Equal(("saved", "9f3c41d07a2b88e1"), (againstSaved.Argument(ExploreOperation.SchemaArgument), againstSaved.Argument(ExploreOperation.TemplateVersionArgument)));
 
             // A check of a search reads from the first record whatever page the search was on, up to the most asked.
             var listed = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new
             {
-                search = new { text = "NO 33", kind = "*:*:master-data--Wellbore:*", offset = 300, limit = 50, facet = new { path = "data.FacilityTypeID" } },
+                search = new { text = "Wellbore B", kind = "*:*:master-data--Wellbore:*", offset = 300, limit = 50, facet = new { path = "data.FacilityTypeID" } },
                 max = 250,
             });
             Assert.Equal((ExploreOperation.ValidateListAction, "250"), (listed.Argument(ExploreOperation.ActionArgument), listed.Argument(ExploreOperation.MaxArgument)));
             var checkedSearch = ExplorerSearch.Parse(listed.Argument(ExploreOperation.SearchArgument));
-            Assert.Equal(("NO 33", "*:*:master-data--Wellbore:*", 0, ExplorerSearch.DefaultLimit), (checkedSearch.Text, checkedSearch.Kind, checkedSearch.Offset, checkedSearch.Limit));
+            Assert.Equal(("Wellbore B", "*:*:master-data--Wellbore:*", 0, ExplorerSearch.DefaultLimit), (checkedSearch.Text, checkedSearch.Kind, checkedSearch.Offset, checkedSearch.Limit));
             Assert.Null(checkedSearch.Facet);
             var everything = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new { });
             Assert.Equal(ExplorerChecks.MaxRecords.ToString(CultureInfo.InvariantCulture), everything.Argument(ExploreOperation.MaxArgument));
 
             var validate400 = $"/api/v1/delivery/explorer/validate?partition={named}";
-            await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:NO-33", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
-            await RefusedAsync(client, token, validate400, new { targetId = "NO 33/9-C-28 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
-            await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:NO-33", schema = "saved", templateVersion = new string('v', 65) }, HttpStatusCode.BadRequest, "saved template version");
+            await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
+            await RefusedAsync(client, token, validate400, new { targetId = "Wellbore B-2 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
+            await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = "saved", templateVersion = new string('v', 65) }, HttpStatusCode.BadRequest, "saved template version");
             var list400 = $"/api/v1/delivery/explorer/validate-list?partition={named}";
             await RefusedAsync(client, token, list400, new { max = 1001 }, HttpStatusCode.BadRequest, "A check reads 1 to 1000 records");
             await RefusedAsync(client, token, list400, new { max = 0 }, HttpStatusCode.BadRequest, "A check reads 1 to 1000 records");
@@ -203,27 +203,27 @@ public sealed class DeliveryExplorerApiTests
 
             // A read takes a reference as a document holds it, and a version beside it; a flow whose partition is its header's
             // is told no partition, since its header already names it.
-            var read = await RanAsync(client, token, "/api/v1/delivery/explorer/read", new { targetId = $" {headed}:master-data--Wellbore:NO-33: ", version = 1712345678901234L }, headed);
+            var read = await RanAsync(client, token, "/api/v1/delivery/explorer/read", new { targetId = $" {headed}:master-data--Wellbore:Wellbore-B: ", version = 1712345678901234L }, headed);
             Assert.Equal((ExploreOperation.ReadAction, header.Name), (read.Argument(ExploreOperation.ActionArgument), read.SourceRef));
-            Assert.Equal(($"{headed}:master-data--Wellbore:NO-33", "1712345678901234"), (read.Argument("targetId"), read.Argument("version")));
+            Assert.Equal(($"{headed}:master-data--Wellbore:Wellbore-B", "1712345678901234"), (read.Argument("targetId"), read.Argument("version")));
             Assert.Null(read.Argument(DeliveryOperation.PartitionArgument));
 
             // A record page checks a record it shows as the explorer checks one, read through the record's own flow and the
             // partition its ledger names, whichever flow the explorer would pick there; a bad ask is refused as the explorer's is.
             var onPage = $"/api/v1/delivery/flows/{CatalogIdentity.Pipeline(repoId, ddms.Name):D}/osdu/validate?partition={named}";
-            var pageChecked = await RanAsync(client, token, onPage, new { targetId = " dev:master-data--Wellbore:NO-33: ", version = 7L, schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
+            var pageChecked = await RanAsync(client, token, onPage, new { targetId = " dev:master-data--Wellbore:Wellbore-B: ", version = 7L, schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
             Assert.Equal((ExploreOperation.OperationName, ddms.Name, named), (pageChecked.Operation, pageChecked.SourceRef, pageChecked.Argument(DeliveryOperation.PartitionArgument)));
             Assert.Equal(
-                (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:NO-33", "7", "saved", "9f3c41d07a2b88e1"),
+                (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:Wellbore-B", "7", "saved", "9f3c41d07a2b88e1"),
                 (pageChecked.Argument(ExploreOperation.ActionArgument), pageChecked.Argument("targetId"), pageChecked.Argument("version"),
                     pageChecked.Argument(ExploreOperation.SchemaArgument), pageChecked.Argument(ExploreOperation.TemplateVersionArgument)));
-            await RefusedAsync(client, token, onPage, new { targetId = "NO 33/9-C-28 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
-            await RefusedAsync(client, token, onPage, new { targetId = "dev:master-data--Wellbore:NO-33", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
+            await RefusedAsync(client, token, onPage, new { targetId = "Wellbore B-2 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
+            await RefusedAsync(client, token, onPage, new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
 
             // A flow whose route keeps no record in storage has none to check.
             await RefusedAsync(
                 client, token, $"/api/v1/delivery/flows/{CatalogIdentity.Pipeline(repoId, dspdm.Name):D}/osdu/validate?partition={named}",
-                new { targetId = "dev:master-data--Wellbore:NO-33" }, HttpStatusCode.Conflict, "keeps no record in OSDU's storage service");
+                new { targetId = "dev:master-data--Wellbore:Wellbore-B" }, HttpStatusCode.Conflict, "keeps no record in OSDU's storage service");
 
             var search400 =$"/api/v1/delivery/explorer/search?partition={named}";
             await RefusedAsync(client, token, search400, new { kind = "osdu:wks" }, HttpStatusCode.BadRequest, "is not a kind");
@@ -236,7 +236,7 @@ public sealed class DeliveryExplorerApiTests
             await RefusedAsync(client, token, search400, new { offset = 9950, limit = 100 }, HttpStatusCode.BadRequest, "first 10,000 records");
             await RefusedAsync(client, token, search400, new { text = "a", mentions = "dev:master-data--Well:1" }, HttpStatusCode.BadRequest, "not both");
             await RefusedAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = " " }, HttpStatusCode.BadRequest, "Name the kind");
-            await RefusedAsync(client, token, "/api/v1/delivery/explorer/read?partition=" + named, new { targetId = "NO 33/9-C-28 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
+            await RefusedAsync(client, token, "/api/v1/delivery/explorer/read?partition=" + named, new { targetId = "Wellbore B-2 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
 
             // A partition no flow reaches has no connection to read through.
             await RefusedAsync(client, token, $"/api/v1/delivery/explorer/search?partition={unreached}", new { text = "x" }, HttpStatusCode.Conflict, "No delivery flow reaches partition");
@@ -315,14 +315,14 @@ public sealed class DeliveryExplorerApiTests
         {
             kind = SampleEstate.WellboreTemplateKind,
             path = "data.FacilityName",
-            value = "NO 16/2-9 S",
+            value = "WB B/2-9 S",
         }))
         {
             var text = await answered.Content.ReadAsStringAsync();
             Assert.True(answered.StatusCode == HttpStatusCode.OK, text);
             var answer = JsonDocument.Parse(text).RootElement;
             var queries = answer.GetProperty("queries").EnumerateArray().ToDictionary(q => q.GetProperty("purpose").GetString()!, q => q.GetProperty("query").GetString());
-            Assert.Equal("data.FacilityName.keyword:\"NO 16/2-9 S\"", queries["exact"]);
+            Assert.Equal("data.FacilityName.keyword:\"WB B/2-9 S\"", queries["exact"]);
             Assert.Equal("_exists_:data.FacilityName", queries["exists"]);
             Assert.Equal(SampleEstate.WellboreTemplateKind, answer.GetProperty("template").GetProperty("kind").GetString());
             Assert.Equal("text", answer.GetProperty("field").GetProperty("index").GetString());
@@ -333,12 +333,12 @@ public sealed class DeliveryExplorerApiTests
         {
             kind = SampleEstate.WellboreTemplateKind,
             path = "data.NameAliases[1].AliasName",
-            value = "NO 16/2-9 S",
+            value = "WB B/2-9 S",
         }))
         {
             var answer = JsonDocument.Parse(await nested.Content.ReadAsStringAsync()).RootElement;
             Assert.Equal(
-                "nested(data.NameAliases, (AliasName.keyword:\"NO 16/2-9 S\"))",
+                "nested(data.NameAliases, (AliasName.keyword:\"WB B/2-9 S\"))",
                 answer.GetProperty("queries").EnumerateArray().Single(q => q.GetProperty("purpose").GetString() == "exact").GetProperty("query").GetString());
         }
 
@@ -350,14 +350,14 @@ public sealed class DeliveryExplorerApiTests
             section = true,
             values = new object[]
             {
-                new { path = "data.NameAliases[0].AliasName", value = "NO 16/2-9 S" },
+                new { path = "data.NameAliases[0].AliasName", value = "WB B/2-9 S" },
                 new { path = "data.NameAliases[0].AliasNameTypeID", value = "dev:reference-data--AliasNameType:Borehole:" },
             },
         }))
         {
             var answer = JsonDocument.Parse(await item.Content.ReadAsStringAsync()).RootElement;
             Assert.Equal(
-                "nested(data.NameAliases, (AliasName.keyword:\"NO 16/2-9 S\" AND AliasNameTypeID.keyword:\"dev:reference-data--AliasNameType:Borehole:\"))",
+                "nested(data.NameAliases, (AliasName.keyword:\"WB B/2-9 S\" AND AliasNameTypeID.keyword:\"dev:reference-data--AliasNameType:Borehole:\"))",
                 answer.GetProperty("queries")[0].GetProperty("query").GetString());
         }
 

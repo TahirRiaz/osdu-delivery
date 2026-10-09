@@ -46,8 +46,15 @@ public sealed record RecordPreviewLimits
     /// <summary>References the document makes that are looked up in the ledger.</summary>
     public int MaxReferences { get; init; } = 50;
 
-    /// <summary>The largest rendered document returned, in characters of canonical JSON; a larger one is described and left out.</summary>
+    /// <summary>
+    /// The largest rendered document returned, in characters of canonical JSON; a larger one is described and left out
+    /// (<see cref="RecordPreviewer.Bound"/>). <see cref="Whole"/> keeps a document of any size, for a preview written to a
+    /// file rather than shown.
+    /// </summary>
     public int MaxDocumentChars { get; init; } = 2_000_000;
+
+    /// <summary>The default bounds, except that the rendered document is kept whole whatever its size.</summary>
+    public static RecordPreviewLimits Whole { get; } = new() { MaxDocumentChars = int.MaxValue };
 }
 
 /// <summary>
@@ -157,7 +164,7 @@ public sealed class RecordPreviewer
             document = Document(render, resolved.Mapping.Kind, rehearsal);
         }
 
-        return new RecordPreview
+        var preview = new RecordPreview
         {
             Flow = flow.Label,
             Interface = flow.Interface,
@@ -177,6 +184,41 @@ public sealed class RecordPreviewer
             Notes = rehearsal?.Notes ?? [],
             Issues = issues,
             PreviewedUtc = context.Time.GetUtcNow().UtcDateTime,
+        };
+
+        return Bound(preview, _limits.MaxDocumentChars);
+    }
+
+    /// <summary>
+    /// <paramref name="preview"/> with its documents left out when the rendered document is over
+    /// <paramref name="maxDocumentChars"/> characters of canonical JSON: the size, the hash and where to read it whole are
+    /// said in their place, and everything else (the decision, the steps, the placeholders) stays. A preview within the
+    /// bound, or one with no document, is returned as it is. A preview kept whole for a file (<see cref="RecordPreviewLimits.Whole"/>)
+    /// is bounded this way for the screen.
+    /// </summary>
+    /// <param name="preview">The preview.</param>
+    /// <param name="maxDocumentChars">The largest document shown.</param>
+    /// <param name="writtenTo">The file the whole preview was written to, when it was; null says how to write one.</param>
+    public static RecordPreview Bound(RecordPreview preview, int maxDocumentChars, string? writtenTo = null)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxDocumentChars);
+        if (preview.Document is not { Rendered: not null } document || document.Characters <= maxDocumentChars)
+        {
+            return preview;
+        }
+
+        var whole = writtenTo is null ? "'sqlflow preview' writes it whole with --out" : $"the whole preview is written to {writtenTo}";
+        return preview with
+        {
+            Document = document with
+            {
+                Rendered = null,
+                Sent = null,
+                Omitted = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The rendered document is {document.Characters:N0} characters, more than the {maxDocumentChars:N0} a preview shows. Its hash is {document.MetadataHash}; {whole}."),
+            },
         };
     }
 
@@ -460,26 +502,19 @@ public sealed class RecordPreviewer
                 : null,
         };
 
-    private PreviewDocument Document(RenderResult render, string kind, RehearsedRoute rehearsal)
-    {
-        var characters = render.Canonical.Length;
-        var tooLarge = characters > _limits.MaxDocumentChars;
-        return new PreviewDocument
+    /// <summary>The record's document whole, as rendered and as the route sends it; <see cref="Bound"/> decides what is shown of it.</summary>
+    private static PreviewDocument Document(RenderResult render, string kind, RehearsedRoute rehearsal)
+        => new()
         {
             TargetId = render.TargetId,
             Kind = kind,
             MetadataHash = render.MetadataHash,
-            Characters = characters,
+            Characters = render.Canonical.Length,
             Held = render.IsHeld,
             Holds = render.Holds,
-            Rendered = tooLarge ? null : render.Document,
-            Sent = tooLarge ? null : rehearsal.Sent,
+            Rendered = render.Document,
+            Sent = rehearsal.Sent,
             Placeholders = rehearsal.Placeholders,
-            Omitted = tooLarge
-                ? string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"The rendered document is {characters:N0} characters, more than the {_limits.MaxDocumentChars:N0} a preview shows. Its hash is {render.MetadataHash}; 'sqlflow preview' writes it whole with --out.")
-                : null,
             Searches = render.SearchUsages
                 .Select(s => new PreviewSearch(s.Kind, s.Field, s.Value, s.Outcome.ToString().ToLowerInvariant(), s.Id))
                 .ToList(),
@@ -494,7 +529,6 @@ public sealed class RecordPreviewer
                 .Order(StringComparer.Ordinal)
                 .ToList(),
         };
-    }
 
     /// <summary>
     /// The files each payload part of the record holds, as the render pass resolved where they are: listed, bounded, and for

@@ -125,7 +125,9 @@ public sealed class RetrievalTests : IDisposable
         Assert.True(RetrievalFlowKind.Forced(forced));
         Assert.False(RetrievalFlowKind.Forced(RunParameters.None));
         var scoped = new RunParameters { Operation = DeliveryOperations.Retrieve, Payload = $$"""{"submissionId":"{{Guid.NewGuid():D}}"}""" };
-        Assert.Contains("carries only force", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(scoped)).Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "payload submissionId does not apply to a retrieval flow: only a delivery flow's runs name a submission; a retrieval flow's payload names only force.",
+            Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(scoped)).Message, StringComparison.Ordinal);
         Assert.Equal(DeliveryOperations.Retrieve, RetrievalExecutor.Operation(RunParameters.None));
         Assert.Equal(DeliveryOperations.Plan, RetrievalExecutor.Operation(new RunParameters { Operation = DeliveryOperations.Plan }));
         Assert.Throws<SqlFlowException>(() => RetrievalExecutor.Operation(new RunParameters { Operation = DeliveryOperations.Verify }));

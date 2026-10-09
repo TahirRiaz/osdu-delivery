@@ -625,7 +625,7 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
         await work.ReportStepAsync("session", new Dictionary<string, string>(StringComparer.Ordinal) { ["state"] = "opening" }, [TargetArtifact.Intent(slot, ArtifactRoles.Session, work.TargetId)], ct).ConfigureAwait(false);
         var created = await _client.SendJsonAsync(HttpMethod.Post, createUrl, createBody, null, ct, idempotent: false).ConfigureAwait(false);
         var sessionId = JsonPathReader.SelectValue(OsduHttpClient.ParseJson(created, createUrl), "id")
-            ?? throw new DeliveryException($"{createUrl} did not return a session id.");
+            ?? throw new DeliveryException($"{createUrl.AbsolutePath} did not return a session id.");
         await work.ReportStepAsync("session", new Dictionary<string, string>(StringComparer.Ordinal) { ["sessionId"] = sessionId }, [TargetArtifact.Created(slot, ArtifactRoles.Session, sessionId, locator: work.TargetId)], ct).ConfigureAwait(false);
 
         var sent = 0;

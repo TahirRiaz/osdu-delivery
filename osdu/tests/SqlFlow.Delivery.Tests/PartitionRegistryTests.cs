@@ -126,7 +126,7 @@ public sealed class PartitionRegistryTests : IDisposable
         await registry.AddAsync("test", null, makeDefault: false, "tester", Now);
         await using (var seed = _module.CreateDbContext())
         {
-            seed.DeliveryCacheMembers.Add(new DeliveryCacheMember { Scope = "test", TypeName = "CurveDictionary", RecordId = "GR", FlowName = "recall-lookups-00-cache" });
+            seed.DeliveryCacheMembers.Add(new DeliveryCacheMember { Scope = "test", TypeName = "CurveDictionary", RecordId = "GR", FlowName = "welldb-lookups-00-cache" });
             await seed.SaveChangesAsync();
         }
 

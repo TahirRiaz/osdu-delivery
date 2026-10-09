@@ -63,20 +63,6 @@ public sealed partial class SpecProvenanceTests
         return bytes.LongLength - carriageReturns;
     }
 
-    /// <summary>The repository the suite was built from: the folder that holds the solution.</summary>
-    private static string RepositoryRoot()
-    {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
-        {
-            if (File.Exists(Path.Combine(directory.FullName, "OsduDelivery.sln")))
-            {
-                return directory.FullName;
-            }
-        }
-
-        throw new InvalidOperationException($"No folder above {AppContext.BaseDirectory} holds OsduDelivery.sln; the suite runs from a build of the repository.");
-    }
-
     [Fact]
     public void Every_pinned_file_has_its_provenance_at_the_size_recorded()
     {
@@ -84,7 +70,7 @@ public sealed partial class SpecProvenanceTests
         Assert.Equal(rows.Count, rows.Select(r => r.File).Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(PinnedFiles(), rows.Select(r => r.File).OrderBy(f => f, StringComparer.Ordinal).ToList());
 
-        var root = RepositoryRoot();
+        var root = RepositoryRoot.Path;
         foreach (var row in rows)
         {
             Assert.True(row.Size == StoredSize(row.File), $"{row.File}: sources.json records {row.Size} bytes, the repository holds {StoredSize(row.File)}.");

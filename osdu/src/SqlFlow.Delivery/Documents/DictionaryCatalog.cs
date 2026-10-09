@@ -4,7 +4,7 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Finds dictionary documents in a repository. A dictionary <c>RecallUnits</c> is the file <c>RecallUnits.yaml</c> (or
+/// Finds dictionary documents in a repository. A dictionary <c>UnitAlias</c> is the file <c>UnitAlias.yaml</c> (or
 /// <c>.yml</c>) in the nearest <c>dictionaries/</c> directory walking up from the cache flow that declares it, the way a
 /// delivery flow finds its <c>mappings/</c>, so a cache flow three folders deep still finds the repository's shared
 /// dictionaries. The file must declare the name it is filed under, so a name always resolves to exactly the file that was

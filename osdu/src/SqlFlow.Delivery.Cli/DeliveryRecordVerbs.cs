@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Cli.Hosting;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
@@ -329,11 +330,12 @@ internal static class DeliveryRecordVerbs
     }
 
     /// <summary>
-    /// Releases the interface's blocked records back to pending: the held, the failed and the ones a removal marked
-    /// deleted, every one, the ones named by <c>--key</c>, or every one an issue keeps blocked (<c>--issue</c>). A record
-    /// that still holds a rendered document is queued at once, and the rest are planned again by the next run. Fixing what
-    /// blocked them is the operator's job; this is the verb that says "try again". It is recorded on the audit trail as
-    /// <c>cli:&lt;user&gt;</c>'s, with every record it released named under it.
+    /// Releases the interface's blocked records back to pending: the held, the failed, the ones a removal marked deleted
+    /// and the ones a reversal reverted, every one, the ones named by <c>--key</c>, or every one an issue keeps blocked
+    /// (<c>--issue</c>). A record that still holds a rendered document is queued at once, and the rest are planned again by
+    /// the next run. Fixing what blocked them is the operator's job; this is the verb that says "try again". It is recorded
+    /// on the audit trail as <c>cli:&lt;user&gt;@&lt;machine&gt;</c>'s (<see cref="RunActors.LocalAccount"/>), with every
+    /// record it released named under it.
     /// </summary>
     private static async Task<int> ReleaseAsync(
         CliVerbContext context, ILedger ledger, EngineContext engine, FlowDefinition flow, string label, CancellationToken ct)
@@ -361,7 +363,7 @@ internal static class DeliveryRecordVerbs
             : null;
 
         using var runtime = FlowRuntime.ForTarget(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow);
-        runtime.Actor = $"cli:{Environment.UserName}";
+        runtime.Actor = RunActors.LocalAccount();
         var released = group is not null
             ? await runtime.ReleaseProblemAsync(group.Problem, group.Pattern, ct).ConfigureAwait(false)
             : await runtime.ReleaseAsync(keys.Count > 0 ? keys : null, ct).ConfigureAwait(false);

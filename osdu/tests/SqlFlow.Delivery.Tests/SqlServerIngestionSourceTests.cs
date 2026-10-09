@@ -40,7 +40,7 @@ public sealed class SqlServerIngestionSourceTests
             FROM (SELECT TOP (6000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b) AS n
             ORDER BY n.rn;
             DELETE FROM {table} WHERE [RecId] BETWEEN 2001 AND 4000;
-            DBCC CHECKIDENT ('[{estate.ArcSchema}].[Item]', RESEED, 100000) WITH NO_INFOMSGS;
+            DBCC CHECKIDENT ('[{estate.SilverSchema}].[Item]', RESEED, 100000) WITH NO_INFOMSGS;
             INSERT INTO {table} ([item_key], [UpdatedDate_DW])
             SELECT CONCAT(N'late-', FORMAT(n.rn, 'D6')), @loaded
             FROM (SELECT TOP (1000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b) AS n
@@ -154,7 +154,7 @@ public sealed class SqlServerIngestionSourceTests
 
         // Inserted by one load and changed by the next: the insert stamp stays where the first load put it.
         await ExecuteAsync(estate, $"INSERT INTO {table} ([item_key], [InsertedDate_DW], [UpdatedDate_DW]) VALUES (N'item', @loaded, @changed);");
-        await ExecuteAsync(estate, $"INSERT INTO [{estate.ArcSchema}].[Unstamped] ([item_key], [UpdatedDate_DW]) VALUES (N'item', @changed);");
+        await ExecuteAsync(estate, $"INSERT INTO [{estate.SilverSchema}].[Unstamped] ([item_key], [UpdatedDate_DW]) VALUES (N'item', @changed);");
 
         async Task<SqlFlow.Delivery.Rendering.SourceOrigin> OriginAsync(FlowDefinition flow)
         {
@@ -190,7 +190,7 @@ public sealed class SqlServerIngestionSourceTests
         // Opted out, the same table reads without one.
         var optedOut = ItemFlow(estate, "TextArrival");
         optedOut = optedOut with { Source = optedOut.Source with { SystemColumns = optedOut.Source.SystemColumns with { Inserted = null } } };
-        await ExecuteAsync(estate, $"INSERT INTO [{estate.ArcSchema}].[TextArrival] ([item_key], [InsertedDate_DW], [UpdatedDate_DW]) VALUES (N'item', N'yesterday', @changed);");
+        await ExecuteAsync(estate, $"INSERT INTO [{estate.SilverSchema}].[TextArrival] ([item_key], [InsertedDate_DW], [UpdatedDate_DW]) VALUES (N'item', N'yesterday', @changed);");
         Assert.Null((await OriginAsync(optedOut)).InsertedUtc);
     }
 
@@ -227,7 +227,7 @@ public sealed class SqlServerIngestionSourceTests
 
         var plain = await RefusedAsync("PlainId");
         Assert.Contains("which is neither an identity column nor the table's primary key", plain, StringComparison.Ordinal);
-        Assert.Contains($"ALTER TABLE [{estate.DatabaseName}].[{estate.ArcSchema}].[PlainId] ADD [RecId] bigint IDENTITY(1, 1) NOT NULL", plain, StringComparison.Ordinal);
+        Assert.Contains($"ALTER TABLE [{estate.DatabaseName}].[{estate.SilverSchema}].[PlainId] ADD [RecId] bigint IDENTITY(1, 1) NOT NULL", plain, StringComparison.Ordinal);
         Assert.Contains("which is not the table's single-column primary key", await RefusedAsync("KeyedByName"), StringComparison.Ordinal);
         Assert.Contains("which is not the table's single-column primary key", await RefusedAsync("Composite"), StringComparison.Ordinal);
         Assert.Contains("has no unique index without a filter", await RefusedAsync("NoUniqueKey"), StringComparison.Ordinal);
@@ -250,14 +250,14 @@ public sealed class SqlServerIngestionSourceTests
             + "[region_id] int NULL, [UpdatedDate_DW] datetime NULL, [DeletedDate_DW] datetime NULL",
             "CREATE UNIQUE NONCLUSTERED INDEX [NCI_KeyColumn] ON {0} ([item_key]);");
 
-        // Three STAT_COMP rows, two STAT_CPI, one with no source, and a STAT_CORE row the ingestion flow marked deleted. The
+        // Three COMPOSITE rows, two CPI, one with no source, and a CORE row the ingestion flow marked deleted. The
         // key column may hold a null, as SQLFlow's ingestion leaves it: a run checks its scope's rows for one, which needs the
         // scope's values, and the listing of what those values can be must not.
         await ExecuteAsync(estate, $"""
             INSERT INTO {table} ([item_key], [log_source], [region_id], [UpdatedDate_DW], [DeletedDate_DW])
-            VALUES (N'a', N'STAT_COMP', 7, @loaded, NULL), (N'b', N'STAT_COMP', 7, @loaded, NULL), (N'c', N'STAT_COMP', 9, @loaded, NULL),
-                   (N'd', N'STAT_CPI', 9, @loaded, NULL), (N'e', N'STAT_CPI', NULL, @loaded, NULL), (N'f', NULL, 7, @loaded, NULL),
-                   (N'g', N'STAT_CORE', 7, @loaded, @changed);
+            VALUES (N'a', N'COMPOSITE', 7, @loaded, NULL), (N'b', N'COMPOSITE', 7, @loaded, NULL), (N'c', N'COMPOSITE', 9, @loaded, NULL),
+                   (N'd', N'CPI', 9, @loaded, NULL), (N'e', N'CPI', NULL, @loaded, NULL), (N'f', NULL, 7, @loaded, NULL),
+                   (N'g', N'CORE', 7, @loaded, @changed);
             """);
         var item = ItemFlow(estate, "Scoped");
         var flow = item with
@@ -280,18 +280,18 @@ public sealed class SqlServerIngestionSourceTests
         Assert.Equal(["logSource", "region"], listed.Select(p => p.Parameter));
         var logSource = listed[0];
         Assert.Equal("log_source", logSource.Column);
-        Assert.Equal([new ScopeValue("STAT_COMP", 3), new ScopeValue("STAT_CPI", 2)], logSource.Values);
+        Assert.Equal([new ScopeValue("COMPOSITE", 3), new ScopeValue("CPI", 2)], logSource.Values);
         Assert.False(logSource.More);
         Assert.Equal([new ScopeValue("7", 3), new ScopeValue("9", 2)], listed[1].Values);
 
         // A listing capped below what the column holds says there is more.
         var capped = (await estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance).ScopeValuesAsync(1))[0];
-        Assert.Equal([new ScopeValue("STAT_COMP", 3)], capped.Values);
+        Assert.Equal([new ScopeValue("COMPOSITE", 3)], capped.Values);
         Assert.True(capped.More);
 
-        // A value listed is one the scope reads by: STAT_CPI in region 9 is one row.
+        // A value listed is one the scope reads by: CPI in region 9 is one row.
         var scoped = estate.Engine.Sources.Open(
-            flow, new Dictionary<string, string>(StringComparer.Ordinal) { ["logSource"] = "STAT_CPI", ["region"] = "9" }, NullLoggerFactory.Instance);
+            flow, new Dictionary<string, string>(StringComparer.Ordinal) { ["logSource"] = "CPI", ["region"] = "9" }, NullLoggerFactory.Instance);
         Assert.Equal(1, (await scoped.OpenAsync(SourceSelection.Full(), null)).EstimatedCandidates);
 
         // A scope bound to a column the table does not hold is refused, naming the column and the parameter.
@@ -316,7 +316,7 @@ public sealed class SqlServerIngestionSourceTests
             {
                 Record = new FlowSourceTable
                 {
-                    Object = $"[{estate.DatabaseName}].[{estate.ArcSchema}].[{table}]",
+                    Object = $"[{estate.DatabaseName}].[{estate.SilverSchema}].[{table}]",
                     Key = ["item_key"],
                     PrimaryKey = "RecId",
                 },
@@ -346,7 +346,7 @@ public sealed class SqlServerIngestionSourceTests
     /// <summary>Creates a table in the fixture's ingestion schema, with the statements that follow it; <c>{0}</c> names the table.</summary>
     private static async Task<string> CreateTableAsync(SqlServerIngestionFixture estate, string name, string columns, string then)
     {
-        var table = $"[{estate.ArcSchema}].[{name}]";
+        var table = $"[{estate.SilverSchema}].[{name}]";
         await ExecuteAsync(estate, $"CREATE TABLE {table} ({columns});");
         if (then.Length > 0)
         {

@@ -280,10 +280,11 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
                 </RouterLink>
               </Button>
             )}
+            {/* The preview's flow is the flow's label, which names the interface already (flow/interface). */}
             <Button
               variant="outline"
               size="sm"
-              onClick={() => downloadJson(fileNameOf("preview", preview.flow, preview.interface, source.sourceKey), preview)}
+              onClick={() => downloadJson(fileNameOf("preview", preview.flow, source.sourceKey), preview)}
               data-testid="preview-download"
             >
               <Download />

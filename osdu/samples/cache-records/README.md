@@ -13,9 +13,11 @@ repository sync never reads these files. They sit here, beside the bundled schem
 the same reason those do: so a suite or a first-time setup can fill a cache with no OSDU platform to capture from.
 
 One file per cached type, named after the type, holding its entity type and its records (each an `id` and the values
-a cache flow captures): exactly the nine types `osdu/samples/recall/cache/recall-reference-00-cache.yaml` declares, with
-a record for every reference the recall estate's well log mapping (`osdu/samples/recall/mappings/WellLog@1.4.0.yaml`)
-builds from the lookup tables of `recall/cache/recall-lookups-00-cache.yaml`. The mapping checks each id it builds
+a cache flow captures): exactly the nine types `osdu/samples/welldb/cache/osdu-reference-00-cache.yaml` declares, with
+a record for every reference the welldb estate's well log mapping (`osdu/samples/welldb/mappings/WellLog@1.4.0.yaml`)
+builds from the lookup tables of `welldb/cache/welldb-lookups-00-cache.yaml`. The curve types and families a partition
+defines for itself, rather than taking from OSDU's reference values, carry the `Local-` prefix (`Local-GR`,
+`Local-Measured Depth`). The mapping checks each id it builds
 against these records, as it checks it against the partition's own once the reference flow has refreshed. The suites
 import them as that flow's capture, and so does the control plane suite's mapping builder test, which seeds a
 partition's cache from them. The suites' fixture mappings and the GUI
@@ -23,7 +25,7 @@ end-to-end suite's seed step import records of their own instead (`osdu/tests/Sq
 exactly what their cache flow (`Fixtures/documents/cache/fixtures-osdu-00-reference-cache.yaml`) declares.
 
 ```bash
-sqlflow cache import osdu/samples/recall/cache/recall-reference-00-cache.yaml --from-dir osdu/samples/cache-records --db <conn-ref>
+sqlflow cache import osdu/samples/welldb/cache/osdu-reference-00-cache.yaml --from-dir osdu/samples/cache-records --db <conn-ref>
 ```
 
 merges the files a cache flow declares into the cache of the partition it names, as that flow's capture, exactly

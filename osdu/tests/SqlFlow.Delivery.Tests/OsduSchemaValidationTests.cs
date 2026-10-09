@@ -25,10 +25,10 @@ public sealed class OsduSchemaValidationTests : IDisposable
 
     private static JsonObject WellboreRecord() => JsonNode.Parse("""
         {
-          "id": "dev:master-data--Wellbore:NO-1",
+          "id": "dev:master-data--Wellbore:WB-1",
           "kind": "osdu:wks:master-data--Wellbore:1.3.0",
           "acl": { "owners": ["data.default.owners@dev.example.com"], "viewers": ["data.default.viewers@dev.example.com"] },
-          "legal": { "legaltags": ["dev-public"], "otherRelevantDataCountries": ["NO"], "status": "compliant" },
+          "legal": { "legaltags": ["dev-public"], "otherRelevantDataCountries": ["US"], "status": "compliant" },
           "tags": { "DeliveredBy": "osdu-delivery" },
           "meta": [
             {
@@ -40,15 +40,15 @@ public sealed class OsduSchemaValidationTests : IDisposable
             }
           ],
           "data": {
-            "FacilityName": "NO 1/1-1",
-            "WellID": "dev:master-data--Well:NO-1:",
+            "FacilityName": "WB 1/1-1",
+            "WellID": "dev:master-data--Well:WB-1:",
             "SequenceNumber": 1,
             "VerticalMeasurements": [
               { "VerticalMeasurementID": "KB", "VerticalMeasurement": 25.0, "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KB:" }
             ],
-            "NameAliases": [ { "AliasName": "NO-1", "AliasNameTypeID": "dev:reference-data--AliasNameType:Name:" } ],
+            "NameAliases": [ { "AliasName": "WB-1", "AliasNameTypeID": "dev:reference-data--AliasNameType:Name:" } ],
             "GeoContexts": [
-              { "GeoPoliticalEntityID": "dev:master-data--GeoPoliticalEntity:Norway:", "GeoTypeID": "dev:reference-data--GeoPoliticalEntityType:Country:" }
+              { "GeoPoliticalEntityID": "dev:master-data--GeoPoliticalEntity:US:", "GeoTypeID": "dev:reference-data--GeoPoliticalEntityType:Country:" }
             ],
             "ExtensionProperties": { "anything": ["goes", 1, { "here": true }] }
           }
@@ -85,7 +85,7 @@ public sealed class OsduSchemaValidationTests : IDisposable
 
         Assert.Empty(found.Problems);
         Assert.Equal(0, found.UnverifiedCount);
-        Assert.Contains(found.References, r => r.Id == "dev:master-data--Well:NO-1:" && r.At == "data.WellID");
+        Assert.Contains(found.References, r => r.Id == "dev:master-data--Well:WB-1:" && r.At == "data.WellID");
         Assert.Contains(found.References, r => r.Id == "dev:reference-data--UnitOfMeasure:m:" && r.At == "meta[].unitOfMeasureID");
         Assert.Contains(found.References, r => r.EntityType == "master-data--GeoPoliticalEntity" && r.Path == "data.GeoContexts[0].GeoPoliticalEntityID");
     }
@@ -103,20 +103,20 @@ public sealed class OsduSchemaValidationTests : IDisposable
 
     public static TheoryData<string, string, string> WellboreBreaks() => new()
     {
-        { "id=\"dev:master-data--Well:NO-1\"", "pattern", "id" },
+        { "id=\"dev:master-data--Well:WB-1\"", "pattern", "id" },
         { "kind=\"osdu:wks:master-data--Wellbore\"", "pattern", "kind" },
         { "-acl", "required", "acl" },
         { "acl.owners=[\"owners at dev\"]", "pattern", "acl.owners[0]" },
         { "acl.other=[]", "additionalProperties", "acl.other" },
         { "-legal.otherRelevantDataCountries", "required", "legal.otherRelevantDataCountries" },
-        { "legal.otherRelevantDataCountries=[\"Norway\"]", "pattern", "legal.otherRelevantDataCountries[0]" },
+        { "legal.otherRelevantDataCountries=[\"United States\"]", "pattern", "legal.otherRelevantDataCountries[0]" },
         { "legal.status=\"pending\"", "pattern", "legal.status" },
         { "tags.Count=1", "type", "tags.Count" },
-        { "source=\"recall\"", "additionalProperties", "source" },
+        { "source=\"welldb\"", "additionalProperties", "source" },
         { "version=\"one\"", "type", "version" },
         { "meta=[{\"kind\":\"Unit\",\"name\":\"m\"}]", "anyOf", "meta[0]" },
         { "data.FacilityName=12", "type", "data.FacilityName" },
-        { "data.WellID=\"dev:master-data--Wellbore:NO-1:\"", "relationship", "data.WellID" },
+        { "data.WellID=\"dev:master-data--Wellbore:WB-1:\"", "relationship", "data.WellID" },
         { "data.SequenceNumber=1.5", "type", "data.SequenceNumber" },
         { "data.VerticalMeasurements=[{\"VerticalMeasurement\":\"high\"}]", "type", "data.VerticalMeasurements[0].VerticalMeasurement" },
         { "data.VerticalMeasurements=[{\"VerticalMeasurementTypeID\":\"dev:reference-data--UnitOfMeasure:m:\"}]", "relationship", "data.VerticalMeasurements[0].VerticalMeasurementTypeID" },
@@ -128,8 +128,8 @@ public sealed class OsduSchemaValidationTests : IDisposable
     [Fact]
     public void A_wellbore_naming_an_organisation_of_either_entity_type_a_relationship_allows_meets_it_and_any_other_does_not()
     {
-        Assert.Empty(RecordValidator.Check(Changed("data.NameAliases=[{\"AliasName\":\"x\",\"DefinitionOrganisationID\":\"dev:master-data--Organisation:Equinor:\"}]"), Wellbore).Problems);
-        Assert.Empty(RecordValidator.Check(Changed("data.NameAliases=[{\"AliasName\":\"x\",\"DefinitionOrganisationID\":\"dev:reference-data--StandardsOrganisation:NPD:\"}]"), Wellbore).Problems);
+        Assert.Empty(RecordValidator.Check(Changed("data.NameAliases=[{\"AliasName\":\"x\",\"DefinitionOrganisationID\":\"dev:master-data--Organisation:Operator-A:\"}]"), Wellbore).Problems);
+        Assert.Empty(RecordValidator.Check(Changed("data.NameAliases=[{\"AliasName\":\"x\",\"DefinitionOrganisationID\":\"dev:reference-data--StandardsOrganisation:PPDM:\"}]"), Wellbore).Problems);
 
         var problem = Assert.Single(RecordValidator.Check(Changed("data.NameAliases=[{\"AliasName\":\"x\",\"DefinitionOrganisationID\":\"dev:master-data--Field:F:\"}]"), Wellbore).Problems);
         Assert.Equal("relationship", problem.Rule);

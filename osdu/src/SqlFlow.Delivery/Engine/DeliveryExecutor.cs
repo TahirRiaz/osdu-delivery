@@ -25,7 +25,8 @@ namespace SqlFlow.Delivery.Engine;
 
 /// <summary>
 /// Runs one delivery flow document as one platform run. The run's operation (deliver, plan, intake, drain, verify,
-/// replan) and its payload (the submission it works on, the records it is scoped to, the key slices a member plans)
+/// replan, sync, reverse, undo, delete-ledger: <see cref="DeliveryFlowKind.DeliveryOperationList"/>) and its payload (the
+/// submission or run it works on, the records it is scoped to, the key slices a member plans, the interfaces it runs)
 /// decide what it reads out of the flow's ingestion tables and what it does with it; the engine's log becomes the run
 /// log and the live trace; the outcome becomes <c>run.json</c> and the run row's projected counts. Every ledger activity
 /// and attempt the run writes carries the run id, so a record's history links back to the run that produced it and the
@@ -459,36 +460,33 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             return SourceSelection.Full();
         }
 
-        if (context.Ledger is not { } source)
+        // The scope's own read is decided where 'sqlflow check --connect' decides it too, so the check reports what this reads.
+        // Once a whole-scope read under new rules completes, the watermark carries the new rules and runs are incremental again.
+        var read = await ScopeReads.DecideAsync(context.Ledger, flow, values, rendering, ct).ConfigureAwait(false);
+        switch (read.Reason)
         {
-            return SourceSelection.Full();
+            case ScopeReadReason.NoWatermark:
+                log.LogInformation("No whole-scope plan of scope {Scope} has completed yet, so this run reads every row in scope.", read.Scope);
+                break;
+
+            case ScopeReadReason.RulesMoved:
+                log.LogInformation(
+                    "Scope {Scope} was last planned with other rules than {Mapping} renders with now (its mapping, template or parameters changed), so this run reads every row in scope; each record's own hashes decide what is sent.",
+                    read.Scope, rendering.MappingReference);
+                break;
+
+            case ScopeReadReason.SinceWatermark:
+                log.LogInformation(
+                    "Scope {Scope} was planned through {Through:o}; reading the rows changed after {Lower:o} (an overlap of {Overlap}s).",
+                    read.Scope, read.Watermark!.UpdatedThroughUtc, read.Selection.LowerUtc, flow.Source.Incremental.OverlapSeconds);
+                break;
+
+            case ScopeReadReason.NoLedger:
+            default:
+                break;
         }
 
-        var scope = Planner.ScopeKey(values);
-        var watermark = await source.GetWatermarkAsync(flow.Id, scope, ct).ConfigureAwait(false);
-        if (watermark is null)
-        {
-            log.LogInformation("No whole-scope plan of scope {Scope} has completed yet, so this run reads every row in scope.", scope);
-            return SourceSelection.Full();
-        }
-
-        // Rows that did not change still render differently under a new mapping, template or parameter value, and nothing
-        // else would reach them. Once this read completes the watermark carries the new rules and runs are incremental again.
-        if (watermark.ContextHash is { } planned && !string.Equals(planned, rendering.RulesHash(), StringComparison.Ordinal))
-        {
-            log.LogInformation(
-                "Scope {Scope} was last planned with other rules than {Mapping} renders with now (its mapping, template or parameters changed), so this run reads every row in scope; each record's own hashes decide what is sent.",
-                scope, rendering.MappingReference);
-            return SourceSelection.Full();
-        }
-
-        // The overlap looks a little below the watermark again, for rows whose statement committed after the last read
-        // fixed its upper bound: their update time is inside the window that has already been read.
-        var lower = watermark.UpdatedThroughUtc.AddSeconds(-flow.Source.Incremental.OverlapSeconds);
-        log.LogInformation(
-            "Scope {Scope} was planned through {Through:o}; reading the rows changed after {Lower:o} (an overlap of {Overlap}s).",
-            scope, watermark.UpdatedThroughUtc, lower, flow.Source.Incremental.OverlapSeconds);
-        return SourceSelection.Incremental(lower);
+        return read.Selection;
     }
 
     /// <summary>

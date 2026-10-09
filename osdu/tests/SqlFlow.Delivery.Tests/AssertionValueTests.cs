@@ -60,9 +60,9 @@ public sealed class AssertionValueTests
     [InlineData("{ field: data.A, between: [1, 3] }", "3", true)]
     [InlineData("{ field: data.A, between: [1, 3] }", "3.5", false)]
     [InlineData("{ field: data.A, between: [\"2026-01-01\", \"2026-12-31\"] }", "\"2026-06-01T12:00:00Z\"", true)]
-    [InlineData("{ field: data.A, matches: '^15/9-F-\\d+$' }", "\"15/9-F-11\"", true)]
-    [InlineData("{ field: data.A, matches: '^15/9' }", "\"25/1\"", false)]
-    [InlineData("{ field: data.A, notMatches: '^15/9' }", "\"25/1\"", true)]
+    [InlineData("{ field: data.A, matches: '^A/1-F-\\d+$' }", "\"A/1-F-11\"", true)]
+    [InlineData("{ field: data.A, matches: '^A/1' }", "\"B/2\"", false)]
+    [InlineData("{ field: data.A, notMatches: '^A/1' }", "\"B/2\"", true)]
     [InlineData("{ field: data.A, startsWith: ab }", "\"abc\"", true)]
     [InlineData("{ field: data.A, endsWith: BC, ignoreCase: true }", "\"abc\"", true)]
     [InlineData("{ field: data.A, contains: b }", "\"abc\"", true)]
@@ -215,7 +215,7 @@ public sealed class AssertionValueTests
     public async Task A_test_that_fits_its_template_has_no_problem()
     {
         var fit = await FitAsync("""
-            - { field: data.FacilityName, startsWith: "15/" }
+            - { field: data.FacilityName, startsWith: "A/" }
             - { field: data.SequenceNumber, between: [0, 10] }
             - { field: data.WellID, resolves: master-data--Well }
             - { field: data.WellID, equals: "osdu:master-data--Well:1234:" }
@@ -257,7 +257,7 @@ public sealed class AssertionValueTests
     [Fact]
     public async Task The_sample_estates_assertion_flow_fits_the_templates_it_reads()
     {
-        var flow = Loader.LoadAssertion(Path.Combine(Samples.Source, "flows", "recall-welllog-04-header-assertion.yaml"));
+        var flow = Loader.LoadAssertion(Path.Combine(Samples.Source, "flows", "welldb-welllog-04-header-assertion.yaml"));
         Assert.Equal(["logs-delivered", "log-headers", "log-curves", "log-sources"], flow.Tests.Select(t => t.Name));
         var fits = await AssertionTemplates.FitAsync(flow.Tests, Samples.SampleTemplates, CancellationToken.None);
         Assert.All(fits.Values, fit => Assert.Empty(fit.Problems));

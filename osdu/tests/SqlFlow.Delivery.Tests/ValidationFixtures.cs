@@ -132,7 +132,7 @@ internal static class ValidationFixtures
           "id": "dev:master-data--Thing:T-1",
           "kind": "test:wks:master-data--Thing:1.0.0",
           "acl": { "owners": ["data.default.owners@dev.example.com"], "viewers": ["data.default.viewers@dev.example.com"] },
-          "legal": { "legaltags": ["dev-public"], "otherRelevantDataCountries": ["NO"] },
+          "legal": { "legaltags": ["dev-public"], "otherRelevantDataCountries": ["US"] },
           "tags": { "DeliveredBy": "osdu-delivery" },
           "data": {
             "Name": "Alpha",

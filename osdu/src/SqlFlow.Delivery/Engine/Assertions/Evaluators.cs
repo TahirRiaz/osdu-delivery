@@ -665,7 +665,12 @@ public sealed class Aggregator
         : string.Empty;
 }
 
-/// <summary>No two records share the values of the fields named, taken together.</summary>
+/// <summary>
+/// No two records share the values of the fields named, taken together. It keeps one entry per record it observes, and a test
+/// observes at most its maxRecords (at most <see cref="AssertionDefaults.MaxRecordsCeiling"/>), so it holds no more entries
+/// than a distinct count holds values (<see cref="AggregateEvaluator.MaxDistinct"/>); a distinct count needs a cap of its own
+/// because one record yields a value for every element of an array it crosses.
+/// </summary>
 internal sealed class UniqueEvaluator : Evaluator
 {
     private const string Separator = "\u001f";
@@ -998,7 +1003,10 @@ internal sealed class ConformsEvaluator(int index, ConformsAssertion assertion, 
             : Result(_tally.Passed, _tally.Actual("record"), _tally.Message("record"), _tally.Considered, _tally.Failing, _tally.Share, _tally.Examples));
 }
 
-/// <summary>The search indexed every record the test matches cleanly: none carries an index status other than 200.</summary>
+/// <summary>
+/// The search indexed every record the test matches cleanly: none carries an index status above 200, the indexer's status of
+/// a record it mapped whole (osdu/specs/core/INTEGRATION.md: 200 all OK, 400 a field could not be mapped, 404 schema missing).
+/// </summary>
 internal sealed class IndexedEvaluator(int index, IndexedAssertion assertion, int examples) : Evaluator(index, assertion, examples)
 {
     /// <summary>What finds a record the indexer could not index fully: a status of 201 or above (400 mapping, 404 schema missing).</summary>
@@ -1015,11 +1023,11 @@ internal sealed class IndexedEvaluator(int index, IndexedAssertion assertion, in
         var examples = hits.Select(hit => new AssertionExample(
                 hit["id"]?.GetValue<string>(),
                 hit["index"]?["statusCode"]?.ToJsonString(),
-                hit["index"]?["trace"] is JsonArray trace && trace.Count > 0 ? TestResults.Quote(RecordValues.Text(trace[0])) : "indexed with a status other than 200"))
+                hit["index"]?["trace"] is JsonArray trace && trace.Count > 0 ? TestResults.Quote(RecordValues.Text(trace[0])) : "indexed with a status above 200"))
             .ToList();
-        var actual = string.Create(CultureInfo.InvariantCulture, $"{total} record(s) indexed with a status other than 200")
+        var actual = string.Create(CultureInfo.InvariantCulture, $"{total} record(s) indexed with a status above 200")
             + (subject.Matched is { } matched ? string.Create(CultureInfo.InvariantCulture, $", of {matched} matched") : string.Empty);
-        return Result(total == 0, actual, string.Create(CultureInfo.InvariantCulture, $"{total} record(s) are in the index with a status other than 200: the indexer could not map them whole."), subject.Matched, total, total, examples);
+        return Result(total == 0, actual, string.Create(CultureInfo.InvariantCulture, $"{total} record(s) are in the index with a status above 200: the indexer could not map them whole."), subject.Matched, total, total, examples);
     }
 }
 

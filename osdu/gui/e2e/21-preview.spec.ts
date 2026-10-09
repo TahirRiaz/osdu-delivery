@@ -1,5 +1,6 @@
 import { E2E } from "../playwright.config";
 import { DELIVERY_FLOW, LOG_SOURCE } from "./global-setup";
+import { stageWellLogRecords } from "./delivery-cli";
 import { expect, test } from "./helpers";
 
 // A record before it is sent, and a record as OSDU holds it. The Preview tab of a delivery flow renders one record on a
@@ -9,16 +10,17 @@ import { expect, test } from "./helpers";
 //
 // Nothing here reaches an OSDU: the flows reach the e2e stand-in, which answers the wellbore searches a render makes and
 // the record reads, and holds the one well log this spec gives it, and a schema of its kind, for as long as the spec runs.
-// The records the earlier specs staged are the ones read here; nothing is delivered and nothing is written to the ledger.
+// The record page's test stages the flow's records itself (an intake, which sends nothing), so it reads them whatever ran
+// before it; nothing is delivered.
 
-/** A Recall well log of the sample estate: its source key as the Records page shows it, and the wellbore it names. */
-const LOG_KEY = "recall:NORWAY_WELLDB/12359/1";
-const LOG_WELLBORE = "NO-33-9-C-28-B";
+/** A well log of the sample well database: its source key as the Records page shows it, and the wellbore it names. */
+const LOG_KEY = "welldb:PROJECT_A/LOG-0004/1";
+const LOG_WELLBORE = "Wellbore-B-2-B";
 
 /** The kind of the well log the stand-in holds. */
 const LOG_KIND = "osdu:wks:work-product-component--WellLog:1.4.0";
 
-/** What the stand-in's Schema service holds for the well log's kind while the spec runs: a name that starts with "Recall ". */
+/** What the stand-in's Schema service holds for the well log's kind while the spec runs: a name that starts with "WellDB ". */
 const LOG_SCHEMA = {
   $schema: "http://json-schema.org/draft-07/schema#",
   "x-osdu-schema-source": LOG_KIND,
@@ -26,7 +28,7 @@ const LOG_SCHEMA = {
   required: ["kind", "acl", "legal"],
   properties: {
     kind: { type: "string" },
-    data: { type: "object", properties: { Name: { type: "string", pattern: "^Recall " } } },
+    data: { type: "object", properties: { Name: { type: "string", pattern: "^WellDB " } } },
   },
 };
 
@@ -79,30 +81,33 @@ test.describe.serial("record preview and OSDU read", () => {
     // cache gave it, none of them records of this ledger.
     await adminPage.getByTestId("preview-tab-references").click();
     // The reference is named by its type and unique part; the whole id is on hover and on copy.
-    await expect(adminPage.getByTestId("preview-references")).toContainText(/Wellbore\s?NO-[0-9A-Z-]+\s?data\.WellboreID/);
+    await expect(adminPage.getByTestId("preview-references")).toContainText(/Wellbore\s?Wellbore-[0-9A-Z-]+\s?data\.WellboreID/);
     await expect(adminPage.getByTestId("preview-references")).toContainText("not a record of the ledger");
 
     // A key as the Records page shows it names that record, though its log id holds a slash.
     await adminPage.getByTestId("preview-key").fill(LOG_KEY);
     await run.click();
     await expect(adminPage.getByTestId("preview-asked")).toContainText("read as a source key", { timeout: 60_000 });
-    await expect(adminPage.getByTestId("preview-header")).toContainText("12359/1");
+    await expect(adminPage.getByTestId("preview-header")).toContainText("LOG-0004/1");
 
     // A key the table holds no row for is an answer, not a failure.
-    await adminPage.getByTestId("preview-key").fill("NORWAY_WELLDB/no-such-log");
+    await adminPage.getByTestId("preview-key").fill("PROJECT_A/no-such-log");
     await run.click();
     await expect(adminPage.getByTestId("preview-not-found")).toBeVisible({ timeout: 60_000 });
     await expect(adminPage.getByTestId("preview-reason")).toContainText("holds no row");
   });
 
   test("a record's page reads it from OSDU, follows what it refers to, and compares it with what a delivery would send", async ({ adminPage, request }) => {
+    test.setTimeout(600_000);
+    expect(stageWellLogRecords()).toContain("record(s)");
+
     // The lookup finds the record by the source key an operator holds; its row goes straight to what OSDU holds.
     await adminPage.getByTestId("nav-delivery-records").click();
     await expect(adminPage.getByTestId("page-delivery-records")).toBeVisible();
     await adminPage.getByTestId("delivery-lookup-search").fill(LOG_KEY);
     // The lookup writes its term into the address once typing settles; a click before that is taken back to the lookup.
-    await expect(adminPage).toHaveURL(/q=recall%3ANORWAY_WELLDB%2F12359%2F1/);
-    const row =adminPage.getByTestId("delivery-lookup-table").getByTestId("table-row").filter({ hasText: "12359/1" }).first();
+    await expect(adminPage).toHaveURL(/q=welldb%3APROJECT_A%2FLOG-0004%2F1/);
+    const row =adminPage.getByTestId("delivery-lookup-table").getByTestId("table-row").filter({ hasText: "LOG-0004/1" }).first();
     await expect(row).toBeVisible({ timeout: 30_000 });
     await row.getByTestId("open-in-osdu").click();
     await expect(adminPage.getByTestId("page-delivery-record")).toBeVisible();
@@ -122,13 +127,14 @@ test.describe.serial("record preview and OSDU read", () => {
         id: targetId,
         kind: LOG_KIND,
         acl: { viewers: [E2E.osdu.OSDU_ACL_VIEWER], owners: [E2E.osdu.OSDU_ACL_OWNER] },
-        legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["NO"], status: "compliant" },
+        legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["US"], status: "compliant" },
         data: { Name: "held by the stand-in", WellboreID: `${partition}:master-data--Wellbore:${LOG_WELLBORE}:` },
         createUser: "e2e-stand-in",
         createTime: "2026-09-25T00:00:00.000Z",
       },
     });
     expect(hold.ok()).toBe(true);
+    const heldVersion = String(((await hold.json()) as { version: number }).version);
 
     await adminPage.getByTestId("record-osdu-read").click();
     await expect(adminPage.getByTestId("osdu-record")).toBeVisible({ timeout: 60_000 });
@@ -154,9 +160,20 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(explorer.getByTestId("record-tabs")).toHaveCount(0);
     await explorer.close();
 
-    // The well logs travel by a DDMS route, whose read keeps no list of a record's versions, so the location bar says so
-    // rather than offering versions to pick.
-    await expect(adminPage.getByTestId("osdu-no-history")).toHaveText("no version list");
+    // The well logs travel by the Wellbore DDMS route, and a Wellbore DDMS record is a storage record whose versions name
+    // its bulk data, so its history is read through the storage service: the location bar offers the one version OSDU
+    // holds of it, marked as the latest, and says how many there are.
+    const version = adminPage.getByTestId("osdu-record-versions").getByTestId("osdu-record-version");
+    await expect(version).toContainText(heldVersion);
+    await expect(version).toContainText("latest");
+    await expect(adminPage.getByTestId("osdu-no-history")).toHaveCount(0);
+    await version.click();
+    const versions = adminPage.getByTestId("osdu-version-menu");
+    await expect(versions).toContainText("1 version in OSDU, newest first");
+    await expect(versions.getByTestId("osdu-version")).toHaveCount(1);
+    await expect(versions.getByTestId("osdu-version")).toContainText(heldVersion);
+    await adminPage.keyboard.press("Escape");
+    await expect(versions).toHaveCount(0);
 
     // The wellbore it refers to is a link where it stands in the record, read in turn through the same flow's route,
     // and takes the inspector's place after it on the trail; closing it steps back to the log.
@@ -189,7 +206,7 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(problem).toHaveCount(1);
     await expect(problem).toContainText("data.Name");
     await expect(problem.getByTestId("validation-problem-found")).toHaveText("'held by the stand-in'");
-    await expect(problem.getByTestId("validation-problem-expected")).toHaveText("text matching ^Recall");
+    await expect(problem.getByTestId("validation-problem-expected")).toHaveText("text matching ^WellDB");
     await problem.getByTestId("validation-problem-open").click();
     const mark = adminPage.getByTestId("explorer-validation-mark").first();
     await expect(mark).toBeVisible();

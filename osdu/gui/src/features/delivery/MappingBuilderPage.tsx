@@ -654,7 +654,7 @@ export default function MappingBuilderPage() {
                 </Select>
                 <p className="text-xs text-muted-foreground">
                   The last part of every record&apos;s OSDU id: a GUID derived from the key, or the key&apos;s values themselves, so the id
-                  reads as the code it stands for (<span className="font-mono">RECALL::GAPI</span>). A record keeps the id it was first
+                  reads as the code it stands for (<span className="font-mono">WELLDB::GAPI</span>). A record keeps the id it was first
                   delivered under, so choose before anything is delivered.
                 </p>
               </div>

@@ -334,7 +334,7 @@ export function conditionValueText(filter: ExplorerFilter): string {
   }
 }
 
-/** A condition as a sentence: `WellboreName starts with NO 34/10`; a term's by its name, given in `name`. */
+/** A condition as a sentence: `WellboreName starts with Wellbore A`; a term's by its name, given in `name`. */
 export function filterSentence(filter: ExplorerFilter, name?: string): string {
   const condition = filter.condition ?? "is";
   const value = conditionValueText(filter);

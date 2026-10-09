@@ -19,12 +19,12 @@ public class YamlDocumentLoaderTests
         source:
           connection: ${env:OSDU_DATA_DB}
           record:
-            object: OsduData.arc.WellLog
+            object: OsduData.silver.WellLog
             key: [source_project, log_id]
             scope: { log_source: logSource }
           datasets:
             curves:
-              object: OsduData.arc.WellLogCurve
+              object: OsduData.silver.WellLogCurve
               join: { source_project: source_project, log_id: log_id }
               orderBy: [curve_ordinal]
           payloads:
@@ -39,7 +39,7 @@ public class YamlDocumentLoaderTests
           mapping: WellLog@1.4.0
           parameters: { dataPartition: dev }
         target:
-          endpoint: https://example.org/petrodb
+          endpoint: https://example.org/facade-api
           headers: { data-partition-id: dev }
           protocol: ddms
           protocolOptions: { payload: curves, recordMethod: POST }
@@ -119,7 +119,7 @@ public class YamlDocumentLoaderTests
     {
         var loader = new DeliveryDocumentLoader();
         var flow = loader.LoadFlow(Samples.Flow);
-        Assert.Equal("recall-welllog-03-header-delivery", flow.Name);
+        Assert.Equal("welldb-welllog-03-header-delivery", flow.Name);
         Assert.Equal(DeliveryProtocol.Ddms, flow.Target.Protocol);
         Assert.Equal("WellLog", flow.Render.MappingName);
         Assert.Equal("1.4.0", flow.Render.MappingVersion);
@@ -127,11 +127,11 @@ public class YamlDocumentLoaderTests
         Assert.Equal(["Datasets", "DDMSDatasets", "ExtensionProperties"], flow.Target.ProtocolOptions.PreserveDataKeys);
 
         // The sample delivers what its own pre and ing flows load into the ingestion tables.
-        Assert.Equal("OsduData.arc.WellLog", flow.Source.Record.Object);
+        Assert.Equal("OsduData.silver.WellLog", flow.Source.Record.Object);
         Assert.Equal(["source_project", "log_id"], flow.Source.Record.Key);
         Assert.Equal("RecId", flow.Source.Record.PrimaryKey);
         Assert.Equal("logSource", flow.Source.Record.Scope["log_source"]);
-        Assert.Equal("OsduData.arc.WellLogCurve", flow.Source.Datasets["curves"].Object);
+        Assert.Equal("OsduData.silver.WellLogCurve", flow.Source.Datasets["curves"].Object);
         Assert.Equal("source_project", flow.Source.Datasets["curves"].Join["source_project"]);
         Assert.Equal(["curve_ordinal"], flow.Source.Datasets["curves"].OrderBy);
         Assert.Equal("curve_folder", flow.Source.Payloads["curves"].LocationColumn);
@@ -142,7 +142,7 @@ public class YamlDocumentLoaderTests
         Assert.Contains(mapping.Entries, e => e.Target.Text == "osdu.data.Curves" && e.IsRepeater && e.Source!.Child == "curves");
         Assert.Equal(["curves"], mapping.ChildDatasets);
         Assert.Equal(["{$param.legalTag}"], mapping.Envelope.LegalTags);
-        Assert.Equal(["NO"], mapping.Envelope.OtherRelevantDataCountries);
+        Assert.Equal(["US"], mapping.Envelope.OtherRelevantDataCountries);
     }
 
     [Fact]
@@ -496,15 +496,15 @@ public class YamlDocumentLoaderTests
     {
         var flow = new DeliveryDocumentLoader().ParseFlow(Flow, "f");
         Assert.Throws<FlowValidationException>(() => FlowParameters.Resolve(flow, null));
-        var values = FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "STAT_COMP" });
+        var values = FlowParameters.Resolve(flow, new Dictionary<string, string> { ["logSource"] = "COMPOSITE" });
 
         // A declared location resolves against the flow file, with its tokens filled in.
         var work = FlowParameters.WorkLocation(flow, values);
         Assert.True(Path.IsPathRooted(work));
-        Assert.EndsWith(Path.Combine("work", "STAT_COMP"), work, StringComparison.Ordinal);
+        Assert.EndsWith(Path.Combine("work", "COMPOSITE"), work, StringComparison.Ordinal);
 
         // The scope predicate: the column the run filters on, carrying the value of the parameter bound to it.
-        Assert.Equal("STAT_COMP", FlowParameters.ScopeValues(flow, values)["log_source"]);
+        Assert.Equal("COMPOSITE", FlowParameters.ScopeValues(flow, values)["log_source"]);
 
         // A parameter value that would climb out of a declared location is refused, because those locations bound
         // what a run may read and write.
@@ -534,7 +534,7 @@ public class OsduIdentifierValidationTests
 
     [Theory]
     [InlineData("legaltags: [tag]", "legaltags: [tag, tag]", "record.legal.legaltags")]
-    [InlineData("otherRelevantDataCountries: [NO]", "otherRelevantDataCountries: [NO, NO]", "record.legal.otherRelevantDataCountries")]
+    [InlineData("otherRelevantDataCountries: [US]", "otherRelevantDataCountries: [US, US]", "record.legal.otherRelevantDataCountries")]
     public void A_repeated_legal_entry_is_rejected_because_the_legal_lists_are_sets(string from, string to, string key)
     {
         var yaml = TestSchema.MappingYaml.Replace(from, to, StringComparison.Ordinal);

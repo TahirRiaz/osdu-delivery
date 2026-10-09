@@ -111,14 +111,14 @@ public class MappingShapeTests
                 $cache: UnitOfMeasure.id
                 $findBy: Code = unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
+                  - replace: $cache.UnitAlias
             """), TestSchema.Build(), Dev);
 
         Assert.Equal(
             "<string from dataset.unit | replace from $cache.CurveClasses (its key to curve_family), otherwise ~>",
             shape.Document["data"]!["Symbol"]!.GetValue<string>());
         Assert.Equal(
-            "<string from cache.UnitOfMeasure.id by Code = (dataset.unit | replace from $cache.RecallUnits)>",
+            "<string from cache.UnitOfMeasure.id by Code = (dataset.unit | replace from $cache.UnitAlias)>",
             shape.Document["data"]!["Unit"]!.GetValue<string>());
     }
 

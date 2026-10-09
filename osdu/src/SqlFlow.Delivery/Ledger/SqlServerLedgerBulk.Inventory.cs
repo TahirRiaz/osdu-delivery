@@ -114,6 +114,14 @@ internal static partial class SqlServerLedgerBulk
             END
         """;
 
+    // Whether a ledger expects the id (r, an inventory row) to be served, from what the ledgers hold of it (InventoryLedgerApply):
+    // its record delivered (or reverted) at a version, or, claimed by no record, a live minted id whose record its ledger holds.
+    // Written as a CASE so it is true or false, never unknown where no record or artifact is held, and NOT of it holds where it does not.
+    private const string InventoryExpected = """
+        (CASE WHEN (rec.[DeliveryKey] IS NOT NULL AND rec.[TargetVersion] IS NOT NULL AND rec.[Status] IN (N'delivered', N'reverted'))
+            OR (rec.[DeliveryKey] IS NULL AND art.[State] = N'live' AND art.[Held] = 1) THEN 1 ELSE 0 END = 1)
+        """;
+
     // The findings of the ids OSDU serves, set only where they changed.
     private const string InventoryReconcileSql = """
         SELECT r.[InventoryRecordId],
@@ -162,31 +170,33 @@ internal static partial class SqlServerLedgerBulk
 
     // The ids a ledger expects that the read did not list: rows of the inventory no longer (or never) listed whose record is
     // delivered or whose minted id is live, and, for an inventory that covers its entity type whole, the ledgers' delivered
-    // records and live minted ids of the type the inventory holds no row of.
+    // records and live minted ids of the type the inventory holds no row of. They come least recently asked of storage first
+    // (never asked, then the longest ago), so builds that each ask for @max of them take turns through every one.
     private const string InventoryCandidatesSql = """
-        SELECT TOP (@max) u.* FROM (
+        SELECT TOP (@max) u.[TargetId], u.[Known], u.[LedgerFlowId], u.[DeliveryKey], u.[LedgerStatus], u.[LedgerVersion], u.[ArtifactId], u.[ArtifactState]
+        FROM (
             SELECT r.[TargetId], CAST(1 AS bit) AS [Known],
                 COALESCE(rec.[FlowId], art.[FlowId]) AS [LedgerFlowId], COALESCE(rec.[DeliveryKey], art.[DeliveryKey]) AS [DeliveryKey],
-                rec.[Status] AS [LedgerStatus], rec.[TargetVersion] AS [LedgerVersion], art.[ArtifactId], art.[State] AS [ArtifactState]
+                rec.[Status] AS [LedgerStatus], rec.[TargetVersion] AS [LedgerVersion], art.[ArtifactId], art.[State] AS [ArtifactState],
+                r.[CheckedUtc]
             FROM [osdu].[InventoryRecord] AS r
             {{ledger}}
             WHERE r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND (r.[GoneUtc] IS NOT NULL OR r.[FirstSeenUtc] IS NULL)
-                AND ((rec.[DeliveryKey] IS NOT NULL AND rec.[TargetVersion] IS NOT NULL AND rec.[Status] IN (N'delivered', N'reverted'))
-                    OR (rec.[DeliveryKey] IS NULL AND art.[State] = N'live' AND art.[Held] = 1))
+                AND {{expected}}
             UNION ALL
-            SELECT x.[ClaimedTargetId], CAST(0 AS bit), x.[FlowId], x.[DeliveryKey], x.[Status], x.[TargetVersion], NULL, NULL
+            SELECT x.[ClaimedTargetId], CAST(0 AS bit), x.[FlowId], x.[DeliveryKey], x.[Status], x.[TargetVersion], NULL, NULL, NULL
             FROM [osdu].[Record] AS x
             WHERE @coversType = 1 AND x.[PartitionId] = @partitionId AND x.[ClaimedTargetId] LIKE @prefix ESCAPE N'\'
                 AND x.[TargetVersion] IS NOT NULL AND x.[Status] IN (N'delivered', N'reverted')
                 AND NOT EXISTS (SELECT 1 FROM [osdu].[InventoryRecord] AS r WHERE r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND r.[TargetId] = x.[ClaimedTargetId])
             UNION ALL
-            SELECT a.[TargetId], CAST(0 AS bit), a.[FlowId], a.[DeliveryKey], NULL, NULL, a.[ArtifactId], a.[State]
+            SELECT a.[TargetId], CAST(0 AS bit), a.[FlowId], a.[DeliveryKey], NULL, NULL, a.[ArtifactId], a.[State], NULL
             FROM [osdu].[Artifact] AS a
             WHERE @coversType = 1 AND a.[PartitionId] = @partitionId AND a.[TargetId] LIKE @prefix ESCAPE N'\' AND a.[State] = N'live'
                 AND NOT EXISTS (SELECT 1 FROM [osdu].[Record] AS x WHERE x.[ClaimedTargetId] = a.[TargetId])
                 AND NOT EXISTS (SELECT 1 FROM [osdu].[InventoryRecord] AS r WHERE r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND r.[TargetId] = a.[TargetId])
         ) AS u
-        ORDER BY u.[Known] DESC, u.[TargetId];
+        ORDER BY CASE WHEN u.[CheckedUtc] IS NULL THEN 0 ELSE 1 END, u.[CheckedUtc], u.[Known] DESC, u.[TargetId];
         """;
 
     private const string InventoryCheckedStageSql = """
@@ -200,17 +210,28 @@ internal static partial class SqlServerLedgerBulk
         """;
 
     // The ids OSDU no longer serves: gone unless storage was asked, and then missing (storage does not hold it) or unlisted (it
-    // does, and the read did not list it). An id a ledger expects that the inventory held no row of gets one, never listed.
+    // does, and the read did not list it). An id a ledger expects that the inventory held no row of gets one, never listed. An
+    // id a ledger still expects that this build did not ask for (more were expected than maxMissingChecks) keeps what storage
+    // answered when it was last asked; one never asked is gone, saying it was not asked, until a later build asks. With no
+    // check at all (@checks = 0) only maxMissingChecks: 0 leaves an expected id unasked, and every id not listed is gone.
     private const string InventoryCheckedSql = """
         UPDATE r SET
             [FindingUtc] = CASE WHEN r.[Finding] = N'gone' THEN r.[FindingUtc] ELSE @now END,
-            [Finding] = N'gone', [Detail] = CASE WHEN @checks = 0 THEN N'no ledger expects it, or the build read no id from storage' ELSE N'no ledger expects it' END
+            [Finding] = N'gone', [Detail] = d.[Detail]
         FROM [osdu].[InventoryRecord] AS r
+        {{ledger}}
+        CROSS APPLY (SELECT CASE
+                WHEN NOT {{expected}} THEN N'no ledger expects it'
+                WHEN @checks = 0 THEN N'a ledger expects it, and the flow asks storage for no id (maxMissingChecks: 0), so whether it is missing is not known'
+                ELSE N'a ledger expects it, and this build did not ask storage for it: more ids were expected than maxMissingChecks, and a later build asks'
+            END AS [Detail]) AS d
         WHERE r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND (r.[GoneUtc] IS NOT NULL OR r.[FirstSeenUtc] IS NULL)
             AND NOT EXISTS (SELECT 1 FROM #Checked AS c WHERE c.[TargetId] = r.[TargetId])
-            AND (r.[Finding] <> N'gone' OR r.[Detail] IS NULL);
+            AND NOT (@checks > 0 AND r.[CheckedUtc] IS NOT NULL AND r.[Finding] IN (N'missing', N'unlisted') AND {{expected}})
+            AND (r.[Finding] <> N'gone' OR r.[Detail] IS NULL OR r.[Detail] <> d.[Detail]);
 
         UPDATE r SET
+            [CheckedUtc] = @now,
             [FindingUtc] = CASE WHEN r.[Finding] = (CASE WHEN c.[Held] = 1 THEN N'unlisted' ELSE N'missing' END) THEN r.[FindingUtc] ELSE @now END,
             [Finding] = CASE WHEN c.[Held] = 1 THEN N'unlisted' ELSE N'missing' END,
             [LedgerFlowId] = c.[LedgerFlowId], [DeliveryKey] = c.[DeliveryKey], [LedgerStatus] = c.[LedgerStatus], [LedgerVersion] = c.[LedgerVersion],
@@ -221,10 +242,10 @@ internal static partial class SqlServerLedgerBulk
         INNER JOIN #Checked AS c ON r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND r.[TargetId] = c.[TargetId];
 
         INSERT INTO [osdu].[InventoryRecord] ([PartitionId], [InventoryId], [TargetId], [Kind], [Version], [CreateUser], [CreateTime],
-                [ModifyUser], [ModifyTime], [Finding], [FindingUtc], [LedgerFlowId], [DeliveryKey], [LedgerStatus], [LedgerVersion],
+                [ModifyUser], [ModifyTime], [Finding], [FindingUtc], [CheckedUtc], [LedgerFlowId], [DeliveryKey], [LedgerStatus], [LedgerVersion],
                 [ArtifactId], [ArtifactState], [Detail])
         SELECT @partitionId, @inventoryId, c.[TargetId], c.[Kind], c.[Version], c.[CreateUser], c.[CreateTime], c.[ModifyUser], c.[ModifyTime],
-            CASE WHEN c.[Held] = 1 THEN N'unlisted' ELSE N'missing' END, @now, c.[LedgerFlowId], c.[DeliveryKey], c.[LedgerStatus], c.[LedgerVersion],
+            CASE WHEN c.[Held] = 1 THEN N'unlisted' ELSE N'missing' END, @now, @now, c.[LedgerFlowId], c.[DeliveryKey], c.[LedgerStatus], c.[LedgerVersion],
             c.[ArtifactId], c.[ArtifactState],
             CASE WHEN c.[Held] = 1 THEN N'storage holds it, and the read never listed it: the index has not caught up with it'
                 ELSE N'a ledger expects it, and storage does not hold it' END
@@ -328,14 +349,14 @@ internal static partial class SqlServerLedgerBulk
         }, ct);
 
     /// <summary>
-    /// The ids a ledger expects that the inventory's read did not list, at most <paramref name="max"/>: its own rows no longer
-    /// listed, and, with <paramref name="prefix"/> (an inventory that covers its entity type whole), the ledgers' ids of the type
-    /// it holds no row of.
+    /// The ids a ledger expects that the inventory's read did not list, at most <paramref name="max"/>, never asked of storage
+    /// first and then the longest ago: its own rows no longer listed, and, with <paramref name="prefix"/> (an inventory that
+    /// covers its entity type whole), the ledgers' ids of the type it holds no row of.
     /// </summary>
     public static Task<IReadOnlyList<InventoryCandidate>> InventoryCandidatesAsync(OsduDbContext db, short partitionId, int inventoryId, string? prefix, int max, CancellationToken ct)
         => InTransactionAsync<IReadOnlyList<InventoryCandidate>>(db, async (connection, transaction) =>
         {
-            await using var command = Command(connection, transaction, InventoryCandidatesSql.Replace("{{ledger}}", InventoryLedgerApply, StringComparison.Ordinal), slice: null);
+            await using var command = Command(connection, transaction, InventorySql(InventoryCandidatesSql), slice: null);
             command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@inventoryId", SqlDbType.Int) { Value = inventoryId });
             command.Parameters.Add(new SqlParameter("@max", SqlDbType.Int) { Value = max });
@@ -393,7 +414,7 @@ internal static partial class SqlServerLedgerBulk
                 await BulkCopyAsync(connection, transaction, "#Checked", table, ct).ConfigureAwait(false);
             }
 
-            await using var command = Command(connection, transaction, InventoryCheckedSql, slice: null);
+            await using var command = Command(connection, transaction, InventorySql(InventoryCheckedSql), slice: null);
             command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@inventoryId", SqlDbType.Int) { Value = inventoryId });
             command.Parameters.Add(new SqlParameter("@checks", SqlDbType.Int) { Value = checks.Count });
@@ -438,9 +459,14 @@ internal static partial class SqlServerLedgerBulk
             return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }, ct);
 
-    /// <summary>An inventory statement with what the ledgers hold of each id, and the rule its finding is set by, written in.</summary>
+    /// <summary>
+    /// An inventory statement with what the ledgers hold of each id, the rule its finding is set by, and whether a ledger
+    /// expects it, written in.
+    /// </summary>
     private static string InventorySql(string sql)
-        => sql.Replace("{{ledger}}", InventoryLedgerApply, StringComparison.Ordinal).Replace("{{finding}}", InventoryFindingCase, StringComparison.Ordinal);
+        => sql.Replace("{{ledger}}", InventoryLedgerApply, StringComparison.Ordinal)
+            .Replace("{{finding}}", InventoryFindingCase, StringComparison.Ordinal)
+            .Replace("{{expected}}", InventoryExpected, StringComparison.Ordinal);
 
     /// <summary>A LIKE pattern matching every id that starts with <paramref name="prefix"/>, its wildcards escaped.</summary>
     private static string LikePrefix(string prefix)

@@ -80,7 +80,7 @@ public sealed class SnapshotVersioningTests : IDisposable
         """;
 
     private const string OneWellbore = """
-        { "entityType": "master-data--Wellbore", "items": [ { "id": "dev:master-data--Wellbore:A", "FacilityName": "NO 1/1-A" } ] }
+        { "entityType": "master-data--Wellbore", "items": [ { "id": "dev:master-data--Wellbore:A", "FacilityName": "WB 1/1-A" } ] }
         """;
 
     [Fact]
@@ -187,7 +187,7 @@ public sealed class SnapshotVersioningTests : IDisposable
             HttpMethod.Post,
             "/query_with_cursor",
             HttpStatusCode.OK,
-            """{"results":[{"id":"dev:master-data--Wellbore:A","data":{"FacilityName":"NO 1/1-A","NameAlias":[{"AliasName":"1/1-A"},{"AliasName":"WELL A"}]}}],"totalCount":1}""");
+            """{"results":[{"id":"dev:master-data--Wellbore:A","data":{"FacilityName":"WB 1/1-A","NameAlias":[{"AliasName":"1/1-A"},{"AliasName":"WELL A"}]}}],"totalCount":1}""");
         using var osdu = await OsduConnection.CreateAsync(
             "http://localhost/osdu",
             new TargetAuth { Type = TargetAuthType.None },
@@ -204,7 +204,7 @@ public sealed class SnapshotVersioningTests : IDisposable
         Assert.Contains("data.NameAlias.AliasName", search.Body, StringComparison.Ordinal);
         Assert.True(write.Written);
         var wellbore = (await _catalog.Caches().LoadAsync(Scope, write.Snapshot.Version))!.Type("Wellbore")!.Items.Single();
-        Assert.Equal("NO 1/1-A", wellbore.Fields["FacilityName"].Text);
+        Assert.Equal("WB 1/1-A", wellbore.Fields["FacilityName"].Text);
         Assert.Equal(["1/1-A", "WELL A"], wellbore.Fields["Alias"].Terms.Order(StringComparer.Ordinal));
         Assert.Equal("project-a", (await store.ListVersionsAsync(Scope)).Single().FlowName);
     }
@@ -278,16 +278,16 @@ public sealed class SnapshotVersioningTests : IDisposable
     public async Task An_import_holds_only_records_of_the_declared_entity_type_in_the_partition_and_never_a_lookup_table()
     {
         var (builder, store, _) = NewBuilder();
-        var lookup = new ReferenceTypeSpec { Name = "RecallUnits", EntityType = ReferenceType.LookupEntityType("RecallUnits"), Origin = CacheOrigin.Dictionary, Dictionary = "RecallUnits" };
+        var lookup = new ReferenceTypeSpec { Name = "UnitAlias", EntityType = ReferenceType.LookupEntityType("UnitAlias"), Origin = CacheOrigin.Dictionary, Dictionary = "UnitAlias" };
 
         // A lookup table the flow declares is filled from its origin, so an import neither needs nor takes it.
         var without = await builder.ImportDirectoryAsync(ReferenceDirectory(("UnitOfMeasure", OneItem)), [Units, lookup], Capture);
         Assert.True(without.Written);
         var offered = await Assert.ThrowsAsync<DeliveryException>(() => builder.ImportDirectoryAsync(
-            ReferenceDirectory(("UnitOfMeasure", OneItem), ("RecallUnits", """{ "entityType": "lookup--RecallUnits", "key": "key", "items": [ { "id": "M", "key": "M", "value": "m" } ] }""")),
+            ReferenceDirectory(("UnitOfMeasure", OneItem), ("UnitAlias", """{ "entityType": "lookup--UnitAlias", "key": "key", "items": [ { "id": "M", "key": "M", "value": "m" } ] }""")),
             [Units, lookup],
             Capture));
-        Assert.Contains("RecallUnits.json holds RecallUnits, which cache flow 'units' fills from dictionary RecallUnits; a lookup table is captured from its origin, never imported", offered.Message, StringComparison.Ordinal);
+        Assert.Contains("UnitAlias.json holds UnitAlias, which cache flow 'units' fills from dictionary UnitAlias; a lookup table is captured from its origin, never imported", offered.Message, StringComparison.Ordinal);
 
         // Records that are not OSDU records of the declared entity type in this partition are hand-made rows, and refused.
         foreach (var id in new[] { "M", "other:reference-data--UnitOfMeasure:m", "dev:reference-data--UnitQuantity:length", "dev:reference-data--UnitOfMeasure:" })
@@ -303,7 +303,7 @@ public sealed class SnapshotVersioningTests : IDisposable
     private const string AliasedWellbore = """
         {
           "entityType": "master-data--Wellbore",
-          "items": [ { "id": "dev:master-data--Wellbore:A", "FacilityName": "NO 1/1-A", "Alias": ["1/1-A", "WELL A"] } ]
+          "items": [ { "id": "dev:master-data--Wellbore:A", "FacilityName": "WB 1/1-A", "Alias": ["1/1-A", "WELL A"] } ]
         }
         """;
 
@@ -330,7 +330,7 @@ public sealed class SnapshotVersioningTests : IDisposable
         var carrying = await builder.ImportDirectoryAsync(ReferenceDirectory(("Wellbore", AliasedWellbore)), [projectA], Capture);
         Assert.True(carrying.Written);
         var wellbore = (await _catalog.Caches().LoadAsync(Scope, carrying.Snapshot.Version))!.Type("Wellbore")!.Items.Single();
-        Assert.Equal("NO 1/1-A", wellbore.Fields["FacilityName"].Text);
+        Assert.Equal("WB 1/1-A", wellbore.Fields["FacilityName"].Text);
         Assert.Equal(["1/1-A", "WELL A"], wellbore.Fields["Alias"].Terms.Order(StringComparer.Ordinal));
         Assert.Equal("project-a", Assert.Single(await store.ListVersionsAsync(Scope)).FlowName);
 

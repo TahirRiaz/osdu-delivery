@@ -333,7 +333,10 @@ public sealed record DeliveryCacheHistoryTypeDto(string Name, string Change, lon
 /// <summary>A run was queued for a record-scoped operation (redeliver, verify).</summary>
 public sealed record DeliveryRunAccepted(Guid RunId, string Status);
 
-/// <summary>A compute task was queued for a target-side operation (probe, read-back, delete).</summary>
+/// <summary>
+/// A compute task was queued for a node: an operation that runs long enough to be watched rather than waited on (a removal,
+/// a value check). A probe, a read-back, a preview and a read of the ingestion tables run in process instead.
+/// </summary>
 public sealed record ComputeTaskAccepted(Guid TaskId, string Status);
 
 /// <summary>
@@ -487,8 +490,10 @@ public sealed record DeliveryPruneResult(int AttemptsPruned, int ActivityLogsCle
 /// The delivery ledger's API: what each flow delivered (records, their history, their submissions), the audit trail
 /// of runs and interventions, the mappings and snapshots the repositories hold, and the interventions themselves
 /// (release, redeliver, verify, read back, delete). Reads are answered from the catalog's indexed ledger tables;
-/// interventions either act on the ledger directly under the caller's name, or queue a run or a compute task for a
-/// node, so nothing here ever talks to OSDU itself.
+/// interventions either act on the ledger directly under the caller's name, or queue a run or a compute task for a node.
+/// What a person waits on (a probe, a read-back of a record from OSDU, a preview, a read of the ingestion tables) runs in
+/// this process through <see cref="DirectOperationRunner"/>, under the flow's own credentials resolved with the central
+/// configuration, exactly as a node would run it.
 /// </summary>
 public static class DeliveryEndpoints
 {
@@ -2168,10 +2173,10 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// The record's rows as the ingestion tables hold them now (docs/stage4-design.md section 5.3): a compute task on a
-    /// node, which opens the flow's source with the flow's own connection reference and reads the record by the key tuple
-    /// the ledger stored. Nothing is planned and nothing is delivered; the task's result carries the record row with its
-    /// system columns, its child datasets and the origin file and row the ingestion tables record.
+    /// The record's rows as the ingestion tables hold them now (docs/stage4-design.md section 5.3), read in this process
+    /// (<see cref="DirectOperationRunner"/>), which opens the flow's source with the flow's own connection reference and reads
+    /// the record by the key tuple the ledger stored. Nothing is planned and nothing is delivered; the answer carries the
+    /// record row with its system columns, its child datasets and the origin file and row the ingestion tables record.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReadSourceAsync(
         Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
@@ -2371,10 +2376,11 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// One record of a flow rendered on a node as a delivery would render it, with nothing sent: the scope's first record,
-    /// or the one the request's key names. The key and the parameter values are checked here, so a request a node would
-    /// refuse is a 400 rather than a task that fails; whether the key names a row is the node's to find, in the flow's own
-    /// ingestion tables, and is an answer rather than a failure.
+    /// One record of a flow rendered in this process (<see cref="DirectOperationRunner"/>) as a delivery would render it, with
+    /// nothing sent: the scope's first record, or the one the request's key names. The key and the parameter values are
+    /// checked before the preview runs, so a request the preview would refuse is a 400 rather than a preview that fails;
+    /// whether the key names a row is the preview's to find, in the flow's own ingestion tables, and is an answer rather
+    /// than a failure.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> PreviewAsync(
         Guid pipelineId, DeliveryPreviewRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
@@ -2423,9 +2429,9 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// The values each parameter of an interface's scope predicate can take, read on a node from the column
-    /// <c>source.record.scope</c> binds it to in the flow's own record table: what a page offers for a scope's value rather
-    /// than having it typed. Nothing is written.
+    /// The values each parameter of an interface's scope predicate can take, read in this process
+    /// (<see cref="DirectOperationRunner"/>) from the column <c>source.record.scope</c> binds it to in the flow's own record
+    /// table: what a page offers for a scope's value rather than having it typed. Nothing is written.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ScopeValuesAsync(
         Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
@@ -2461,9 +2467,9 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// The record a record page shows, rendered on a node from its current source row as a delivery would render it now,
-    /// with nothing sent: what the page compares with what OSDU holds. The row is read in the scope the record was last
-    /// planned under, as the source row read reads it.
+    /// The record a record page shows, rendered in this process (<see cref="DirectOperationRunner"/>) from its current source
+    /// row as a delivery would render it now, with nothing sent: what the page compares with what OSDU holds. The row is read
+    /// in the scope the record was last planned under, as the source row read reads it.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> PreviewRecordAsync(
         Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
@@ -2481,7 +2487,7 @@ public static class DeliveryEndpoints
             if (last.ParametersJson.Length > ComputeTaskPayload.MaxArgumentLength)
             {
                 return TypedResults.Problem(
-                    detail: $"The scope the record was last planned under is {last.ParametersJson.Length} characters as JSON, more than the {ComputeTaskPayload.MaxArgumentLength} a node task carries; preview it from the flow's Preview tab with its values.",
+                    detail: $"The scope the record was last planned under is {last.ParametersJson.Length} characters as JSON, more than the {ComputeTaskPayload.MaxArgumentLength} an operation's argument carries; preview it from the flow's Preview tab with its values.",
                     statusCode: StatusCodes.Status409Conflict, title: "Scope too large to preview");
             }
 
@@ -2495,9 +2501,9 @@ public static class DeliveryEndpoints
     private const int MaxTargetIdLength = 1024;
 
     /// <summary>
-    /// One OSDU record read on a node through a flow's route and credentials, by its id: a record a document refers to, which
-    /// the ledger may never have delivered. The id may carry a version or the trailing colon of a reference; the read is of
-    /// the record, at its latest version. Nothing is written.
+    /// One OSDU record read in this process (<see cref="DirectOperationRunner"/>) through a flow's route and credentials, by
+    /// its id: a record a document refers to, which the ledger may never have delivered. The id may carry a version or the
+    /// trailing colon of a reference; the read is of the record, at its latest version. Nothing is written.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReadTargetAsync(
         Guid pipelineId, DeliveryReadRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
@@ -2822,9 +2828,14 @@ public static class DeliveryEndpoints
             ? "The DDMS collection is chosen by the kind the flow's mapping renders, which the repository sync has not read yet."
             : DdmsRouting.Of(flow).Explain(kind);
 
+    /// <summary>
+    /// The operator's "Probe target", asked from the GUI, the API or the MCP tool: one interface's target probed in this
+    /// process and recorded in the audit trail under the caller (<see cref="TargetProbes.RunAsync"/>, the path the scheduled
+    /// probe takes too), answering with what the probe found.
+    /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ProbeAsync(
         Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, EngineContext engine, TimeProvider clock, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
@@ -2832,18 +2843,8 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        return await ProbeTargetAsync(db, config, direct, flow, RequestActor.Label(user), loggers, ct).ConfigureAwait(false);
+        return await TargetProbes.RunAsync(db, ledger, config, direct, engine, clock, loggers, flow, RequestActor.Label(user), ct).ConfigureAwait(false);
     }
-
-    /// <summary>
-    /// One interface's target probe, run in this process: the one path an operator's "Probe target" and the scheduled probe
-    /// (<see cref="Background.ScheduledTargetProbeService"/>) both take, so what a schedule reports is what a button
-    /// reports. <paramref name="actor"/> is who asked (<c>user:alice</c>, <c>service:schedule</c>).
-    /// </summary>
-    internal static Task<Results<ContentHttpResult, ProblemHttpResult>> ProbeTargetAsync(
-        CatalogDbContext db, DeliveryConfigStore config, DirectOperations direct, FlowContext flow, string actor, ILoggerFactory loggers, CancellationToken ct)
-        => DirectOperationRunner.RunAsync(
-            db, config, direct, flow, ProbeTargetOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), actor, loggers, ct);
 
     /// <summary>
     /// The ledger's retention pass: everything the <c>osdu</c> schema grows without bound and a delivered record does not
@@ -3201,22 +3202,17 @@ public static class DeliveryEndpoints
     /// <summary>A failure as it may be stored and shown: the message with every resolved secret redacted out of it.</summary>
     internal static string Redacted(Exception ex) => SecretHygiene.RedactedMessage(ex);
 
-    /// <summary>Queues a target-side operation for a node: the flow file's location rides along, every credential
-    /// stays a reference the node resolves.</summary>
-    internal static Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
-        CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments,
-        ClaimsPrincipal user, CancellationToken ct)
-        => EnqueueOperationAsync(db, dispatcher, flow, operation, arguments, RequestActor.Label(user), RequestActor.Of(user), ct);
-
     /// <summary>
-    /// The same, for a caller that is not a request: the actor label and the requester are given rather than read from a
-    /// principal, so the scheduled work of the module queues a node operation exactly as an endpoint does.
+    /// Queues an operation for a node (a removal, a value check) under the caller's name: the flow file's location rides
+    /// along, every credential stays a reference the node resolves.
     /// </summary>
     internal static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> EnqueueOperationAsync(
         CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments,
-        string actor, string? requestedBy, CancellationToken ct)
+        ClaimsPrincipal user, CancellationToken ct)
     {
-        var (payload, problem) = await OperationPayloadAsync(db, flow, operation, arguments, actor, ct).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(user);
+        var requestedBy = RequestActor.Of(user);
+        var (payload, problem) = await OperationPayloadAsync(db, flow, operation, arguments, RequestActor.Label(user), ct).ConfigureAwait(false);
         if (payload is null)
         {
             return problem!;

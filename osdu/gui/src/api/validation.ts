@@ -110,7 +110,7 @@ export interface FindingGuide {
   rule: string;
   /** The key of what the schema expects there, in `expectations`; null when the schema describes nothing there. */
   expected: string | null;
-  /** The value found, in words: `null`, `absent`, `'NO 33/9'`, `a list of 3 items`. */
+  /** The value found, in words: `null`, `absent`, `'Wellbore A-1'`, `a list of 3 items`. */
   found: string;
   /** How to make the value meet the schema. */
   advice: string | null;

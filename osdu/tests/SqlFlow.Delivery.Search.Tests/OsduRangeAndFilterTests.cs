@@ -114,8 +114,8 @@ public class OsduRangeAndFilterTests
     [Fact]
     public void A_filter_of_several_values_outside_a_nested_array_is_one_grouped_comparison()
         => Assert.Equal(
-            "data.FacilityName.keyword:(\"NO 15/9-A-1\" OR \"no 15/9-a-1\")",
-            OsduQuery.AnyOf(Name, ["NO 15/9-A-1", "no 15/9-a-1"]).Text);
+            "data.FacilityName.keyword:(\"Wellbore A/1-A-1\" OR \"wellbore a/1-a-1\")",
+            OsduQuery.AnyOf(Name, ["Wellbore A/1-A-1", "wellbore a/1-a-1"]).Text);
 
     [Fact]
     public void A_filter_of_one_value_is_that_value_compared_exactly()

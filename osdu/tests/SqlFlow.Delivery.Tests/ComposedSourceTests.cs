@@ -22,7 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 [Collection(SqlServerSuite.Name)]
 public sealed class ComposedSourceTests : IDisposable
 {
-    private const string WellLogTable = "OsduData.arc.WellLog";
+    private const string WellLogTable = "OsduData.silver.WellLog";
     private const string Ddms = FakeOsduPlatform.DdmsRoot + "/ddms/v3/welllogs";
 
     private readonly OsduTestDatabase _db = new();
@@ -61,9 +61,9 @@ public sealed class ComposedSourceTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
-                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
-                legalTag: dev-equinor-osdu-reference-default
+                aclOwner: data.welldb.owners@dev.dataservices.energy
+                aclViewer: data.welldb.viewers@dev.dataservices.energy
+                legalTag: dev-osdu-default-legal
             target:
               endpoint: {{FakeOsduPlatform.Endpoint}}
               headers:
@@ -80,7 +80,7 @@ public sealed class ComposedSourceTests : IDisposable
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.silver.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 files: { root: '{{root}}/las', locationColumn: las_folder, pattern: "*.las", hashColumn: las_hash }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellLog@1.4.0
@@ -104,7 +104,7 @@ public sealed class ComposedSourceTests : IDisposable
         {
             var log = logs[i];
             await SampleWellLogs.WriteChunkAsync(SampleEstate.PayloadFolder(_root, log), log);
-            // A Recall log id holds a slash, so the LAS file is named for its folder.
+            // A log id holds a slash, so the LAS file is named for its folder.
             var las = Path.Combine([_root, "las", .. log.Folder.Split('/')]);
             Directory.CreateDirectory(las);
             await File.WriteAllTextAsync(Path.Combine(las, Path.GetFileName(las) + ".las"), $"~VERSION INFORMATION\n VERS. 2.0 :\n~WELL INFORMATION\n WELL. {log.WellboreUwi} :\n");

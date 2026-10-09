@@ -194,7 +194,7 @@ export function InventoryTriggerFields({ pipelineId, initialValues, initialPaylo
           <Textarea
             id={`${idPrefix}-values`}
             className="min-h-16 font-mono text-[12px]"
-            placeholder="source=RECALL"
+            placeholder="source=WELLDB"
             value={valuesText}
             onChange={(event) => setValuesText(event.target.value)}
             data-testid="trigger-values"

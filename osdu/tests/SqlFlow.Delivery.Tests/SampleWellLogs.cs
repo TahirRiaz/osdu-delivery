@@ -8,20 +8,20 @@ using SqlFlow.Delivery.Storage;
 
 namespace SqlFlow.Delivery.Tests;
 
-/// <summary>One curve of a sample log, as the Recall curve metadata describes it.</summary>
+/// <summary>One curve of a sample log, as the well database's curve metadata describes it.</summary>
 /// <param name="CurveId">The curve's mnemonic, which is also its column in the payload files.</param>
-/// <param name="Unit">The unit as Recall writes it (GAPI, OHMM, G/CC), which the mapping translates through the cache.</param>
+/// <param name="Unit">The unit as the well database writes it (GAPI, OHMM, G/CC), which the mapping translates through the cache.</param>
 /// <param name="Description">The curve description the record carries.</param>
-/// <param name="BusinessValue">Recall's business value (HIGH), or null where the source gives none.</param>
+/// <param name="BusinessValue">The well database's business value (HIGH), or null where the source gives none.</param>
 /// <param name="TopDepth">The first depth the curve holds a value at.</param>
 /// <param name="BaseDepth">The last depth the curve holds a value at.</param>
 /// <param name="Version">The curve version, or null where the source gives none.</param>
-/// <param name="DateStamp">When the curve was last written in Recall (ISO 8601, UTC), or null.</param>
+/// <param name="DateStamp">When the curve was last written in the well database (ISO 8601, UTC), or null.</param>
 public sealed record SampleCurve(
     string CurveId, string Unit, string Description, string? BusinessValue, double TopDepth, double BaseDepth, string? Version, string? DateStamp);
 
 /// <summary>
-/// One Recall well log of the sample estate: its header row, its curves, and the curve grid its payload file carries (one
+/// One well log of the sample estate: its header row, its curves, and the curve grid its payload file carries (one
 /// row per measured depth, one column per curve, a gap where a curve has no value at that depth).
 /// </summary>
 public sealed record SampleLog(
@@ -30,7 +30,7 @@ public sealed record SampleLog(
     string WellboreUwi,
     string LogSource,
     string LogRun,
-    string RecallLogSource,
+    string WellDbLogSource,
     string IndexType,
     string IndexUnit,
     double IndexMin,
@@ -52,7 +52,10 @@ public sealed record SampleLog(
     IReadOnlyList<double> Depths,
     IReadOnlyDictionary<string, IReadOnlyList<double?>> Values)
 {
-    /// <summary>Where the log's payload files sit, relative to the flow's payload root. A Recall log id holds a slash.</summary>
+    /// <summary>
+    /// Where the log's payload files sit, relative to the flow's payload root: a folder per project and one per log. A log
+    /// id may hold a slash, which a folder name cannot, so a slash becomes an underscore.
+    /// </summary>
     public string Folder => $"{SourceProject}/{LogId.Replace('/', '_')}";
 
     /// <summary>The delivery key the mapping derives for this log, which is what the ledger holds it under.</summary>
@@ -114,22 +117,22 @@ public sealed record SampleLog(
 }
 
 /// <summary>
-/// The sample estate's data, in one place: five real Recall STAT_COMP well logs exported from the Databricks tables
-/// recall_to_osdu delivers from (osdu/tools/SampleData), and the files that carry them: the CSV files the pre flows read
-/// and the parquet chunk per log the delivery streams to the wellbore DDMS. The exporter writes the committed files
-/// through <see cref="WriteAsync"/>, and the suites read those same files back through <see cref="Logs"/>, so what the
-/// suites exercise and what the repository holds can never drift.
+/// The sample estate's data, in one place: five synthetic COMPOSITE well logs of a made-up well database (welldb), as
+/// the generator writes them (osdu/tools/SampleData, deterministic for a seed), and the files that carry them: the CSV
+/// files the pre flows read and the parquet chunk per log the delivery streams to the wellbore DDMS. The generator writes
+/// the committed files through <see cref="WriteAsync"/>, and the suites read those same files back through
+/// <see cref="Logs"/>, so what the suites exercise and what the repository holds can never drift.
 /// </summary>
 public static class SampleWellLogs
 {
     /// <summary>The source system the delivery keys are derived under, matching the sample mapping's <c>dataset.system</c>.</summary>
-    public const string System = "recall";
+    public const string System = "welldb";
 
     /// <summary>The index curve, whose values are the depths the other curves are sampled at.</summary>
     public const string IndexCurveId = "MD";
 
     /// <summary>The log source the sample flow's schedule fires for, and the scope its records sit in.</summary>
-    public const string LogSource = "STAT_COMP";
+    public const string LogSource = "COMPOSITE";
 
     /// <summary>The payload file of one log; each sample log fits one chunk.</summary>
     public const string ChunkFileName = "chunk_00000.parquet";
@@ -146,7 +149,7 @@ public static class SampleWellLogs
     /// <summary>The columns of the well log file the pre flow reads, in the order it writes them.</summary>
     public static IReadOnlyList<string> LogColumns { get; } =
     [
-        "source_project", "log_id", "wellbore_uwi", "log_source", "log_run", "recall_log_source", "index_type", "index_unit",
+        "source_project", "log_id", "wellbore_uwi", "log_source", "log_run", "welldb_log_source", "index_type", "index_unit",
         "index_min", "index_max", "index_increment", "depth_coding", "elev_meas_ref", "logs_meas_from", "creator",
         "log_service", "log_version", "data_type", "logging_contractor", "log_pass", "log_pass_type", "native_uid",
         "update_date", "curve_folder", "payload_hash", "chunk_count",
@@ -160,7 +163,7 @@ public static class SampleWellLogs
     ];
 
     /// <summary>The committed sample data, as the build copies it next to the binaries.</summary>
-    public static string DataRoot => Path.Combine(AppContext.BaseDirectory, "samples", "recall", "data");
+    public static string DataRoot => Path.Combine(AppContext.BaseDirectory, "samples", "welldb", "data");
 
     private static readonly Lazy<IReadOnlyList<SampleLog>> Committed = new(() => LoadAsync(DataRoot).GetAwaiter().GetResult());
 
@@ -177,7 +180,7 @@ public static class SampleWellLogs
     /// <summary>The file the committed curve rows sit in.</summary>
     public static string CurveFileName => Path.GetFileName(SingleCsv(Path.Combine(DataRoot, CurveFolder)));
 
-    /// <summary>When the committed log at <paramref name="index"/> was last changed in Recall.</summary>
+    /// <summary>When the committed log at <paramref name="index"/> was last changed in the well database.</summary>
     public static DateTime UpdatedUtc(int index) => Committed.Value[index].UpdateDateUtc;
 
     /// <summary>
@@ -225,8 +228,8 @@ public static class SampleWellLogs
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         ArgumentNullException.ThrowIfNull(logs);
         ArgumentException.ThrowIfNullOrWhiteSpace(date);
-        await WriteCsvAsync(Path.Combine(dataRoot, LogFolder, $"stat_comp_welllog_{date}.csv"), LogColumns, logs.Select(LogRow).ToList(), ct).ConfigureAwait(false);
-        await WriteCsvAsync(Path.Combine(dataRoot, CurveFolder, $"stat_comp_curves_{date}.csv"), CurveColumns, logs.SelectMany(CurveRows).ToList(), ct).ConfigureAwait(false);
+        await WriteCsvAsync(Path.Combine(dataRoot, LogFolder, $"welllog_{date}.csv"), LogColumns, logs.Select(LogRow).ToList(), ct).ConfigureAwait(false);
+        await WriteCsvAsync(Path.Combine(dataRoot, CurveFolder, $"curves_{date}.csv"), CurveColumns, logs.SelectMany(CurveRows).ToList(), ct).ConfigureAwait(false);
         foreach (var log in logs)
         {
             await WriteChunkAsync(Path.Combine(dataRoot, PayloadFolder, log.Folder), log, ct).ConfigureAwait(false);
@@ -261,7 +264,7 @@ public static class SampleWellLogs
             ["wellbore_uwi"] = log.WellboreUwi,
             ["log_source"] = log.LogSource,
             ["log_run"] = log.LogRun,
-            ["recall_log_source"] = log.RecallLogSource,
+            ["welldb_log_source"] = log.WellDbLogSource,
             ["index_type"] = log.IndexType,
             ["index_unit"] = log.IndexUnit,
             ["index_min"] = Number(log.IndexMin),
@@ -363,7 +366,7 @@ public static class SampleWellLogs
 
     private static SampleLog FromRow(IReadOnlyDictionary<string, string?> row, IReadOnlyList<SampleCurve> curves) => new(
         Text(row, "source_project"), Text(row, "log_id"), Text(row, "wellbore_uwi"), Text(row, "log_source"), Text(row, "log_run"),
-        Text(row, "recall_log_source"), Text(row, "index_type"), Text(row, "index_unit"), Double(row, "index_min"),
+        Text(row, "welldb_log_source"), Text(row, "index_type"), Text(row, "index_unit"), Double(row, "index_min"),
         Double(row, "index_max"), Double(row, "index_increment"), Text(row, "depth_coding"), Text(row, "elev_meas_ref"),
         Text(row, "logs_meas_from"), Text(row, "creator"), Text(row, "log_service"), Text(row, "log_version"), Text(row, "data_type"),
         Text(row, "logging_contractor"), Text(row, "log_pass"), Text(row, "log_pass_type"), Text(row, "native_uid"),

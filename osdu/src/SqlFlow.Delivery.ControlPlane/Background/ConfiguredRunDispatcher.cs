@@ -6,6 +6,7 @@ using SqlFlow.Core.Compute;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Model;
@@ -56,7 +57,7 @@ public sealed partial class ConfiguredRunDispatcher : IRunDispatcher
     public async Task<Guid> EnqueueAsync(CatalogDbContext catalog, RunEnqueueRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!Owns(request.FlowKind))
+        if (!Configures(request.FlowKind))
         {
             return await _inner.EnqueueAsync(catalog, request, ct).ConfigureAwait(false);
         }
@@ -72,7 +73,7 @@ public sealed partial class ConfiguredRunDispatcher : IRunDispatcher
 
         // A group's members can be of several kinds: the whole estate's pre, ingestion and delivery flows run as one
         // ordered set. Only the members this module owns are given the configuration.
-        var owned = request.Members.Where(m => Owns(m.FlowKind)).Select(m => m.FlowName).ToList();
+        var owned = request.Members.Where(m => Configures(m.FlowKind)).Select(m => m.FlowName).ToList();
         if (owned.Count == 0)
         {
             return await _inner.EnqueueGroupAsync(catalog, request, ct).ConfigureAwait(false);
@@ -97,7 +98,7 @@ public sealed partial class ConfiguredRunDispatcher : IRunDispatcher
     public async Task<Guid> EnqueueComputeTaskAsync(CatalogDbContext catalog, ComputeTaskEnqueueRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!Owns(request.ProviderKind) || string.IsNullOrWhiteSpace(request.ArgumentsJson))
+        if (!Configures(request.ProviderKind) || string.IsNullOrWhiteSpace(request.ArgumentsJson))
         {
             return await _inner.EnqueueComputeTaskAsync(catalog, request, ct).ConfigureAwait(false);
         }
@@ -161,14 +162,16 @@ public sealed partial class ConfiguredRunDispatcher : IRunDispatcher
     public Task<CancelOutcome> CancelComputeTaskAsync(CatalogDbContext catalog, Guid taskId, CancellationToken ct = default)
         => _inner.CancelComputeTaskAsync(catalog, taskId, ct);
 
-    /// <summary>Whether <paramref name="flowKind"/> is one of this module's, and so takes the configuration.</summary>
-    private static bool Owns(string? flowKind)
-        => flowKind is not null
-        && (flowKind.Equals(FlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
-            || flowKind.Equals(CacheDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
-            || flowKind.Equals(RetrievalDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
-            || flowKind.Equals(AssertionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
-            || flowKind.Equals(DimensionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// The flow kinds this module adds, by the <c>flowType</c> their documents carry: the ones its loader reads
+    /// (<see cref="DeliveryDocumentLoader.FlowTypes"/>). Every one resolves its references from the central configuration,
+    /// so every one is queued carrying it, and a kind added to the module is configured by being added there.
+    /// </summary>
+    public static IReadOnlyList<string> ConfiguredKinds => DeliveryDocumentLoader.FlowTypes;
+
+    /// <summary>Whether a run of <paramref name="flowKind"/> is one of this module's, and so is given the configuration.</summary>
+    public static bool Configures(string? flowKind)
+        => flowKind is not null && ConfiguredKinds.Contains(flowKind.Trim(), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The configuration for a repository, or nothing when the module has no database or the read fails. A run is never

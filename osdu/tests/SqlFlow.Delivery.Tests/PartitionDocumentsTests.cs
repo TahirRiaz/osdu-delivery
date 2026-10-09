@@ -29,14 +29,14 @@ public sealed class PartitionDocumentsTests
         .Replace("partitions: [dev]\n", extra, StringComparison.Ordinal);
 
     /// <summary>A delivery flow in the single form naming <paramref name="partitions"/> (a YAML value), with no partition header.</summary>
-    private static string Delivery(string partitions, string headers = "{ }", string parameters = "{ region: north }", string name = "recall-welllog") => $$"""
+    private static string Delivery(string partitions, string headers = "{ }", string parameters = "{ region: north }", string name = "welldb-welllog") => $$"""
         flowType: delivery
         name: {{name}}
         partitions: {{partitions}}
         source:
           connection: ${env:OSDU_DATA_DB}
           record:
-            object: OsduData.arc.WellLog
+            object: OsduData.silver.WellLog
             key: [log_id]
           lastModified: update_date
           work: work/welllog
@@ -73,7 +73,7 @@ public sealed class PartitionDocumentsTests
     /// <summary>A cache flow naming <paramref name="partitions"/> over the given <c>types:</c> block (items indented two spaces).</summary>
     private static string Cache(string partitions, string types, string headers = "{ }") => $$"""
         flowType: cache
-        name: recall-lookups-00-cache
+        name: welldb-lookups-00-cache
         partitions: {{partitions}}
         source:
           connection: ${env:OSDU_DATA_DB}
@@ -83,12 +83,12 @@ public sealed class PartitionDocumentsTests
         """.ReplaceLineEndings("\n");
 
     private const string Lookups = """
-          - table: OsduData.arc.CacheCurveDictionary
+          - table: OsduData.silver.CurveDictionary
             name: CurveDictionary
             key: mnemonic
             fields: [log_curve_type_id]
-          - table: OsduData.arc.CacheRecallUnits
-            name: RecallUnits
+          - table: OsduData.silver.UnitAlias
+            name: UnitAlias
             key: source_unit
             fields: [osdu_unit]
         """;
@@ -114,8 +114,8 @@ public sealed class PartitionDocumentsTests
 
         Assert.False(flow.DeclaresPartitions);
         Assert.False(flow.IsUnbound);
-        Assert.Equal("recall-welllog", flow.LedgerName);
-        Assert.Equal(FlowId.Of("recall-welllog"), flow.Id);
+        Assert.Equal("welldb-welllog", flow.LedgerName);
+        Assert.Equal(FlowId.Of("welldb-welllog"), flow.Id);
         Assert.Empty(flow.Partitions);
         Assert.Equal("dev", flow.Target.Headers["data-partition-id"]);
     }
@@ -129,15 +129,15 @@ public sealed class PartitionDocumentsTests
         Assert.Equal("dev", dev.Partition);
         Assert.Equal("dev", dev.Target.Headers["data-partition-id"]);
         Assert.True(dev.KeepsOwnLedger);
-        Assert.Equal("recall-welllog", dev.LedgerName);
-        Assert.Equal(FlowId.Of("recall-welllog"), dev.Id);
+        Assert.Equal("welldb-welllog", dev.LedgerName);
+        Assert.Equal(FlowId.Of("welldb-welllog"), dev.Id);
 
         var test = flow.ForPartition("TEST");
         Assert.Equal("test", test.Partition);
         Assert.Equal("test", test.Target.Headers["data-partition-id"]);
         Assert.False(test.KeepsOwnLedger);
-        Assert.Equal("recall-welllog@test", test.LedgerName);
-        Assert.Equal(FlowId.Of("recall-welllog", "test"), test.Id);
+        Assert.Equal("welldb-welllog@test", test.LedgerName);
+        Assert.Equal(FlowId.Of("welldb-welllog", "test"), test.Id);
         Assert.NotEqual(dev.Id, test.Id);
     }
 
@@ -154,9 +154,9 @@ public sealed class PartitionDocumentsTests
     [Fact]
     public void A_partition_keeps_a_ledger_id_no_flow_name_can_derive()
     {
-        Assert.Equal(FlowId.Of("recall-welllog", "test"), FlowId.Of(" Recall-WellLog ", "TEST"));
-        Assert.NotEqual(FlowId.Of("recall-welllog@test"), FlowId.Of("recall-welllog", "test"));
-        Assert.NotEqual(FlowId.Of("recall-welllog", "test"), FlowId.Of("recall-welllog", "dev"));
+        Assert.Equal(FlowId.Of("welldb-welllog", "test"), FlowId.Of(" WellDB-WellLog ", "TEST"));
+        Assert.NotEqual(FlowId.Of("welldb-welllog@test"), FlowId.Of("welldb-welllog", "test"));
+        Assert.NotEqual(FlowId.Of("welldb-welllog", "test"), FlowId.Of("welldb-welllog", "dev"));
     }
 
     [Fact]
@@ -289,7 +289,7 @@ public sealed class PartitionDocumentsTests
     public void A_cache_flow_names_its_partitions_and_builds_every_type_for_each_unless_a_type_narrows_them()
     {
         var cache = _loader.ParseCache(Cache("[dev, test, prod]", Lookups + "\n" + """
-              - table: OsduData.arc.CacheProdUnits
+              - table: OsduData.silver.ProdUnits
                 name: ProdUnits
                 key: source_unit
                 fields: [osdu_unit]
@@ -303,10 +303,10 @@ public sealed class PartitionDocumentsTests
         var dev = cache.ForPartition("dev");
         Assert.Equal("dev", dev.Scope);
         Assert.Equal("dev", dev.Source.Headers["data-partition-id"]);
-        Assert.Equal(["CurveDictionary", "RecallUnits"], dev.Types.Select(t => t.Name));
+        Assert.Equal(["CurveDictionary", "UnitAlias"], dev.Types.Select(t => t.Name));
 
         var prod = cache.ForPartition("prod");
-        Assert.Equal(["CurveDictionary", "RecallUnits", "ProdUnits"], prod.Types.Select(t => t.Name));
+        Assert.Equal(["CurveDictionary", "UnitAlias", "ProdUnits"], prod.Types.Select(t => t.Name));
     }
 
     [Fact]
@@ -346,20 +346,20 @@ public sealed class PartitionDocumentsTests
     public void Two_declarations_may_share_a_type_name_when_their_partitions_do_not_overlap()
     {
         var cache = _loader.ParseCache(Cache("[dev, prod]", """
-              - table: OsduData.arc.CacheCurveDictionary
+              - table: OsduData.silver.CurveDictionary
                 name: CurveDictionary
                 key: mnemonic
                 fields: [log_curve_type_id]
                 partitions: [dev]
-              - table: OsduData.arc.CacheCurveDictionaryProd
+              - table: OsduData.silver.CurveDictionaryProd
                 name: CurveDictionary
                 key: mnemonic
                 fields: [log_curve_type_id]
                 partitions: [prod]
             """), "cache/lookups.yaml");
 
-        Assert.Equal("OsduData.arc.CacheCurveDictionary", cache.ForPartition("dev").Types.Single().Table);
-        Assert.Equal("OsduData.arc.CacheCurveDictionaryProd", cache.ForPartition("prod").Types.Single().Table);
+        Assert.Equal("OsduData.silver.CurveDictionary", cache.ForPartition("dev").Types.Single().Table);
+        Assert.Equal("OsduData.silver.CurveDictionaryProd", cache.ForPartition("prod").Types.Single().Table);
     }
 
     [Theory]
@@ -390,11 +390,11 @@ public sealed class PartitionDocumentsTests
     public void Two_declarations_of_one_name_for_one_partition_and_a_partition_with_no_type_are_refused()
     {
         var overlap = Assert.Throws<FlowValidationException>(() => _loader.ParseCache(Cache("[dev, prod]", """
-              - table: OsduData.arc.CacheCurveDictionary
+              - table: OsduData.silver.CurveDictionary
                 name: CurveDictionary
                 key: mnemonic
                 fields: [log_curve_type_id]
-              - table: OsduData.arc.CacheCurveDictionaryProd
+              - table: OsduData.silver.CurveDictionaryProd
                 name: CurveDictionary
                 key: mnemonic
                 fields: [log_curve_type_id]
@@ -403,7 +403,7 @@ public sealed class PartitionDocumentsTests
         Assert.Contains("CurveDictionary more than once for partition 'prod'", overlap.Message, StringComparison.Ordinal);
 
         var empty = Assert.Throws<FlowValidationException>(() => _loader.ParseCache(Cache("[dev, prod]", """
-              - table: OsduData.arc.CacheCurveDictionary
+              - table: OsduData.silver.CurveDictionary
                 name: CurveDictionary
                 key: mnemonic
                 fields: [log_curve_type_id]
@@ -447,7 +447,7 @@ public sealed class PartitionDocumentsTests
         var cache = _loader.ParseCache(yaml, "cache/lookups.yaml");
 
         Assert.Equal(["CurveDictionary"], cache.ForPartition("dev").Types.Select(t => t.Name));
-        Assert.Equal(["CurveDictionary", "RecallUnits"], cache.ForPartition("prod").Types.Select(t => t.Name));
+        Assert.Equal(["CurveDictionary", "UnitAlias"], cache.ForPartition("prod").Types.Select(t => t.Name));
     }
 
     [Fact]
@@ -467,7 +467,7 @@ public sealed class PartitionDocumentsTests
         var test = source.Resolve(" Test ", Registry());
         Assert.Equal("test", test.Partition);
         Assert.Equal("test", test.First.Target.Headers["data-partition-id"]);
-        Assert.Equal("recall-welllog@test", test.First.LedgerName);
+        Assert.Equal("welldb-welllog@test", test.First.LedgerName);
 
         Assert.Contains("'staging' is not registered", Assert.Throws<DeliveryException>(() => source.Resolve("staging", Registry())).Message, StringComparison.Ordinal);
         Assert.Contains("acts in one partition", Assert.Throws<DeliveryException>(() => source.Resolve(PartitionNames.Every, Registry())).Message, StringComparison.Ordinal);
@@ -499,9 +499,9 @@ public sealed class PartitionDocumentsTests
     {
         var source = _loader.ParseSource(RegistryDelivery("keepLedger: dev\n"), "flows/welllog.yaml");
 
-        Assert.Equal(FlowId.Of("recall-welllog"), source.ForPartition("dev").First.Id);
-        Assert.Equal("recall-welllog", source.ForPartition("DEV").First.LedgerName);
-        Assert.Equal(FlowId.Of("recall-welllog", "test"), source.ForPartition("test").First.Id);
+        Assert.Equal(FlowId.Of("welldb-welllog"), source.ForPartition("dev").First.Id);
+        Assert.Equal("welldb-welllog", source.ForPartition("DEV").First.LedgerName);
+        Assert.Equal(FlowId.Of("welldb-welllog", "test"), source.ForPartition("test").First.Id);
     }
 
     [Theory]

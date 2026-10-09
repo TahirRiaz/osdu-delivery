@@ -177,7 +177,10 @@ public static class DeliveryInventoryEndpoints
         delivery.MapGet("/inventories/{partition}/removals/{removalId:long}/items", ListRemovalItemsAsync).WithName("ListDeliveryInventoryRemovalItems");
     }
 
-    /// <summary>The removal routes, under the operate scope: a removal takes records out of OSDU.</summary>
+    /// <summary>
+    /// The removal routes, under the operate policy, which every signed-in user passes (only admin checks a scope): a removal
+    /// takes records out of OSDU, and its run is queued as the caller.
+    /// </summary>
     public static void MapWrites(RouteGroupBuilder delivery)
     {
         ArgumentNullException.ThrowIfNull(delivery);

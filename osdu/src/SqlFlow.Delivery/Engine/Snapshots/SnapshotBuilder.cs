@@ -418,7 +418,7 @@ public sealed class OsduConnection : IDisposable
     {
         var url = Url(path);
         var result = await Client.SendJsonAsync(HttpMethod.Get, url, null, null, ct).ConfigureAwait(false);
-        return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{url} did not return a JSON object.");
+        return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{HeaderRedaction.DescribeUrl(url)} did not return a JSON object.");
     }
 
     /// <summary>A POST of a search, a read the service answers alike however often it is asked, so it is repeated like any read.</summary>
@@ -427,7 +427,7 @@ public sealed class OsduConnection : IDisposable
         ArgumentNullException.ThrowIfNull(body);
         var url = Url(path);
         var result = await Client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-        return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{url} did not return a JSON object.");
+        return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{HeaderRedaction.DescribeUrl(url)} did not return a JSON object.");
     }
 
     /// <summary>A path under the endpoint, taken as written: no token in it is substituted.</summary>

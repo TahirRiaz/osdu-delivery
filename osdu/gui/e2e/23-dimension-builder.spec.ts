@@ -20,8 +20,8 @@ const WELLBORE_1 = `${PARTITION}:master-data--Wellbore:e2e-builder-1`;
 const WELLBORE_2 = `${PARTITION}:master-data--Wellbore:e2e-builder-2`;
 /** The wellbore the fifth log names, which the stand-in does not hold. */
 const WELLBORE_GONE = `${PARTITION}:master-data--Wellbore:e2e-builder-gone`;
-const NORWAY = `${PARTITION}:master-data--GeoPoliticalEntity:e2e-builder-norway`;
-const ROGALAND = `${PARTITION}:master-data--GeoPoliticalEntity:e2e-builder-rogaland`;
+const UNITED_STATES = `${PARTITION}:master-data--GeoPoliticalEntity:e2e-builder-united-states`;
+const COUNTY_A = `${PARTITION}:master-data--GeoPoliticalEntity:e2e-builder-county-a`;
 const COMPANY = `${PARTITION}:master-data--Organisation:e2e-builder-services`;
 const COUNTRY = `${PARTITION}:reference-data--GeoPoliticalEntityType:Country:`;
 const COUNTY = `${PARTITION}:reference-data--GeoPoliticalEntityType:County:`;
@@ -37,7 +37,7 @@ function record(id: string, kind: string, data: Record<string, unknown>) {
     id,
     kind,
     acl: { viewers: [E2E.osdu.OSDU_ACL_VIEWER], owners: [E2E.osdu.OSDU_ACL_OWNER] },
-    legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["NO"], status: "compliant" },
+    legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["US"], status: "compliant" },
     data,
     createUser: "e2e-stand-in",
     createTime: "2026-10-03T00:00:00.000Z",
@@ -46,25 +46,25 @@ function record(id: string, kind: string, data: Record<string, unknown>) {
 
 const RECORDS = [
   record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-1`, WELLLOG_KIND, {
-    Name: "e2e builder log 1", WellboreID: `${WELLBORE_1}:`, Source: "STAT", ServiceCompanyID: `${COMPANY}:`,
+    Name: "e2e builder log 1", WellboreID: `${WELLBORE_1}:`, Source: "CPI", ServiceCompanyID: `${COMPANY}:`,
   }),
-  record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-2`, WELLLOG_KIND, { Name: "e2e builder log 2", WellboreID: `${WELLBORE_1}:`, Source: "STAT" }),
+  record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-2`, WELLLOG_KIND, { Name: "e2e builder log 2", WellboreID: `${WELLBORE_1}:`, Source: "CPI" }),
   record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-3`, WELLLOG_KIND, { Name: "e2e builder log 3", WellboreID: `${WELLBORE_1}:`, Source: "COMP" }),
-  record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-4`, WELLLOG_KIND, { Name: "e2e builder log 4", WellboreID: `${WELLBORE_2}:`, Source: "STAT" }),
-  record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-5`, WELLLOG_KIND, { Name: "e2e builder log 5", WellboreID: `${WELLBORE_GONE}:`, Source: "STAT" }),
+  record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-4`, WELLLOG_KIND, { Name: "e2e builder log 4", WellboreID: `${WELLBORE_2}:`, Source: "CPI" }),
+  record(`${PARTITION}:work-product-component--WellLog:e2e-builder-log-5`, WELLLOG_KIND, { Name: "e2e builder log 5", WellboreID: `${WELLBORE_GONE}:`, Source: "CPI" }),
   record(WELLBORE_1, "osdu:wks:master-data--Wellbore:1.3.0", {
     FacilityName: "E2E Builder 1",
     GeoContexts: [
-      { GeoPoliticalEntityID: `${NORWAY}:`, GeoTypeID: COUNTRY },
-      { GeoPoliticalEntityID: `${ROGALAND}:`, GeoTypeID: COUNTY },
+      { GeoPoliticalEntityID: `${UNITED_STATES}:`, GeoTypeID: COUNTRY },
+      { GeoPoliticalEntityID: `${COUNTY_A}:`, GeoTypeID: COUNTY },
     ],
   }),
   record(WELLBORE_2, "osdu:wks:master-data--Wellbore:1.3.0", {
     FacilityName: "E2E Builder 2",
-    GeoContexts: [{ GeoPoliticalEntityID: `${NORWAY}:`, GeoTypeID: COUNTRY }],
+    GeoContexts: [{ GeoPoliticalEntityID: `${UNITED_STATES}:`, GeoTypeID: COUNTRY }],
   }),
-  record(NORWAY, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", { GeoPoliticalEntityName: "Norway", GeoPoliticalEntityTypeID: COUNTRY }),
-  record(ROGALAND, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", { GeoPoliticalEntityName: "Rogaland", GeoPoliticalEntityTypeID: COUNTY }),
+  record(UNITED_STATES, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", { GeoPoliticalEntityName: "United States", GeoPoliticalEntityTypeID: COUNTRY }),
+  record(COUNTY_A, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", { GeoPoliticalEntityName: "County A", GeoPoliticalEntityTypeID: COUNTY }),
   record(COMPANY, "osdu:wks:master-data--Organisation:1.0.0", { OrganisationName: "E2E Services" }),
 ];
 
@@ -163,7 +163,7 @@ test.describe.serial("dimension builder", () => {
     // Into the wellbore's GeoContexts, and from its first item to the country it names; its name read as an attribute.
     // The step passes through one item of two that name records, so the builder asks which, and suggests the country's.
     await adminPage.locator('[data-testid="osdu-drill"]:visible').filter({ hasText: "2 items" }).click();
-    await follow(adminPage, NORWAY);
+    await follow(adminPage, UNITED_STATES);
     await expect(field(adminPage, "data.GeoPoliticalEntityName")).toBeVisible({ timeout: 60_000 });
     await pick(adminPage, "data.GeoPoliticalEntityName", "attribute");
     const which = adminPage.getByTestId("builder-filter-dialog");
@@ -174,7 +174,7 @@ test.describe.serial("dimension builder", () => {
     await expect(which).toHaveCount(0);
     const country = adminPage.getByTestId("builder-column-attribute").nth(0);
     await expect(country.getByTestId("builder-column-attribute-name")).toHaveValue("Country");
-    await expect(country.getByTestId("builder-column-attribute-example")).toHaveText("Norway", { timeout: 60_000 });
+    await expect(country.getByTestId("builder-column-attribute-example")).toHaveText("United States", { timeout: 60_000 });
     await expect(field(adminPage, "data.GeoPoliticalEntityName").locator('[data-testid="builder-mark"][data-role="attribute"]')).toBeVisible();
 
     // Back along the trail to the log, and the source of every log of a wellbore collected, the commonest first.
@@ -185,7 +185,7 @@ test.describe.serial("dimension builder", () => {
     await pick(adminPage, "data.Source", "collect");
     const source = adminPage.getByTestId("builder-column-attribute").nth(1);
     await expect(source.getByTestId("builder-column-attribute-name")).toHaveValue("Source");
-    await expect(source.getByTestId("builder-column-attribute-example")).toHaveText("STAT (2), COMP (1)", { timeout: 60_000 });
+    await expect(source.getByTestId("builder-column-attribute-example")).toHaveText("CPI (2), COMP (1)", { timeout: 60_000 });
 
     // The YAML a dimension flow lists, checked as the flow's own would be: it loads, and the one thing it cannot check (no
     // template of the political entities is saved) is said, with where to save one.

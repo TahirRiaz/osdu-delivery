@@ -11,9 +11,10 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Loads the kind's documents: delivery, retrieval, cache, assertion and dimension flows (behind the platform's envelope probe, which
-/// dispatches on flowType) and mappings (which the platform never sees). Unknown keys are a hard parse error
-/// (design.md section 10.4); every failure is a <see cref="FlowValidationException"/> prefixed with the file path.
+/// Loads the module's documents: delivery, retrieval, cache, assertion, dimension and inventory flows (behind the platform's
+/// envelope probe, which dispatches on flowType), and the mappings and dictionaries those flows name. Unknown keys are a hard
+/// parse error (design.md section 10.4), and so is a literal secret (<see cref="DocumentSecrets"/>); every failure is a
+/// <see cref="FlowValidationException"/> prefixed with the file path.
 /// </summary>
 public sealed class DeliveryDocumentLoader
 {
@@ -110,7 +111,18 @@ public sealed class DeliveryDocumentLoader
         return ParseMapping(File.ReadAllText(path), source);
     }
 
-    /// <summary>The discriminator of a document: "delivery", "retrieval", "cache", "assertion", "dimension" or "inventory" for a flow, "mapping" or "dictionary" for a document.</summary>
+    /// <summary>The flow types the loader reads, each the <c>flowType</c> of one of its documents, in the order a message lists them.</summary>
+    public static IReadOnlyList<string> FlowTypes { get; } =
+    [
+        FlowDefinition.FlowTypeName,
+        RetrievalDefinition.FlowTypeName,
+        CacheDefinition.FlowTypeName,
+        AssertionFlowDefinition.FlowTypeName,
+        DimensionFlowDefinition.FlowTypeName,
+        InventoryFlowDefinition.FlowTypeName,
+    ];
+
+    /// <summary>The discriminator of a document: one of <see cref="FlowTypes"/> for a flow, "mapping" or "dictionary" for a document.</summary>
     public string Probe(string yaml, string source = "<inline>")
     {
         var probe = Deserialize<DocumentProbeYaml>(_probe, yaml, source);
@@ -124,7 +136,7 @@ public sealed class DeliveryDocumentLoader
             return probe!.DocumentType!;
         }
 
-        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache, assertion, dimension) and no 'documentType' (mapping, dictionary).");
+        throw new FlowValidationException($"{source}: the document declares no 'flowType' ({string.Join(", ", FlowTypes)}) and no 'documentType' ({MappingDefinition.DocumentTypeName}, {DictionaryDefinition.DocumentTypeName}).");
     }
 
     /// <summary>Parses a delivery flow document as a source: every interface it declares, or the one its single form is.</summary>
@@ -138,6 +150,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<FlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
         return FlowMapper.Map(y, source);
     }
 
@@ -170,6 +183,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<RetrievalYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
         return RetrievalMapper.Map(y, source);
     }
 
@@ -183,6 +197,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<CacheYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
         return CacheMapper.Map(y, source);
     }
 
@@ -197,6 +212,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<AssertionYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
         return AssertionMapper.Map(y, source);
     }
 
@@ -211,6 +227,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<DimensionFlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
         return DimensionMapper.Map(y, source);
     }
 
@@ -225,6 +242,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<InventoryFlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
         return InventoryMapper.Map(y, source);
     }
 
@@ -1380,7 +1398,9 @@ internal static partial class FlowMapper
         {
             Updated = declared.HasUpdated ? declared.Updated!.Trim() : defaults.Updated,
             FileName = declared.HasFileName ? Optional(declared.FileName) : defaults.FileName,
+            FileNameDeclared = declared.HasFileName && !string.IsNullOrWhiteSpace(declared.FileName),
             RowNumber = declared.HasRowNumber ? Optional(declared.RowNumber) : defaults.RowNumber,
+            RowNumberDeclared = declared.HasRowNumber && !string.IsNullOrWhiteSpace(declared.RowNumber),
             Deleted = declared.HasDeleted ? Optional(declared.Deleted) : defaults.Deleted,
             DeletedDeclared = declared.HasDeleted && !string.IsNullOrWhiteSpace(declared.Deleted),
             Inserted = declared.HasInserted ? Optional(declared.Inserted) : defaults.Inserted,
@@ -1476,7 +1496,7 @@ internal static partial class FlowMapper
         foreach (var (name, payload) in src.Payloads)
         {
             var at = paths.Payload(name);
-            CheckTokens(flow, payload.Root, at + ".root", source);
+            CheckLocation(flow, payload.Root, at + ".root", source);
             foreach (var column in new[] { payload.LocationColumn, payload.HashColumn, payload.ChunkCountColumn }.OfType<string>())
             {
                 CheckColumn(column, at, source);
@@ -1544,7 +1564,7 @@ internal static partial class FlowMapper
             throw new FlowValidationException($"{source}: {paths.Shared("source.incremental.commandTimeoutSeconds")} must not be negative (0 lets a read run as long as the run does).");
         }
 
-        CheckTokens(flow, src.Work, "source.work", source);
+        CheckLocation(flow, src.Work, "source.work", source);
     }
 
     internal static void CheckObject(string declared, string key, string source)
@@ -1565,14 +1585,35 @@ internal static partial class FlowMapper
         }
     }
 
-    private static void CheckTokens(FlowDefinition flow, string text, string key, string source)
+    /// <summary>
+    /// A file location the flow declares (its work root, a payload root): written out, and its <c>{name}</c> tokens are
+    /// declared parameters (<see cref="RefuseLocationReference"/>).
+    /// </summary>
+    private static void CheckLocation(FlowDefinition flow, string location, string key, string source)
     {
-        foreach (var token in Tokens(text))
+        RefuseLocationReference(location, key, source);
+        foreach (var token in Tokens(location))
         {
             if (!flow.Parameters.ContainsKey(token))
             {
                 throw new FlowValidationException($"{source}: {key} uses '{{{token}}}', which is not declared under parameters.");
             }
+        }
+    }
+
+    /// <summary>
+    /// Refuses a <c>${...}</c> reference in a file location of any kind's flow (a delivery flow's work and payload roots, a
+    /// retrieval flow's target). No file location in the product is resolved from a reference, SQLFlow's own included: the
+    /// location is substituted from the run's parameters and read as written, so a run would read or write under a folder
+    /// named after the reference. What varies per run or environment is a <c>{parameter}</c> token instead.
+    /// </summary>
+    internal static void RefuseLocationReference(string location, string key, string source)
+    {
+        ArgumentNullException.ThrowIfNull(location);
+        if (location.Contains("${", StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{source}: {key} '{location}' holds a ${{...}} reference, and a location is not resolved from one: write the path or storage URI itself, and vary it per run or environment with a {{parameter}} token declared under parameters.");
         }
     }
 

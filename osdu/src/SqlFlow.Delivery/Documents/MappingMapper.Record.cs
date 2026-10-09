@@ -52,7 +52,7 @@ internal static partial class MappingMapper
     /// <summary>How a column of the dataset's own row is named from anywhere in the tree: <c>$dataset.log_id</c>.</summary>
     internal const string DatasetReference = Marker + DatasetColumn.Prefix;
 
-    /// <summary>How a replace names a table read from the partition's cache: <c>$cache.RecallUnits</c>.</summary>
+    /// <summary>How a replace names a table read from the partition's cache: <c>$cache.UnitAlias</c>.</summary>
     internal const string CacheReference = Marker + MappingSource.CachePrefix;
 
     /// <summary>The keys a value node reads its value with; naming one of them makes a map a value node.</summary>
@@ -389,7 +389,7 @@ internal static partial class MappingMapper
                 $"{at} is a list of objects inside the items of {outer.Text}, and a list of objects inside the items of another array is not supported.");
         }
 
-        var example = $"- {{ TechnicalAssuranceTypeID: {{ {ExprKey}: iif(startsWith(log_source, \"stat_\"), \"Certified\", \"Unevaluated\") }} }}";
+        var example = $"- {{ TechnicalAssuranceTypeID: {{ {ExprKey}: iif(startsWith(log_source, \"COMP\"), \"Certified\", \"Unevaluated\") }} }}";
         var first = list.FindIndex(IsObjectItem);
         var itemPath = path.Take(path.Count - 1).Append(path[^1] + "[]").ToList();
         var itemScope = scope with { List = location };

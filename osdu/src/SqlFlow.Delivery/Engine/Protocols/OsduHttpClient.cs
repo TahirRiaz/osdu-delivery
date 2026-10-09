@@ -292,14 +292,14 @@ public sealed class OsduHttpClient
         }
         catch (JsonException ex)
         {
-            throw new DeliveryException($"{url} returned a body that is not JSON: {Preview(result)}", ex);
+            throw new DeliveryException($"{HeaderRedaction.DescribeUrl(url)} returned a body that is not JSON: {Preview(result)}", ex);
         }
     }
 
     private static string Preview(HttpFetchResult result)
     {
         var text = Encoding.UTF8.GetString(result.Body);
-        return text.Length <= 200 ? text : text[..200] + "...";
+        return HeaderRedaction.RedactMessage(text.Length <= 200 ? text : text[..200] + "...");
     }
 
     private void Apply(HttpRequestMessage request, AppliedAuth auth)

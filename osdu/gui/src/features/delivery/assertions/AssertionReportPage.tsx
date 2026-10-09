@@ -13,7 +13,7 @@ import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { cn } from "@/lib/utils";
-import { deliveryApi, type DeliveryAssertionRunDetail, type DeliveryTestResult, type TestOutcome } from "../../../api/delivery";
+import { deliveryApi, type DeliveryAssertionRun, type DeliveryAssertionRunDetail, type DeliveryTestResult, type TestOutcome } from "../../../api/delivery";
 import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
 import { AssertionRunStatusBadge, OutcomeBar, StatusStrip, TestOutcomeIcon, type StripCell } from "./AssertionBadges";
@@ -25,6 +25,16 @@ import { shortId } from "../idTail";
 function tally(results: readonly DeliveryTestResult[]) {
   const count = (outcome: TestOutcome) => results.filter((r) => r.outcome === outcome).length;
   return { passed: count("passed"), failed: count("failed"), warned: count("warned"), errored: count("errored"), skipped: count("skipped") };
+}
+
+/**
+ * Whether the run stopped before it recorded a result for every test it selected: cancelled, or failing part way. A run
+ * that completed records one for each, a skipped test's included, so one whose tests errored is told from one that stopped
+ * by its counts; its reason (how many tests failed or errored, and which) is what the strip and the results below show.
+ */
+function runStopped(run: Pick<DeliveryAssertionRun, "status" | "tests" | "passed" | "failed" | "warned" | "errored" | "skipped">) {
+  const recorded = run.passed + run.failed + run.warned + run.errored + run.skipped;
+  return run.status === "cancelled" || (run.status === "errored" && recorded < run.tests);
 }
 
 /**
@@ -239,7 +249,7 @@ export default function AssertionReportPage() {
         )}
       />
 
-      {run.error && run.status !== "failed" && (
+      {run.error && runStopped(run) && (
         <Alert variant="destructive" data-testid="assertion-report-run-error">
           <CircleAlert />
           <AlertTitle>The run stopped</AlertTitle>

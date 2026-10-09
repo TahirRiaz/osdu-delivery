@@ -35,7 +35,7 @@ public sealed partial class RecordIdFromKeyDeliveryTests : IDisposable
     [GeneratedRegex(@"(?m)^  key: \[source_project, log_id\]")]
     private static partial Regex KeyLine();
 
-    [GeneratedRegex(@"(?m)^  system: recall\b")]
+    [GeneratedRegex(@"(?m)^  system: welldb\b")]
     private static partial Regex SystemLine();
 
     /// <summary>The sample WellLog mapping, changed by <paramref name="change"/>, in a folder of its own a flow renders from.</summary>
@@ -55,7 +55,7 @@ public sealed partial class RecordIdFromKeyDeliveryTests : IDisposable
     private static Func<FlowDefinition, FlowDefinition> Rendering(string mappings, string? name = null)
         => flow => flow with { Name = name ?? flow.Name, Render = flow.Render with { MappingsDirectory = mappings } };
 
-    /// <summary>The id a log's record is delivered to under <c>idFrom: key</c>: its project and its log id, the slash of a Recall log id encoded.</summary>
+    /// <summary>The id a log's record is delivered to under <c>idFrom: key</c>: its project and its log id, the slash of a log id encoded.</summary>
     private static string CodeId(SampleLog log) => TargetId.ComposeFromKey(Samples.SamplePartition, WellLogs, [log.SourceProject, log.LogId], out _)!;
 
     private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, OsduLedger Ledger)> RuntimeAsync(
@@ -212,7 +212,7 @@ public sealed partial class RecordIdFromKeyDeliveryTests : IDisposable
             Assert.Equal(LogCount, (await RunAsync(first, firstProtocol, ledger)).Work.Delivered);
         }
 
-        var rekeyed = Mappings("rekeyed", yaml => SystemLine().Replace(FromKey(yaml), "  system: recall-v2", 1));
+        var rekeyed = Mappings("rekeyed", yaml => SystemLine().Replace(FromKey(yaml), "  system: welldb-v2", 1));
         var (second, secondProtocol, _) = await RuntimeAsync(tables, Rendering(rekeyed));
         using (second)
         {
@@ -222,7 +222,7 @@ public sealed partial class RecordIdFromKeyDeliveryTests : IDisposable
             Assert.Empty(secondProtocol.Deliveries);
             foreach (var log in SampleEstate.Logs())
             {
-                var rekey = DeliveryKey.Derive("recall-v2", [log.SourceProject, log.LogId]);
+                var rekey = DeliveryKey.Derive("welldb-v2", [log.SourceProject, log.LogId]);
                 var held = await ledger.GetRecordAsync(second.Flow.Id, rekey);
                 Assert.Equal((RecordStatus.Held, (string?)null, (string?)null), (held!.Status, held.TargetId, held.ClaimedTargetId));
                 Assert.Contains($"OSDU id {CodeId(log)} is already claimed by record ", held.LastError, StringComparison.Ordinal);

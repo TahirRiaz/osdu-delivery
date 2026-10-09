@@ -382,7 +382,7 @@ test.describe.serial("templates and the mapping builder", () => {
     // The name starts as the template's entity; this draft takes its own, so it is never taken for the synced mapping.
     await expect(adminPage.getByTestId("mapping-builder-name")).toHaveValue("WellLog");
     await adminPage.getByTestId("mapping-builder-name").fill("WellLogDraft");
-    await adminPage.getByTestId("mapping-builder-system").fill("recall");
+    await adminPage.getByTestId("mapping-builder-system").fill("welldb");
     await adminPage.getByTestId("mapping-builder-start").click();
 
     // A well log points at the unit of its vertical measurement, reference data the cache holds (the partition's units),
@@ -444,7 +444,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("3 alternatives, tried in order");
     const alternatives = entry.getByTestId("delivery-mapping-property-detail-alternatives").getByRole("listitem");
     await expect(alternatives).toHaveCount(3);
-    await expect(alternatives.nth(0)).toContainText("dataset.elev_meas_ref | split on ' ', part 2 | replace from $cache.RecallDepthUnits | ref");
+    await expect(alternatives.nth(0)).toContainText("dataset.elev_meas_ref | split on ' ', part 2 | replace from $cache.DepthUnitAlias | ref");
     await expect(alternatives.nth(1)).toContainText("cache.UnitOfMeasure.id by ID/Code/Name = dataset.elev_meas_ref");
     await expect(alternatives.nth(2)).toContainText("(unverified)");
 
@@ -516,7 +516,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await detail.getByTestId("delivery-mapping-tab-shape").click();
     const shape = detail.getByTestId("delivery-mapping-shape-json");
     // The editor draws only the lines in view, so the check reads the id on the first lines rather than a deeper field.
-    await expect(shape).toContainText("<delivery key from recall", { timeout: 15_000 });
+    await expect(shape).toContainText("<delivery key from welldb", { timeout: 15_000 });
     await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("dev");
     await expect(shape).toContainText("dev:work-product-component--WellLog:", { timeout: 15_000 });
 
@@ -558,7 +558,8 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(alternative.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].CurveUnit, alternative 1");
     await expect(alternative.getByTestId("mapping-builder-entry-input-coalesce")).toHaveCount(0);
     await expect(alternative.getByTestId("mapping-builder-entry-modifier-source-cache-0")).toHaveAttribute("data-state", "on");
-    await expect(alternative.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("RecallUnits");
+    // UnitAlias itself: DepthUnitAlias, the partition's other unit table, ends in the same name.
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText(/(?<!Depth)UnitAlias/);
     await expect(alternative.getByTestId("mapping-builder-entry-modifier-match-0")).toContainText("the table's key");
     await expect(alternative.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("the table's only field");
     await expect(alternative.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("osdu_unit");
@@ -569,14 +570,14 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(alternative.getByTestId("mapping-builder-entry-modifier-from-0-0")).toBeVisible();
     await alternative.getByTestId("mapping-builder-entry-modifier-source-cache-0").click();
     await alternative.getByTestId("mapping-builder-entry-modifier-table-0").click();
-    await expect(adminPage.getByRole("option").filter({ hasText: "RecallUnits" })).toBeVisible();
+    await expect(adminPage.getByRole("option").filter({ hasText: /(?<!Depth)UnitAlias/ })).toBeVisible();
     await expect(adminPage.getByRole("option").filter({ hasText: "key mnemonic" })).toBeVisible();
     await adminPage.keyboard.press("Escape");
 
     // Cancel leaves the alternative as it was and returns to the entry, which Cancel leaves as it was too.
     await alternative.getByTestId("mapping-builder-entry-cancel").click();
     await expect(alternative).toHaveCount(0);
-    await expect(adminPage.getByTestId("mapping-builder-entry-alternative-0")).toContainText("replace from $cache.RecallUnits");
+    await expect(adminPage.getByTestId("mapping-builder-entry-alternative-0")).toContainText("replace from $cache.UnitAlias");
     await adminPage.getByTestId("mapping-builder-entry-cancel").click();
     await expect(adminPage.getByTestId("mapping-builder-entry-editor")).toHaveCount(0);
   });

@@ -12,7 +12,7 @@ using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Engine;
 
-/// <summary>The operations a run of the delivery, cache, retrieval, assertion and dimension kinds performs, by the names runs carry.</summary>
+/// <summary>The operations a run of the delivery, cache, retrieval, assertion, dimension and inventory kinds performs, by the names runs carry.</summary>
 public static class DeliveryOperations
 {
     /// <summary>Plan the source and deliver what changed: the delivery kind's default.</summary>
@@ -244,10 +244,12 @@ public static class RedeliverScopes
 }
 
 /// <summary>
-/// The kind-owned arguments of a delivery run (<see cref="RunParameters.Payload"/>): whether it forces a re-plan, the
-/// submission it works on, the records it is scoped to and what of them it redelivers, and the key slices a fan-out
-/// member plans. Parsed strictly: an unknown property, a wrong type
-/// or a value out of range is refused with a message naming it, at every trust boundary the platform validates a run at.
+/// The kind-owned arguments of a run of this module's kinds (<see cref="RunParameters.Payload"/>): for a delivery run,
+/// whether it forces a re-plan, the submission it works on, the records it is scoped to and what of them it redelivers, and
+/// the key slices a fan-out member plans; the tests, dimensions and inventories a run of the other kinds selects; and the
+/// central configuration the control plane supplies to every one of them. Parsed strictly: an unknown property, a wrong
+/// type or a value out of range is refused with a message naming it, at every trust boundary the platform validates a run
+/// at, and each kind refuses every property it does not take (<see cref="RefuseOtherThan"/>).
 /// </summary>
 public sealed record DeliveryRunPayload
 {
@@ -279,7 +281,7 @@ public sealed record DeliveryRunPayload
     /// <summary>The central configuration set for one partition, by partition, which a run bound to it resolves with first.</summary>
     public const string PartitionReferencesProperty = "partitionReferences";
 
-    /// <summary>The partition a run deleting the ledger acts in, named by whoever asked for it as confirmation.</summary>
+    /// <summary>The partition a run deleting the ledger, or an inventory flow's remove run, acts in, named by whoever asked for it as confirmation.</summary>
     public const string ConfirmProperty = "confirm";
 
     /// <summary>The tests of an assertion flow a run runs, by name.</summary>
@@ -303,6 +305,33 @@ public sealed record DeliveryRunPayload
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
             PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty, RemovalProperty];
+
+    /// <summary>
+    /// For every property a run asks something by (all but the central configuration, which every kind takes), the runs that
+    /// take it: what the message refusing it on any other kind says.
+    /// </summary>
+    private static readonly Dictionary<string, string> TakenBy = new(StringComparer.Ordinal)
+    {
+        [ForceProperty] = "only delivery and retrieval runs force",
+        [SubmissionIdProperty] = "only a delivery flow's runs name a submission",
+        [RunIdProperty] = "only a delivery flow's reverse run names the run it reverses",
+        [RecordKeysProperty] = "only a delivery flow's runs are scoped to records",
+        [RedeliverProperty] = "only a delivery flow's deliver runs send records again",
+        [RerenderProperty] = "only a delivery flow's runs bring records up to date",
+        [SlicesProperty] = "only a delivery flow's intake members plan slices",
+        [InterfaceProperty] = "only a delivery flow's runs name an interface",
+        [InterfacesProperty] = "only a delivery flow's runs select interfaces",
+        [ConfirmProperty] = "only a delivery flow's run deleting the ledger and an inventory flow's remove run name the partition they act in",
+        [TestsProperty] = "only an assertion flow's runs select tests",
+        [TagsProperty] = "only an assertion flow's runs select tests by tag",
+        [DimensionsProperty] = "only a dimension flow's runs select dimensions",
+        [InventoriesProperty] = "only an inventory flow's runs select inventories",
+        [RemovalProperty] = "only an inventory flow's remove run names what it removes",
+    };
+
+    /// <summary>The properties a delivery flow's runs take, besides the central configuration; which operation takes which is <see cref="Validate"/>'s.</summary>
+    private static readonly string[] DeliveryProperties =
+        [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ConfirmProperty];
 
     private static readonly string[] RemovalProperties = ["finding", "scope", "expected", "ids"];
 
@@ -355,8 +384,9 @@ public sealed record DeliveryRunPayload
     public IReadOnlyList<string> Interfaces { get; init; } = [];
 
     /// <summary>
-    /// The partition a run deleting the ledger acts in, as whoever asked for it named it: the run refuses to delete anything
-    /// unless it is the partition the ledger is kept in, so a deletion is never one click away from a trigger dialog.
+    /// The partition a run deleting the ledger, or an inventory flow's remove run, acts in, as whoever asked for it named it:
+    /// the run refuses to remove or delete anything unless it is the partition the ledger is kept in or the inventory reads, so a
+    /// deletion is never one click away from a trigger dialog.
     /// </summary>
     public string? Confirm { get; init; }
 
@@ -406,17 +436,80 @@ public sealed record DeliveryRunPayload
     public bool SelectsInventories => Inventories.Count > 0 || Removal is not null;
 
     /// <summary>True when the payload carries nothing.</summary>
-    public bool IsEmpty
-        => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && Confirm is null && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions && !SelectsInventories;
+    public bool IsEmpty => CarriesOnlyConfiguration && References.Count == 0 && PartitionReferences.Count == 0;
 
     /// <summary>
     /// True when the payload carries nothing but the central configuration the control plane supplied: what the payload of
-    /// a kind that names no submission, record, slice, test or dimension may hold.
+    /// a cache run, which names nothing, may hold.
     /// </summary>
-    public bool CarriesOnlyConfiguration
-        => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && Confirm is null && !SelectsTests && !SelectsDimensions && !SelectsInventories;
+    public bool CarriesOnlyConfiguration => Named().Count == 0;
+
+    /// <summary>
+    /// The properties this payload asks something by, in the order a payload lists them: every one but the central
+    /// configuration, which every kind of the module takes. A property counts when it asks for something (force set, a
+    /// list that names something), as each kind reads it; one written as false or empty asks for nothing.
+    /// </summary>
+    public IReadOnlyList<string> Named()
+    {
+        var named = new List<string>();
+        Add(Force, ForceProperty);
+        Add(SubmissionId is not null, SubmissionIdProperty);
+        Add(RunId is not null, RunIdProperty);
+        Add(RecordKeys.Count > 0, RecordKeysProperty);
+        Add(Redeliver is not null, RedeliverProperty);
+        Add(Rerender, RerenderProperty);
+        Add(Slices.Count > 0, SlicesProperty);
+        Add(Interface is not null, InterfaceProperty);
+        Add(Interfaces.Count > 0, InterfacesProperty);
+        Add(Confirm is not null, ConfirmProperty);
+        Add(Tests.Count > 0, TestsProperty);
+        Add(Tags.Count > 0, TagsProperty);
+        Add(Dimensions.Count > 0, DimensionsProperty);
+        Add(Inventories.Count > 0, InventoriesProperty);
+        Add(Removal is not null, RemovalProperty);
+        return named;
+
+        void Add(bool asks, string property)
+        {
+            if (asks)
+            {
+                named.Add(property);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Refuses the first property this payload asks something by that a run of <paramref name="flowType"/> does not take,
+    /// naming it, the runs that take it, and what the kind's payload names, in one message shape for every kind:
+    /// <c>payload P does not apply to a K flow: only ...; a K flow's payload names only ...</c>. The central configuration
+    /// the control plane supplies is taken by every kind and never refused here.
+    /// </summary>
+    /// <param name="flowType">The kind the run is of, as its documents' <c>flowType</c> names it.</param>
+    /// <param name="takes">The properties the kind takes, besides the central configuration; empty for a kind that takes none.</param>
+    /// <exception cref="SqlFlowException">The payload names a property the kind does not take.</exception>
+    public void RefuseOtherThan(string flowType, IReadOnlyCollection<string> takes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowType);
+        ArgumentNullException.ThrowIfNull(takes);
+        foreach (var property in Named())
+        {
+            if (takes.Contains(property, StringComparer.Ordinal))
+            {
+                continue;
+            }
+
+            var kind = $"{(StartsWithVowel(flowType) ? "an" : "a")} {flowType} flow";
+            var names = takes.Count switch
+            {
+                0 => "carries only the central configuration the control plane supplies",
+                1 => $"names only {takes.First()}",
+                _ => $"names only {string.Join(", ", takes.Take(takes.Count - 1))} and {takes.Last()}",
+            };
+            throw new SqlFlowException($"payload {property} does not apply to {kind}: {TakenBy[property]}; {kind}'s payload {names}.");
+        }
+    }
+
+    private static bool StartsWithVowel(string word) => "aeiouAEIOU".Contains(word[0], StringComparison.Ordinal);
 
     /// <summary>
     /// The configuration a run resolves its references with when it acts on <paramref name="partition"/>: the partition's
@@ -590,26 +683,7 @@ public sealed record DeliveryRunPayload
             throw new SqlFlowException("payload names both a submissionId and recordKeys; a run works on a submission or is scoped to records, not both.");
         }
 
-        if (SelectsTests)
-        {
-            throw new SqlFlowException(
-                $"payload {(Tests.Count > 0 ? TestsProperty : TagsProperty)} does not apply to a delivery flow: only an assertion flow's runs select tests.");
-        }
-
-        if (SelectsDimensions)
-        {
-            throw new SqlFlowException($"payload {DimensionsProperty} does not apply to a delivery flow: only a dimension flow's runs select dimensions.");
-        }
-
-        if (Removal is not null)
-        {
-            throw new SqlFlowException($"payload {RemovalProperty} does not apply to a delivery flow: only an inventory flow's remove run names what it removes; a delivery flow removes its records through its ledger.");
-        }
-
-        if (SelectsInventories)
-        {
-            throw new SqlFlowException($"payload {InventoriesProperty} does not apply to a delivery flow: only an inventory flow's runs select inventories.");
-        }
+        RefuseOtherThan(FlowDefinition.FlowTypeName, DeliveryProperties);
 
         switch (operation)
         {
@@ -950,11 +1024,6 @@ public sealed record DeliveryRunPayload
     }
 
     /// <summary>
-    /// A selection of an assertion flow's tests or tags, or of a dimension flow's dimensions: an array of names, each a name as
-    /// a flow writes one (<see cref="SelectableNames.IsName"/>), none twice. Whether each names something of the flow is the
-    /// run's to check, since a payload is validated before the flow document is read.
-    /// </summary>
-    /// <summary>
     /// The removal a payload names, parsed strictly: a removable finding, a scope (record or everything), the count the operator
     /// was shown, and at most <see cref="InventoryRemovalRequest.MaxIds"/> distinct ids, each an OSDU id, whose number is that count.
     /// </summary>
@@ -1031,6 +1100,11 @@ public sealed record DeliveryRunPayload
         return new InventoryRemovalRequest { Finding = finding, Scope = scope, Expected = expected, Ids = ids };
     }
 
+    /// <summary>
+    /// A selection of an assertion flow's tests or tags, a dimension flow's dimensions or an inventory flow's inventories: an
+    /// array of names, each a name as a flow writes one (<see cref="SelectableNames.IsName"/>), none twice. Whether each names
+    /// something of the flow is the run's to check, since a payload is validated before the flow document is read.
+    /// </summary>
     private static IReadOnlyList<string> Selection(JsonNode? node, string property, string what)
     {
         if (node is null)

@@ -1,85 +1,19 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { E2E, hostRun } from "../playwright.config";
-import { DELIVERY_FLOW, FixtureMeta, INTERFACES_FLOW, LOG_SOURCE, REPO_NAME } from "./global-setup";
+import { DELIVERY_FLOW, INTERFACES_FLOW } from "./global-setup";
+import { cliJson as json, cliRefusal, deliveryCli as cli, deliveryFlowFile, fixtureMeta, stageWellLogRecords } from "./delivery-cli";
 import { expect, test } from "./helpers";
 
 // A record's history where an operator already is. The GUI and the API have shown a record's attempts from the start;
-// `sqlflow records` shows the same ledger from a terminal or a node, with no control plane to reach. The plan run of
-// the earlier specs is what put these records in the ledger.
-
-/** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
-const moduleRoot = join(import.meta.dirname, "..", "..");
-
-function fixtureMeta(): FixtureMeta {
-  return JSON.parse(readFileSync(join(import.meta.dirname, ".fixtures", "meta.json"), "utf8")) as FixtureMeta;
-}
-
-/**
- * Runs the module's CLI host against the e2e catalog, returning stdout. The catalog reaches it as a reference, the way
- * a deployment's does, so a connection string never lands in an argument list or a failure message.
- */
-function cli(...args: string[]): string {
-  return execFileSync(
-    "dotnet",
-    [...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--", ...args, "--db", "${env:SQLFLOW_E2E_CATALOG_CONNECTION}"],
-    {
-      encoding: "utf8",
-      timeout: 300_000,
-      env: {
-        ...process.env,
-        OSDU_DATA_DB: fixtureMeta().dataDb,
-        SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
-        // The ledger these commands read is the module's database, which is not the catalog's: a node reaches it
-        // through exactly this reference, and so does a command run beside one.
-        SQLFLOW_OSDU_DB: E2E.osduDb,
-        // The flow's target: the stand-in platform. An intake sends nothing (the fixture turns the legal check off), but
-        // it renders, and a render asks the platform's search for the wellbore each log names.
-        ...E2E.osdu,
-      },
-    },
-  );
-}
-
-/**
- * The JSON document in what the CLI printed. `dotnet run` builds the host on its way and prints what that says first,
- * so the document is taken from its first brace rather than from the first byte of the output.
- */
-function json<T>(output: string): T {
-  const start = output.indexOf("{");
-  if (start < 0) {
-    throw new Error(`no JSON in the CLI's output: ${output.slice(0, 400)}`);
-  }
-
-  return JSON.parse(output.slice(start, output.lastIndexOf("}") + 1)) as T;
-}
-
-/** What the CLI said when it refused: the command must fail, and its reason is what the test is about. */
-function cliRefusal(...args: string[]): string {
-  try {
-    cli(...args);
-  } catch (error) {
-    const failure = error as { stderr?: string; stdout?: string; message?: string };
-    return `${failure.stderr ?? ""}${failure.stdout ?? ""}${failure.message ?? ""}`;
-  }
-
-  throw new Error(`'records ${args.join(" ")}' was expected to fail and did not.`);
-}
+// `sqlflow records` shows the same ledger from a terminal or a node, with no control plane to reach. The spec stages the
+// records it reads itself (an intake), so it reads them whatever ran before it.
 
 test.describe.serial("records from the CLI", () => {
   test("the ledger's records and one record's attempts are readable from the command line", () => {
     test.setTimeout(600_000);
-    const flow = `${fixtureMeta().sourceDir}/flows/${DELIVERY_FLOW}.yaml`;
+    const flow = deliveryFlowFile();
 
     // Records reach the ledger when a submission is planned, which is what an intake does: it renders and stages every
-    // record of the scope and sends nothing. A plan run reports what it would do and stages nothing, so the earlier
-    // specs' plan leaves the ledger empty by design.
-    //
-    // The run records itself into the repo the fixture is registered under, like every other run of this estate.
-    // Without --repo it would name the repo after the folder it was started from, leaving a second repo called
-    // "flows" in the catalog holding a copy of this flow.
-    expect(cli("run", flow, "--operation", "intake", "--set", `logSource=${LOG_SOURCE}`, "--repo", REPO_NAME)).toContain("record(s)");
+    // record of the scope and sends nothing.
+    expect(stageWellLogRecords()).toContain("record(s)");
 
     const listed = json<{
       flow: string;

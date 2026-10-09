@@ -216,7 +216,7 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
         ["id"] = id,
         ["kind"] = kind,
         ["acl"] = new JsonObject { ["viewers"] = new JsonArray("data.default.viewers@dev.example.com"), ["owners"] = new JsonArray("data.default.owners@dev.example.com") },
-        ["legal"] = new JsonObject { ["legaltags"] = new JsonArray("dev-public"), ["otherRelevantDataCountries"] = new JsonArray("NO") },
+        ["legal"] = new JsonObject { ["legaltags"] = new JsonArray("dev-public"), ["otherRelevantDataCountries"] = new JsonArray("US") },
         ["data"] = data ?? new JsonObject { ["Name"] = id },
     };
 

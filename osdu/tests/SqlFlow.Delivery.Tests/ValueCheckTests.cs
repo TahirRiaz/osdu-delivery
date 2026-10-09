@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The value check (<see cref="ValueChecker"/>): the rows of a flow's scope that will not give the variables of its mapping
-/// the values its template expects, found by inspecting every row as a delivery renders it, over the sample Recall logs.
+/// the values its template expects, found by inspecting every row as a delivery renders it, over the sample well database logs.
 /// Each failing row is named with the reason, the value behind it and where the row came from; counts are exact and what
 /// is listed is bounded; and nothing is written anywhere.
 /// </summary>

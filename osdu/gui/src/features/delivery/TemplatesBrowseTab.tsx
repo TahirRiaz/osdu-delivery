@@ -311,7 +311,7 @@ export function TemplatesBrowseTab({ canAuthor, canOperate }: { canAuthor: boole
               size="sm"
               onClick={() => sync.mutate()}
               disabled={!canOperate || sync.isPending || releases.data === undefined}
-              title={canOperate ? "Read the release list again, and download the release in view when it is not on disk" : "Syncing takes the operate scope."}
+              title={canOperate ? "Read the release list again, and download the release in view when it is not on disk" : "Syncing takes a signed-in session."}
               data-testid="templates-browse-sync"
             >
               {sync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}

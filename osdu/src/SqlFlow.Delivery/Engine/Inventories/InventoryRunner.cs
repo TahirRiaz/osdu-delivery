@@ -385,7 +385,7 @@ public sealed partial class InventoryRunner
             if (candidates.Count >= _flow.MaxMissingChecks)
             {
                 _log.LogWarning(
-                    "inventory '{Inventory}': {Count} id(s) a ledger expects were read from storage, the flow's maxMissingChecks; more may be missing, and the next build reads them",
+                    "inventory '{Inventory}': {Count} id(s) a ledger expects were read from storage, the flow's maxMissingChecks; more may be missing, and the next builds read the rest, the least recently read first",
                     inventory.Name, candidates.Count);
             }
         }

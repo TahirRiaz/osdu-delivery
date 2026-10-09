@@ -23,7 +23,7 @@ public sealed class AssertionRunTests : IDisposable
 
     private const string Flow = $$"""
         flowType: assertion
-        name: recall-04-assertion
+        name: welldb-04-assertion
         partitions: [dev, test]
         source:
           endpoint: http://localhost
@@ -41,21 +41,21 @@ public sealed class AssertionRunTests : IDisposable
               - { field: data.WellID, resolves: master-data--Well }
               - { aggregate: max, field: data.SequenceNumber, atMost: 4 }
               - { groupBy: kind, groups: { "{{Wellbore}}": 4 }, mode: exact }
-              - { groupBy: data.FacilityName, groups: { "15/9-F-12": 2 }, groupCount: 3 }
+              - { groupBy: data.FacilityName, groups: { "A/1-F-12": 2 }, groupCount: 3 }
               - { indexed: true }
               - { legal: valid }
               - { conforms: true, severity: warning }
-              - { recordSet: { columns: [data.FacilityName, data.SequenceNumber], mode: includes, rows: [["15/9-F-11", 1]] } }
+              - { recordSet: { columns: [data.FacilityName, data.SequenceNumber], mode: includes, rows: [["A/1-F-11", 1]] } }
               - { field: data.SequenceNumber, between: [1, 4] }
               - { delivered: wells-delivery }
           - name: names
             tags: [smoke]
             kind: {{Wellbore}}
-            query: 'data.Source:"Recall"'
+            query: 'data.Source:"WellDB"'
             read: index
             assert:
               - count: { atLeast: 1 }
-              - { field: data.FacilityName, startsWith: "15/" }
+              - { field: data.FacilityName, startsWith: "A/" }
           - name: logs
             tags: [bulk]
             kind: {{WellLog}}
@@ -105,17 +105,17 @@ public sealed class AssertionRunTests : IDisposable
         _platform.Dispose();
     }
 
-    private static JsonObject Data(string name, int sequence, string wellId, string source = "Recall")
+    private static JsonObject Data(string name, int sequence, string wellId, string source = "WellDB")
         => new() { ["FacilityName"] = name, ["SequenceNumber"] = sequence, ["WellID"] = wellId, ["Source"] = source };
 
     /// <summary>Four wellbores (one sharing its name, one pointing at a well that is not there, one indexed badly, one without a legal block), their well, and two logs.</summary>
     private void Estate()
     {
-        _platform.Add("dev:master-data--Well:W1", "osdu:wks:master-data--Well:1.0.0", new JsonObject { ["FacilityName"] = "15/9-F" });
-        _platform.Add("dev:master-data--Wellbore:w1", Wellbore, Data("15/9-F-11", 1, "dev:master-data--Well:W1:"));
-        _platform.Add("dev:master-data--Wellbore:w2", Wellbore, Data("15/9-F-12", 2, "dev:master-data--Well:MISSING:"), ["dev-expired"]);
-        _platform.Add("dev:master-data--Wellbore:w3", Wellbore, Data("15/9-F-12", 3, "dev:master-data--Well:W1:1234"));
-        _platform.Add("dev:master-data--Wellbore:w4", Wellbore, Data("15/9-F-14", 4, "dev:master-data--Well:W1:"), withLegal: false);
+        _platform.Add("dev:master-data--Well:W1", "osdu:wks:master-data--Well:1.0.0", new JsonObject { ["FacilityName"] = "A/1-F" });
+        _platform.Add("dev:master-data--Wellbore:w1", Wellbore, Data("A/1-F-11", 1, "dev:master-data--Well:W1:"));
+        _platform.Add("dev:master-data--Wellbore:w2", Wellbore, Data("A/1-F-12", 2, "dev:master-data--Well:MISSING:"), ["dev-expired"]);
+        _platform.Add("dev:master-data--Wellbore:w3", Wellbore, Data("A/1-F-12", 3, "dev:master-data--Well:W1:1234"));
+        _platform.Add("dev:master-data--Wellbore:w4", Wellbore, Data("A/1-F-14", 4, "dev:master-data--Well:W1:"), withLegal: false);
         _platform.IndexStatus["dev:master-data--Wellbore:w2"] = 400;
         _platform.InvalidLegalTags["dev-expired"] = "LegalTag has expired";
 
@@ -410,13 +410,13 @@ public sealed class AssertionRunTests : IDisposable
 
         var junit = report.Render(ReportFormat.JUnit);
         Assert.StartsWith("<?xml version=\"1.0\" encoding=\"utf-8\"?>", junit);
-        Assert.Contains("<testsuites name=\"recall-04-assertion@dev\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"0\"", junit);
-        Assert.Contains("<testcase classname=\"recall-04-assertion.osdu:wks:master-data--Wellbore:1.3.0\" name=\"wellbores\"", junit);
+        Assert.Contains("<testsuites name=\"welldb-04-assertion@dev\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"0\"", junit);
+        Assert.Contains("<testcase classname=\"welldb-04-assertion.osdu:wks:master-data--Wellbore:1.3.0\" name=\"wellbores\"", junit);
         Assert.Contains("<failure message=", junit);
         Assert.Contains("<system-out>", junit);
 
         var html = report.Render(ReportFormat.Html);
-        Assert.Contains("<title>recall-04-assertion test report</title>", html);
+        Assert.Contains("<title>welldb-04-assertion test report</title>", html);
         Assert.Contains("dev:master-data--Well:MISSING", html);
         // A warning that fails is badged as a warning, not as a failure.
         Assert.Contains("<td class=\"fit\">warning</td><td class=\"fit\"><span class=\"badge warned\">warned</span>", html);
@@ -424,13 +424,13 @@ public sealed class AssertionRunTests : IDisposable
         Assert.DoesNotContain("<script", html, StringComparison.OrdinalIgnoreCase);
 
         var markdown = report.Render(ReportFormat.Markdown);
-        Assert.Contains("# recall-04-assertion in dev", markdown);
+        Assert.Contains("# welldb-04-assertion in dev", markdown);
         Assert.Contains("| Assertion | Severity | Outcome | Expected | Actual |", markdown);
 
         var json = JsonNode.Parse(report.Render(ReportFormat.Json))!;
         Assert.Equal(3, json["results"]!.AsArray().Count);
         Assert.Equal("""{"tags":["smoke","bulk"]}""", json["selection"]!.ToJsonString());
-        Assert.Equal("recall-04-assertion-dev-report-" + run.AssertionRunId + ".xml", report.FileName(ReportFormat.JUnit));
+        Assert.Equal("welldb-04-assertion-dev-report-" + run.AssertionRunId + ".xml", report.FileName(ReportFormat.JUnit));
         foreach (var text in new[] { junit, html, markdown })
         {
             Assert.DoesNotContain('\u2014', text);

@@ -833,13 +833,17 @@ public sealed class Planner
 
     /// <summary>
     /// Why a record whose render gives another OSDU id than the one it claimed is held: which two ids, and the two ways on.
+    /// The record is the same one (its delivery key, made from <c>dataset.system</c> and the key's values, did not move), so
+    /// what moved its id is one of the id's other parts: what its unique segment is made from (<c>dataset.idFrom</c>), the
+    /// entity type of the kind the mapping renders, or the partition the id is minted in (<c>dataPartition</c>). A changed
+    /// system or key never reaches here: it makes another delivery key, and so another record.
     /// </summary>
     internal static string ChangedTargetId(string claimed, string rendered)
         => $"the mapping now gives this record the OSDU id {rendered}, and the record claimed {claimed} when it first queued a document; "
             + "a record keeps the OSDU id it claimed, so nothing is sent. To deliver the flow's records under the ids the mapping gives now, "
             + "remove them from OSDU (the record scope) and either deliver them under a ledger of their own (the interface's ledger:), "
             + "which keeps their history, or delete them from the ledger with the removal, after which the next run delivers the rows as new records; "
-            + "or put back the mapping's dataset.idFrom, system and key";
+            + "or put back what moved the id: the mapping's dataset.idFrom, the entity type of the kind it renders, or the partition the flow mints ids in (dataPartition)";
 
     /// <summary>
     /// The record's document, the change it amounts to, and the entry the plan records for it: everything after the
@@ -901,8 +905,9 @@ public sealed class Planner
         }
 
         // A record keeps the OSDU id it claimed when it first queued a document. A render that gives it another one (its
-        // mapping's dataset.idFrom, system or key changed) is never sent: the document would land on a second OSDU record
-        // while the ledger, and every removal and read back, still names the first.
+        // mapping's dataset.idFrom or the entity type of its kind changed, or the partition the flow mints ids in) is never
+        // sent: the document would land on a second OSDU record while the ledger, and every removal and read back, still
+        // names the first. A changed dataset.system or key makes another delivery key, so another record, and never this.
         if (state?.ClaimedTargetId is { } claimed && render.TargetId is { } rendered && !string.Equals(claimed, rendered, StringComparison.Ordinal))
         {
             render = render with { Holds = [.. render.Holds, ChangedTargetId(claimed, rendered)] };

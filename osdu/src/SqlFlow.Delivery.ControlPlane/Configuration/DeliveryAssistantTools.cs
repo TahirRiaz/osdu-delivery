@@ -41,7 +41,7 @@ public static class DeliveryAssistantTools
     /// The delivery tools deliberately kept from the assistant, listed rather than merely absent so the omission is a
     /// decision on the record: every one starts work or changes what the ledger or OSDU holds, as SQLFlow's
     /// <c>trigger_run</c> does, and a chat answer never does that. They remain available to a person's own MCP client,
-    /// under that person's <c>operate</c> scope.
+    /// under the <c>operate</c> policy, which every signed-in user passes (only admin checks a scope).
     /// </summary>
     public static IReadOnlyList<string> Excluded { get; } =
     [

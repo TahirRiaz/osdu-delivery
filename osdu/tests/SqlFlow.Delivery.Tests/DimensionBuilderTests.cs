@@ -18,7 +18,7 @@ public class DimensionBuilderTests
     private const string WellLog = "osdu:wks:work-product-component--WellLog:1.4.0";
     private const string CountryName = "data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName";
 
-    /// <summary>The recall estate's Wellbore dimension (Welllog/flows/recall-welllog-05-dimensions.yaml), as the builder holds it.</summary>
+    /// <summary>The well database estate's Wellbore dimension (Welllog/flows/welldb-welllog-05-dimensions.yaml), as the builder holds it.</summary>
     private static DimensionDraft Wellbore() => new()
     {
         Name = "Wellbore",
@@ -43,7 +43,7 @@ public class DimensionBuilderTests
         => Assert.Throws<FlowValidationException>(() => Read(draft)).Message;
 
     [Fact]
-    public void The_recall_wellbore_dimension_is_written_as_its_flow_writes_it()
+    public void The_welldb_wellbore_dimension_is_written_as_its_flow_writes_it()
     {
         var yaml = DimensionBuilder.ToYaml(Wellbore());
 
@@ -94,7 +94,7 @@ public class DimensionBuilderTests
     {
         var draft = Wellbore() with
         {
-            Query = "data.Source:\"Recall\" AND NOT data.Name:\"x, y\"",
+            Query = "data.Source:\"WellDB\" AND NOT data.Name:\"x, y\"",
             KeyColumn = "Wellbore_Id",
             ValueColumn = "WellboreName",
             Clean =
@@ -110,13 +110,13 @@ public class DimensionBuilderTests
         };
 
         var yaml = DimensionBuilder.ToYaml(draft);
-        Assert.Contains("    query: 'data.Source:\"Recall\" AND NOT data.Name:\"x, y\"'\n", yaml, StringComparison.Ordinal);
+        Assert.Contains("    query: 'data.Source:\"WellDB\" AND NOT data.Name:\"x, y\"'\n", yaml, StringComparison.Ordinal);
         Assert.Contains("    columns: { key: Wellbore_Id, value: WellboreName }\n", yaml, StringComparison.Ordinal);
         Assert.Contains("      - replace: { pattern: '\\s*\\(.*\\)$', with: '' }\n", yaml, StringComparison.Ordinal);
         Assert.Contains("    countRecords: true\n    maxValues: 250000\n", yaml, StringComparison.Ordinal);
 
         var spec = Read(draft);
-        Assert.Equal("data.Source:\"Recall\" AND NOT data.Name:\"x, y\"", spec.Query);
+        Assert.Equal("data.Source:\"WellDB\" AND NOT data.Name:\"x, y\"", spec.Query);
         Assert.Equal(("Wellbore_Id", "WellboreName"), (spec.KeyColumn, spec.ValueColumn));
         Assert.Equal(
             [CleanStepKind.Trim, CleanStepKind.CollapseSpaces, CleanStepKind.Replace, CleanStepKind.Replace, CleanStepKind.Upper],

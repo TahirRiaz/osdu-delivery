@@ -19,8 +19,9 @@ public sealed record VerifySummary(int Checked, int Matched, int Drifted, int Mi
 /// <summary>
 /// The drift pass (design.md section 7.6): compares OSDU's current version of each delivered record with the
 /// ledger's <c>targetVersion</c>. A mismatch is either drift to correct or a signal that this system is not the
-/// authority for the record. With <c>reconcile</c> the drifted records are queued for redelivery on the next
-/// submission by clearing their hashes. Every drifted record and the pass itself go through the completion callback.
+/// authority for the record. With <c>reconcile</c> each drifted or missing record is marked for redelivery as a redelivery
+/// marks it (<see cref="ILedger.RecordVerifyAsync"/>), named under the pass's activity, so the flow's next deliver run sends
+/// it again whatever its incremental window reads. Every drifted record and the pass itself go through the completion callback.
 /// </summary>
 public sealed class Verifier
 {
@@ -57,7 +58,13 @@ public sealed class Verifier
     private IReadOnlyDictionary<string, string>? StateFor(RecordState record)
         => _protocol.VerifiesWithTargetState ? JsonMerge.ToValues(record.TargetStateJson) : Protocols.OwnedContent.StateOf(record.TargetStateJson);
 
-    public async Task<VerifySummary> RunAsync(int max, TimeSpan? notVerifiedWithin, bool reconcile, IReadOnlyList<DeliveryKey>? keys = null, CancellationToken ct = default)
+    /// <summary>
+    /// Verifies up to <paramref name="max"/> delivered records (those not verified within <paramref name="notVerifiedWithin"/>,
+    /// or the named <paramref name="keys"/>); with <paramref name="reconcile"/> each one found drifted or missing is marked
+    /// for redelivery and named under <paramref name="activityId"/>, the activity that records the pass, when given.
+    /// </summary>
+    public async Task<VerifySummary> RunAsync(
+        int max, TimeSpan? notVerifiedWithin, bool reconcile, IReadOnlyList<DeliveryKey>? keys = null, long? activityId = null, CancellationToken ct = default)
     {
         var now = _time.GetUtcNow().UtcDateTime;
         var before = notVerifiedWithin is { } window ? now - window : (DateTime?)null;
@@ -190,7 +197,8 @@ public sealed class Verifier
 
             if (result.Outcome != VerifyOutcome.Error)
             {
-                await _ledger.RecordVerifyAsync(_flow.Id, record.DeliveryKey, result.Outcome, result.ObservedVersion, _time.GetUtcNow().UtcDateTime, reconciling, CancellationToken.None).ConfigureAwait(false);
+                await _ledger.RecordVerifyAsync(
+                    _flow.Id, record.DeliveryKey, result.Outcome, result.ObservedVersion, _time.GetUtcNow().UtcDateTime, reconciling, activityId, CancellationToken.None).ConfigureAwait(false);
             }
 
             if (result.Outcome is VerifyOutcome.Drifted or VerifyOutcome.Missing)
@@ -209,7 +217,7 @@ public sealed class Verifier
                     TargetId = record.TargetId,
                     TargetVersion = result.ObservedVersion,
                     Worker = "verify",
-                    Detail = (result.Outcome == VerifyOutcome.Missing ? "missing in OSDU" : result.Detail) + (reconciling ? "; redelivery queued" : string.Empty),
+                    Detail = (result.Outcome == VerifyOutcome.Missing ? "missing in OSDU" : result.Detail) + (reconciling ? "; redelivery requested for the next deliver run" : string.Empty),
                 }, CancellationToken.None).ConfigureAwait(false);
             }
         }

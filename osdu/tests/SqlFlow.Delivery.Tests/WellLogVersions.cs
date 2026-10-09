@@ -126,7 +126,7 @@ internal static class WellLogVersions
     private static string NextMappingDocument()
     {
         var text = File.ReadAllText(Path.Combine(Samples.Mappings, CurrentMapping + ".yaml")).ReplaceLineEndings("\n");
-        text = Replace(text, "# Mapping: Recall well logs into the WellLog 1.4.0 template", "# Mapping: Recall well logs into the WellLog 1.5.0 template", 1);
+        text = Replace(text, "# Mapping: well database logs into the WellLog 1.4.0 template", "# Mapping: well database logs into the WellLog 1.5.0 template", 1);
         text = Replace(text, "\nversion: 1.4.0\n", "\nversion: 1.5.0\n", 1);
         return Replace(text, $"  kind: {CurrentKind}\n  version: {CurrentTemplateVersion}\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
     }

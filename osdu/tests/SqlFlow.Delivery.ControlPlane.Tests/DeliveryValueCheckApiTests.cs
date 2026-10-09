@@ -50,8 +50,8 @@ public sealed class DeliveryValueCheckApiTests
             flowType: delivery
             name: {{flowName}}
             parameters:
-              logSource: { required: true, description: The Recall log source a run reads }
-              project: { default: NORWAY_WELLDB }
+              logSource: { required: true, description: The well database's log source a run reads }
+              project: { default: PROJECT_A }
             source:
               connection: ${env:OSDU_DATA_DB}
               work: ../.work/{logSource}
@@ -64,10 +64,10 @@ public sealed class DeliveryValueCheckApiTests
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
-                record: { object: OsduData.arc.Wellbore, key: [facility_name] }
+                record: { object: OsduData.silver.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduData.arc.WellLog, key: [source_project, log_id], scope: { log_source: logSource } }
+                record: { object: OsduData.silver.WellLog, key: [source_project, log_id], scope: { log_source: logSource } }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
             """;
@@ -115,11 +115,11 @@ public sealed class DeliveryValueCheckApiTests
                 LastSeenUtc = now,
             });
             osdu.DeliveryInterfaces.AddRange(
-                Interface(repoId, flowName, "wellbores", 0, "Wellbore@1.0.0", "OsduData.arc.Wellbore", FlowId.Of(flowName + "/wellbores"), active: true, now),
-                Interface(repoId, flowName, "welllogs", 1, "WellLog@1.4.0", "OsduData.arc.WellLog", logsLedger, active: true, now),
+                Interface(repoId, flowName, "wellbores", 0, "Wellbore@1.0.0", "OsduData.silver.Wellbore", FlowId.Of(flowName + "/wellbores"), active: true, now),
+                Interface(repoId, flowName, "welllogs", 1, "WellLog@1.4.0", "OsduData.silver.WellLog", logsLedger, active: true, now),
                 // A flow the repository no longer declares renders nothing, and one the catalog holds no pipeline of has no rows to read.
-                Interface(repoId, retiredName, "welllogs", 0, "WellLog@1.4.0", "OsduData.arc.WellLog", FlowId.Of(retiredName + "/welllogs"), active: false, now),
-                Interface(repoId, "no-pipeline-" + suffix, string.Empty, 0, "WellLog@1.4.0", "OsduData.arc.WellLog", FlowId.Of("no-pipeline-" + suffix), active: true, now));
+                Interface(repoId, retiredName, "welllogs", 0, "WellLog@1.4.0", "OsduData.silver.WellLog", FlowId.Of(retiredName + "/welllogs"), active: false, now),
+                Interface(repoId, "no-pipeline-" + suffix, string.Empty, 0, "WellLog@1.4.0", "OsduData.silver.WellLog", FlowId.Of("no-pipeline-" + suffix), active: true, now));
             await osdu.SaveChangesAsync();
         }
 
@@ -146,7 +146,7 @@ public sealed class DeliveryValueCheckApiTests
                 Assert.Equal("welllogs", only.GetProperty("interface").GetString());
                 Assert.Equal(JsonValueKind.Null, only.GetProperty("partition").ValueKind);
                 Assert.Equal(logsLedger, only.GetProperty("ledgerFlowId").GetGuid());
-                Assert.Equal("OsduData.arc.WellLog", only.GetProperty("recordObject").GetString());
+                Assert.Equal("OsduData.silver.WellLog", only.GetProperty("recordObject").GetString());
                 Assert.Equal("ddms", only.GetProperty("route").GetString());
             }
 
@@ -169,7 +169,7 @@ public sealed class DeliveryValueCheckApiTests
 
             // A check of named variables, with the scope's values, a row budget and a page of examples.
             var path = $"/api/v1/delivery/flows/{pipelineId:D}/check-values?interface=welllogs";
-            var values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
+            var values = new Dictionary<string, string> { ["logSource"] = "COMPOSITE" };
             var queued = await QueuedAsync(client, token, path, new
             {
                 targets = new[] { " osdu.data.WellboreID ", "osdu.data.Curves[].CurveUnit", "osdu.data.WellboreID" },
@@ -183,7 +183,7 @@ public sealed class DeliveryValueCheckApiTests
             Assert.Equal(flowName, queued.SourceRef);
             Assert.Equal("welllogs", queued.Argument("interface"));
             Assert.Equal(["osdu.data.WellboreID", "osdu.data.Curves[].CurveUnit"], JsonSerializer.Deserialize<string[]>(queued.Argument("targets")!)!);
-            Assert.Equal("STAT_COMP", JsonDocument.Parse(queued.Argument("values")!).RootElement.GetProperty("logSource").GetString());
+            Assert.Equal("COMPOSITE", JsonDocument.Parse(queued.Argument("values")!).RootElement.GetProperty("logSource").GetString());
             Assert.Equal("25000", queued.Argument("maxRows"));
             Assert.Equal("100", queued.Argument("samples"));
             Assert.Equal("200", queued.Argument("skipSamples"));

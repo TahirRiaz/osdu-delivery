@@ -35,7 +35,7 @@ public sealed class DeliverySearchTermApiTests
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     /// <summary>A term of the log's own table, as the sample flow reads it.</summary>
-    private static Guid IdOf(string column) => SearchTermKey.Of("OsduData.arc.WellLog", column).Id;
+    private static Guid IdOf(string column) => SearchTermKey.Of("OsduData.silver.WellLog", column).Id;
 
     [Fact]
     public async Task Terms_are_listed_for_a_kind_refined_by_an_author_and_searched_through_their_route()
@@ -76,7 +76,7 @@ public sealed class DeliverySearchTermApiTests
                     partitions: [{{partition}}]
                     source:
                       connection: ${env:OSDU_DATA_DB}
-                      record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
+                      record: { object: OsduData.silver.WellLog, key: [source_project, log_id] }
                       work: ../.work/search-terms
                     render:
                       mapping: WellLog@1.4.0
@@ -111,7 +111,7 @@ public sealed class DeliverySearchTermApiTests
             Assert.Equal(WellLog, listed.EntityType);
             var wellbore = Assert.Single(listed.Terms, t => t.Id == IdOf("wellbore_uwi"));
             Assert.Equal(("WellLog.wellbore_uwi", $"{WellLog}|osdu.data.WellboreID|Search", "search"), (wellbore.Name, wellbore.Route, wellbore.Routes[0].Kind));
-            Assert.Equal(("OsduData.arc.WellLog", "WellLog", "wellbore_uwi"), (wellbore.Source, wellbore.Table, wellbore.Column));
+            Assert.Equal(("OsduData.silver.WellLog", "WellLog", "wellbore_uwi"), (wellbore.Source, wellbore.Table, wellbore.Column));
             Assert.Empty((await ReadAsync<DeliverySearchTermsDto>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/search-terms?kind=*:*:*:*"))).Terms);
             var types = await ReadAsync<List<DeliverySearchTermTypeDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/search-terms/entity-types"));
             Assert.Contains(types, t => t.EntityType == WellLog && t.Terms > 10);
@@ -128,7 +128,7 @@ public sealed class DeliverySearchTermApiTests
                 Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
             }
 
-            var renamed = await ReadAsync<SearchTermView>(await SendAsync(client, author, HttpMethod.Put, $"/api/v1/delivery/search-terms/{IdOf("wellbore_uwi")}", new { name = "Wellbore name", note = "The UWI Recall files the log under." }));
+            var renamed = await ReadAsync<SearchTermView>(await SendAsync(client, author, HttpMethod.Put, $"/api/v1/delivery/search-terms/{IdOf("wellbore_uwi")}", new { name = "Wellbore name", note = "The UWI the well database files the log under." }));
             Assert.Equal(("Wellbore name", true), (renamed.Name, renamed.Renamed));
             using (var taken = await SendAsync(client, author, HttpMethod.Put, $"/api/v1/delivery/search-terms/{IdOf("log_run")}", new { name = "wellbore NAME" }))
             {
@@ -142,7 +142,7 @@ public sealed class DeliverySearchTermApiTests
                 kind = "*:*:work-product-component--WellLog:*",
                 filters = new object[]
                 {
-                    new { term = IdOf("wellbore_uwi"), condition = "is", value = "NO 34/10-A-30" },
+                    new { term = IdOf("wellbore_uwi"), condition = "is", value = "WB D/4-A-30" },
                     new { term = IdOf("index_type"), condition = "anyOf", values = new[] { "DEPTH" } },
                 },
             });

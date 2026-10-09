@@ -1,4 +1,5 @@
 import { DELIVERY_FLOW } from "./global-setup";
+import { stageWellLogRecords } from "./delivery-cli";
 import { expect, test } from "./helpers";
 
 // The pipeline catalog for a delivery flow: the module's Delivery tab and the platform's own read-only tabs beside
@@ -49,12 +50,18 @@ test.describe.serial("pipelines", () => {
   });
 
   test("records are redelivered from the Records tab through one dialog, which asks first what bringing them up to date sends", async ({ adminPage }) => {
+    // The flow's records are what the dialog acts on, and the earlier specs only plan, which stages none: the spec stages
+    // them itself (an intake renders and stages every record of the scope, and sends nothing), so it holds on a first
+    // run of the flow as on any later one.
+    test.setTimeout(600_000);
+    expect(stageWellLogRecords()).toContain("record(s)");
+
     await adminPage.getByTestId("nav-pipelines").click();
     await adminPage.getByTestId("filter-name").fill(DELIVERY_FLOW);
     await adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
-    // The overview offers it for every delivered record; the earlier specs only planned this flow's records.
+    // The overview offers it for every delivered record.
     await expect(adminPage.getByTestId("delivery-redeliver-all")).toBeVisible({ timeout: 30_000 });
 
     // A ticked record: the dialog opens over the Records tab and names it.

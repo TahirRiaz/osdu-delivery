@@ -236,7 +236,7 @@ export function recordNameOf(record: Record<string, unknown> | null | undefined)
 
 /**
  * Whether the unique part of an id was minted by a machine, a hash of 32 hex digits or a GUID, and so names nothing a
- * reader knows. A wellbore's `NO-33-9-C-28-B` or a reference value's `Equinor:NPHI` reads as a name; `5596f42c...`
+ * reader knows. A wellbore's `WB-0002` or a reference value's `Local:NPHI` reads as a name; `5596f42c...`
  * does not.
  */
 export function isMintedUnique(unique: string): boolean {

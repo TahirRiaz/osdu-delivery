@@ -351,7 +351,7 @@ public sealed partial class DdmsCatalogTests
     [InlineData("surveys//north", false)]
     [InlineData("/surveys", false)]
     [InlineData("surveys/", false)]
-    [InlineData("north sea", false)]
+    [InlineData("area a", false)]
     [InlineData("", false)]
     public void A_seismic_folder_is_segments_of_the_characters_a_dataset_path_takes(string folder, bool valid)
         => Assert.Equal(valid, DdmsCatalog.IsSeismicFolder(folder));

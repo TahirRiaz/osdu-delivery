@@ -172,7 +172,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
                     data-testid="preview-key"
                   />
                 </div>
-                <Button type="submit" size="sm" className="h-9" disabled={blocked} title={canOperate ? undefined : "A preview reads the flow's tables and renders with its credentials, which takes the operate scope."} data-testid="preview-run">
+                <Button type="submit" size="sm" className="h-9" disabled={blocked} title={canOperate ? undefined : "A preview reads the flow's tables and renders with its credentials, which takes a signed-in session."} data-testid="preview-run">
                   {running ? <Loader2 className="animate-spin" /> : <Eye />}
                   Preview
                 </Button>

@@ -227,8 +227,8 @@ public sealed class RunTraceTests
     [Fact]
     public void A_record_reads_as_its_source_key_and_label()
     {
-        Assert.Equal("recall:NORWAY_WELLDB/1/1 [NO 15/9-19 A / STAT_COMP]", RunTrace.Record("recall:NORWAY_WELLDB/1/1", "NO 15/9-19 A / STAT_COMP", Key(1)));
-        Assert.Equal("recall:NORWAY_WELLDB/1/1", RunTrace.Record("recall:NORWAY_WELLDB/1/1", null, Key(1)));
+        Assert.Equal("welldb:PROJECT_A/1/1 [Wellbore A/1-19 A / COMPOSITE]", RunTrace.Record("welldb:PROJECT_A/1/1", "Wellbore A/1-19 A / COMPOSITE", Key(1)));
+        Assert.Equal("welldb:PROJECT_A/1/1", RunTrace.Record("welldb:PROJECT_A/1/1", null, Key(1)));
         Assert.Equal(Key(1).ToString(), RunTrace.Record(null, null, Key(1)));
     }
 
@@ -326,7 +326,7 @@ public sealed class RunTraceTests
 [Collection(SqlServerSuite.Name)]
 public sealed class RunTraceDeliveryTests : IDisposable
 {
-    private const string WellLogTable = "OsduData.arc.WellLog";
+    private const string WellLogTable = "OsduData.silver.WellLog";
     private const string Root = "/api/os-wellbore-ddms";
 
     private readonly OsduTestDatabase _db = new();
@@ -477,9 +477,9 @@ public sealed class RunTraceDeliveryTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
-                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
-                legalTag: dev-equinor-osdu-reference-default
+                aclOwner: data.welldb.owners@dev.dataservices.energy
+                aclViewer: data.welldb.viewers@dev.dataservices.energy
+                legalTag: dev-osdu-default-legal
             target:
               endpoint: http://localhost
               headers:
@@ -495,7 +495,7 @@ public sealed class RunTraceDeliveryTests : IDisposable
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.silver.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellLog@1.4.0
             """).ReplaceLineEndings("\n");

@@ -295,7 +295,7 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
         var removed = await DeliveredAsync("a", Guid.NewGuid());
         var delivered = await DeliveredAsync("b", Guid.NewGuid());
         await Ledger.MarkRemovedAsync(_flow, [removed], RemovalScope.Record, "gui:tahir", Now);
-        foreach (var scope in new[] { "", "scope=STAT_COMP" })
+        foreach (var scope in new[] { "", "scope=COMPOSITE" })
         {
             await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, scope, Now, Guid.NewGuid(), Now, "rules"));
         }
@@ -306,7 +306,7 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
         Assert.Null(await Ledger.GetRecordAsync(_flow, removed));
         Assert.Equal(RecordStatus.Delivered, (await Ledger.GetRecordAsync(_flow, delivered))!.Status);
         Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, ""));
-        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, "scope=STAT_COMP"));
+        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, "scope=COMPOSITE"));
     }
 
     [Fact]

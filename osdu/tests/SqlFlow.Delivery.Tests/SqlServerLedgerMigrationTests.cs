@@ -81,7 +81,7 @@ public sealed class SqlServerLedgerMigrationTests
 
     private static readonly DateTime Now = new(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
 
-    private static readonly Guid Logs = FlowId.Of("recall-welllog-03-header-delivery");
+    private static readonly Guid Logs = FlowId.Of("welldb-welllog-03-header-delivery");
 
     private static readonly Guid Wellbores = FlowId.Of("wells-wellbore-03-header-delivery");
 
@@ -113,13 +113,13 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[Submission] ([SubmissionId], [FlowId], [FlowName], [MappingReference], [RenderContext], [ParametersJson], [RecordCount],
                 [BatchCount], [Slices], [Status], [ReceivedUtc], [Planned], [SkippedUnchanged], [AwaitingApproval], [SkippedStale], [UnchangedAtPush],
                 [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
-            VALUES (@submission, @logs, N'recall-welllog-03-header-delivery', N'WellLog@1.4.0', N'{}', N'{}', 3, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 1, 1, 0, 0,
-                N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog');
+            VALUES (@submission, @logs, N'welldb-welllog-03-header-delivery', N'WellLog@1.4.0', N'{}', N'{}', 3, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 1, 1, 0, 0,
+                N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.silver.WellLog');
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [LastDeliveredUtc], [PendingDocumentRef], [LastSubmissionId])
             VALUES
-                (@delivered, @logs, N'wells:NO_15_9/L-1001', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:work-product-component--WellLog:a', @now, NULL, @submission),
-                (@queued, @logs, N'wells:NO_15_9/L-1002', N'WellLog', N'pending', 0, 1, 0, 0, @now, @now, N'dev:work-product-component--WellLog:b', NULL, N'0:0:10', @submission),
+                (@delivered, @logs, N'wells:AREA_A_1/L-1001', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:work-product-component--WellLog:a', @now, NULL, @submission),
+                (@queued, @logs, N'wells:AREA_A_1/L-1002', N'WellLog', N'pending', 0, 1, 0, 0, @now, @now, N'dev:work-product-component--WellLog:b', NULL, N'0:0:10', @submission),
                 (@held, @wellbores, N'wells:WB-A', N'Wellbore', N'held', 0, 0, 0, 1, @now, @now, N'dev:master-data--Wellbore:c', NULL, NULL, NULL);
             INSERT INTO [osdu].[Attempt] ([DeliveryKey], [SubmissionId], [Worker], [StartedUtc], [CompletedUtc], [Outcome], [Phase])
             VALUES
@@ -127,7 +127,7 @@ public sealed class SqlServerLedgerMigrationTests
                 (@held, NULL, N'intake', @now, @now, N'held', N'render'),
                 (@unrecorded, @submission, N'w', @now, @now, N'failed', N'none');
             INSERT INTO [osdu].[Activity] ([FlowId], [FlowName], [Kind], [Actor], [StartedUtc], [Outcome], [DeliveryKey])
-            VALUES (@logs, N'recall-welllog-03-header-delivery', N'release', N'user:tahir', @now, N'completed', @delivered);
+            VALUES (@logs, N'welldb-welllog-03-header-delivery', N'release', N'user:tahir', @now, N'completed', @delivered);
             INSERT INTO [osdu].[UpdateTag] ([Kind], [Scope], [TypeName], [ItemId], [Path], [Change], [ToVersion], [Mode], [Status], [SetIds],
                 [AffectedRecords], [Processed], [DetectedUtc], [Cursor])
             VALUES (N'cache', N'dev', N'Wellbore', N'dev:master-data--Wellbore:x', N'Name', N'changed', N'v2', N'auto', N'rolling', N'1', 3, 1, @now, @held);
@@ -166,7 +166,7 @@ public sealed class SqlServerLedgerMigrationTests
         var third = FlowId.Of("wells-welllog-copy");
         await ledger.RegisterAsync(third);
         var conflict = Assert.Single((await ledger.UpsertPendingAsync(third, [Pending(third, delivered, "dev:work-product-component--WellLog:a")])).Conflicts);
-        Assert.Equal((Logs, "recall-welllog-03-header-delivery"), (conflict.OwnerFlowId, conflict.OwnerFlowName));
+        Assert.Equal((Logs, "welldb-welllog-03-header-delivery"), (conflict.OwnerFlowId, conflict.OwnerFlowName));
         Assert.Equal(2, (await ledger.LookupAsync(delivered.ToString(), 10)).Count);
 
         // Back down is refused while two flows hold records of one key, because the earlier ledger keeps one per key. The
@@ -214,7 +214,7 @@ public sealed class SqlServerLedgerMigrationTests
             """
             INSERT INTO [osdu].[CacheDefinition] ([Id], [RepoId], [FlowName], [Scope], [Endpoint], [RelativePath], [Name], [EntityType], [Kind], [Query],
                 [FieldsJson], [OnChange], [FirstSeenUtc], [LastSeenUtc])
-            VALUES (@id, @logs, N'recall-osdu-00-reference-cache', N'dev', N'${env:OSDU_URL}', N'cache/wells.yaml', N'UnitOfMeasure',
+            VALUES (@id, @logs, N'welldb-osdu-00-reference-cache', N'dev', N'${env:OSDU_URL}', N'cache/wells.yaml', N'UnitOfMeasure',
                 N'reference-data--UnitOfMeasure', N'osdu:wks:reference-data--UnitOfMeasure:*', N'*', N'[]', N'auto', @now, @now);
             """,
             ("id", id));
@@ -451,9 +451,9 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[Interface] ([Id], [RepoId], [FlowName], [Interface], [Partition], [Ordinal], [LedgerFlowId], [LedgerName], [Route],
                 [MappingReference], [Kind], [RecordObject], [AfterJson], [RelativePath], [Active], [FirstSeenUtc], [LastSeenUtc])
             VALUES
-                (NEWID(), NEWID(), N'wells', N'welllogs', N'test', 0, @logs, N'wells/welllogs@test', N'storage', N'WellLog@1.4.0', N'', N'OsduData.arc.WellLog',
+                (NEWID(), NEWID(), N'wells', N'welllogs', N'test', 0, @logs, N'wells/welllogs@test', N'storage', N'WellLog@1.4.0', N'', N'OsduData.silver.WellLog',
                     N'[]', N'flows/wells.yaml', 1, @now, @now),
-                (NEWID(), NEWID(), N'wellbores', N'', N'', 0, @wellbores, N'wellbores', N'storage', N'Wellbore@1.0.0', N'', N'OsduData.arc.Wellbore',
+                (NEWID(), NEWID(), N'wellbores', N'', N'', 0, @wellbores, N'wellbores', N'storage', N'Wellbore@1.0.0', N'', N'OsduData.silver.Wellbore',
                     N'[]', N'flows/wellbores.yaml', 1, @now, @now);
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [ClaimedTargetId], [LastSubmissionId])
@@ -467,7 +467,7 @@ public sealed class SqlServerLedgerMigrationTests
                 [BatchCount], [Slices], [Status], [ReceivedUtc], [Planned], [SkippedUnchanged], [AwaitingApproval], [SkippedStale], [UnchangedAtPush],
                 [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
             VALUES (@submission, @logs, N'wells/welllogs@test', N'WellLog@1.4.0', N'{}', N'{}', 2, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0,
-                N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog');
+                N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.silver.WellLog');
             INSERT INTO [osdu].[Attempt] ([DeliveryKey], [FlowId], [SubmissionId], [Worker], [StartedUtc], [CompletedUtc], [Outcome], [Phase])
             VALUES (@logA, @logs, @submission, N'w', @now, @now, N'delivered', N'metadata'), (@wellbore, @wellbores, NULL, N'w', @now, @now, N'delivered', N'metadata');
             INSERT INTO [osdu].[Activity] ([FlowId], [FlowName], [Kind], [Actor], [StartedUtc], [Outcome], [DeliveryKey])
@@ -554,11 +554,11 @@ public sealed class SqlServerLedgerMigrationTests
                 [UnchangedAtPush], [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
             VALUES
                 (1, @quiet, @logs, N'logs', N'WellLog@1.4.0', N'{}', N'{}', 5, 0, 0, N'completed', @now, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0,
-                    N'full', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog'),
+                    N'full', N'${env:OSDU_DATA_DB}', N'OsduData.silver.WellLog'),
                 (1, @busy, @logs, N'logs', N'WellLog@1.4.0', N'{}', N'{}', 2, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0,
-                    N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog'),
+                    N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.silver.WellLog'),
                 (1, @resent, @logs, N'logs', N'WellLog@1.4.0', N'{}', N'{}', 0, 0, 0, N'completed', @now, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog');
+                    N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.silver.WellLog');
             INSERT INTO [osdu].[Attempt] ([PartitionId], [DeliveryKey], [FlowId], [SubmissionId], [RunId], [Worker], [StartedUtc], [CompletedUtc], [Outcome], [Phase])
             VALUES (1, NEWID(), @logs, @busy, @resentRun, N'w', @now, @now, N'delivered', N'metadata');
             INSERT INTO [osdu].[Activity] ([PartitionId], [FlowId], [FlowName], [Kind], [Actor], [StartedUtc], [Outcome], [SubmissionId], [RunId], [Summary])
@@ -663,12 +663,12 @@ public sealed class SqlServerLedgerMigrationTests
             VALUES (@p, NEWID(), N'wells', N'Wellbore', N'osdu:wks:work-product-component--WellLog:1.4.0', N'data.WellboreID', 0, N'[]', N'["data.FacilityName"]', N'0123456789abcdef', 1, 1, SYSUTCDATETIME());
             DECLARE @d int = SCOPE_IDENTITY();
             INSERT INTO [osdu].[DimensionValue] ([PartitionId], [DimensionId], [Original], [OriginalHash], [Label], [Count], [Filterable], [FirstSeenRunId], [FirstSeenUtc], [MemberSinceRunId])
-            VALUES (@p, @d, N'dev:master-data--Wellbore:1:', HASHBYTES('SHA2_256', CAST(N'x' AS varbinary(max))), N'NO 15/9-A', 4, 1, 1, SYSUTCDATETIME(), 1);
+            VALUES (@p, @d, N'dev:master-data--Wellbore:1:', HASHBYTES('SHA2_256', CAST(N'x' AS varbinary(max))), N'WB A/1-A', 4, 1, 1, SYSUTCDATETIME(), 1);
             """);
 
         await database.MigrateAsync(null);
 
-        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionValue] WHERE [Label] = N'NO 15/9-A' AND [Count] = 4;"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionValue] WHERE [Label] = N'WB A/1-A' AND [Count] = 4;"));
         Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Dimension] WHERE [AttributesJson] IS NULL;"));
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute];"));
         Assert.Equal("PartitionId", (await database.PrimaryKeyAsync("DimensionAttribute"))[0]);
@@ -701,18 +701,18 @@ public sealed class SqlServerLedgerMigrationTests
             INSERT INTO [osdu].[DimensionValue] ([PartitionId], [DimensionId], [Original], [OriginalHash], [Count], [Filterable], [FirstSeenRunId], [FirstSeenUtc], [MemberSinceRunId])
             VALUES (@p, @d, N'dev:master-data--Wellbore:1:', HASHBYTES('SHA2_256', CAST(N'x' AS varbinary(max))), 4, 1, 1, SYSUTCDATETIME(), 1);
             INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom])
-            VALUES (@p, @d, SCOPE_IDENTITY(), N'Country', N'Norway', N'dev:master-data--GeoPoliticalEntity:NO');
+            VALUES (@p, @d, SCOPE_IDENTITY(), N'Country', N'United States', N'dev:master-data--GeoPoliticalEntity:US');
             """);
 
         await database.MigrateAsync(BeforeCollectedTexts);
 
         // The value kept, read from a record rather than collected; the key now names the value as well.
-        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Value] = N'Norway' AND [Records] IS NULL;"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Value] = N'United States' AND [Records] IS NULL;"));
         Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Dimension] WHERE [CollectedJson] IS NULL;"));
         Assert.Equal(["PartitionId", "DimensionId", "ValueId", "Name", "Value"], await database.PrimaryKeyAsync("DimensionAttribute"));
         await database.ExecuteAsync("""
             INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
-            SELECT [PartitionId], [DimensionId], [ValueId], N'Source', N'RECALL', N'RECALL', 3 FROM [osdu].[DimensionAttribute];
+            SELECT [PartitionId], [DimensionId], [ValueId], N'Source', N'WELLDB', N'WELLDB', 3 FROM [osdu].[DimensionAttribute];
             INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
             SELECT [PartitionId], [DimensionId], [ValueId], N'Source', N'PETREL', N'PETREL', 1 FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country';
             """);
@@ -726,7 +726,7 @@ public sealed class SqlServerLedgerMigrationTests
 
         // Back down, a key holds one value per attribute again: the collected values go, the value read stays.
         await database.MigrateAsync(BeforeCollectedAttributes);
-        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country' AND [Value] = N'Norway';"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country' AND [Value] = N'United States';"));
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Source';"));
         Assert.Equal(["PartitionId", "DimensionId", "ValueId", "Name"], await database.PrimaryKeyAsync("DimensionAttribute"));
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Dimension]') AND [name] = N'CollectedJson';"));
@@ -742,7 +742,7 @@ public sealed class SqlServerLedgerMigrationTests
             DECLARE @p smallint = (SELECT [PartitionId] FROM [osdu].[LedgerPartition] WHERE [Name] = N'dev');
             INSERT INTO [osdu].[Dimension] ([PartitionId], [FlowId], [FlowName], [Name], [Kind], [Path], [Repeats], [CleanJson], [AttributesJson], [CollectedJson], [DefinitionHash], [Members], [Originals], [CreatedUtc])
             VALUES (@p, NEWID(), N'wells', N'Wellbore', N'osdu:wks:work-product-component--WellLog:1.4.0', N'data.WellboreID', 0, N'[]', N'[{"name":"Source","collect":"data.Source"}]',
-                N'[{"name":"Source","path":"data.Source","field":{"index":"text","aggregateBy":"data.Source.keyword","repeats":false},"values":[{"value":"RECALL","texts":["RECALL"],"records":3}]}]',
+                N'[{"name":"Source","path":"data.Source","field":{"index":"text","aggregateBy":"data.Source.keyword","repeats":false},"values":[{"value":"WELLDB","texts":["WELLDB"],"records":3}]}]',
                 N'0123456789abcdef', 1, 1, SYSUTCDATETIME());
             """);
 
@@ -780,10 +780,10 @@ public sealed class SqlServerLedgerMigrationTests
             VALUES (@p, @d, N'dev:master-data--Wellbore:1:', HASHBYTES('SHA2_256', CAST(N'x' AS varbinary(max))), 4, 1, 1, SYSUTCDATETIME(), 1);
             DECLARE @k bigint = SCOPE_IDENTITY();
             INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
-            VALUES (@p, @d, @k, N'Country', N'Norway', N'dev:master-data--GeoPoliticalEntity:NO', NULL),
-                   (@p, @d, @k, N'Source', N'RECALL', N'RECALL', 3), (@p, @d, @k, N'Source', N'PETREL', N'PETREL', 1);
+            VALUES (@p, @d, @k, N'Country', N'United States', N'dev:master-data--GeoPoliticalEntity:US', NULL),
+                   (@p, @d, @k, N'Source', N'WELLDB', N'WELLDB', 3), (@p, @d, @k, N'Source', N'PETREL', N'PETREL', 1);
             INSERT INTO [osdu].[DimensionCollectedText] ([PartitionId], [DimensionId], [Name], [TextHash], [Text], [Value], [Records])
-            VALUES (@p, @d, N'Source', HASHBYTES('SHA2_256', CAST(N'RECALL' AS varbinary(max))), N'RECALL', N'RECALL', 3),
+            VALUES (@p, @d, N'Source', HASHBYTES('SHA2_256', CAST(N'WELLDB' AS varbinary(max))), N'WELLDB', N'WELLDB', 3),
                    (@p, @d, N'Source', HASHBYTES('SHA2_256', CAST(N'PETREL' AS varbinary(max))), N'PETREL', N'PETREL', 1);
             """);
 
@@ -797,8 +797,8 @@ public sealed class SqlServerLedgerMigrationTests
         const string Kept = """
             SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] AS a
             INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = a.[PartitionId] AND n.[AttributeId] = a.[AttributeId]
-            WHERE n.[Name] = N'Country' AND a.[Value] = N'Norway' AND a.[Records] IS NULL
-               OR n.[Name] = N'Source' AND a.[Value] = N'RECALL' AND a.[Records] = 3
+            WHERE n.[Name] = N'Country' AND a.[Value] = N'United States' AND a.[Records] IS NULL
+               OR n.[Name] = N'Source' AND a.[Value] = N'WELLDB' AND a.[Records] = 3
                OR n.[Name] = N'Source' AND a.[Value] = N'PETREL' AND a.[Records] = 1;
             """;
         Assert.Equal(3L, await database.ScalarAsync(Kept));
@@ -828,7 +828,7 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(BeforeDimensionTables);
         const string Made = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name IN (N'dim_Wellbore', N'DimensionAttributeName');";
         Assert.Equal(0L, await database.ScalarAsync(Made));
-        Assert.Equal(3L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country' AND [Value] = N'Norway' OR [Name] = N'Source' AND [Value] IN (N'RECALL', N'PETREL');"));
+        Assert.Equal(3L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country' AND [Value] = N'United States' OR [Name] = N'Source' AND [Value] IN (N'WELLDB', N'PETREL');"));
         Assert.Equal(2L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionCollectedText] WHERE [Name] = N'Source';"));
         Assert.Equal(["PartitionId", "DimensionId", "ValueId", "Name", "Value"], await database.PrimaryKeyAsync("DimensionAttribute"));
         Assert.Equal(["PartitionId", "DimensionId", "Name", "TextHash"], await database.PrimaryKeyAsync("DimensionCollectedText"));
@@ -855,7 +855,7 @@ public sealed class SqlServerLedgerMigrationTests
                 [id] bigint IDENTITY(1, 1) NOT NULL PRIMARY KEY, [partition] nvarchar(256) NOT NULL, [key_id] bigint NOT NULL, [key] nvarchar(1024) NOT NULL,
                 [value] nvarchar(256) NOT NULL, [records] bigint NOT NULL, [filter] nvarchar(4000) NULL);
             """);
-        await database.ExecuteAsync("INSERT INTO [osdu].[dim_Wellbore] ([partition], [key_id], [key], [value], [records]) VALUES (N'dev', 1, N'dev:master-data--Wellbore:1:', N'15/9-F-1', 4);");
+        await database.ExecuteAsync("INSERT INTO [osdu].[dim_Wellbore] ([partition], [key_id], [key], [value], [records]) VALUES (N'dev', 1, N'dev:master-data--Wellbore:1:', N'A/1-F-1', 4);");
 
         // A table a build has made holds its key and its value under those two names, which is what its row records; a
         // dimension with no table records none until one is made.
@@ -871,7 +871,7 @@ public sealed class SqlServerLedgerMigrationTests
             UPDATE [osdu].[Dimension] SET [KeyColumn] = N'WellboreID', [ValueColumn] = N'FacilityName' WHERE [TableName] = N'dim_Wellbore';
             """);
         await database.MigrateAsync(BeforeDimensionColumnNames);
-        const string Row = "SELECT COUNT_BIG(*) FROM [osdu].[dim_Wellbore] WHERE [id] = 1 AND [key] = N'dev:master-data--Wellbore:1:' AND [value] = N'15/9-F-1';";
+        const string Row = "SELECT COUNT_BIG(*) FROM [osdu].[dim_Wellbore] WHERE [id] = 1 AND [key] = N'dev:master-data--Wellbore:1:' AND [value] = N'A/1-F-1';";
         Assert.Equal(1L, await database.ScalarAsync(Row));
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Dimension]') AND [name] IN (N'KeyColumn', N'ValueColumn');"));
 
@@ -909,7 +909,7 @@ public sealed class SqlServerLedgerMigrationTests
         // A source of a ledger has one reversal: asking again resumes it, and the database refuses a second one.
         const string Open = """
             INSERT INTO [osdu].[Reversal] ([PartitionId], [FlowId], [FlowName], [SourceKind], [SourceId], [SubmissionsJson], [Status], [RequestedBy], [RequestedUtc])
-            VALUES (1, @logs, N'recall-welllog-03-header-delivery', N'run', @run, N'[]', N'capturing', N'user:alice', @now);
+            VALUES (1, @logs, N'welldb-welllog-03-header-delivery', N'run', @run, N'[]', N'capturing', N'user:alice', @now);
             """;
         var run = Guid.NewGuid();
         await database.ExecuteAsync(Open, ("run", run));
@@ -1009,7 +1009,7 @@ public sealed class SqlServerLedgerMigrationTests
         // A repository gives a term once per entity type: a second row of the same term and type in the same repository is refused.
         const string Insert = """
             INSERT INTO [osdu].[SearchTerm] ([Id], [RepoId], [TermId], [TermKey], [Source], [EntityType], [Column], [RoutesJson], [FlowsJson], [FirstSeenUtc], [LastSeenUtc])
-            VALUES (NEWID(), @repo, @term, N'osdudata.arc.welllog/log_run', N'OsduData.arc.WellLog', N'work-product-component--WellLog', N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
+            VALUES (NEWID(), @repo, @term, N'osdudata.silver.welllog/log_run', N'OsduData.silver.WellLog', N'work-product-component--WellLog', N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
             """;
         var repo = Guid.NewGuid();
         var term = Guid.NewGuid();
@@ -1030,9 +1030,9 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(BeforeSearchTermSources);
         await database.ExecuteAsync("""
             INSERT INTO [osdu].[SearchTerm] ([Id], [RepoId], [TermId], [TermKey], [System], [EntityType], [Dataset], [Column], [RoutesJson], [FlowsJson], [FirstSeenUtc], [LastSeenUtc])
-            VALUES (NEWID(), NEWID(), NEWID(), N'recall/work-product-component--WellLog//log_run', N'recall', N'work-product-component--WellLog', NULL, N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
+            VALUES (NEWID(), NEWID(), NEWID(), N'welldb/work-product-component--WellLog//log_run', N'welldb', N'work-product-component--WellLog', NULL, N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
             INSERT INTO [osdu].[SearchTermRefinement] ([TermId], [TermKey], [EntityType], [Name], [Excluded], [UpdatedBy], [UpdatedUtc])
-            VALUES (NEWID(), N'recall/work-product-component--WellLog//log_run', N'work-product-component--WellLog', N'Run', 0, N'tester', SYSUTCDATETIME());
+            VALUES (NEWID(), N'welldb/work-product-component--WellLog//log_run', N'work-product-component--WellLog', N'Run', 0, N'tester', SYSUTCDATETIME());
             """);
 
         await database.MigrateAsync(null);
@@ -1087,7 +1087,7 @@ public sealed class SqlServerLedgerMigrationTests
     {
         DeliveryKey = new DeliveryKey(key),
         FlowId = flow,
-        SourceKey = "wells:NO_15_9/L-1001",
+        SourceKey = "wells:AREA_A_1/L-1001",
         MappingName = "Wellbore",
         TargetId = targetId,
         LastSubmissionId = Guid.NewGuid(),

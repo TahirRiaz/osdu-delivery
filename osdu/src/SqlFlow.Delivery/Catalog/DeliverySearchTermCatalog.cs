@@ -163,7 +163,7 @@ public static class DeliverySearchTermCatalog
 
     /// <summary>
     /// Moves what people made of terms while a term was keyed by its mapping's source system, its entity type and its dataset
-    /// (<c>recall/work-product-component--WellLog/curves/curve_unit</c>) to the term that column now is: the one of
+    /// (<c>welldb/work-product-component--WellLog/curves/curve_unit</c>) to the term that column now is: the one of
     /// <paramref name="terms"/> in that entity type, read under that system and dataset. The newest of several made for one
     /// term is moved; the others, like any no term matches, stay as they are and are listed as no longer found, to be removed.
     /// A route picked is moved with it where the term still has it.

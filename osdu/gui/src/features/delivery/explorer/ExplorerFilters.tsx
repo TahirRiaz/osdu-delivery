@@ -47,7 +47,7 @@ export function ExplorerAddFilter({ partition, request, onAdd }: {
 }
 
 /**
- * The conditions the records are narrowed to, one chip each, read as a sentence (`WellboreName starts with NO 34/10`): a
+ * The conditions the records are narrowed to, one chip each, read as a sentence (`WellboreName starts with Wellbore A`): a
  * click opens the editor to change it, the cross drops it, and Clear all drops them all. Every condition holds, together
  * with the search typed. A condition on a source column (a search term) says the column's name, marked as one, with its
  * system and the property it is searched in on hover; one whose column is no longer searched says so.

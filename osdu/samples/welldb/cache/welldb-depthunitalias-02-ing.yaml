@@ -1,0 +1,30 @@
+# Ingestion: the typed depth unit spelling view into the keyed table the lookups cache flow reads.
+#
+# One row per spelling, captured whole by welldb-lookups-00-cache into the partition's cache as DepthUnitAlias.
+flowType: ing
+name: welldb-depthunitalias-02-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_DepthUnitAlias
+
+target:
+  server: osduData
+  object: OsduData.silver.DepthUnitAlias
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_unit]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-cache

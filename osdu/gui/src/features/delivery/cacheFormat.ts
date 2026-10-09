@@ -131,7 +131,7 @@ const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/g;
 
 /**
  * A cached value cut into the runs a cell draws. The value is never changed: an id minted from a code keeps its escapes
- * (EQ-Bad%20Hole%20Flag), and a value copied from the cell must be the value a mapping reads. The escapes are marked so
+ * (Local-Bad%20Hole%20Flag), and a value copied from the cell must be the value a mapping reads. The escapes are marked so
  * the cell can step them back, and the stretches the search matched are marked so a row says why the search found it.
  */
 export function valueSegments(text: string, search: string): ValueSegment[] {

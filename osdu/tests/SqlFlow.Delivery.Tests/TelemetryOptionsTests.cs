@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using OpenTelemetry.Metrics;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Telemetry;
@@ -21,9 +22,11 @@ public sealed class TelemetryOptionsTests
         Assert.Equal(TelemetryExporter.None, options.Exporter);
         Assert.False(options.Enabled);
 
-        // The meters still publish: an in-process listener reads them whatever this says.
-        Assert.Null(DeliveryTelemetry.BuildMeterProvider(options, secrets: null));
-        Assert.Empty(new ServiceCollection().AddNodeMetricsExport(options));
+        // The meters still publish: an in-process listener reads them whatever this says. Nothing builds a meter provider,
+        // and the one hosted service registered only says, as the host starts, that the metrics go nowhere.
+        using var provider = Host(options, secrets: null);
+        Assert.Null(provider.GetService<MeterProvider>());
+        Assert.Single(provider.GetServices<IHostedService>());
     }
 
     [Theory]
@@ -33,9 +36,21 @@ public sealed class TelemetryOptionsTests
     {
         var options = new TelemetryOptions { Exporter = exporter, ExportSeconds = 5, OtlpEndpoint = "http://127.0.0.1:4317" };
 
-        using var provider = DeliveryTelemetry.BuildMeterProvider(options, secrets: null);
+        using var provider = Host(options, secrets: null);
 
-        Assert.NotNull(provider);
+        Assert.NotNull(provider.GetService<MeterProvider>());
+    }
+
+    /// <summary>The services a host builds with the export registered, as the control plane and a node register it.</summary>
+    private static ServiceProvider Host(TelemetryOptions options, ISecretResolver? secrets)
+    {
+        var services = new ServiceCollection();
+        if (secrets is not null)
+        {
+            services.AddSingleton(secrets);
+        }
+
+        return services.AddDeliveryMetricsExport(options).BuildServiceProvider();
     }
 
     [Fact]
@@ -112,11 +127,14 @@ public sealed class TelemetryOptionsTests
         options.Validate();
 
         // With no resolver the exporter is refused rather than built against the reference text itself.
-        var refused = Assert.Throws<InvalidOperationException>(() => DeliveryTelemetry.BuildMeterProvider(options, secrets: null));
-        Assert.Contains("secret reference", refused.Message, StringComparison.Ordinal);
+        using (var unresolved = Host(options, secrets: null))
+        {
+            var refused = Assert.Throws<InvalidOperationException>(() => unresolved.GetService<MeterProvider>());
+            Assert.Contains("secret reference", refused.Message, StringComparison.Ordinal);
+        }
 
-        using var built = DeliveryTelemetry.BuildMeterProvider(options, new FakeSecrets("InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"));
-        Assert.NotNull(built);
+        using var resolved = Host(options, new FakeSecrets("InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"));
+        Assert.NotNull(resolved.GetService<MeterProvider>());
     }
 
     /// <summary>A resolver that answers every reference with one value, as a host's own would answer from its vault.</summary>

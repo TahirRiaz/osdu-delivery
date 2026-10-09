@@ -674,7 +674,7 @@ public sealed record ConformsAssertion : TestAssertion
     public override string Expected => "every record meets the template of its kind";
 }
 
-/// <summary>The search indexed every record the test matches cleanly: no record carries an index status other than 200.</summary>
+/// <summary>The search indexed every record the test matches cleanly: no record carries an index status above 200 (<c>index.statusCode:[201 TO *]</c>).</summary>
 public sealed record IndexedAssertion : TestAssertion
 {
     public override string Type => "indexed";

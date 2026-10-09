@@ -103,8 +103,8 @@ public class UrlGuardTests
     [Fact]
     public void Allowlist_matches_exact_and_wildcard_hosts()
     {
-        var guard = new UrlGuard(["*.equinor.com", "api.example.org"]);
-        guard.Check(new Uri("https://api-dev.gateway.equinor.com/petrodb"));
+        var guard = new UrlGuard(["*.example.com", "api.example.org"]);
+        guard.Check(new Uri("https://api-dev.gateway.example.com/facade-api"));
         guard.Check(new Uri("https://api.example.org/"));
         Assert.Throws<UrlRefusedException>(() => guard.Check(new Uri("https://other.org/")));
     }

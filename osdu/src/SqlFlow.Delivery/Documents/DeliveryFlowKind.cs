@@ -49,6 +49,10 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
 
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
         => DeliveryLineage.Describe(Source, context, MappingDocuments, Templates);
+
+    /// <summary>The mapping each interface pins, found and read as a run of the flow finds and reads it (<see cref="CompanionFiles.Mappings"/>).</summary>
+    public override IReadOnlyList<string> CheckOffline(string documentPath)
+        => CompanionFiles.Mappings(Source, documentPath, MappingDocuments);
 }
 
 /// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor; it also owns
@@ -93,6 +97,12 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
 
     /// <summary>The mapping documents a delivery flow pins (<c>documentType: mapping</c>).</summary>
     public string DocumentType => MappingDefinition.DocumentTypeName;
+
+    /// <summary>
+    /// What a mapping document is, for the loader's unknown-type message. The kind's own <see cref="Description"/> says
+    /// what its flows do, which is not what a mapping is.
+    /// </summary>
+    string ICompanionDocumentKind.Description => "how a delivery flow renders the rows of an ingestion table into records of one OSDU kind";
 
     public string ParseCompanion(string yaml, string source)
     {

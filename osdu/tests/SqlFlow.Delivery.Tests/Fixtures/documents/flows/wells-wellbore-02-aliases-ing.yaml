@@ -12,7 +12,7 @@ source:
 
 target:
   server: osduData
-  object: OsduData.arc.WellboreAlias
+  object: OsduData.silver.WellboreAlias
   # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
   # column the OSDU flow pages and fans out by (source.record.primaryKey).
   identityColumn: RecId

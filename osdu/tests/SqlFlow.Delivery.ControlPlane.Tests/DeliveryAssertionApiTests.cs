@@ -51,7 +51,7 @@ public sealed class DeliveryAssertionApiTests
             description: What the well logs look like once delivered.
             partitions: [{{partition}}]
             parameters:
-              logSource: { default: STAT_COMP, description: The log source tested. }
+              logSource: { default: COMPOSITE, description: The log source tested. }
             source:
               endpoint: http://localhost
             tests:
@@ -136,7 +136,7 @@ public sealed class DeliveryAssertionApiTests
             Assert.Equal(JsonValueKind.Null, listed.GetProperty("problem").ValueKind);
             Assert.Equal([partition], listed.GetProperty("partitions").EnumerateArray().Select(p => p.GetString()));
             Assert.Equal("logSource", listed.GetProperty("parameters")[0].GetProperty("name").GetString());
-            Assert.Equal("STAT_COMP", listed.GetProperty("parameters")[0].GetProperty("default").GetString());
+            Assert.Equal("COMPOSITE", listed.GetProperty("parameters")[0].GetProperty("default").GetString());
             Assert.Equal(second, listed.GetProperty("lastRun").GetProperty("assertionRunId").GetInt64());
 
             var tests = listed.GetProperty("tests").EnumerateArray().ToDictionary(t => t.GetProperty("name").GetString()!);

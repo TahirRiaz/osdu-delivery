@@ -73,9 +73,9 @@ test.describe.serial("lineage", () => {
 
     // The lookup tables sit in the same partition's cache, written by the lookups flow and read by the well log mapping,
     // which translates through them.
-    const recallUnits = named(CACHE_SYSTEM, "RecallUnits");
-    expect([recallUnits?.namespace, recallUnits?.group, recallUnits?.writers]).toEqual([PARTITION, "cache", 1]);
-    expect(recallUnits!.readers).toBeGreaterThanOrEqual(1);
+    const unitAlias = named(CACHE_SYSTEM, "UnitAlias");
+    expect([unitAlias?.namespace, unitAlias?.group, unitAlias?.writers]).toEqual([PARTITION, "cache", 1]);
+    expect(unitAlias!.readers).toBeGreaterThanOrEqual(1);
     expect(units!.readers).toBeGreaterThanOrEqual(1);
 
     // A mapping is a node of its own, under the folder it is filed in. The sample's delivery flow and the welllogs

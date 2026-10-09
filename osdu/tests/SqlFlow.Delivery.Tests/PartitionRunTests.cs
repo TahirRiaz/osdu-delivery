@@ -73,14 +73,14 @@ public sealed class PartitionRunTests
     [Fact]
     public void The_partition_a_run_targets_never_reaches_the_flow_s_parameters()
     {
-        var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["partition"] = " test ", ["logSource"] = "STAT_COMP" };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["partition"] = " test ", ["logSource"] = "COMPOSITE" };
 
         var (partition, rest) = PartitionNames.SplitRunValues(values, keptAsParameter: false);
 
         Assert.Equal("test", partition);
         Assert.Equal(["logSource"], rest.Keys);
 
-        var (none, same) = PartitionNames.SplitRunValues(new Dictionary<string, string> { ["logSource"] = "STAT_COMP" }, keptAsParameter: false);
+        var (none, same) = PartitionNames.SplitRunValues(new Dictionary<string, string> { ["logSource"] = "COMPOSITE" }, keptAsParameter: false);
         Assert.Null(none);
         Assert.Equal(["logSource"], same.Keys);
 

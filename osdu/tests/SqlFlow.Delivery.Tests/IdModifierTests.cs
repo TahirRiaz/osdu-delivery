@@ -169,12 +169,12 @@ public sealed class IdModifierTests
             "      - id: \"{$param.dataPartition}:master-data--Wellbore:{source}-{$value}:{version}\"",
             "uwi"));
 
-        var pinned = renderer.Render(Record(("uwi", "NO 15/5-7"), ("source", "recall"), ("version", "3")));
+        var pinned = renderer.Render(Record(("uwi", "Wellbore A/5-7"), ("source", "welldb"), ("version", "3")));
         Assert.False(pinned.IsHeld, string.Join("; ", pinned.Holds));
-        Assert.Equal("dev:master-data--Wellbore:recall-NO%2015%2F5-7:3", Data(pinned, "WellboreID"));
+        Assert.Equal("dev:master-data--Wellbore:welldb-Wellbore%20A%2F5-7:3", Data(pinned, "WellboreID"));
 
         // A token with no value leaves no id: a half-built id is never written, and a required entry names the token.
-        var unversioned = renderer.Render(Record(("uwi", "NO 15/5-7"), ("source", "recall"), ("version", " ")));
+        var unversioned = renderer.Render(Record(("uwi", "Wellbore A/5-7"), ("source", "welldb"), ("version", " ")));
         Assert.True(unversioned.IsHeld);
         Assert.Contains(
             "osdu.data.WellboreID: the id {$param.dataPartition}:master-data--Wellbore:{source}-{$value}:{version} cannot be built, since {version} has no value, and the entry is required",
@@ -337,10 +337,10 @@ public sealed class IdModifierTests
             StringComparison.Ordinal);
 
         var clash = Held(
-            "      - id: \"dev:reference-data--UnitOfMeasure:{$cache.RecallUnits.value}:\"",
-            Cache(LookupCacheTests.Pairs("RecallUnits", ("Ft", "ft"), ("FT", "foot"))),
+            "      - id: \"dev:reference-data--UnitOfMeasure:{$cache.UnitAlias.value}:\"",
+            Cache(LookupCacheTests.Pairs("UnitAlias", ("Ft", "ft"), ("FT", "foot"))),
             "ft");
-        Assert.Contains("'ft' matches the RecallUnits rows ", clash, StringComparison.Ordinal);
+        Assert.Contains("'ft' matches the UnitAlias rows ", clash, StringComparison.Ordinal);
         Assert.Contains("and they hold different values at 'value'", clash, StringComparison.Ordinal);
     }
 

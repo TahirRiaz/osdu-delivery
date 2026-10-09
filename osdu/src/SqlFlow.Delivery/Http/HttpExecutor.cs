@@ -153,7 +153,7 @@ public sealed class HttpExecutor
 
                 if (response.IsSuccessStatusCode || (allowStatuses?.Contains(code) ?? false))
                 {
-                    var body = await ReadCappedAsync(response, ct).ConfigureAwait(false);
+                    var body = await ReadCappedAsync(response, request, ct).ConfigureAwait(false);
                     return new HttpFetchResult(status, body, response.Headers, response.Content.Headers);
                 }
 
@@ -190,7 +190,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure calling {hops.Current.Method} {Describe(hops.Current.RequestUri)}{CorrelationNote(null, hops.Current)}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure calling {hops.Current.Method} {Describe(hops.Current.RequestUri)}{CorrelationNote(null, hops.Current)}: {Redacted(ex.Message)}", ex);
                 }
 
                 DeliveryMetrics.RequestRetried(method, host, result);
@@ -207,7 +207,7 @@ public sealed class HttpExecutor
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
-                    throw new DeliveryException($"HTTP transport failure reading the response from {Describe(hops.Current.RequestUri)}: {ex.Message}", ex);
+                    throw new DeliveryException($"HTTP transport failure reading the response from {Describe(hops.Current.RequestUri)}: {Redacted(ex.Message)}", ex);
                 }
 
                 DeliveryMetrics.RequestRetried(method, host, result);
@@ -369,7 +369,6 @@ public sealed class HttpExecutor
         }
     }
 
-    /// <summary>RFC 9110 section 9.2.2: the methods whose repetition has the same effect as sending them once.</summary>
     /// <summary>
     /// Whether a status says the service refused the request without acting on it: 408 (it gave up waiting for the request,
     /// RFC 9110 section 15.5.9), 425 (it would not risk acting on a request that might be replayed, RFC 8470 section 5.2)
@@ -377,6 +376,7 @@ public sealed class HttpExecutor
     /// </summary>
     internal static bool RefusedUnread(int code) => code is 408 or 425 or 429;
 
+    /// <summary>RFC 9110 section 9.2.2: the methods whose repetition has the same effect as sending them once.</summary>
     internal static bool IsIdempotent(HttpMethod method)
         => method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Put
             || method == HttpMethod.Delete || method == HttpMethod.Options || method == HttpMethod.Trace;
@@ -401,14 +401,18 @@ public sealed class HttpExecutor
         return string.IsNullOrWhiteSpace(id) ? string.Empty : $" (correlation-id {id})";
     }
 
-    /// <summary>What ended an attempt, as the observer is told it: with any credential the text carries redacted.</summary>
+    /// <summary>
+    /// What ended an attempt, as the observer is told it and an exception quotes it: with any credential the text carries
+    /// redacted (a proxy's URL with its password, a signed URL a handler quotes).
+    /// </summary>
+    [return: System.Diagnostics.CodeAnalysis.NotNullIfNotNull(nameof(failure))]
     private static string? Redacted(string? failure) => failure is null ? null : HeaderRedaction.RedactMessage(failure);
 
-    /// <summary>The request URL without its query string: a signed upload URL carries its credential there.</summary>
-    private static string Describe(Uri? uri)
-        => uri is null ? string.Empty : uri.IsAbsoluteUri ? uri.GetLeftPart(UriPartial.Path) : uri.ToString();
+    /// <summary>The request URL without its user info and query string: a signed upload URL carries its credential there.</summary>
+    private static string Describe(Uri? uri) => HeaderRedaction.DescribeUrl(uri);
 
-    private async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, CancellationToken ct)
+    /// <summary>The response body, refused once it grows past the cap; <paramref name="request"/> is the hop that was answered, which the refusal names.</summary>
+    private async Task<byte[]> ReadCappedAsync(HttpResponseMessage response, HttpRequestMessage request, CancellationToken ct)
     {
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var buffer = new MemoryStream();
@@ -418,8 +422,11 @@ public sealed class HttpExecutor
         {
             if (buffer.Length + read > _maxResponseBytes)
             {
+                var limit = _maxResponseBytes >= 1024 * 1024
+                    ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{_maxResponseBytes / (1024 * 1024)} MB")
+                    : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{_maxResponseBytes} byte");
                 throw new DeliveryException(
-                    $"Response from {response.RequestMessage?.RequestUri} exceeds the {_maxResponseBytes / (1024 * 1024)} MB limit. Raise reliability.maxResponseBytes.");
+                    $"Response from {Describe(request.RequestUri)} exceeds the {limit} limit. Raise reliability.maxResponseBytes.");
             }
 
             buffer.Write(chunk, 0, read);

@@ -73,16 +73,23 @@ public sealed class DeliveryPartitionsApiTests
     public async Task The_dispatcher_gives_a_run_every_partition_s_configuration_and_a_node_task_its_own_partition_s()
     {
         var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
         var repoId = Guid.NewGuid();
         var store = new DeliveryConfigStore(() => SampleEstate.Context(cs));
         var now = DateTime.UtcNow;
-        await store.SetAsync(repoId, null, "OSDU_LEGAL_TAG", "estate-legal", null, "tests", now);
-        await store.SetAsync(repoId, null, "OSDU_URL", "https://osdu.example.com", null, "tests", now);
-        await store.SetAsync(repoId, "test", "OSDU_LEGAL_TAG", "estate-test-legal", null, "tests", now);
+
+        // A property is set for a repository the catalog holds.
+        await using var catalog = CatalogDatabase.Create(cs);
+        catalog.Repos.Add(new CatalogRepo { Id = repoId, Name = "cp-dispatch-" + repoId.ToString("N")[..10], FirstSeenUtc = now, LastSyncUtc = now });
+        await catalog.SaveChangesAsync();
 
         try
         {
+            await store.SetAsync(repoId, null, "OSDU_LEGAL_TAG", "estate-legal", null, "tests", now, catalog);
+            await store.SetAsync(repoId, null, "OSDU_URL", "https://osdu.example.com", null, "tests", now, catalog);
+            await store.SetAsync(repoId, "test", "OSDU_LEGAL_TAG", "estate-test-legal", null, "tests", now, catalog);
+
             var inner = new RecordingDispatcher();
             var dispatcher = new ConfiguredRunDispatcher(inner, store, NullLogger<ConfiguredRunDispatcher>.Instance);
 
@@ -128,6 +135,7 @@ public sealed class DeliveryPartitionsApiTests
         {
             await using var osdu = SampleEstate.Context(cs);
             await osdu.DeliveryConfigProperties.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+            await catalog.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
         }
     }
 

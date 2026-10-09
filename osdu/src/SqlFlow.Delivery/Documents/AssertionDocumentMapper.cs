@@ -313,7 +313,7 @@ internal static partial class AssertionMapper
             MaxRecords = maxRecords,
             Sample = t.Sample ?? false,
             IndexSettleSeconds = indexSettle,
-            Bulk = bulk is null ? null : bulk with { Columns = BulkColumns(bulk, assertions) },
+            Bulk = bulk is null ? null : bulk with { Columns = BulkColumns(bulk, assertions, where, source) },
             Assertions = assertions,
         };
         return test with { DefinitionHash = Hash(test) };
@@ -321,19 +321,16 @@ internal static partial class AssertionMapper
 
     /// <summary>
     /// What a test's bulk read reads: the columns the document lists, or when it lists none, the columns its assertions name
-    /// (empty, which reads every column, when none does).
+    /// (empty, which reads every column, when none does). The columns the assertions name are always read
+    /// (osdu/docs/reference/flow/assertion.md, Bulk data), so a list that leaves one out is refused here rather than leaving
+    /// an assertion to read a column the read never asked for.
     /// </summary>
-    private static IReadOnlyList<string> BulkColumns(AssertionBulk bulk, IReadOnlyList<TestAssertion> assertions)
+    private static IReadOnlyList<string> BulkColumns(AssertionBulk bulk, IReadOnlyList<TestAssertion> assertions, string where, string source)
     {
-        if (bulk.Columns.Count > 0)
+        var named = new List<(string Column, int Assertion)>();
+        for (var i = 0; i < assertions.Count; i++)
         {
-            return bulk.Columns;
-        }
-
-        var named = new List<string>();
-        foreach (var assertion in assertions)
-        {
-            var columns = assertion switch
+            var columns = assertions[i] switch
             {
                 ValueAssertion { Target.IsColumn: true } value => value.Where.Select(w => w.Target.Path).Prepend(value.Target.Path),
                 AggregateAssertion { Target.IsColumn: true } aggregate => [aggregate.Target.Path],
@@ -342,14 +339,26 @@ internal static partial class AssertionMapper
             };
             foreach (var column in columns)
             {
-                if (!named.Contains(column, StringComparer.Ordinal))
+                if (!named.Exists(n => string.Equals(n.Column, column, StringComparison.Ordinal)))
                 {
-                    named.Add(column);
+                    named.Add((column, i));
                 }
             }
         }
 
-        return named;
+        if (bulk.Columns.Count == 0)
+        {
+            return named.Select(n => n.Column).ToList();
+        }
+
+        var unread = named.Where(n => !bulk.Columns.Contains(n.Column, StringComparer.Ordinal)).ToList();
+        if (unread.Count > 0)
+        {
+            throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                $"{source}: {where}: bulk.columns lists the only columns the test reads, and leaves out {string.Join(", ", unread.Select(u => $"'{u.Column}' (assert[{u.Assertion}])"))}; add {(unread.Count == 1 ? "it" : "them")} to bulk.columns, or leave bulk.columns out to read exactly the columns the assertions name."));
+        }
+
+        return bulk.Columns;
     }
 
     private static string Hash(AssertionTest test)

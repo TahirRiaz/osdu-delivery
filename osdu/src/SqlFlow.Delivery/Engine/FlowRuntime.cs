@@ -84,10 +84,20 @@ public sealed record EngineContext(
 
     /// <summary>
     /// A context whose references resolve from the central configuration a run carried before they resolve from the
-    /// node. A run given nothing keeps the node's own resolver, so it behaves exactly as it did before.
+    /// node. A run given nothing keeps the node's own resolver, so it resolves exactly as it did before. A context that
+    /// serves a run (<see cref="ForRun"/>) also says on the run's trace where each reference takes its value, the first
+    /// time the run resolves it (<see cref="RunReferenceTrace"/>): by name and origin, never by value.
     /// </summary>
     public EngineContext WithSuppliedReferences(IReadOnlyDictionary<string, string> supplied)
-        => this with { Secrets = Http.SuppliedReferenceResolver.For(supplied, Secrets), Supplied = supplied };
+    {
+        ArgumentNullException.ThrowIfNull(supplied);
+        var secrets = Http.SuppliedReferenceResolver.For(supplied, Secrets);
+        return this with
+        {
+            Secrets = Trace is null ? secrets : new RunReferenceTrace(secrets, supplied, Loggers.CreateLogger(RunTrace.RunStep)),
+            Supplied = supplied,
+        };
+    }
 
     /// <summary>
     /// The central configuration this context resolves with ahead of the node (<see cref="WithSuppliedReferences"/>):
@@ -100,6 +110,116 @@ public sealed record EngineContext(
 
     /// <summary>A context whose loggers say, on every line, that it is about <paramref name="interfaceName"/>.</summary>
     public EngineContext ForInterface(string interfaceName) => this with { Loggers = new InterfaceLoggerFactory(Loggers, interfaceName) };
+}
+
+/// <summary>
+/// The resolver of a context that serves a run: it resolves exactly as the resolver it wraps, and says on the run's trace
+/// where each <c>${env:NAME}</c> reference takes its value, the central configuration the control plane supplied with the
+/// run or the node's own environment, the first time the run resolves it (<see cref="ReferenceSource"/>). Where a record
+/// goes and under whose access and legal terms (the endpoint, the partition, the ACL groups, the legal tag) are such
+/// references, and the run's payload holds only what the control plane supplied, so without these lines nothing would say
+/// which values a node's environment gave a run.
+/// </summary>
+/// <remarks>
+/// Names and origins only: a value may be a secret, and is never written. Each reference is named once per run however
+/// often it is resolved, and a run names at most <see cref="MaxNamed"/>, so the lines are bounded by what the run's
+/// documents declare and never by how many records it moves; they are written as <see cref="RunTrace.Bounded"/> lines
+/// for that reason. A <c>${keyvault:...}</c> reference is not named: the configuration never answers one, so it is always
+/// the node's, as the flow's own text says.
+/// </remarks>
+internal sealed class RunReferenceTrace : ISecretResolver
+{
+    /// <summary>The references a run names on its trace; a run resolving more says so once and names no other.</summary>
+    public const int MaxNamed = 100;
+
+    private readonly ISecretResolver _inner;
+    private readonly IReadOnlyDictionary<string, string> _supplied;
+    private readonly ILogger _log;
+    private readonly int _max;
+    private readonly Lock _gate = new();
+    private readonly HashSet<string> _named = new(StringComparer.Ordinal);
+    private bool _full;
+
+    /// <summary>
+    /// A trace of the references <paramref name="inner"/> resolves for a run given <paramref name="supplied"/>, written to
+    /// <paramref name="log"/>; a test names a smaller <paramref name="max"/> to see where it stops.
+    /// </summary>
+    public RunReferenceTrace(ISecretResolver inner, IReadOnlyDictionary<string, string> supplied, ILogger log, int max = MaxNamed)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        ArgumentNullException.ThrowIfNull(supplied);
+        ArgumentNullException.ThrowIfNull(log);
+        ArgumentOutOfRangeException.ThrowIfNegative(max);
+        _inner = inner;
+        _supplied = supplied;
+        _log = log;
+        _max = max;
+    }
+
+    public string Resolve(string value)
+    {
+        Name(value);
+        return _inner.Resolve(value);
+    }
+
+    public Task<string> ResolveAsync(string value, CancellationToken ct = default)
+    {
+        Name(value);
+        return _inner.ResolveAsync(value, ct);
+    }
+
+    /// <summary>
+    /// Says where each reference in <paramref name="value"/> the run has not named yet takes its value. Said before the
+    /// value is resolved, so a reference the node cannot answer is named too, beside the error that follows.
+    /// </summary>
+    private void Name(string value)
+    {
+        foreach (var name in SuppliedReferenceResolver.NamesIn(value))
+        {
+            bool first;
+            bool overflowed;
+            lock (_gate)
+            {
+                if (_named.Contains(name))
+                {
+                    continue;
+                }
+
+                first = _named.Count < _max;
+                overflowed = !first && !_full;
+                if (first)
+                {
+                    _named.Add(name);
+                }
+                else
+                {
+                    _full = true;
+                }
+            }
+
+            if (first)
+            {
+                var source = ReferenceSource.Of(name, _supplied);
+                _log.LogInformation(RunTrace.Bounded, "Reference {Reference} takes its value from {Origin}.", "${env:" + name + "}", Describe(source));
+            }
+            else if (overflowed)
+            {
+                _log.LogInformation(
+                    RunTrace.Bounded,
+                    "This run resolves more than {Max} references; the trace says where the ones named above take their values, and names no other.",
+                    _max);
+            }
+        }
+    }
+
+    /// <summary>Where a reference took its value, as the trace says it.</summary>
+    private string Describe(ReferenceSource source) => source switch
+    {
+        { Origin: ReferenceOrigin.ControlPlane } => "the central configuration the control plane supplied with this run",
+        { Deferred: true } => "this node's environment: the central configuration names it as its own reference, which leaves it to the node",
+        _ when _supplied.Count == 0 => "this node's environment: the run carries no central configuration",
+        _ => "this node's environment: the central configuration does not set it",
+    };
 }
 
 /// <summary>
@@ -175,10 +295,10 @@ public sealed class FlowRuntime : IDisposable
     private static readonly TimeSpan LeaseExpiryMargin = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Settled submissions a deliver run reads at a time when it sends the released records they still hold after its own;
-    /// it reads as many such pages as there are submissions to send.
+    /// Submissions no run works on any more that a deliver run reads at a time when it sends what they still hold after its
+    /// own; it reads as many such pages as there are submissions to send.
     /// </summary>
-    private const int SettledSubmissionsPerPage = 10;
+    private const int UnattendedSubmissionsPerPage = 10;
 
     /// <summary>The records waiting to be planned again without a source key that a runtime names; it counts the rest.</summary>
     private const int KeylessNamed = 10;
@@ -208,6 +328,9 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>The partition this runtime's ledger is kept under, once it is registered.</summary>
     private string? _ledgerPartition;
+
+    /// <summary>The submissions this runtime holds, created when it first holds one.</summary>
+    private SubmissionHolds? _holds;
 
     private FlowRuntime(
         EngineContext context,
@@ -249,8 +372,10 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>Which records this run reads: an incremental window by default, or what the run asked for.</summary>
     public SourceSelection Selection { get; set; } = SourceSelection.Incremental(null);
 
-    /// <summary>Who is asking: the run's trigger source (manual:&lt;user&gt;, schedule:&lt;name&gt;), gui:&lt;user&gt; for
-    /// an intervention, cli:&lt;user&gt; on a workstation. Recorded on every activity.</summary>
+    /// <summary>Who is asking: for a run, its requester as SQLFlow records it (the token's subject for a run a person
+    /// queued, schedule:&lt;name&gt; for one a schedule fired, cli:&lt;user&gt;@&lt;machine&gt; for a direct CLI run); for
+    /// an intervention, user:&lt;subject&gt; through the control plane and cli:&lt;user&gt;@&lt;machine&gt; from the
+    /// command line (<see cref="RunActors.LocalAccount"/>). Recorded on every activity.</summary>
     public string Actor { get; set; } = "unknown";
 
     /// <summary>The platform run this runtime executes for, when it is one; stamped on activities and attempts.</summary>
@@ -365,7 +490,14 @@ public sealed class FlowRuntime : IDisposable
         RunId = RunId,
         Trace = _context.Trace,
         Target = ProtocolAsync,
+        Holds = HeldSubmissions,
     };
+
+    /// <summary>
+    /// The submissions this runtime works on, each held while it does (<see cref="SubmissionHolds"/>), so no later run takes
+    /// over a submission this one is planning or sending. An operation lets go of what it held when it ends.
+    /// </summary>
+    internal SubmissionHolds HeldSubmissions => _holds ??= new SubmissionHolds(RequireLedger());
 
     /// <summary>What this run asks the intake for: its selection, the submission it works on, and a member's slices.</summary>
     public IntakeRequest Request => new(Selection, SubmissionId, Slices);
@@ -591,7 +723,7 @@ public sealed class FlowRuntime : IDisposable
                     var worker = await WorkerAsync(ct).ConfigureAwait(false);
                     var sent = await PassUntilNothingClaimableAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                     sent = sent.Add(await SendOrphanedLeasesAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false));
-                    var leftovers = await SendSettledLeftoversAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                    var leftovers = await SendUnattendedAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                     var swept = await SweepAfterRunAsync(ct).ConfigureAwait(false);
                     if (sent.Processed == 0 && leftovers.Processed == 0 && sent.Waiting == 0 && leftovers.Waiting == 0)
                     {
@@ -608,12 +740,13 @@ public sealed class FlowRuntime : IDisposable
                 handle = null;
                 var submission = await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false);
 
-                // Its own records sent, the run takes what settled submissions still hold (records released after their run).
-                var settledLeftovers = await SendSettledLeftoversAsync(await WorkerAsync(ct).ConfigureAwait(false), intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                // Its own records sent, the run takes what submissions no run works on any more still hold: records released
+                // after their run settled, and submissions whose run ended before settling them.
+                var unattended = await SendUnattendedAsync(await WorkerAsync(ct).ConfigureAwait(false), intake.Submission.SubmissionId, ct).ConfigureAwait(false);
 
                 // Every delivery of the run has ended, its fan-out members' too: what unfinished deliveries left is undone now.
                 var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
-                return Tracked(new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers) { Undone = undone });
+                return Tracked(new RunResult(intake, work.Add(unattended), submission, intakeMembers, drainMembers) { Undone = undone });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -625,6 +758,11 @@ public sealed class FlowRuntime : IDisposable
 
                 await SettleStoppedAsync().ConfigureAwait(false);
                 throw;
+            }
+            finally
+            {
+                // Whatever ended the run, it works on no submission any more: a later run may take over what it left.
+                await HeldSubmissions.ReleaseAllAsync().ConfigureAwait(false);
             }
 
             // What the audit trail records of the run: what it did itself, the submission it worked on, and whether it changed nothing.
@@ -674,12 +812,27 @@ public sealed class FlowRuntime : IDisposable
         {
             await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             var worker = await WorkerAsync(ct).ConfigureAwait(false);
-            var summary = once ? await worker.PassAsync(submissionId, ct).ConfigureAwait(false) : await worker.DrainAsync(submissionId, ct).ConfigureAwait(false);
             if (submissionId is { } s)
             {
-                await Intake.CompleteAsync(s, Flow.Id, ct).ConfigureAwait(false);
-                return (new DrainResult(summary, UndoSummary.Empty), summary.Headline, submissionId, summary.Idle);
+                // A drain of one submission works on it as its run does (a fan-out member's drain, an operator's), so it
+                // holds it for as long as it drains, and no later run takes it over meanwhile.
+                var held = await HeldSubmissions.HoldAsync(s, ct).ConfigureAwait(false);
+                try
+                {
+                    var drained = once ? await worker.PassAsync(s, ct).ConfigureAwait(false) : await worker.DrainAsync(s, ct).ConfigureAwait(false);
+                    await Intake.CompleteAsync(s, Flow.Id, ct).ConfigureAwait(false);
+                    return (new DrainResult(drained, UndoSummary.Empty), drained.Headline, submissionId, drained.Idle);
+                }
+                finally
+                {
+                    if (held)
+                    {
+                        await HeldSubmissions.ReleaseAsync(s).ConfigureAwait(false);
+                    }
+                }
             }
+
+            var summary = once ? await worker.PassAsync(null, ct).ConfigureAwait(false) : await worker.DrainAsync(null, ct).ConfigureAwait(false);
 
             // A drain of the whole flow ends with the sweep a deliver run ends with. A drain of a submission does not: it is what a
             // fan-out member runs while its coordinator and other members deliver, and the coordinator sweeps once they are done.
@@ -788,12 +941,15 @@ public sealed class FlowRuntime : IDisposable
 
     private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max];
 
-    /// <summary>The drift pass: the <c>verify</c> operation.</summary>
+    /// <summary>
+    /// The drift pass: the <c>verify</c> operation. With <paramref name="reconcile"/>, each record it marks for redelivery is
+    /// named under the pass's activity, so the record's history shows which verify asked for it to be sent again.
+    /// </summary>
     public Task<VerifySummary> VerifyAsync(int max, TimeSpan? notVerifiedWithin, bool reconcile, IReadOnlyList<DeliveryKey>? keys = null, CancellationToken ct = default)
-        => TrackAsync("verify", new { max, notVerifiedWithin, reconcile, keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async () =>
+        => TrackAsync("verify", new { max, notVerifiedWithin, reconcile, keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async activity =>
         {
             var verifier = await VerifierAsync(ct).ConfigureAwait(false);
-            var summary = await verifier.RunAsync(max, notVerifiedWithin, reconcile, keys, ct).ConfigureAwait(false);
+            var summary = await verifier.RunAsync(max, notVerifiedWithin, reconcile, keys, activity, ct).ConfigureAwait(false);
             return (summary, summary.ToString(), (Guid?)null, summary.Idle);
         }, ct);
 
@@ -1450,15 +1606,22 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
-    /// Sends what settled submissions of the flow still hold. A record released back to pending with its rendered document
-    /// after its submission completed or failed belongs to no run: its own run is over, and a newer plan skips it because
-    /// its row is what the record already queues. The run takes the due records of up to
-    /// due records of every such submission, <see cref="SettledSubmissionsPerPage"/> submissions at a time, passes over each
-    /// until nothing of it is claimable (records in backoff are not waited for) and recomputes the totals of each one it
-    /// sent anything from. A submission is passed over once per run: one still holding due records after its pass (a record
-    /// another lease held meanwhile) is the next run's, so the run ends however many submissions a release reached.
+    /// Sends what submissions of the flow no run works on any more still hold, <see cref="UnattendedSubmissionsPerPage"/>
+    /// submissions at a time (osdu/docs/reference/concepts/submissions.md, Recovering a stopped submission). Two kinds belong
+    /// to no run: a settled submission holding records released back to pending with their rendered documents after its
+    /// run was over, and a submission its run left received, planned or running when it stopped (its node was lost, its
+    /// process ended, it ran out of attempts) with records still planned in its work batches. A newer plan skips those
+    /// records, because their rows are what they already queue, so without this they would wait for a drain by hand.
+    /// Each one is taken over only when no run holds it (<see cref="ILedger.TakeOverSubmissionAsync"/>), so a run still
+    /// planning or sending it, a fan-out member included, is never raced, and only when no lease that has not run out holds
+    /// its work; it is passed over until nothing of it is claimable (records in backoff are not waited for), and closed:
+    /// a settled one has its totals counted again when anything of it was sent, and one its run left open is closed as
+    /// its records stand, failed with why when records of it are still to be sent or its planning never finished. Every
+    /// claim is the one a run of the submission makes, so a record is sent once, resuming after the steps a stopped try
+    /// recorded. A submission is visited once per run: what is left of it is the next run's, so the run ends however many
+    /// submissions it finds.
     /// </summary>
-    private async Task<WorkerSummary> SendSettledLeftoversAsync(DeliveryWorker worker, Guid current, CancellationToken ct)
+    private async Task<WorkerSummary> SendUnattendedAsync(DeliveryWorker worker, Guid current, CancellationToken ct)
     {
         var ledger = RequireLedger();
         var visited = new HashSet<Guid> { current };
@@ -1466,28 +1629,87 @@ public sealed class FlowRuntime : IDisposable
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var settled = await ledger.ListSettledSubmissionsWithDueWorkAsync(Flow.Id, visited, _context.Time.GetUtcNow().UtcDateTime, SettledSubmissionsPerPage, ct).ConfigureAwait(false);
-            if (settled.Count == 0)
+            var page = await ledger.ListUnattendedSubmissionsAsync(Flow.Id, visited, _context.Time.GetUtcNow().UtcDateTime, UnattendedSubmissionsPerPage, ct).ConfigureAwait(false);
+            if (page.Count == 0)
             {
                 return total;
             }
 
-            foreach (var submissionId in settled)
+            foreach (var submission in page)
             {
-                visited.Add(submissionId);
-                var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
-                if (sent.Processed > 0 || sent.Waiting > 0)
-                {
-                    await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
-                    _log.LogInformation(
-                        "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
-                        sent.Processed, submissionId);
-                }
-
-                total = total.Add(sent);
+                visited.Add(submission.SubmissionId);
+                total = total.Add(await SendUnattendedAsync(worker, submission, ct).ConfigureAwait(false));
             }
         }
     }
+
+    /// <summary>Takes over one submission no run may work on any more, sends what it holds and closes it (see above).</summary>
+    private async Task<WorkerSummary> SendUnattendedAsync(DeliveryWorker worker, SubmissionState submission, CancellationToken ct)
+    {
+        var ledger = RequireLedger();
+        var submissionId = submission.SubmissionId;
+        var settled = submission.Status is SubmissionStatus.Completed or SubmissionStatus.Failed;
+        await using var hold = await ledger.TakeOverSubmissionAsync(submissionId, ct).ConfigureAwait(false);
+        if (hold is null)
+        {
+            _log.LogInformation(
+                "Submission {SubmissionId} ({Status}) is held by a run that still works on it, so it is left to that run.",
+                submissionId, Status(submission.Status));
+            return WorkerSummary.Empty;
+        }
+
+        if (!settled)
+        {
+            _log.LogWarning(
+                "Submission {SubmissionId} was left {Status} by {Run}, which no longer works on it: it ended before the submission was settled. This run takes it over, sends what it still holds and closes it.",
+                submissionId, Status(submission.Status), submission.RunId is { } stoppedRun ? $"run {stoppedRun:D}" : "its run");
+        }
+
+        var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
+        if (settled)
+        {
+            if (sent.Processed > 0 || sent.Waiting > 0)
+            {
+                await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
+                _log.LogInformation(
+                    "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
+                    sent.Processed, submissionId);
+            }
+
+            return sent;
+        }
+
+        if (await ledger.IsSubmissionLeasedAsync(Flow.Id, submissionId, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false))
+        {
+            // A worker took up some of it meanwhile (a drain of the whole flow claims any submission's batches): closing it now
+            // would count records that worker is still sending, so it is left open for the next run to close.
+            _log.LogInformation(
+                "Sent {Count} record(s) of submission {SubmissionId}; a worker is sending the rest under a lease of its own, so the submission is left open for the flow's next run to close.",
+                sent.Processed, submissionId);
+            return sent;
+        }
+
+        var closed = await Intake.StopAsync(submissionId, Flow.Id, StoppedReason(submission), ct).ConfigureAwait(false);
+        _log.LogInformation(
+            "Took over submission {SubmissionId}: sent {Count} record(s) it still held, and closed it {Status}: {Summary}.",
+            submissionId, sent.Processed, Status(closed.Status), SubmissionIntake.Summarize(closed));
+        return sent;
+    }
+
+    /// <summary>
+    /// Why a submission this run took over is closed failed, when it is: records of it are still to be sent (in backoff for a
+    /// retry), or the run that registered it ended before its planning finished.
+    /// </summary>
+    private string StoppedReason(SubmissionState submission)
+    {
+        var stopped = submission.RunId is { } run ? $"run {run:D}" : "the run that registered it";
+        var takenBy = RunId is { } own ? $"run {own:D}" : "a later run of the flow";
+        return submission.Status == SubmissionStatus.Received
+            ? $"stopped: {stopped} ended before its planning finished; {takenBy} took it over and sent what it had planned, and the rows it had not reached are left to the flow's plans, which read them again: it moved no watermark and answered no request to plan them"
+            : $"stopped: {stopped} ended before its records were all sent; {takenBy} took it over and sent what was due, and the flow's next run sends the rest";
+    }
+
+    private static string Status(SubmissionStatus status) => status.ToString().ToLowerInvariant();
 
     /// <summary>
     /// Asks the legal service about the mapping's legal tags before a run plans or sends anything. Every record the
@@ -1561,8 +1783,12 @@ public sealed class FlowRuntime : IDisposable
             && header.Source.EstimatedCandidates >= Flow.Reliability.FanOutMinRecords
             && slices - 1 <= SubmissionIntake.MaxFanOutPartition;
         // The candidates are cut on the record table's identity primary key; when they sit so close together that fewer
-        // than two ranges come out, the read is one run's.
-        var ranges = applies ? await Planner.SliceBoundsAsync(header, slices, ct).ConfigureAwait(false) : [];
+        // than two ranges come out, the read is one run's. A submission planned again that was cut before keeps its cut:
+        // the members it already has (a run the platform executes again gets them back) plan the ranges they were dealt,
+        // and a new cut would leave rows between the two to nobody.
+        var ranges = !applies ? []
+            : prepared.Window is { Slices.Count: >= 2 } cut ? Recorded(cut)
+            : await Planner.SliceBoundsAsync(header, slices, ct).ConfigureAwait(false);
         if (ranges.Count < 2)
         {
             var own = await intake.PlanSlicesAsync(Flow, prepared, null, ct).ConfigureAwait(false);
@@ -1599,7 +1825,7 @@ public sealed class FlowRuntime : IDisposable
         {
             if (!member.Succeeded)
             {
-                throw new DeliveryException($"Intake member {member.Slot} (run {member.RunId:D}) {member.Status}: {member.Error ?? "no error recorded"}. The submission stays planned as far as it got; re-run it to finish the intake.");
+                throw new DeliveryException($"Intake member {member.Slot} (run {member.RunId:D}) {member.Status}: {member.Error ?? "no error recorded"}. The submission stays planned as far as it got: re-run it to finish the intake now, or the flow's next deliver run takes it over, sends what it planned and closes it, and plans the rest in its own window.");
             }
 
             var outcome = IntakeOutcome.Parse(member.ResultJson)
@@ -1610,6 +1836,10 @@ public sealed class FlowRuntime : IDisposable
         var settledSubmission = await intake.FinalizePlanningAsync(Flow, submission.SubmissionId, Parameters, totals, ct).ConfigureAwait(false);
         return (new IntakeResult(settledSubmission, header, totals, AlreadyProcessed: false), members.Count);
     }
+
+    /// <summary>The key ranges a submission recorded it was cut into, in slice order.</summary>
+    private static IReadOnlyList<KeyRange> Recorded(SourceWindowDescription cut)
+        => cut.Slices.OrderBy(s => s.Slice).Select(s => cut.Range(s.Slice)!.Value).ToList();
 
     /// <summary>
     /// The values a member run of this one carries: <paramref name="values"/>, and the partition the flow is bound to, so a
@@ -1916,6 +2146,7 @@ public sealed class FlowRuntime : IDisposable
 
     public void Dispose()
     {
+        _holds?.Dispose();
         (_search as IDisposable)?.Dispose();
         _target.Dispose();
     }

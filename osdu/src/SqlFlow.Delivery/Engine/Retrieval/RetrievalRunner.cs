@@ -102,7 +102,10 @@ public sealed class RetrievalRunner
 
     /// <summary>
     /// The window this run covers, for an incremental flow: from the last completed run's upper bound (or the
-    /// declared start, which a forced run goes back to) up to now minus the lag. Null for a flow that is not incremental.
+    /// declared start, which a forced run goes back to) up to now minus the lag. A window never moves backwards: it starts
+    /// no earlier than the declared start, and when now minus the lag is not past its start (a lag raised since the last
+    /// run, a start in the future) it is empty at its start, which a run that does nothing records as its upper bound, so the
+    /// next run starts there again. Null for a flow that is not incremental.
     /// </summary>
     public async Task<RetrievalWindow?> WindowAsync(DateTime startedUtc, bool force, CancellationToken ct)
     {
@@ -112,12 +115,19 @@ public sealed class RetrievalRunner
         }
 
         var from = incremental.Since;
-        if (!force && _ledger is not null && await _ledger.LastRetrievalAsync(_flow.Id, RetrievalStatus.Done, ct).ConfigureAwait(false) is { WindowTo: { } previous })
+        if (!force && _ledger is not null && await _ledger.LastRetrievalAsync(_flow.Id, RetrievalStatus.Done, ct).ConfigureAwait(false) is { WindowTo: { } upper } last)
         {
-            from = previous;
+            // A run that did nothing before windows were held from moving backwards may have recorded an upper bound below its
+            // own start; its start is where the window stood.
+            var previous = last.WindowFrom is { } lower && lower > upper ? lower : upper;
+            if (from is not { } since || previous > since)
+            {
+                from = previous;
+            }
         }
 
-        return new RetrievalWindow(incremental.Field, from, startedUtc - TimeSpan.FromMinutes(Math.Max(0, incremental.LagMinutes)));
+        var to = startedUtc - TimeSpan.FromMinutes(Math.Max(0, incremental.LagMinutes));
+        return new RetrievalWindow(incremental.Field, from, from is { } start && to < start ? start : to);
     }
 
     /// <summary>The flow's query with its tokens substituted, narrowed to the window when there is one.</summary>
@@ -191,7 +201,7 @@ public sealed class RetrievalRunner
 
         if (window is { IsEmpty: true })
         {
-            _logger.LogInformation("retrieve: the window is empty (the last run's upper bound is not behind now minus the lag); nothing to do.");
+            _logger.LogInformation("retrieve: the window is empty (its start, the last run's upper bound or the declared since, is not behind now minus the lag); nothing to do, and the next run starts there again.");
             await CloseAsync(state, RetrievalStatus.Done, [], null, null).ConfigureAwait(false);
             return new RetrievalResult(state.RetrievalId, location, null, window, [], 0, 0, 0, NothingToDo: true);
         }

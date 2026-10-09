@@ -103,10 +103,10 @@ public sealed class LedgerPartitionKeyTests : IDisposable
     {
         await Ledger.RegisterAsync(Dev, _dev);
         await Ledger.RegisterAsync(Test, _test);
-        var key = DeliveryKey.Derive("wells", ["NO 15/9-19"]);
-        await Ledger.UpsertPendingAsync(_dev, [Pending(_dev, key, "NO 15/9-19", "dev:master-data--Wellbore:NO-15-9-19")]);
+        var key = DeliveryKey.Derive("wells", ["WB A/1-19"]);
+        await Ledger.UpsertPendingAsync(_dev, [Pending(_dev, key, "WB A/1-19", "dev:master-data--Wellbore:WB-A-1-19")]);
         _clock.Advance(TimeSpan.FromSeconds(1));
-        await Ledger.UpsertPendingAsync(_test, [Pending(_test, key, "NO 15/9-19", "test:master-data--Wellbore:NO-15-9-19")]);
+        await Ledger.UpsertPendingAsync(_test, [Pending(_test, key, "WB A/1-19", "test:master-data--Wellbore:WB-A-1-19")]);
 
         // Each record names its partition, read one flow at a time or across flows.
         Assert.Equal(Dev, (await Ledger.GetRecordAsync(_dev, key))!.Partition);
@@ -114,13 +114,13 @@ public sealed class LedgerPartitionKeyTests : IDisposable
 
         // A partition is a filter on every read across ledgers; with none, each partition is read and the rows merged.
         Assert.Equal([_dev], (await Ledger.LookupAsync(key.Value.ToString(), 10, partition: Dev)).Select(r => r.FlowId));
-        Assert.Equal([_test], (await Ledger.LookupAsync("NO 15/9", 10, partition: Test)).Select(r => r.FlowId));
+        Assert.Equal([_test], (await Ledger.LookupAsync("WB A/1", 10, partition: Test)).Select(r => r.FlowId));
         Assert.Equal([_test, _dev], (await Ledger.ListRecentAsync(10)).Select(r => r.FlowId));
         Assert.Equal([Test, Dev], (await Ledger.ListRecentAsync(10)).Select(r => r.Partition));
         Assert.Equal([_dev], (await Ledger.ListRecentAsync(10, partition: Dev)).Select(r => r.FlowId));
         Assert.Equal(2, (await Ledger.CountRecentAsync(100)).Count);
         Assert.Equal(1, (await Ledger.CountRecentAsync(100, partition: Test)).Count);
-        Assert.Equal(1, (await Ledger.CountLookupAsync("NO 15/9", 100, partition: Dev)).Count);
+        Assert.Equal(1, (await Ledger.CountLookupAsync("WB A/1", 100, partition: Dev)).Count);
         Assert.Empty(await Ledger.ListRecentAsync(10, partition: "prod"));
 
         // A flow and a partition named together are both filters: a ledger of another partition reads empty.
@@ -129,10 +129,10 @@ public sealed class LedgerPartitionKeyTests : IDisposable
         Assert.Empty(await Ledger.LookupAsync(key.Value.ToString(), 10, flowId: _test, partition: Dev));
 
         // An OSDU id is held within its partition: each ledger's partition answers for its own ids only.
-        Assert.Equal(["dev:master-data--Wellbore:NO-15-9-19"], await Ledger.HeldIdsAsync(_dev, ["dev:master-data--Wellbore:NO-15-9-19", "test:master-data--Wellbore:NO-15-9-19"]));
-        Assert.Equal(["test:master-data--Wellbore:NO-15-9-19"], await Ledger.HeldIdsAsync(_test, ["dev:master-data--Wellbore:NO-15-9-19", "test:master-data--Wellbore:NO-15-9-19"]));
-        Assert.Equal(_test, Assert.Single(await Ledger.ListHoldersAsync(_test, "test:master-data--Wellbore:NO-15-9-19", 10)).FlowId);
-        Assert.Empty(await Ledger.ListHoldersAsync(_dev, "test:master-data--Wellbore:NO-15-9-19", 10));
+        Assert.Equal(["dev:master-data--Wellbore:WB-A-1-19"], await Ledger.HeldIdsAsync(_dev, ["dev:master-data--Wellbore:WB-A-1-19", "test:master-data--Wellbore:WB-A-1-19"]));
+        Assert.Equal(["test:master-data--Wellbore:WB-A-1-19"], await Ledger.HeldIdsAsync(_test, ["dev:master-data--Wellbore:WB-A-1-19", "test:master-data--Wellbore:WB-A-1-19"]));
+        Assert.Equal(_test, Assert.Single(await Ledger.ListHoldersAsync(_test, "test:master-data--Wellbore:WB-A-1-19", 10)).FlowId);
+        Assert.Empty(await Ledger.ListHoldersAsync(_dev, "test:master-data--Wellbore:WB-A-1-19", 10));
 
         // The directory lists each partition's ledgers.
         Assert.Equal([_dev], (await Ledger.ListLedgersAsync(Dev)).Select(l => l.FlowId));

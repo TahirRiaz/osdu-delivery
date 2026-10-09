@@ -521,7 +521,8 @@ internal sealed class ExpressionParser
     {
         if (node.Kind == ExpressionKind.Boolean && node is not LiteralNode)
         {
-            throw new ExpressionSyntaxException($"{where} is '{node.Written}', a condition; a condition decides with and, or, not or '?', and is not compared or combined as a value");
+            throw new ExpressionSyntaxException(
+                $"{where} is '{node.Written}', a condition; conditions are joined with and, or and not, and choose between values with {ChoiceSignature}, but are not compared or combined as values");
         }
     }
 

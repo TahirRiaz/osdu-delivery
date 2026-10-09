@@ -24,7 +24,7 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
   pipelineId: string | null;
   /** The record's ledger: the interface and partition a record opened from this one is read through. */
   flowScope: DeliveryFlowScope;
-  /** Whether the viewer holds the operate scope a node task takes. */
+  /** Whether the viewer may start a node task: the operate policy, which every signed-in user holds. */
   canOperate: boolean;
   /** Whether another request of the page is in flight, which holds a read back until it lands. */
   disabled: boolean;
@@ -48,7 +48,7 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
   // The last check of the record, kept so its fields carry the marks of the problems it found while the record is in view.
   const [validated, setValidated] = useState<ExplorerValidation | null>(null);
   const keepValidated = useCallback((result: ExplorerValidation | null) => setValidated(result), []);
-  // A check reads OSDU as the tab's read does, so it takes the operate scope and the flow the record is read through.
+  // A check reads OSDU as the tab's read does, so it takes the operate policy (every signed-in user holds it) and the flow the record is read through.
   const extras: InspectorExtras | undefined = pipelineId === null || !canOperate ? undefined : {
     validation: (checked, shownVersion, openPath) => (
       <ExplorerValidationView
@@ -73,7 +73,7 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
         className="h-7"
         onClick={osdu.readAgain}
         disabled={disabled || reading || !canActOnTarget || !canOperate}
-        title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials. Nothing is written." : "Reading what OSDU holds takes the operate scope."}
+        title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials. Nothing is written." : "Reading what OSDU holds takes a signed-in session."}
         data-testid="record-osdu-read"
       >
         <BookOpenCheck />

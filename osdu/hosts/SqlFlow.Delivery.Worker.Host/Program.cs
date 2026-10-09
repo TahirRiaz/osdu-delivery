@@ -22,13 +22,15 @@ internal static class Program
         ArgumentNullException.ThrowIfNull(args);
 
         // The verb is this host's identity, not something a caller chooses: a node process runs the node loop and
-        // nothing else, so an argument that named another verb would make the image behave as a different program.
-        if (Array.Exists(args, argument => string.Equals(argument, "worker", StringComparison.OrdinalIgnoreCase)))
+        // nothing else, so a positional argument (a verb, or anything else) is refused, while an option's value, such as
+        // the pool --pool names, is the node's.
+        var (commandLine, refusal) = WorkerHostArguments.Of(args);
+        if (commandLine is null)
         {
-            Console.Error.WriteLine("ERROR  this host is the OSDU Delivery worker; pass the node's options only (the 'worker' verb is implied).");
+            Console.Error.WriteLine($"ERROR  {refusal}");
             return Task.FromResult(1);
         }
 
-        return CliHost.RunAsync(["worker", .. args], OsduDeliveryBranding.Product, new DeliveryCliModule());
+        return CliHost.RunAsync(commandLine, OsduDeliveryBranding.Product, new DeliveryCliModule());
     }
 }

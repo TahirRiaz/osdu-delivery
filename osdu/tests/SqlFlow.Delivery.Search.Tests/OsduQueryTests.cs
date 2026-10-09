@@ -17,8 +17,8 @@ public class OsduQueryTests
         // The indexer maps every string as text with a keyword sub-field. The analysed field matches a phrase anywhere
         // in the value, so a lookup that must find one record asks the sub-field, which holds the whole value.
         Assert.Equal(
-            "data.FacilityName.keyword:\"NO 15/9-A-1\"",
-            OsduQuery.Exact("data.FacilityName", "NO 15/9-A-1").Text);
+            "data.FacilityName.keyword:\"Wellbore A/1-A-1\"",
+            OsduQuery.Exact("data.FacilityName", "Wellbore A/1-A-1").Text);
     }
 
     [Fact]
@@ -28,8 +28,8 @@ public class OsduQueryTests
     [Fact]
     public void A_value_is_quoted_so_its_words_are_one_value_and_not_an_or_of_words()
     {
-        // The service sets defaultOperator(OR), so an unquoted NO 15/9-A-1 would ask for NO or 15/9-A-1.
-        var text = OsduQuery.Exact("data.FacilityName", "NO 15/9-A-1").Text;
+        // The service sets defaultOperator(OR), so an unquoted Wellbore A/1-A-1 would ask for Wellbore or A/1-A-1.
+        var text = OsduQuery.Exact("data.FacilityName", "Wellbore A/1-A-1").Text;
         Assert.StartsWith("data.FacilityName.keyword:\"", text, StringComparison.Ordinal);
         Assert.EndsWith("\"", text, StringComparison.Ordinal);
     }
@@ -160,8 +160,8 @@ public class OsduQueryTests
         // keywordLower exists only where the platform enables it, so a caller asks for it explicitly and never by
         // default: on a platform without it the sub-field is absent and the query matches nothing.
         Assert.Equal(
-            "data.FacilityName.keywordLower:\"no 15/9-a-1\"",
-            OsduQuery.Exact("data.FacilityName", "no 15/9-a-1", caseInsensitive: true).Text);
+            "data.FacilityName.keywordLower:\"wellbore a/1-a-1\"",
+            OsduQuery.Exact("data.FacilityName", "wellbore a/1-a-1", caseInsensitive: true).Text);
     }
 
     [Theory]
@@ -219,11 +219,11 @@ public class OsduQueryTests
         var type = OsduField.Text("data.GeoContexts.GeoTypeID", "data.GeoContexts");
         var depth = OsduField.Number("data.GeoContexts.Depth", "data.GeoContexts");
 
-        var query = OsduQuery.NestedAll("data.GeoContexts", [(entity, "dev:master-data--GeoPoliticalEntity:Norway:"), (type, "dev:reference-data--GeoPoliticalEntityType:Country:"), (depth, "12.5")]);
+        var query = OsduQuery.NestedAll("data.GeoContexts", [(entity, "dev:master-data--GeoPoliticalEntity:UnitedStates:"), (type, "dev:reference-data--GeoPoliticalEntityType:Country:"), (depth, "12.5")]);
 
         // No parentheses of their own: the service prefixes the first property and each one after an AND with the array's path.
         Assert.Equal(
-            "nested(data.GeoContexts, (GeoPoliticalEntityID.keyword:\"dev:master-data--GeoPoliticalEntity:Norway:\" AND GeoTypeID.keyword:\"dev:reference-data--GeoPoliticalEntityType:Country:\" AND Depth:\"12.5\"))",
+            "nested(data.GeoContexts, (GeoPoliticalEntityID.keyword:\"dev:master-data--GeoPoliticalEntity:UnitedStates:\" AND GeoTypeID.keyword:\"dev:reference-data--GeoPoliticalEntityType:Country:\" AND Depth:\"12.5\"))",
             query.Text);
 
         // One comparison is Equal's own.
@@ -342,7 +342,7 @@ public class OsduQueryTests
     [Theory]
     [InlineData("A AND B")]
     [InlineData("SAND:1")]
-    [InlineData("NO 15/9-F-1")]
+    [InlineData("Wellbore A/1-F-1")]
     public void A_value_the_service_leaves_alone_is_carried_inside_a_nested_query(string value)
         => Assert.Contains(
             LuceneText.Phrase(value),
@@ -360,10 +360,10 @@ public class OsduQueryTests
     public void Words_ask_the_analysed_field_as_a_phrase_and_reach_a_nested_array_through_its_form()
     {
         // The analysed field keeps the words apart and in lower case, so the phrase is found anywhere in the value, any case.
-        Assert.Equal("data.Equinor.WellboreName:\"NO 34/10\"", OsduQuery.Words(OsduField.Text("data.Equinor.WellboreName"), "NO 34/10").Text);
+        Assert.Equal("data.Augmented.WellboreName:\"WB D/4\"", OsduQuery.Words(OsduField.Text("data.Augmented.WellboreName"), "WB D/4").Text);
         Assert.Equal(
-            "nested(data.NameAliases, (AliasName:\"Gullfaks A\"))",
-            OsduQuery.Words(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "Gullfaks A").Text);
+            "nested(data.NameAliases, (AliasName:\"Field A\"))",
+            OsduQuery.Words(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "Field A").Text);
     }
 
     [Theory]
@@ -378,8 +378,8 @@ public class OsduQueryTests
     [Fact]
     public void A_start_is_a_bare_term_before_the_wildcard_on_the_whole_value_with_every_reserved_character_escaped()
     {
-        Assert.Equal("data.Equinor.WellboreName.keyword:NO\\ 34\\/10*", OsduQuery.Prefix(OsduField.Text("data.Equinor.WellboreName"), "NO 34/10").Text);
-        Assert.Equal("legal.legaltags:dev\\-equinor*", OsduQuery.Prefix(OsduField.Keyword("legal.legaltags"), "dev-equinor").Text);
+        Assert.Equal("data.Augmented.WellboreName.keyword:WB\\ D\\/4*", OsduQuery.Prefix(OsduField.Text("data.Augmented.WellboreName"), "WB D/4").Text);
+        Assert.Equal("legal.legaltags:dev\\-osdu*", OsduQuery.Prefix(OsduField.Keyword("legal.legaltags"), "dev-osdu").Text);
 
         // A star the reader typed is a character to match, not a second wildcard.
         Assert.Equal("data.Name.keyword:A\\*B*", OsduQuery.Prefix(OsduField.Text("data.Name"), "A*B").Text);

@@ -50,9 +50,9 @@ public class MappingBuilderTests
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [RenderContext.DataPartitionParameter] = "dev",
-                ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
-                ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
-                ["legalTag"] = "dev-equinor-osdu-reference-default",
+                ["aclOwner"] = "data.welldb.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.welldb.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-osdu-default-legal",
             },
         };
         var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, reread);
@@ -285,8 +285,8 @@ public class MappingBuilderTests
         Assert.Contains("needs the text an unlisted value becomes", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], OtherwiseKind: "text", OtherwiseText: " ")), StringComparison.Ordinal);
 
         // A table read from the cache is named and not listed, and its fields go with it.
-        Assert.Contains("reads its table from the cache or lists its values, not both", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], Table: "RecallUnits")), StringComparison.Ordinal);
-        Assert.Contains("replace reads cache type 'Recall Units'", Issue(new MappingDraftModifier("replace", Table: "Recall Units")), StringComparison.Ordinal);
+        Assert.Contains("reads its table from the cache or lists its values, not both", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], Table: "UnitAlias")), StringComparison.Ordinal);
+        Assert.Contains("replace reads cache type 'Unit Alias'", Issue(new MappingDraftModifier("replace", Table: "Unit Alias")), StringComparison.Ordinal);
         Assert.Contains("replace's match names the cached field", Issue(new MappingDraftModifier("replace", Table: "CurveClasses", Match: "a b")), StringComparison.Ordinal);
         Assert.Contains("replace's field names the cached field", Issue(new MappingDraftModifier("replace", Table: "CurveClasses", Field: "family?")), StringComparison.Ordinal);
         Assert.Contains("match and field choose the fields of a table read from the cache; choose the cached type too", Issue(new MappingDraftModifier("replace", Replacements: [new("M", "m")], Field: "value")), StringComparison.Ordinal);
@@ -395,6 +395,8 @@ public class MappingBuilderTests
                     FindBy = [new MappingDraftFind("Code", "unit", null), new MappingDraftFind("Name", null, "metre")],
                     IgnoreSeparators = true,
                 },
+                // A word YAML would read as a boolean is quoted inside a flow list, so it reads back as the same text.
+                new MappingDraftEntry { Target = "osdu.data.Aliases", Input = MappingDraftInput.Static, Static = """["no", "A-1"]""" },
             ],
         };
         Assert.Empty(MappingBuilder.Incomplete(draft));
@@ -408,7 +410,7 @@ public class MappingBuilderTests
                 viewers: [viewers@x]
               legal:
                 legaltags: [tag]
-                otherRelevantDataCountries: ["NO"]
+                otherRelevantDataCountries: [US]
               data:
                 Name: { $from: name }
                 Depth: { $from: depth }
@@ -441,6 +443,7 @@ public class MappingBuilderTests
                     - Code = unit
                     - Name = 'metre'
                   $ignoreSeparators: true
+                Aliases: ["no", A-1]
               tags:
                 Source: "{$param.dataPartition}-test"
             """,
@@ -569,12 +572,12 @@ public class MappingBuilderTests
                     ],
                 },
                 new MappingDraftEntry { Target = "osdu.legal.legaltags", Input = MappingDraftInput.List, Items = [Fixed("osdu.legal.legaltags", "\"tag\"")] },
-                Fixed("osdu.legal.otherRelevantDataCountries", """["NO"]"""),
+                Fixed("osdu.legal.otherRelevantDataCountries", """["US"]"""),
                 new MappingDraftEntry { Target = "osdu.data.Name", Input = MappingDraftInput.Dataset, Column = "name" },
                 new MappingDraftEntry { Target = "osdu.data.WellboreID", Input = MappingDraftInput.Lookup, Lookup = "well", CacheField = "id" },
                 new MappingDraftEntry
                 {
-                    Target = "osdu.data.Aliases", Input = MappingDraftInput.Cache, CacheType = "AccessGroupMap", CacheField = "EntitlementGroupEmail",
+                    Target = "osdu.data.Aliases", Input = MappingDraftInput.Cache, CacheType = "AccessGroup", CacheField = "EntitlementGroupEmail",
                     FindAll = new MappingDraftFindAll { Field = "FieldList", Column = "uwi", Literal = "x", Empty = ["FieldList"] },
                 },
             ],
@@ -618,7 +621,7 @@ public class MappingBuilderTests
             new MappingDraftEntry { Target = "osdu.acl.owners", Input = MappingDraftInput.Static, Static = """["owners@x"]""" },
             new MappingDraftEntry { Target = "osdu.acl.viewers", Input = MappingDraftInput.Static, Static = """["viewers@x"]""" },
             new MappingDraftEntry { Target = "osdu.legal.legaltags", Input = MappingDraftInput.Static, Static = """["tag"]""" },
-            new MappingDraftEntry { Target = "osdu.legal.otherRelevantDataCountries", Input = MappingDraftInput.Static, Static = """["NO"]""" },
+            new MappingDraftEntry { Target = "osdu.legal.otherRelevantDataCountries", Input = MappingDraftInput.Static, Static = """["US"]""" },
             new MappingDraftEntry { Target = "osdu.data.Name", Input = MappingDraftInput.Dataset, Column = "name" },
         ],
     };

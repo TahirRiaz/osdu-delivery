@@ -23,8 +23,8 @@ namespace SqlFlow.Delivery.Tests;
 [Collection(SqlServerSuite.Name)]
 public sealed class DdmsSourceTests : IDisposable
 {
-    private const string TrajectoryTable = "OsduData.arc.WellboreTrajectory";
-    private const string WellLogTable = "OsduData.arc.WellLog";
+    private const string TrajectoryTable = "OsduData.silver.WellboreTrajectory";
+    private const string WellLogTable = "OsduData.silver.WellLog";
     private const string Root = "/api/os-wellbore-ddms";
 
     private readonly OsduTestDatabase _db = new();
@@ -61,9 +61,9 @@ public sealed class DdmsSourceTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
-                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
-                legalTag: dev-equinor-osdu-reference-default
+                aclOwner: data.welldb.owners@dev.dataservices.energy
+                aclViewer: data.welldb.viewers@dev.dataservices.energy
+                legalTag: dev-osdu-default-legal
             target:
               endpoint: http://localhost
               headers:
@@ -80,13 +80,13 @@ public sealed class DdmsSourceTests : IDisposable
               trajectories:
                 record: { object: {{TrajectoryTable}}, key: [source_project, survey_id], primaryKey: RecId }
                 datasets:
-                  stations: { object: OsduData.arc.WellboreTrajectoryStation, join: { source_project: source_project, survey_id: survey_id }, orderBy: [station_ordinal] }
+                  stations: { object: OsduData.silver.WellboreTrajectoryStation, join: { source_project: source_project, survey_id: survey_id }, orderBy: [station_ordinal] }
                 bulk: { root: '{{root}}/stations', locationColumn: station_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellboreTrajectory@1.3.0
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.silver.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellLog@1.4.0
             """).ReplaceLineEndings("\n");
@@ -106,7 +106,7 @@ public sealed class DdmsSourceTests : IDisposable
     /// </summary>
     private async Task<MemoryRecord> SurveyAsync(long rowNumber, string surveyId, string wellbore, IReadOnlyList<(string Name, string Type, string Unit)> stations, IReadOnlyList<string> columns)
     {
-        var directory = Path.Combine(_root, "stations", "NO_15_9", surveyId);
+        var directory = Path.Combine(_root, "stations", "PROJECT_A", surveyId);
         Directory.CreateDirectory(directory);
         var rows = Enumerable.Range(0, 5)
             .Select(i => (IReadOnlyDictionary<string, object?>)columns.ToDictionary(c => c, c => (object?)(c == "MD" ? 1000.0 + i : 10.0 + i), StringComparer.Ordinal))
@@ -124,7 +124,7 @@ public sealed class DdmsSourceTests : IDisposable
             Row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["RecId"] = rowNumber,
-                ["source_project"] = "NO_15_9",
+                ["source_project"] = "PROJECT_A",
                 ["survey_id"] = surveyId,
                 ["wellbore_uwi"] = wellbore,
                 ["survey_name"] = "GYRO_2026",
@@ -134,7 +134,7 @@ public sealed class DdmsSourceTests : IDisposable
                 ["base_md"] = "1004",
                 ["elev_meas_ref"] = "23.5 M",
                 ["update_date"] = updated,
-                ["station_folder"] = "NO_15_9/" + surveyId,
+                ["station_folder"] = "PROJECT_A/" + surveyId,
                 ["payload_hash"] = "stations-" + surveyId,
                 ["chunk_count"] = 1L,
             },
@@ -147,7 +147,7 @@ public sealed class DdmsSourceTests : IDisposable
         {
             record.AddChild("stations", new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["source_project"] = "NO_15_9",
+                ["source_project"] = "PROJECT_A",
                 ["survey_id"] = surveyId,
                 ["station_ordinal"] = (long)i,
                 ["station_property"] = stations[i].Name,
@@ -223,14 +223,14 @@ public sealed class DdmsSourceTests : IDisposable
         var logs = Assert.IsType<DeliverOutcome>(outcome.Interfaces[1].Result);
         var reasons = (await engine.Ledger!.GetRecordsAsync(
                 FlowId.Of("surveys/trajectories"),
-                [DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]), DeliveryKey.Derive("wells", ["NO_15_9", "T-1002"])]))
+                [DeliveryKey.Derive("wells", ["PROJECT_A", "T-1001"]), DeliveryKey.Derive("wells", ["PROJECT_A", "T-1002"])]))
             .Values.Select(r => $"{r.SourceKey}: {r.Status} {r.LastError}");
         Assert.True((surveys.Delivered, surveys.Held) == (1L, 1L), string.Join(" | ", reasons));
         Assert.Equal(5, logs.Delivered);
 
         // Each record went to the collection serving its entity type, record first and its bulk data after it.
         string Call(FakeHttpHandler.Request c) => c.Method + " " + c.Uri.AbsolutePath;
-        var surveyId = "dev:work-product-component--WellboreTrajectory:" + DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]).Value.ToString("N");
+        var surveyId = "dev:work-product-component--WellboreTrajectory:" + DeliveryKey.Derive("wells", ["PROJECT_A", "T-1001"]).Value.ToString("N");
         var trajectoryCalls = handler.Calls.Select(Call).Where(c => c.Contains("/wellboretrajectories", StringComparison.Ordinal)).ToList();
         Assert.Equal(
             [
@@ -260,7 +260,7 @@ public sealed class DdmsSourceTests : IDisposable
         var trajectoryLedger = FlowId.Of("surveys/trajectories");
         var stats = await ledger.StatsAsync(trajectoryLedger, _clock.GetUtcNow().UtcDateTime);
         Assert.Equal((1L, 1L), (stats.Delivered, stats.Held));
-        var heldKey = DeliveryKey.Derive("wells", ["NO_15_9", "T-1002"]);
+        var heldKey = DeliveryKey.Derive("wells", ["PROJECT_A", "T-1002"]);
         var held = (await ledger.GetRecordsAsync(trajectoryLedger, [heldKey]))[heldKey];
         Assert.Contains("the bulk column(s) AZI match no data.AvailableTrajectoryStationProperties[].Name", held.LastError, StringComparison.Ordinal);
         Assert.Equal(5, (await ledger.StatsAsync(FlowId.Of("surveys/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);

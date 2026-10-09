@@ -217,7 +217,7 @@ public sealed class RecordInspectionTests
     [Fact]
     public void A_selection_evaluates_only_what_reaches_the_variables_it_names()
     {
-        var search = new FixedRecordSearch([("data.FacilityName", "NO 1/1-A", "dev:master-data--Wellbore:abc")]);
+        var search = new FixedRecordSearch([("data.FacilityName", "Wellbore 1/1-A", "dev:master-data--Wellbore:abc")]);
         var renderer = Searching("""
             WellboreID:
               $search: Wellbore
@@ -228,7 +228,7 @@ public sealed class RecordInspectionTests
                 CurveID: { $from: curve_id }
                 TopDepth: { $from: top }
             """, search);
-        var record = Record(Row(("wellbore", "NO 1/1-A"), ("depth", null)), ("curves", Row(("curve_id", "GR"), ("top", null))));
+        var record = Record(Row(("wellbore", "Wellbore 1/1-A"), ("depth", null)), ("curves", Row(("curve_id", "GR"), ("top", null))));
 
         // A check of the name asks the platform nothing: the wellbore is another variable's.
         var name = renderer.Inspect(record, EntrySelection.Of([Path("osdu.data.Name")]));
@@ -255,13 +255,13 @@ public sealed class RecordInspectionTests
     [Fact]
     public async Task An_entry_waiting_on_a_search_says_what_it_waits_for_and_settles_once_the_platform_answers()
     {
-        var search = new FixedRecordSearch([("data.FacilityName", "NO 1/1-A", "dev:master-data--Wellbore:abc")]);
+        var search = new FixedRecordSearch([("data.FacilityName", "Wellbore 1/1-A", "dev:master-data--Wellbore:abc")]);
         var renderer = Searching("""
             WellboreID:
               $search: Wellbore
               $findBy: data.FacilityName = wellbore
             """, search);
-        var record = Record(Row(("wellbore", "NO 1/1-A")));
+        var record = Record(Row(("wellbore", "Wellbore 1/1-A")));
         var selection = EntrySelection.Of([Path("osdu.data.WellboreID")]);
 
         var first = renderer.Inspect(record, selection);

@@ -20,10 +20,10 @@ public class DimensionBlueprintTests
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
     private const string CountryKind = "osdu:wks:master-data--GeoPoliticalEntity:1.0.0";
 
-    /// <summary>The recall estate's Wellbore dimension, as its flow writes it, comments and all.</summary>
+    /// <summary>The well database estate's Wellbore dimension, as its flow writes it, comments and all.</summary>
     private const string Flow = """
         flowType: dimension
-        name: recall-welllog-05-dimensions
+        name: welldb-welllog-05-dimensions
         source:
           endpoint: http://localhost
         dimensions:
@@ -49,7 +49,7 @@ public class DimensionBlueprintTests
             path: data.Source
         """;
 
-    private static DimensionFlowDefinition Parsed => new DeliveryDocumentLoader().ParseDimension(Flow, "flows/recall-welllog-05-dimensions.yaml");
+    private static DimensionFlowDefinition Parsed => new DeliveryDocumentLoader().ParseDimension(Flow, "flows/welldb-welllog-05-dimensions.yaml");
 
     private static DimensionSpec Wellbore => Parsed.Dimension("Wellbore")!;
 

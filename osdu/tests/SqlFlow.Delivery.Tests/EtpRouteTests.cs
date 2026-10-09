@@ -35,7 +35,7 @@ public class EtpRouteTests : IDisposable
         var route = Route(server);
         var uuid = Guid.NewGuid();
 
-        var outcome = await route.DeliverAsync(Work(uuid, "Top Volve"));
+        var outcome = await route.DeliverAsync(Work(uuid, "Top Field A"));
 
         Assert.True(outcome.Succeeded);
         Assert.True(outcome.MetadataDelivered);
@@ -48,7 +48,7 @@ public class EtpRouteTests : IDisposable
         Assert.Equal("demo/study", space.Path);
         Assert.Equal(["data.default.viewers@dev.example.com"], space.CustomData["viewers"].Strings);
         Assert.Equal(["dev-public-usa-dataset-1"], space.CustomData["legaltags"].Strings);
-        Assert.Equal("Top Volve", Assert.Single(space.Objects.Values).Name);
+        Assert.Equal("Top Field A", Assert.Single(space.Objects.Values).Name);
         Assert.False(server.InTransaction);
 
         // The server registers the dataspace's OSDU record itself; the route knows the id it will have.

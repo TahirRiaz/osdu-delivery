@@ -128,7 +128,7 @@ public sealed class SeismicStoreRouteTests
     private static List<string> ServiceCalls(FakeOsduPlatform platform, int from = 0)
         => platform.Calls.Skip(from).Where(c => !Store(c)).Select(c => c.Method + " " + Uri.UnescapeDataString(c.Uri.PathAndQuery)).ToList();
 
-    private static List<FakeHttpHandler.Request> StoreCalls(FakeOsduPlatform platform, int from = 0) => platform.Calls.Skip(from).Where(Store).ToList();
+    private static List<FakeHttpHandler.Request> ObjectStoreRequests(FakeOsduPlatform platform, int from = 0) => platform.Calls.Skip(from).Where(Store).ToList();
 
     /// <summary>The requests to an object store, which no OSDU contract describes.</summary>
     private static bool Store(FakeHttpHandler.Request request)
@@ -178,7 +178,7 @@ public sealed class SeismicStoreRouteTests
 
         // Three blobs, each one staged block and a block list; each keeps the file's MD5 up to its end, as sdutil writes it.
         var location = Location(platform);
-        var store = StoreCalls(platform);
+        var store = ObjectStoreRequests(platform);
         Assert.Equal(6, store.Count);
         Assert.All(store, c => Assert.Equal("2021-08-06", c.Headers["x-ms-version"]));
         Assert.All(store, c => Assert.False(c.Headers.ContainsKey("Authorization")));
@@ -260,7 +260,7 @@ public sealed class SeismicStoreRouteTests
         Assert.Equal("chunks", outcome.Returned[SeismicStoreShape.LayoutKey]);
 
         // The object is named under the dataset's location without its bucket, and every request carries the issued token.
-        var store = StoreCalls(platform);
+        var store = ObjectStoreRequests(platform);
         Assert.Equal(requests, store.Count);
         Assert.Equal("/gcs/upload/storage/v1/b/ss-dev-seismic00001/o", store[0].Uri.AbsolutePath);
         var query = HttpUtility.ParseQueryString(store[0].Uri.Query);
@@ -299,7 +299,7 @@ public sealed class SeismicStoreRouteTests
 
             Assert.Contains("$$folder01/", platform.SeismicDatasets[SdPath]["gcsurl"]!.GetValue<string>(), StringComparison.Ordinal);
             Same(file, platform.SeismicObjects[Location(platform) + "/0"]);
-            var store = StoreCalls(platform);
+            var store = ObjectStoreRequests(platform);
             Assert.Equal(["POST", "PUT", "PUT", "PUT", "POST"], store.Select(c => c.Method.Method));
             Assert.Equal("?uploads", store[0].Uri.Query);
             Assert.Equal("/s3/" + Location(platform) + "/0", store[0].Uri.AbsolutePath);
@@ -318,7 +318,7 @@ public sealed class SeismicStoreRouteTests
             var outcome = await rig.Protocol.DeliverAsync(Work(Line(), Files(("line-001.sgy", file))));
             Assert.True(outcome.Succeeded, outcome.Failure?.Message);
             Same(file, ibm.SeismicObjects[Location(ibm) + "/0"]);
-            var put = Assert.Single(StoreCalls(ibm));
+            var put = Assert.Single(ObjectStoreRequests(ibm));
             Assert.Equal(HttpMethod.Put, put.Method);
             Assert.Equal($"/s3/{Location(ibm)}/0", put.Uri.AbsolutePath);
             Assert.Equal("ibm", outcome.Returned[SeismicStoreShape.ProviderKey]);
@@ -347,7 +347,7 @@ public sealed class SeismicStoreRouteTests
 
         Assert.Equal(2, platform.SeismicCredentialsIssued);
         Same(file, provider == "azure" ? Joined(platform, length / MiB) : platform.SeismicObjects[Location(platform) + "/0"]);
-        var store = StoreCalls(platform);
+        var store = ObjectStoreRequests(platform);
         Assert.Contains(store, c => (c.Uri.Query + " " + c.Headers.GetValueOrDefault("Authorization")).Contains(renewed, StringComparison.Ordinal));
 
         // A multipart upload keeps its id across the renewal.
@@ -411,7 +411,7 @@ public sealed class SeismicStoreRouteTests
         var lockId = reported[SeismicStoreShape.LockStep]["lockId"];
         Assert.Equal([$"PUT {Base}/lock?path=surveys/north&openmode=write", Credentials, Close(lockId), ReadRecord], ServiceCalls(platform, calls));
         Assert.Equal(lockId, platform.Calls[calls].Headers[SeismicStoreShape.LockHeader]);
-        Assert.Equal(4, StoreCalls(platform, calls).Count);
+        Assert.Equal(4, ObjectStoreRequests(platform, calls).Count);
         Assert.Equal(2, outcome.ChunksSent);
         Same(file, Joined(platform, 18));
         Assert.Equal(Convert.ToHexStringLower(Md5(file)), Metadata(platform)["md5Checksum"]!.GetValue<string>());
@@ -426,7 +426,7 @@ public sealed class SeismicStoreRouteTests
         var closed = await rig.Protocol.DeliverAsync(Work(Line(), Files(("line-001.sgy", file)), completed: again));
         Assert.True(closed.Succeeded, closed.Failure?.Message);
         Assert.Equal([ReadRecord], ServiceCalls(platform, calls));
-        Assert.Empty(StoreCalls(platform, calls));
+        Assert.Empty(ObjectStoreRequests(platform, calls));
         Assert.Equal(outcome.TargetVersion, closed.TargetVersion);
         Assert.Equal(["metadata", "lock", "register", "upload", "close"], closed.Steps.Select(s => s.Name));
         Assert.All(closed.Steps, s => Assert.True(s.Resumed));
@@ -482,7 +482,7 @@ public sealed class SeismicStoreRouteTests
         Assert.Equal(first.Steps.Single(s => s.Name == SeismicStoreShape.LockStep).Returned["lockId"], lockId);
 
         // Two blobs written, the third one of the lost delivery removed, and the record sent with the close.
-        Assert.Equal(["PUT", "PUT", "PUT", "PUT", "DELETE"], StoreCalls(platform, calls).Select(c => c.Method.Method));
+        Assert.Equal(["PUT", "PUT", "PUT", "PUT", "DELETE"], ObjectStoreRequests(platform, calls).Select(c => c.Method.Method));
         Same(smaller, Joined(platform, 2));
         Assert.False(platform.SeismicObjects.ContainsKey(location + "/2"));
         Assert.Equal(smaller.Length, Metadata(platform)["size"]!.GetValue<long>());
@@ -549,7 +549,7 @@ public sealed class SeismicStoreRouteTests
         {
             var busy = await Assert.ThrowsAsync<DeliveryException>(() => rig.Protocol.DeliverAsync(Work(Line(), Files(("line-001.sgy", Bytes(1000))))));
             Assert.StartsWith($"Seismic Store is deleting the dataset {SdPath} (status DELETE:1789000000000); the next try registers it again", busy.Message, StringComparison.Ordinal);
-            Assert.Empty(StoreCalls(deleting));
+            Assert.Empty(ObjectStoreRequests(deleting));
         }
 
         var locked = new FakeOsduPlatform();
@@ -586,7 +586,7 @@ public sealed class SeismicStoreRouteTests
             [$"PATCH {Base}?path=surveys/north", $"PUT {Base}/lock?path=surveys/north&openmode=write", Credentials, Close(lockId), ReadRecord],
             ServiceCalls(platform, calls));
         Assert.Equal("{\"readonly\":false}", platform.Calls[calls].Body);
-        Assert.Equal(["PUT", "PUT", "PUT", "PUT", "DELETE"], StoreCalls(platform, calls).Select(c => c.Method.Method));
+        Assert.Equal(["PUT", "PUT", "PUT", "PUT", "DELETE"], ObjectStoreRequests(platform, calls).Select(c => c.Method.Method));
         Assert.False(platform.SeismicObjects.ContainsKey(location + "/2"));
         Same(smaller, Joined(platform, 2));
         Assert.True(platform.SeismicDatasets[SdPath]["readonly"]!.GetValue<bool>());
@@ -608,7 +608,7 @@ public sealed class SeismicStoreRouteTests
         Assert.Equal(smaller.Length.ToString(CultureInfo.InvariantCulture), stored["DatasetProperties"]!["FileSourceInfos"]![0]!["FileSize"]!.GetValue<string>());
         Assert.Equal(smaller.Length.ToString(CultureInfo.InvariantCulture), stored["TotalSize"]!.GetValue<string>());
         Assert.True(third.TargetVersion > second.TargetVersion);
-        Assert.Empty(StoreCalls(platform, calls));
+        Assert.Empty(ObjectStoreRequests(platform, calls));
         Assert.Equal(["metadata"], third.Steps.Select(s => s.Name));
         Assert.False(third.PayloadDelivered);
         Assert.Null(third.Detail);
@@ -664,7 +664,7 @@ public sealed class SeismicStoreRouteTests
             var outcome = await rig.Protocol.DeliverAsync(Work(Line()));
             Assert.True(outcome.Succeeded, outcome.Failure?.Message);
             Assert.Equal((0, 0L), (Metadata(platform)["nobjects"]!.GetValue<int>(), Metadata(platform)["size"]!.GetValue<long>()));
-            Assert.Empty(StoreCalls(platform));
+            Assert.Empty(ObjectStoreRequests(platform));
             Assert.False(outcome.PayloadDelivered);
             Assert.Equal(("0", "0"), (outcome.Returned[SeismicStoreShape.ObjectsKey], outcome.Returned[SeismicStoreShape.SizeKey]));
             Assert.Equal(["lock", "register", "metadata", "close"], outcome.Steps.Select(s => s.Name));
@@ -686,7 +686,7 @@ public sealed class SeismicStoreRouteTests
             Assert.False(Metadata(google).AsObject().ContainsKey("md5Checksum"));
 
             // Each object is a session of its own; the empty one is one request that states its end.
-            Assert.Equal(["POST", "PUT", "POST", "PUT", "POST", "PUT"], StoreCalls(google).Select(c => c.Method.Method));
+            Assert.Equal(["POST", "PUT", "POST", "PUT", "POST", "PUT"], ObjectStoreRequests(google).Select(c => c.Method.Method));
         }
 
         var azure = new FakeOsduPlatform();
@@ -702,8 +702,8 @@ public sealed class SeismicStoreRouteTests
             Assert.Empty(azure.SeismicObjects[location + "/empty.vds"]);
             Assert.Equal(Convert.ToBase64String(Md5(bigger)), azure.AzureBlobMd5[location + "/a.vds"]);
             Assert.Equal(Convert.ToBase64String(Md5(ReadOnlySpan<byte>.Empty)), azure.AzureBlobMd5[location + "/empty.vds"]);
-            Assert.Equal(["PUT", "PUT", "PUT", "PUT"], StoreCalls(azure).Select(c => c.Method.Method));
-            Assert.Equal("BlockBlob", StoreCalls(azure)[^1].Headers["x-ms-blob-type"]);
+            Assert.Equal(["PUT", "PUT", "PUT", "PUT"], ObjectStoreRequests(azure).Select(c => c.Method.Method));
+            Assert.Equal("BlockBlob", ObjectStoreRequests(azure)[^1].Headers["x-ms-blob-type"]);
         }
     }
 
@@ -823,7 +823,7 @@ public sealed class SeismicStoreRouteTests
             + "set chunkMiB, the size of each block and of each blob a single file is cut into, higher",
             held.Message);
         Assert.Equal(0, platform.SeismicCredentialsIssued);
-        Assert.Empty(StoreCalls(platform));
+        Assert.Empty(ObjectStoreRequests(platform));
         Assert.Empty(platform.SeismicLocks);
     }
 

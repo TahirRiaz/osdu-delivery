@@ -22,8 +22,8 @@ public sealed class SearchTermCatalogTests : IDisposable
     private const string WellLog = "work-product-component--WellLog";
 
     /// <summary>The tables the sample flow reads: a log's row, and its curves' rows under the dataset <c>curves</c>.</summary>
-    private const string Header = "OsduData.arc.WellLog";
-    private const string Curves = "OsduData.arc.WellLogCurve";
+    private const string Header = "OsduData.silver.WellLog";
+    private const string Curves = "OsduData.silver.WellLogCurve";
 
     private readonly OsduTestDatabase _module = new();
     private readonly string _root = Path.Combine(Path.GetTempPath(), "sqlflow-search-terms-" + Guid.NewGuid().ToString("N"));
@@ -83,13 +83,13 @@ public sealed class SearchTermCatalogTests : IDisposable
         var mapping = File.ReadAllText(Path.Combine(_root, "mappings", "WellLog@1.4.0.yaml"))
             .Replace("\nversion: 1.4.0", "\nversion: 1.5.0", StringComparison.Ordinal)
             .Replace("  kind: osdu:wks:work-product-component--WellLog:1.4.0", "  kind: " + WellLogVersions.NextKind, StringComparison.Ordinal)
-            .Replace("  system: recall\n", "  system: recall-welllog-1.5.0\n", StringComparison.Ordinal)
-            .Replace("  system: recall\r\n", "  system: recall-welllog-1.5.0\r\n", StringComparison.Ordinal);
+            .Replace("  system: welldb\n", "  system: welldb-welllog-1.5.0\n", StringComparison.Ordinal)
+            .Replace("  system: welldb\r\n", "  system: welldb-welllog-1.5.0\r\n", StringComparison.Ordinal);
         File.WriteAllText(Path.Combine(_root, "mappings", "WellLog@1.5.0.yaml"), mapping);
-        var flow = File.ReadAllText(Path.Combine(_root, "flows", "recall-welllog-03-header-delivery.yaml"))
-            .Replace("name: recall-welllog-03-header-delivery", "name: recall-welllog-03-header-delivery-v150", StringComparison.Ordinal)
+        var flow = File.ReadAllText(Path.Combine(_root, "flows", "welldb-welllog-03-header-delivery.yaml"))
+            .Replace("name: welldb-welllog-03-header-delivery", "name: welldb-welllog-03-header-delivery-v150", StringComparison.Ordinal)
             .Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.5.0", StringComparison.Ordinal);
-        File.WriteAllText(Path.Combine(_root, "flows", "recall-welllog-03-header-delivery-v150.yaml"), flow);
+        File.WriteAllText(Path.Combine(_root, "flows", "welldb-welllog-03-header-delivery-v150.yaml"), flow);
     }
 
     [Fact]
@@ -101,8 +101,8 @@ public sealed class SearchTermCatalogTests : IDisposable
         await using var db = _module.CreateDbContext();
         var rows = await db.DeliverySearchTerms.AsNoTracking().Where(t => t.RepoId == _repo).ToListAsync();
         var wellbore = Assert.Single(rows, r => r.Column == "wellbore_uwi");
-        Assert.Equal((IdOf("wellbore_uwi"), "osdudata.arc.welllog/wellbore_uwi", WellLog, Header), (wellbore.TermId, wellbore.TermKey, wellbore.EntityType, wellbore.Source));
-        Assert.Contains("recall-welllog-03-header-delivery", wellbore.FlowsJson, StringComparison.Ordinal);
+        Assert.Equal((IdOf("wellbore_uwi"), "osdudata.silver.welllog/wellbore_uwi", WellLog, Header), (wellbore.TermId, wellbore.TermKey, wellbore.EntityType, wellbore.Source));
+        Assert.Contains("welldb-welllog-03-header-delivery", wellbore.FlowsJson, StringComparison.Ordinal);
         Assert.Equal(SearchRouteKind.Search, Assert.Single(SearchRoute.FromJson(wellbore.RoutesJson)).Kind);
         Assert.Contains(rows, r => r.Source == Curves && r.Column == "curve_unit");
 
@@ -141,7 +141,7 @@ public sealed class SearchTermCatalogTests : IDisposable
         // saved template of them, which says how a unit's code is indexed.
         var unit = Assert.Single(terms, t => t.ColumnLabel == "WellLogCurve.curve_unit");
         Assert.Null(unit.Route);
-        Assert.Contains(unit.Routes, r => r.Kind == "steps" && r.Problem!.Contains("RecallUnits", StringComparison.Ordinal));
+        Assert.Contains(unit.Routes, r => r.Kind == "steps" && r.Problem!.Contains("UnitAlias", StringComparison.Ordinal));
         Assert.Contains(unit.Routes, r => r.Kind == "lookup" && r.Problem!.Contains("no saved template of osdu:wks:reference-data--UnitOfMeasure:*", StringComparison.Ordinal));
 
         var types = await WithDirectoryAsync(d => d.EntityTypesAsync(CancellationToken.None));
@@ -154,8 +154,8 @@ public sealed class SearchTermCatalogTests : IDisposable
         await SyncAsync();
         await SaveTemplatesAsync();
 
-        var renamed = await RefineAsync(IdOf("wellbore_uwi"), new SearchTermRefinementRequest("Wellbore name", false, null, "The UWI Recall files the log under."));
-        Assert.Equal(("Wellbore name", true, "The UWI Recall files the log under.", "tester"), (renamed.Name, renamed.Renamed, renamed.Note, renamed.UpdatedBy));
+        var renamed = await RefineAsync(IdOf("wellbore_uwi"), new SearchTermRefinementRequest("Wellbore name", false, null, "The UWI the well database files the log under."));
+        Assert.Equal(("Wellbore name", true, "The UWI the well database files the log under.", "tester"), (renamed.Name, renamed.Renamed, renamed.Note, renamed.UpdatedBy));
         await RefineAsync(IdOf("log_run"), new SearchTermRefinementRequest("Run", true, null, null));
 
         // A sync writes the terms again and never what was made of them.
@@ -217,7 +217,7 @@ public sealed class SearchTermCatalogTests : IDisposable
         await SaveTemplatesAsync();
         await RefineAsync(IdOf("wellbore_uwi"), new SearchTermRefinementRequest("Wellbore name", false, null, null));
 
-        var wellbore = await WithDirectoryAsync(d => d.ResolveAsync(IdOf("wellbore_uwi"), new SearchTermCondition(ExplorerCondition.Is, "NO 34/10-A-30"), "dev", null, CancellationToken.None));
+        var wellbore = await WithDirectoryAsync(d => d.ResolveAsync(IdOf("wellbore_uwi"), new SearchTermCondition(ExplorerCondition.Is, "WB D/4-A-30"), "dev", null, CancellationToken.None));
         Assert.Equal(("data.WellboreID", "Wellbore name", "osdu:wks:master-data--Wellbore:*"), (wellbore.Path, wellbore.Via!.Term, wellbore.Via.Kind));
 
         var domain = await WithDirectoryAsync(d => d.ResolveAsync(IdOf("index_type"), new SearchTermCondition(ExplorerCondition.Is, "DEPTH"), "test", WellLogVersions.CurrentKind, CancellationToken.None));
@@ -240,7 +240,7 @@ public sealed class SearchTermCatalogTests : IDisposable
     {
         await SyncAsync();
         await SaveTemplatesAsync();
-        await RefineAsync(IdOf("wellbore_uwi"), new SearchTermRefinementRequest("Wellbore name", false, null, "The UWI Recall files the log under."));
+        await RefineAsync(IdOf("wellbore_uwi"), new SearchTermRefinementRequest("Wellbore name", false, null, "The UWI the well database files the log under."));
 
         // What is left of a term no pipeline reads any longer: its refinement alone.
         var retired = Guid.NewGuid();
@@ -248,7 +248,7 @@ public sealed class SearchTermCatalogTests : IDisposable
         {
             db.DeliverySearchTermRefinements.Add(new SqlFlow.Delivery.Data.DeliverySearchTermRefinement
             {
-                TermId = retired, TermKey = "osdudata.arc.welllog/retired_column", EntityType = WellLog, Name = "Retired",
+                TermId = retired, TermKey = "osdudata.silver.welllog/retired_column", EntityType = WellLog, Name = "Retired",
                 UpdatedBy = "tester", UpdatedUtc = _clock.GetUtcNow().UtcDateTime,
             });
             await db.SaveChangesAsync();
@@ -265,7 +265,7 @@ public sealed class SearchTermCatalogTests : IDisposable
         await SyncAsync();
         var terms = await TermsAsync(orphans: true);
         var uwi = Assert.Single(terms, t => t.Id == IdOf("wellbore_uwi"));
-        Assert.Equal(("Wellbore name", "The UWI Recall files the log under.", true, "remover"), (uwi.Name, uwi.Note, uwi.Excluded, uwi.UpdatedBy));
+        Assert.Equal(("Wellbore name", "The UWI the well database files the log under.", true, "remover"), (uwi.Name, uwi.Note, uwi.Excluded, uwi.UpdatedBy));
         var run = Assert.Single(terms, t => t.Id == IdOf("log_run"));
         Assert.Equal((true, false, WellLog), (run.Excluded, run.Renamed, run.EntityType));
         Assert.DoesNotContain(terms, t => t.Id == retired);
@@ -285,7 +285,7 @@ public sealed class SearchTermCatalogTests : IDisposable
         Assert.Equal([retired], restoration.Missing);
         terms = await TermsAsync();
         uwi = Assert.Single(terms, t => t.Id == IdOf("wellbore_uwi"));
-        Assert.Equal(("Wellbore name", "The UWI Recall files the log under.", false, "restorer"), (uwi.Name, uwi.Note, uwi.Excluded, uwi.UpdatedBy));
+        Assert.Equal(("Wellbore name", "The UWI the well database files the log under.", false, "restorer"), (uwi.Name, uwi.Note, uwi.Excluded, uwi.UpdatedBy));
         run = Assert.Single(terms, t => t.Id == IdOf("log_run"));
         Assert.Equal((false, null), (run.Excluded, run.UpdatedBy));
         await using (var db = _module.CreateDbContext())
@@ -310,15 +310,15 @@ public sealed class SearchTermCatalogTests : IDisposable
         await using var db = _module.CreateDbContext();
         var rows = await db.DeliverySearchTerms.AsNoTracking().Where(t => t.RepoId == _repo && t.Column == "wellbore_uwi").ToListAsync();
         var wellbore = Assert.Single(rows);
-        Assert.Contains("recall-welllog-03-header-delivery\"", wellbore.FlowsJson, StringComparison.Ordinal);
-        Assert.Contains("recall-welllog-03-header-delivery-v150", wellbore.FlowsJson, StringComparison.Ordinal);
+        Assert.Contains("welldb-welllog-03-header-delivery\"", wellbore.FlowsJson, StringComparison.Ordinal);
+        Assert.Contains("welldb-welllog-03-header-delivery-v150", wellbore.FlowsJson, StringComparison.Ordinal);
         var route = Assert.Single(SearchRoute.FromJson(wellbore.RoutesJson));
         Assert.Equal([WellLogVersions.CurrentMapping, WellLogVersions.NextMapping], route.Mappings);
         Assert.Equal([WellLogVersions.CurrentKind, WellLogVersions.NextKind], route.Kinds);
 
         // The log's id, made as each version's delivery makes it.
         var id = Assert.Single(SearchRoute.FromJson(Assert.Single(await db.DeliverySearchTerms.AsNoTracking().Where(t => t.RepoId == _repo && t.Column == "log_id").ToListAsync()).RoutesJson));
-        Assert.Equal(["recall", "recall-welllog-1.5.0"], id.Key!.Systems);
+        Assert.Equal(["welldb", "welldb-welllog-1.5.0"], id.Key!.Systems);
         Assert.Equal(1, await db.DeliverySearchTerms.CountAsync(t => t.RepoId == _repo && t.Column == "curve_unit"));
     }
 
@@ -330,17 +330,17 @@ public sealed class SearchTermCatalogTests : IDisposable
         {
             db.DeliverySearchTermRefinements.Add(new SqlFlow.Delivery.Data.DeliverySearchTermRefinement
             {
-                TermId = Guid.NewGuid(), TermKey = $"recall/{WellLog}//wellbore_uwi", EntityType = WellLog, Name = "Old UWI",
+                TermId = Guid.NewGuid(), TermKey = $"welldb/{WellLog}//wellbore_uwi", EntityType = WellLog, Name = "Old UWI",
                 Route = "osdu.data.WellboreID|Search", UpdatedBy = "tester", UpdatedUtc = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc),
             });
             db.DeliverySearchTermRefinements.Add(new SqlFlow.Delivery.Data.DeliverySearchTermRefinement
             {
-                TermId = Guid.NewGuid(), TermKey = $"recall-welllog-1.5.0/{WellLog}//wellbore_uwi", EntityType = WellLog, Name = "UWI",
+                TermId = Guid.NewGuid(), TermKey = $"welldb-welllog-1.5.0/{WellLog}//wellbore_uwi", EntityType = WellLog, Name = "UWI",
                 Excluded = true, UpdatedBy = "tester", UpdatedUtc = new DateTime(2026, 10, 2, 0, 0, 0, DateTimeKind.Utc),
             });
             db.DeliverySearchTermRefinements.Add(new SqlFlow.Delivery.Data.DeliverySearchTermRefinement
             {
-                TermId = Guid.NewGuid(), TermKey = $"recall/{WellLog}/curves/curve_unit", EntityType = WellLog, Name = "Curve unit",
+                TermId = Guid.NewGuid(), TermKey = $"welldb/{WellLog}/curves/curve_unit", EntityType = WellLog, Name = "Curve unit",
                 UpdatedBy = "tester", UpdatedUtc = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc),
             });
             await db.SaveChangesAsync();

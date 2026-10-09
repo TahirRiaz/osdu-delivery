@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Cli.Hosting;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Json;
@@ -16,16 +17,23 @@ namespace SqlFlow.Delivery.Cli;
 /// <remarks>
 /// The rows a repository sync writes per partition (a registry-driven flow's interfaces and cache types) follow the
 /// registry at each sync; the control plane's own upkeep makes every repository due at once, and from here the next sync
-/// does it (<c>sqlflow db sync</c>, or Sync now on the Repositories page).
+/// does it (<c>sqlflow db sync</c>, or Sync now on the Repositories page). A change is recorded under the account the
+/// command runs as (<see cref="RunActors.LocalAccount"/>), as every command line change is.
 /// </remarks>
 public static class DeliveryPartitionVerbs
 {
-    private const string Actor = "cli";
+    public static Task<int> PartitionAsync(CliVerbContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return RunAsync(ModuleCommand.Of(context));
+    }
 
-    public static async Task<int> PartitionAsync(CliVerbContext context)
+    /// <summary>The verb, over the command it runs for.</summary>
+    internal static async Task<int> RunAsync(ModuleCommand context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var ct = context.CancellationToken;
+        var actor = RunActors.LocalAccount();
         var registry = context.Services.GetRequiredService<DeliveryPartitionRegistry>();
         if (!registry.Available)
         {
@@ -70,7 +78,7 @@ public static class DeliveryPartitionVerbs
                 }
 
                 var row = await registry
-                    .AddAsync(name, context.Arguments.GetOption("--description"), context.Arguments.HasFlag("--default"), Actor, DateTime.UtcNow, ct)
+                    .AddAsync(name, context.Arguments.GetOption("--description"), context.Arguments.HasFlag("--default"), actor, DateTime.UtcNow, ct)
                     .ConfigureAwait(false);
                 if (context.Json)
                 {
@@ -95,7 +103,7 @@ public static class DeliveryPartitionVerbs
                     return context.UsageError("give what the partition is for with --description <text>; an empty one clears it.");
                 }
 
-                var row = await registry.DescribeAsync(name, description, Actor, DateTime.UtcNow, ct).ConfigureAwait(false);
+                var row = await registry.DescribeAsync(name, description, actor, DateTime.UtcNow, ct).ConfigureAwait(false);
                 context.Out.WriteLine(context.Json ? CanonicalJson.Pretty(Describe(row)) : $"{row.Name} described");
                 return 0;
             }
@@ -107,7 +115,7 @@ public static class DeliveryPartitionVerbs
                     return context.UsageError("name the partition a run that names none should run in.");
                 }
 
-                var row = await registry.MakeDefaultAsync(name, Actor, DateTime.UtcNow, ct).ConfigureAwait(false);
+                var row = await registry.MakeDefaultAsync(name, actor, DateTime.UtcNow, ct).ConfigureAwait(false);
                 context.Out.WriteLine(context.Json ? CanonicalJson.Pretty(Describe(row)) : $"{row.Name} is the default");
                 return 0;
             }

@@ -301,7 +301,7 @@ export default function ExplorerPage() {
       <EmptyState
         icon={<Telescope />}
         title="The explorer reads OSDU with a flow's credentials"
-        description="Each read goes through a delivery flow's connection to the partition, which takes the operate scope. Ask an administrator for it."
+        description="Each read goes through a delivery flow's connection to the partition, which takes a signed-in session. Sign in to read OSDU."
         data-testid="explorer-no-scope"
       />
     );

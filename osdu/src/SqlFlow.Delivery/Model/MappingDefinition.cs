@@ -165,7 +165,7 @@ public enum MappingIdSource
     DeliveryKey,
 
     /// <summary>
-    /// The values of <c>dataset.key</c>, percent-encoded (<c>dev:reference-data--ExternalUnitOfMeasure:RECALL::G%2FCC</c>), so
+    /// The values of <c>dataset.key</c>, percent-encoded (<c>dev:reference-data--ExternalUnitOfMeasure:WELLDB::G%2FCC</c>), so
     /// the id reads as the code it stands for (<see cref="Identity.TargetId.ComposeFromKey"/>).
     /// </summary>
     Key,

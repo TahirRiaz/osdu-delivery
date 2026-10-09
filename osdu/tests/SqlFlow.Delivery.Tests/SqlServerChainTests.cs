@@ -68,13 +68,13 @@ public class SqlServerChainTests
         // run of a flow is actually in.
         var order = await EnqueueChainAndRunIngestionAsync(estate);
         Assert.Equal(
-            [estate.Rename("recall-welllog-01-curves-pre"), estate.Rename("recall-welllog-01-header-pre")],
+            [estate.Rename("welldb-welllog-01-curves-pre"), estate.Rename("welldb-welllog-01-header-pre")],
             order.Where(m => m.Wave == 0).Select(m => m.FlowName).OrderBy(n => n, StringComparer.Ordinal).ToList());
         Assert.Equal(estate.DeliveryFlowName, order.Single(m => m.Wave == 2).FlowName);
 
         // What the ingestion flows left is what the delivery reads: one row per logging run, one per curve.
-        Assert.Equal(5, await estate.CountAsync(estate.ArcSchema, "WellLog"));
-        Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.ArcSchema, "WellLogCurve"));
+        Assert.Equal(5, await estate.CountAsync(estate.SilverSchema, "WellLog"));
+        Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.SilverSchema, "WellLogCurve"));
 
         // The first plan over the loaded tables, with nothing delivered yet: every record is new, so every entry creates.
         // Rendered from the real tables, each document is the one the suites keep for the log (Fixtures/rendered), which is
@@ -233,7 +233,7 @@ public class SqlServerChainTests
         await estate.DeliverAsync();
 
         Assert.Empty(estate.Protocol.Deliveries);
-        Assert.Equal(5, await estate.CountAsync(estate.ArcSchema, "WellLog"));
+        Assert.Equal(5, await estate.CountAsync(estate.SilverSchema, "WellLog"));
         Assert.Equal(updatedBefore, await estate.ValueAsync("WellLog", "UpdatedDate_DW", logs[0].SourceProject, logs[0].LogId));
         Assert.Equal(LogFile, await estate.ValueAsync("WellLog", "FileName_DW", logs[0].SourceProject, logs[0].LogId));
         var record = await estate.Ledger.GetRecordAsync(estate.FlowId, logs[0].Key);
@@ -286,7 +286,7 @@ public class SqlServerChainTests
         await estate.WriteRowsAsync("welllog", LogFile, SampleWellLogs.LogColumns, GeneratedLogs(template, Records));
         await estate.WriteRowsAsync("curves-meta", CurveFile, SampleWellLogs.CurveColumns, GeneratedCurves(template, Records));
         await estate.RunIngestionChainAsync();
-        Assert.Equal(Records, await estate.CountAsync(estate.ArcSchema, "WellLog"));
+        Assert.Equal(Records, await estate.CountAsync(estate.SilverSchema, "WellLog"));
 
         // The fan-out needs a dispatcher and a run to belong to; the members run inline here, each on a runtime of its
         // own over the same engine, which is what another node would do with the slices it was dealt.
@@ -346,7 +346,7 @@ public class SqlServerChainTests
         await estate.WriteRowsAsync("welllog", LogFile, SampleWellLogs.LogColumns, GeneratedLogs(template, Records));
         await estate.WriteRowsAsync("curves-meta", CurveFile, SampleWellLogs.CurveColumns, GeneratedCurves(template, Records));
         await estate.RunIngestionChainAsync();
-        Assert.Equal(Records, await estate.CountAsync(estate.ArcSchema, "WellLog"));
+        Assert.Equal(Records, await estate.CountAsync(estate.SilverSchema, "WellLog"));
 
         // The shipped flow delivers WellLog 1.4.0 to the sample partition; the second pipeline renders the same rows with
         // the same mapping entries as WellLog 1.5.0, into a partition of its own.
@@ -526,9 +526,9 @@ public class SqlServerChainTests
         await estate.WriteWellboreFilesAsync(GeneratedWellbores(Wellbores), GeneratedAliases(Wellbores));
         await estate.RunWellboreChainAsync();
         await estate.RunIngestionChainAsync();
-        Assert.Equal(Wellbores, await estate.CountAsync(estate.ArcSchema, "Wellbore"));
-        Assert.Equal(2 * Wellbores, await estate.CountAsync(estate.ArcSchema, "WellboreAlias"));
-        Assert.Equal(Logs, await estate.CountAsync(estate.ArcSchema, "WellLog"));
+        Assert.Equal(Wellbores, await estate.CountAsync(estate.SilverSchema, "Wellbore"));
+        Assert.Equal(2 * Wellbores, await estate.CountAsync(estate.SilverSchema, "WellboreAlias"));
+        Assert.Equal(Logs, await estate.CountAsync(estate.SilverSchema, "WellLog"));
 
         var name = estate.FlowPrefix + "-source";
         var file = Path.Combine(estate.FlowsDirectory, name + ".yaml");
@@ -636,7 +636,7 @@ public class SqlServerChainTests
     /// </summary>
     private static string SourceDocument(SqlServerIngestionFixture estate, string name, int nodes)
     {
-        string Table(string table) => $"\"[{estate.DatabaseName}].[{estate.ArcSchema}].[{table}]\"";
+        string Table(string table) => $"\"[{estate.DatabaseName}].[{estate.SilverSchema}].[{table}]\"";
         return $$"""
             flowType: delivery
             name: {{name}}
@@ -649,11 +649,11 @@ public class SqlServerChainTests
             render:
               parameters:
                 dataPartition: dev
-                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
-                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
-                legalTag: dev-equinor-osdu-reference-default
+                aclOwner: data.welldb.owners@dev.dataservices.energy
+                aclViewer: data.welldb.viewers@dev.dataservices.energy
+                legalTag: dev-osdu-default-legal
             target:
-              endpoint: http://localhost:9/petrodb
+              endpoint: http://localhost:9/facade-api
               auth:
                 type: none
               headers:
@@ -776,11 +776,11 @@ public class SqlServerChainTests
             return wave!.Wave;
         }
 
-        var pre = WaveOf("recall-welllog-01-header-pre");
-        var curvesPre = WaveOf("recall-welllog-01-curves-pre");
-        var ing = WaveOf("recall-welllog-02-header-ing");
-        var curvesIng = WaveOf("recall-welllog-02-curves-ing");
-        var delivery = WaveOf("recall-welllog-03-header-delivery");
+        var pre = WaveOf("welldb-welllog-01-header-pre");
+        var curvesPre = WaveOf("welldb-welllog-01-curves-pre");
+        var ing = WaveOf("welldb-welllog-02-header-ing");
+        var curvesIng = WaveOf("welldb-welllog-02-curves-ing");
+        var delivery = WaveOf("welldb-welllog-03-header-delivery");
 
         Assert.True(pre < ing, $"the pre flow must run before the ingestion flow that reads its view; waves: {Describe(waves)}");
         Assert.True(curvesPre < curvesIng, $"the curve pre flow must run before its ingestion flow; waves: {Describe(waves)}");
@@ -817,10 +817,10 @@ public class SqlServerChainTests
             var flow = new DeliveryDocumentLoader().LoadFlow(Path.Combine(root, "flows", "rw" + Suffix + ".yaml"));
             var record = SourceObjectName.Parse(flow.Source.Record.Object);
             Assert.Equal(Database, record.Database);
-            Assert.Equal("arc_" + Suffix, record.Schema);
+            Assert.Equal("silver_" + Suffix, record.Schema);
             Assert.Equal("WellLog", record.Name);
             var curves = SourceObjectName.Parse(flow.Source.Datasets["curves"].Object);
-            Assert.Equal("arc_" + Suffix, curves.Schema);
+            Assert.Equal("silver_" + Suffix, curves.Schema);
             Assert.Equal("WellLogCurve", curves.Name);
         }
         finally
@@ -898,7 +898,7 @@ public class SqlServerChainTests
             foreach (var (flowName, _) in queued)
             {
                 var name = shipped[flowName];
-                if (name != "recall-welllog-03-header-delivery")
+                if (name != "welldb-welllog-03-header-delivery")
                 {
                     await estate.RunFlowAsync(name);
                 }
@@ -918,11 +918,11 @@ public class SqlServerChainTests
     /// <summary>The chain's members: the flow as the repository names it, its kind, and the wave lineage puts it in.</summary>
     private static IReadOnlyList<(string Name, string Kind, int Wave)> Chain() =>
     [
-        ("recall-welllog-01-header-pre", "file", 0),
-        ("recall-welllog-01-curves-pre", "file", 0),
-        ("recall-welllog-02-header-ing", "ing", 1),
-        ("recall-welllog-02-curves-ing", "ing", 1),
-        ("recall-welllog-03-header-delivery", FlowDefinition.FlowTypeName, 2),
+        ("welldb-welllog-01-header-pre", "file", 0),
+        ("welldb-welllog-01-curves-pre", "file", 0),
+        ("welldb-welllog-02-header-ing", "ing", 1),
+        ("welldb-welllog-02-curves-ing", "ing", 1),
+        ("welldb-welllog-03-header-delivery", FlowDefinition.FlowTypeName, 2),
     ];
 
     /// <summary>The name the suites keep a log's record under: its id, with the slash a file name cannot hold as an underscore.</summary>
@@ -992,7 +992,7 @@ public class SqlServerChainTests
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText =
-            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{estate.ArcSchema}].[WellLogCurve] WHERE [source_project] = @p AND [log_id] = @l AND [curve_id] = @c;";
+            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{estate.SilverSchema}].[WellLogCurve] WHERE [source_project] = @p AND [log_id] = @l AND [curve_id] = @c;";
         AddParameter(command, "@p", project);
         AddParameter(command, "@l", logId);
         AddParameter(command, "@c", curveId);

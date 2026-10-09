@@ -44,7 +44,7 @@ public sealed class DdmsRouteTests
     private static string Envelope(string id, string entityType, string data) =>
         "{\"id\":\"" + id + "\",\"kind\":\"osdu:wks:" + entityType + ":1.0.0\","
         + "\"acl\":{\"viewers\":[\"data.default.viewers@dev.example.com\"],\"owners\":[\"data.default.owners@dev.example.com\"]},"
-        + "\"legal\":{\"legaltags\":[\"dev-public\"],\"otherRelevantDataCountries\":[\"NO\"]},\"data\":" + data + "}";
+        + "\"legal\":{\"legaltags\":[\"dev-public\"],\"otherRelevantDataCountries\":[\"US\"]},\"data\":" + data + "}";
 
     private static string Log(string curves = "[{\"CurveID\":\"MD\"},{\"CurveID\":\"GR\"}]")
         => Envelope(LogId, "work-product-component--WellLog", "{\"Name\":\"GR run\",\"Curves\":" + curves + "}");
@@ -52,7 +52,7 @@ public sealed class DdmsRouteTests
     private static string Trajectory(string stations = "[{\"Name\":\"MD\"},{\"Name\":\"INC\"},{\"Name\":\"AZI\"}]")
         => Envelope(TrajectoryId, "work-product-component--WellboreTrajectory", "{\"Name\":\"survey\",\"AvailableTrajectoryStationProperties\":" + stations + "}");
 
-    private static string Wellbore() => Envelope(WellboreId, "master-data--Wellbore", "{\"FacilityName\":\"15/9-F-1\"}");
+    private static string Wellbore() => Envelope(WellboreId, "master-data--Wellbore", "{\"FacilityName\":\"A/1-F-1\"}");
 
     private static DeliveryWork Work(string id, string document, bool metadata, bool payload, IPayloadSource? source = null, long? existing = null) => new()
     {

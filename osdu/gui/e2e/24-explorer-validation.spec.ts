@@ -15,7 +15,7 @@ const PARTITION = E2E.osdu.OSDU_DATA_PARTITION;
 /** The kind the stand-in's wellbores are of; no template of it is saved, so the Schema service's is the only schema. */
 const KIND = "osdu:wks:master-data--Wellbore:1.1.0";
 
-/** The schema the wellbore's refers to by id for its facility: a name that starts with "NO ", as the platform's wellbores do but two. */
+/** The schema the wellbore's refers to by id for its facility: a name that starts with "Wellbore ", as the platform's wellbores do but two. */
 const FACILITY = "osdu:wks:AbstractE2eFacility:1.0.0";
 
 /** The wellbore this spec holds: its name breaks the facility's pattern, and the well it names is held nowhere. */
@@ -27,7 +27,7 @@ const MISSING_WELL = `${PARTITION}:master-data--Well:E2E-NO-SUCH-WELL`;
 /** The example record the data definitions publish for the kind, where the guidance finds how OSDU writes each value. */
 const EXAMPLE = {
   path: "Examples/master-data/Wellbore.1.1.0.json",
-  record: { kind: KIND, data: { FacilityName: "NO 15/9-F-1 A", WellID: "namespace:master-data--Well:NO-15-9-F-1:" } },
+  record: { kind: KIND, data: { FacilityName: "Wellbore A/1-F-1 A", WellID: "namespace:master-data--Well:Well-A-1-F-1:" } },
 };
 
 /** The wellbore's schema as the Schema service answers it: the facility's by reference, and the well a wellbore names. */
@@ -62,7 +62,7 @@ const FACILITY_SCHEMA = {
   "x-osdu-schema-source": FACILITY,
   type: "object",
   required: ["FacilityName"],
-  properties: { FacilityName: { type: "string", pattern: "^NO " } },
+  properties: { FacilityName: { type: "string", pattern: "^Wellbore " } },
 };
 
 test.describe.serial("explorer validation", () => {
@@ -81,7 +81,7 @@ test.describe.serial("explorer validation", () => {
           id: OWN,
           kind: KIND,
           acl: { viewers: [E2E.osdu.OSDU_ACL_VIEWER], owners: [E2E.osdu.OSDU_ACL_OWNER] },
-          legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["NO"], status: "compliant" },
+          legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["US"], status: "compliant" },
           meta: null,
           data: { FacilityName: "E2E validate", WellID: `${MISSING_WELL}:` },
           createUser: "e2e-stand-in",
@@ -130,12 +130,12 @@ test.describe.serial("explorer validation", () => {
 
     // Each problem says what was found, what the schema takes there, and how to fix it, with OSDU's own example quoted.
     await expect(name.getByTestId("validation-problem-found")).toHaveText("'E2E validate'");
-    await expect(name.getByTestId("validation-problem-expected")).toHaveText("text matching ^NO");
-    await expect(name.getByTestId("validation-problem-advice")).toContainText("Change FacilityName so it matches ^NO . For example: NO 15/9-F-1 A");
+    await expect(name.getByTestId("validation-problem-expected")).toHaveText("text matching ^Wellbore");
+    await expect(name.getByTestId("validation-problem-advice")).toContainText("Change FacilityName so it matches ^Wellbore . For example: Wellbore A/1-F-1 A");
     await expect(problems.filter({ hasText: "data.WellID" }).getByTestId("validation-problem-advice")).toContainText("Deliver the record");
     await name.getByTestId("validation-problem-details-toggle").click();
-    await expect(name.getByTestId("validation-problem-details-osdu-example")).toHaveText("NO 15/9-F-1 A");
-    await expect(name.getByTestId("validation-problem-details-pattern-0")).toHaveText("^NO ");
+    await expect(name.getByTestId("validation-problem-details-osdu-example")).toHaveText("Wellbore A/1-F-1 A");
+    await expect(name.getByTestId("validation-problem-details-pattern-0")).toHaveText("^Wellbore ");
     await expect(verdict.getByTestId("validation-example-source")).toContainText("release v0.30.0");
 
     // Its meta is null, which is how a stored record with no meta can read: it is read as absent, and the check says so.
@@ -150,7 +150,7 @@ test.describe.serial("explorer validation", () => {
     await expect(marks).toHaveCount(2);
     await marks.first().hover();
     await expect(adminPage.getByRole("tooltip")).toContainText("data.FacilityName (pattern)");
-    await expect(adminPage.getByRole("tooltip")).toContainText("Fix: Change FacilityName so it matches ^NO");
+    await expect(adminPage.getByRole("tooltip")).toContainText("Fix: Change FacilityName so it matches ^Wellbore");
 
     // No template of the kind is saved, so a check against a saved one says so rather than passing the record.
     await record.getByTestId("osdu-outline-validation").click();
@@ -173,7 +173,7 @@ test.describe.serial("explorer validation", () => {
     const list = adminPage.getByTestId("explorer-validate-list");
     const counts = list.getByTestId("explorer-validate-list-counts");
     await expect(counts).toContainText("8 of 8 records checked", { timeout: 60_000 });
-    // The five named "NO ..." are valid; the two development wellbores and the spec's own break the name's pattern.
+    // The five named "Wellbore ..." are valid; the two development wellbores and the spec's own break the name's pattern.
     await expect(counts.locator('[data-outcome="valid"]')).toContainText("5");
     await expect(counts.locator('[data-outcome="invalid"]')).toContainText("3");
     await expect(list.getByTestId("explorer-validate-list-cut")).toHaveCount(0);
@@ -183,8 +183,8 @@ test.describe.serial("explorer validation", () => {
     await expect(rules.first()).toContainText("data.FacilityName");
     await expect(rules.first()).toContainText("pattern");
     await expect(rules.first()).toContainText("3 records");
-    await expect(rules.first().getByTestId("explorer-validate-list-expected")).toContainText("text matching ^NO");
-    await expect(rules.first().getByTestId("explorer-validate-list-advice")).toContainText("Change FacilityName so it matches ^NO . For example: NO 15/9-F-1 A");
+    await expect(rules.first().getByTestId("explorer-validate-list-expected")).toContainText("text matching ^Wellbore");
+    await expect(rules.first().getByTestId("explorer-validate-list-advice")).toContainText("Change FacilityName so it matches ^Wellbore . For example: Wellbore A/1-F-1 A");
 
     // The spec's own wellbore holds meta null: counted as read as absent, not as a problem.
     await expect(list.getByTestId("explorer-validate-list-note").filter({ hasText: "meta null or empty" })).toContainText("1 record(s)");

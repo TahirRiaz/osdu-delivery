@@ -21,7 +21,7 @@ const GROUPS: { origin: NonNullable<ExplorerFieldInfo["origin"]>; heading: strin
 
 /**
  * A property of the records in view to pick, found by typing any part of its path or title: the record's own, the content
- * the kind's schema declares, and what the records hold beyond the schema (an index augmentation such as Equinor.*). Each
+ * the kind's schema declares, and what the records hold beyond the schema (an index augmentation such as Augmented.*). Each
  * says how it is indexed and the nested list it sits in; its title and description, and where it was found, are on hover.
  * Where `terms` are given, the columns of the source systems the delivery flows read
  * (osdu/docs/reference/concepts/search-terms.md) are listed first, each by its name with its system and the property it

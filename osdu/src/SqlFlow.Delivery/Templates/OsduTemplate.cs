@@ -132,7 +132,7 @@ public sealed class OsduTemplate
     /// <summary>
     /// The variable at <paramref name="path"/>, or null when the template has none. A key under an object with free keys
     /// (<c>osdu.tags.WellLogNativeUID</c>) is a variable of that object's value type, and a path inside an open object
-    /// (<c>osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit</c>) a variable of no type, <see cref="TemplateVariable.Inside"/> it.
+    /// (<c>osdu.data.ExtensionProperties.WellDB.Curves[].OriginalUnit</c>) a variable of no type, <see cref="TemplateVariable.Inside"/> it.
     /// </summary>
     public TemplateVariable? Find(TemplatePath path)
     {

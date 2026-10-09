@@ -1,4 +1,5 @@
 using System.Globalization;
+using SqlFlow.Delivery.Http;
 
 namespace SqlFlow.Delivery.Telemetry;
 
@@ -144,8 +145,10 @@ public sealed class TelemetryOptions
             && (!Uri.TryCreate(OtlpEndpoint, UriKind.Absolute, out var endpoint)
                 || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps)))
         {
+            // Named as every URL in a message is named: a token or key a collector takes in the user info or the query
+            // never reaches a log.
             throw new InvalidOperationException(
-                $"{SectionName}:OtlpEndpoint is not an http or https URL: '{OtlpEndpoint}'. A collector is reached at "
+                $"{SectionName}:OtlpEndpoint is not an http or https URL: '{HeaderRedaction.DescribeUrl(OtlpEndpoint)}'. A collector is reached at "
                 + "http://host:4317 (grpc) or http://host:4318/v1/metrics (httpprotobuf).");
         }
 

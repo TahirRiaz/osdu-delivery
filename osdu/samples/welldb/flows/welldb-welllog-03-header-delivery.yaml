@@ -1,0 +1,105 @@
+# Flow: welldb-welllog-03-header-delivery
+#
+# Delivers the well database's well logs to the wellbore DDMS as WellLog 1.4.0 records with their curve grids as bulk
+# data (POST /welllogs, then the parquet chunk, or a session of chunks), run from the ingestion tables SQLFlow's own pre
+# and ing flows load (welldb-welllog-01-*-pre, welldb-welllog-02-*-ing). This flow reads what changed there, renders it
+# with the mapping beside it (../mappings) and delivers it. The template it fills lives in the module's database, and so
+# does the cache it reads, the one of the partition a run delivers to (partitions): the lookup tables
+# ../cache/welldb-lookups-00-cache.yaml keeps there, which every reference the mapping writes is generated from, and the
+# partition's reference data ../cache/osdu-reference-00-cache.yaml captures from OSDU, which every generated reference is
+# checked against (the mapping's $coalesce and $unverified say where one may go out as an unverified reference instead).
+# One flow with a parameter serves every log source of the well database.
+flowType: delivery
+name: welldb-welllog-03-header-delivery
+batch: welldb
+
+# The OSDU partitions this flow delivers to. A run targets one of them (the partition run value: a dropdown in the GUI,
+# --set partition=<name> on the CLI, values in a schedule; the only one when the flow names one), and the ids it mints, the
+# data-partition-id it sends, the cache it reads, the ledger it keeps and the configuration it resolves are that
+# partition's. dev keeps the ledger the flow kept before it named its partitions, so every record already delivered there
+# stays known; a partition added here starts a ledger of its own.
+partitions:
+  - name: dev
+    keepLedger: true
+
+parameters:
+  logSource:
+    required: true
+    description: The well database's log source (COMPOSITE, CPI, CORE, ILT, PLT, PRESSURE).
+
+source:
+  # Resolved on the node that runs the flow; never a connection string in the document.
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.WellLog
+    key: [source_project, log_id]
+    # The table's identity primary key: the read pages by it and a fan-out cuts its ranges on it.
+    primaryKey: RecId
+    # One flow instance per log source: the predicate the run's parameter fills.
+    scope:
+      log_source: logSource
+  datasets:
+    curves:
+      object: OsduData.silver.WellLogCurve
+      join:
+        source_project: source_project
+        log_id: log_id
+      orderBy: [curve_ordinal]
+  payloads:
+    # The curve values stay where the export wrote them: the record's row says which folder. The only payload the
+    # flow declares, so the ddms route streams it as each log's bulk data without naming it again.
+    curves:
+      root: ../data/curves
+      locationColumn: curve_folder
+      pattern: "chunk_*.parquet"
+      hashColumn: payload_hash
+      chunkCountColumn: chunk_count
+  # When the well database last changed the log. A row modified after the version the ledger holds goes through render
+  # and the hash check again; the same moment is skipped without rendering; an older one is never sent.
+  lastModified: update_date
+  incremental:
+    overlapSeconds: 900
+  # Where the intake writes the rendered documents a drain reads back.
+  work: ../.work/{logSource}
+
+render:
+  mapping: WellLog@1.4.0
+
+change:
+  detect: renderedHash
+  payloadDetect: contentHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: ddms
+  protocolOptions:
+    sessionThresholdChunks: 1
+    preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
+    # OSDU_URL is the platform root, shared with every other flow kind (cache, retrieval); the wellbore DDMS itself
+    # is deployed under this ingress route below it (the OSDU C# client's service registry), for both the record
+    # write and its curve bulk data (POST .../data, POST/GET .../sessions).
+    ddmsRoot: /api/os-wellbore-ddms
+
+reliability:
+  concurrency: 8
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  skipStatusCodes: [409]
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+# Hourly, with logSource COMPOSITE (../schedules.yaml). A verify (drift) run is a schedule of its own in the GUI, or a run
+# with --operation verify.
+schedule: welldb-welllog
+
+verify:
+  reconcile: false

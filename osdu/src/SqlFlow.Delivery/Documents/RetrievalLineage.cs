@@ -53,9 +53,10 @@ public static class RetrievalLineage
         return new RegisteredFlowLineage { Files = files, Datasets = datasets, Warnings = warnings };
     }
 
+    // A ${...} reference never reaches here: the document is refused where it is read (RetrievalDocumentMapper), since a
+    // location is not resolved from one.
     private static bool IsRelativeLocalPath(string location)
         => !location.Contains("://", StringComparison.Ordinal)
-            && !location.StartsWith("${", StringComparison.Ordinal)
             && !location.StartsWith('@')
             && !Path.IsPathRooted(location);
 }

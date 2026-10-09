@@ -101,7 +101,7 @@ public sealed class DocumentDefinitionJsonTests
         var json = JsonSerializer.Serialize(document, document.GetType(), CatalogOptions);
 
         using var parsed = JsonDocument.Parse(json);
-        Assert.Equal("recall-welllog-04-header-assertion", parsed.RootElement.GetProperty("name").GetString());
+        Assert.Equal("welldb-welllog-04-header-assertion", parsed.RootElement.GetProperty("name").GetString());
         Assert.DoesNotContain("\"ledgerName\"", json, StringComparison.Ordinal);
         Assert.DoesNotContain("\"ledgerId\"", json, StringComparison.Ordinal);
         Assert.Contains("\"$type\":\"groupBy\"", json, StringComparison.Ordinal);

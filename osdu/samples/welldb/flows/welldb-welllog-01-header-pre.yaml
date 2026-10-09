@@ -1,0 +1,55 @@
+# Pre-ingestion: the well database's well log header files into the pre layer.
+#
+# The first flow of the chain the delivery flow reads. It lands whatever CSV files are under ../data/welllog into
+# [pre].[WellLog] as raw text, then refreshes the typed view [pre].[v_WellLog] that the ingestion flow beside it reads.
+# The files hold one row per log of the well database; the sample's are made up by osdu/tools/SampleData, and a file
+# placed in that folder by hand takes exactly the same path.
+name: welldb-welllog-01-header-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/welllog
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: WellLog
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    # The columns whose type the delivery depends on are declared rather than inferred: the well database's run,
+    # version and log id are text the mapping writes as they stand (a log id reads "LOG-0001/1"), the update time is what
+    # the delivery orders versions by, and the chunk count is the number of payload files a record has.
+    - { name: log_id, type: varchar(50) }
+    - { name: log_run, type: varchar(50) }
+    - { name: log_version, type: varchar(50) }
+    - { name: log_pass, type: varchar(200) }
+    - { name: native_uid, type: varchar(200) }
+    - { name: update_date, type: datetime2 }
+    - { name: chunk_count, type: int }
+    # The depths are numbers the record carries (SamplingStart, SamplingStop, SamplingInterval). Inferred, a file whose
+    # logs all start at depth 0 types index_min as bit, since 0 and 1 read as a boolean, and every record would then be
+    # held for carrying false where the template takes a number. A decimal holds every digit a depth is written with and
+    # widens a column a run inferred as a decimal before; an empty cell is no depth rather than 0.
+    - { name: index_min, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+    - { name: index_max, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+    - { name: index_increment, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-welllog

@@ -321,7 +321,7 @@ function RenderResult({ results }: { results: RenderResults }) {
  */
 export function RecordRenderTab({ record, canOperate, canRender, rendering, onRender, results }: {
   record: DeliveryRecord;
-  /** Whether the viewer holds the operate scope a render takes. */
+  /** Whether the viewer may render: the operate policy, which every signed-in user holds. */
   canOperate: boolean;
   /** Whether a render may be asked for: the record's flow is known and no other request of the page is in flight. */
   canRender: boolean;
@@ -341,7 +341,7 @@ export function RecordRenderTab({ record, canOperate, canRender, rendering, onRe
           size="sm"
           onClick={onRender}
           disabled={!canOperate || !canRender || rendering}
-          title={canOperate ? undefined : "A render reads the flow's tables and OSDU with the flow's credentials, which takes the operate scope."}
+          title={canOperate ? undefined : "A render reads the flow's tables and OSDU with the flow's credentials, which takes a signed-in session."}
           data-testid="record-render-run"
         >
           {rendering ? <Loader2 className="animate-spin" /> : <FileCode2 />}

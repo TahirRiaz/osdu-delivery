@@ -43,7 +43,9 @@ public sealed record DeliveryConfigSetRequest(string? Value, string? Description
 /// </para>
 /// <para>
 /// A value is a non-secret value or a <c>${env:...}</c> or <c>${keyvault:...}</c> reference the node resolves, so a
-/// listing can show every value without showing a secret.
+/// listing can show every value without showing a secret. What a property may hold is checked by
+/// <see cref="DeliveryConfigStore"/> alone, as <c>sqlflow config</c> has it checked, and its refusals answer here as 400,
+/// a repository the catalog does not hold as 404.
 /// </para>
 /// </remarks>
 public static class DeliveryConfigEndpoints
@@ -58,12 +60,22 @@ public static class DeliveryConfigEndpoints
         delivery.MapGet("/config/effective/{repoId:guid}", EffectiveAsync).WithName("GetEffectiveDeliveryConfig");
     }
 
-    /// <summary>Every property of every scope, with the repository each belongs to named.</summary>
-    private static async Task<Ok<IReadOnlyList<DeliveryConfigPropertyDto>>> ListAsync(
-        CatalogDbContext db, DeliveryConfigStore config, CancellationToken ct)
+    /// <summary>
+    /// Every property of every scope, with the repository each belongs to named; <c>repoId</c> narrows it to one repository's,
+    /// <c>partition</c> to one partition's, and both to that repository's in that partition, as <c>sqlflow config list</c> does.
+    /// </summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryConfigPropertyDto>>, ProblemHttpResult>> ListAsync(
+        [FromQuery] Guid? repoId, [FromQuery] string? partition, CatalogDbContext db, DeliveryConfigStore config, CancellationToken ct)
     {
-        var rows = await config.ListAllAsync(ct).ConfigureAwait(false);
-        return TypedResults.Ok(await DescribeAsync(db, rows, ct).ConfigureAwait(false));
+        try
+        {
+            var rows = await config.ListAsync(repoId, partition, ct).ConfigureAwait(false);
+            return TypedResults.Ok(await DescribeAsync(db, rows, ct).ConfigureAwait(false));
+        }
+        catch (FlowValidationException invalid)
+        {
+            return Refused(invalid);
+        }
     }
 
     /// <summary>
@@ -74,15 +86,14 @@ public static class DeliveryConfigEndpoints
     private static async Task<Results<Ok<IReadOnlyDictionary<string, string>>, ProblemHttpResult>> EffectiveAsync(
         Guid repoId, [FromQuery] string? partition, DeliveryConfigStore config, CancellationToken ct)
     {
-        if (!string.IsNullOrWhiteSpace(partition) && !Snapshots.CacheScope.IsPartitionId(partition.Trim()))
+        try
         {
-            return TypedResults.Problem(
-                detail: $"'{partition.Trim()}' is not a data-partition-id: letters, digits, underscore, hyphen and dot, at most {Snapshots.CacheScope.MaxLength} characters.",
-                statusCode: StatusCodes.Status400BadRequest, title: "Not a partition");
+            return TypedResults.Ok(await config.EffectiveAsync(repoId, partition, ct).ConfigureAwait(false));
         }
-
-        var partitioned = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
-        return TypedResults.Ok(await config.EffectiveAsync(repoId, partitioned, ct).ConfigureAwait(false));
+        catch (FlowValidationException invalid)
+        {
+            return Refused(invalid);
+        }
     }
 
     /// <summary>
@@ -100,44 +111,32 @@ public static class DeliveryConfigEndpoints
         ClaimsPrincipal user,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(request?.Value))
-        {
-            return TypedResults.Problem(
-                detail: "A configuration property needs a value. Remove the property instead of setting it to nothing.",
-                statusCode: StatusCodes.Status400BadRequest, title: "No value");
-        }
-
-        if (await MissingRepoAsync(db, repoId, ct).ConfigureAwait(false) is { } missing)
-        {
-            return missing;
-        }
-
         try
         {
             var row = await config
-                .SetAsync(repoId, partition, name, request.Value.Trim(), request.Description, RequestActor.Label(user), clock.GetUtcNow().UtcDateTime, ct)
+                .SetAsync(repoId, partition, name, request?.Value, request?.Description, RequestActor.Label(user), clock.GetUtcNow().UtcDateTime, db, ct)
                 .ConfigureAwait(false);
             var described = await DescribeAsync(db, [row], ct).ConfigureAwait(false);
             return TypedResults.Ok(described[0]);
         }
+        catch (RepositoryNotRegisteredException missing)
+        {
+            return TypedResults.Problem(detail: missing.Message, statusCode: StatusCodes.Status404NotFound, title: "Repository not found");
+        }
         catch (FlowValidationException invalid)
         {
-            return TypedResults.Problem(detail: invalid.Message, statusCode: StatusCodes.Status400BadRequest, title: "Not a configuration property");
+            return Refused(invalid);
         }
     }
 
     /// <summary>
     /// Removes a property from the control plane, or from one repository when <c>repoId</c> is given; from one partition when
-    /// <c>partition</c> is given.
+    /// <c>partition</c> is given. A repository is not looked up, so what was set for one since removed from the catalog can
+    /// still be removed; a scope that holds no such property answers 404.
     /// </summary>
     private static async Task<Results<NoContent, NotFound, ProblemHttpResult>> RemoveAsync(
-        string name, [FromQuery] Guid? repoId, [FromQuery] string? partition, CatalogDbContext db, DeliveryConfigStore config, CancellationToken ct)
+        string name, [FromQuery] Guid? repoId, [FromQuery] string? partition, DeliveryConfigStore config, CancellationToken ct)
     {
-        if (await MissingRepoAsync(db, repoId, ct).ConfigureAwait(false) is { } missing)
-        {
-            return missing;
-        }
-
         try
         {
             return await config.RemoveAsync(repoId, partition, name, ct).ConfigureAwait(false)
@@ -146,25 +145,13 @@ public static class DeliveryConfigEndpoints
         }
         catch (FlowValidationException invalid)
         {
-            return TypedResults.Problem(detail: invalid.Message, statusCode: StatusCodes.Status400BadRequest, title: "Not a partition");
+            return Refused(invalid);
         }
     }
 
-    /// <summary>A problem when the repository named is not one the catalog holds, or null when it is (or none was named).</summary>
-    private static async Task<ProblemHttpResult?> MissingRepoAsync(CatalogDbContext db, Guid? repoId, CancellationToken ct)
-    {
-        if (repoId is not { } id)
-        {
-            return null;
-        }
-
-        var known = await db.Repos.AsNoTracking().AnyAsync(r => r.Id == id, ct).ConfigureAwait(false);
-        return known
-            ? null
-            : TypedResults.Problem(
-                detail: $"No repository {id:D} is registered, so a configuration property cannot be set for it.",
-                statusCode: StatusCodes.Status404NotFound, title: "Repository not found");
-    }
+    /// <summary>What the store refused, as the problem a caller reads: its message is the reason, naming the value at fault.</summary>
+    private static ProblemHttpResult Refused(FlowValidationException invalid)
+        => TypedResults.Problem(detail: invalid.Message, statusCode: StatusCodes.Status400BadRequest, title: "Configuration property refused");
 
     /// <summary>The rows with their repository named, so a listing reads without a second lookup per row.</summary>
     private static async Task<IReadOnlyList<DeliveryConfigPropertyDto>> DescribeAsync(

@@ -117,7 +117,7 @@ export interface ExplorerTypes {
 
 /**
  * Where a property was found: `record`, a property of every record; `schema`, declared by the kind's schema; `records`,
- * held by the records read and declared by no schema read (an index augmentation, such as Equinor.WellboreName).
+ * held by the records read and declared by no schema read (an index augmentation, such as Augmented.WellboreName).
  */
 export type ExplorerFieldOrigin = "record" | "schema" | "records";
 

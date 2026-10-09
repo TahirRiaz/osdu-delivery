@@ -13,7 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The record preview without a ledger: which row a key or the scope picks, what an operator is told when none can be
-/// picked, the document and files of the sample Recall logs, what each route adds to the document it sends, and the bounds
+/// picked, the document and files of the sample well logs, what each route adds to the document it sends, and the bounds
 /// that keep an answer small. The ledger's side (what the next run would do with a delivered record, keys the ledger
 /// resolves) is <see cref="RecordPreviewLedgerTests"/>.
 /// </summary>
@@ -148,10 +148,10 @@ public sealed class RecordPreviewTests : IDisposable
     [Theory]
     [InlineData("[\"only one part\"]", "keyed by 2")]
     [InlineData("[\"a\", null]", "not one of text parts")]
-    [InlineData("recall:", "names the source system and no key")]
+    [InlineData("welldb:", "names the source system and no key")]
     [InlineData("no-separator-at-all", "does not split into that many")]
     [InlineData("dev:work-product-component--WellLog:0123456789abcdef0123456789abcdef", "No record of this flow is delivered as")]
-    [InlineData("NORWAY_WELLDB/no such log", "holds no row")]
+    [InlineData("PROJECT_A/no such log", "holds no row")]
     public async Task A_key_that_names_no_row_is_an_answer_that_says_why(string key, string why)
     {
         var (_, runtime) = await RuntimeAsync();
@@ -173,7 +173,7 @@ public sealed class RecordPreviewTests : IDisposable
         var (tables, runtime) = await RuntimeAsync();
         using (runtime)
         {
-            var tab = await new RecordPreviewer(runtime).PreviewAsync("NORWAY\tWELLDB/1");
+            var tab = await new RecordPreviewer(runtime).PreviewAsync("PROJECT\tA/1");
             var long_ = await new RecordPreviewer(runtime).PreviewAsync(new string('x', PreviewKeys.MaxKeyChars + 1));
 
             Assert.False(tab.Found);

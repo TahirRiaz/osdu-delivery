@@ -235,9 +235,8 @@ public sealed class CentralConfigTests
     [Fact]
     public void A_run_says_which_references_came_from_the_control_plane_and_which_from_the_node()
     {
-        var sources = ReferenceSource.Of(
-            new Dictionary<string, string>(StringComparer.Ordinal) { ["OSDU_DATA_PARTITION"] = "dev" },
-            ["OSDU_URL", "OSDU_DATA_PARTITION"]);
+        var supplied = new Dictionary<string, string>(StringComparer.Ordinal) { ["OSDU_DATA_PARTITION"] = "dev" };
+        var sources = new[] { "OSDU_DATA_PARTITION", "OSDU_URL" }.Select(name => ReferenceSource.Of(name, supplied));
 
         Assert.Equal(
             [("OSDU_DATA_PARTITION", ReferenceOrigin.ControlPlane), ("OSDU_URL", ReferenceOrigin.Node)],

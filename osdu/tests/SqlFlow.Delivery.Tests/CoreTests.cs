@@ -62,8 +62,8 @@ public class DeterministicGuidTests
     [Fact]
     public void Delivery_key_is_deterministic_and_separator_safe()
     {
-        var a = DeliveryKey.Derive("wells", ["NO_15_9", "L-1001"]);
-        var b = DeliveryKey.Derive("Wells ", ["NO_15_9", "L-1001"]);
+        var a = DeliveryKey.Derive("wells", ["AREA_A_1", "L-1001"]);
+        var b = DeliveryKey.Derive("Wells ", ["AREA_A_1", "L-1001"]);
         Assert.Equal(a, b);
         Assert.NotEqual(DeliveryKey.Derive("wells", ["a|b", "c"]), DeliveryKey.Derive("wells", ["a", "b|c"]));
         Assert.Equal('5', a.ToString()[14]);
@@ -72,7 +72,7 @@ public class DeterministicGuidTests
     [Fact]
     public void Flow_id_ignores_case_and_whitespace()
     {
-        Assert.Equal(FlowId.Of("recall-welllog-03-header-delivery"), FlowId.Of(" Recall-WellLog-03-Header-Delivery "));
+        Assert.Equal(FlowId.Of("welldb-welllog-03-header-delivery"), FlowId.Of(" WellDB-WellLog-03-Header-Delivery "));
         Assert.NotEqual(FlowId.Of("a"), FlowId.Of("b"));
     }
 
@@ -142,7 +142,7 @@ public class SchemaSnapshotTests
 
 public class MappingRendererTests
 {
-    private static SourceRecord Record(string name = "well-1", string? depth = "12.5", string? unit = "m", string? flag = "REGULAR", string? wellbore = "NO 1/1-A", bool curves = true, string? when = "01.09.2026")
+    private static SourceRecord Record(string name = "well-1", string? depth = "12.5", string? unit = "m", string? flag = "REGULAR", string? wellbore = "WB 1/1-A", bool curves = true, string? when = "01.09.2026")
         => new()
         {
             Row = SourceRow.FromStrings(new Dictionary<string, string?>
@@ -271,8 +271,8 @@ public class MappingRendererTests
         [
             new ReferenceType("Wellbore", "master-data--Wellbore",
             [
-                ReferenceItem.FromText("dev:master-data--Wellbore:one", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A" }),
-                ReferenceItem.FromText("dev:master-data--Wellbore:two", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A" }),
+                ReferenceItem.FromText("dev:master-data--Wellbore:one", new Dictionary<string, string> { ["FacilityName"] = "WB 1/1-A" }),
+                ReferenceItem.FromText("dev:master-data--Wellbore:two", new Dictionary<string, string> { ["FacilityName"] = "WB 1/1-A" }),
             ]),
         ]);
         var result = Renderer("""
@@ -283,7 +283,7 @@ public class MappingRendererTests
             """, references).Render(Record());
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h =>
-            h.Contains("'NO 1/1-A' matches 2 Wellbore records by FacilityName exactly", StringComparison.Ordinal)
+            h.Contains("'WB 1/1-A' matches 2 Wellbore records by FacilityName exactly", StringComparison.Ordinal)
             && h.Contains("dev:master-data--Wellbore:one", StringComparison.Ordinal)
             && h.Contains("dev:master-data--Wellbore:two", StringComparison.Ordinal));
     }

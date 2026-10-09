@@ -26,12 +26,12 @@ public sealed class CacheTypeHashTests
     private static ReferenceType Wellbores() => new(
         "Wellbore", "master-data--Wellbore",
         [
-            Item("dev:master-data--Wellbore:1", ("FacilityName", "\"Ærfugl Nord\""), ("NameAlias", """[{"AliasName":"A-1","AliasNameTypeID":"x"}]""")),
-            Item("dev:master-data--Wellbore:2", ("FacilityName", "\"NO 15/9-19 SR\""), ("Depth", "1234.50"), ("Active", "true"), ("Aliases", """["b","a"]""")),
+            Item("dev:master-data--Wellbore:1", ("FacilityName", "\"Wellbore Æøå Nord\""), ("NameAlias", """[{"AliasName":"A-1","AliasNameTypeID":"x"}]""")),
+            Item("dev:master-data--Wellbore:2", ("FacilityName", "\"Wellbore A/1-19 ST\""), ("Depth", "1234.50"), ("Active", "true"), ("Aliases", """["b","a"]""")),
         ]);
 
     private static ReferenceType Lookup(params (string Key, string Value)[] rows) => new(
-        "RecallUnits", ReferenceType.LookupEntityType("RecallUnits"),
+        "UnitAlias", ReferenceType.LookupEntityType("UnitAlias"),
         rows.Select(r => Item(r.Key, ("key", $"\"{r.Key}\""), ("value", $"\"{r.Value}\""))), key: "key");
 
     /// <summary>The same type built afresh, so nothing it computed before answers for it.</summary>
@@ -110,7 +110,7 @@ public sealed class CacheTypeHashTests
         Assert.NotEqual(hash, new ReferenceType(units.Name, units.EntityType, []).ContentHash());
         Assert.NotEqual(
             Lookup(("M", "m")).ContentHash(),
-            new ReferenceType("RecallUnits", ReferenceType.LookupEntityType("RecallUnits"), Lookup(("M", "m")).Items, key: "code").ContentHash());
+            new ReferenceType("UnitAlias", ReferenceType.LookupEntityType("UnitAlias"), Lookup(("M", "m")).Items, key: "code").ContentHash());
 
         // A value's case is a change of it: OSDU codes that differ by case are different records.
         Assert.NotEqual(Lookup(("M", "m")).ContentHash(), Lookup(("M", "M")).ContentHash());
@@ -134,13 +134,13 @@ public sealed class CacheTypeHashTests
         Assert.Equal(CacheTypeChange.Unchanged, changes.Of("UnitOfMeasure"));
         Assert.Equal(CacheTypeChange.Unchanged, changes.Of("wellbore"));
         Assert.Equal(CacheTypeChange.Added, changes.Of("LogType"));
-        Assert.Null(changes.Of("RecallUnits"));
-        Assert.Equal(["RecallUnits"], changes.Removed);
+        Assert.Null(changes.Of("UnitAlias"));
+        Assert.Equal(["UnitAlias"], changes.Removed);
         Assert.Equal(["LogType"], changes.Moved);
 
         var moved = CacheTypeChanges.Compare(previous, new ReferenceSnapshot("v2", DateTimeOffset.UnixEpoch, [Units(("m", "meter")), wellbores, Lookup(("M", "m"))]));
         Assert.Equal(CacheTypeChange.Changed, moved.Of("UnitOfMeasure"));
-        Assert.Equal(CacheTypeChange.Unchanged, moved.Of("RecallUnits"));
+        Assert.Equal(CacheTypeChange.Unchanged, moved.Of("UnitAlias"));
         Assert.Equal(["UnitOfMeasure"], moved.Moved);
 
         // A name spelled another way is a change, since the records are stored under the name as spelled.
@@ -194,7 +194,7 @@ public sealed class CacheTypeVersionTests : IDisposable
 
     private static ReferenceType Wellbores(params string[] keys) => new(
         "Wellbore", "master-data--Wellbore",
-        keys.Select(key => ReferenceItem.FromText("dev:master-data--Wellbore:" + key, new Dictionary<string, string> { ["FacilityName"] = "NO " + key })));
+        keys.Select(key => ReferenceItem.FromText("dev:master-data--Wellbore:" + key, new Dictionary<string, string> { ["FacilityName"] = "Wellbore " + key })));
 
     private static ReferenceType LogTypes() => new("LogType", "reference-data--LogType", []);
 
@@ -293,7 +293,7 @@ public sealed class CacheTypeVersionTests : IDisposable
         {
             await db.DeliveryCacheItems
                 .Where(i => i.Scope == Scope && i.RecordId == "dev:master-data--Wellbore:A")
-                .ExecuteUpdateAsync(set => set.SetProperty(i => i.FieldsJson, """{"FacilityName":"NO B"}"""));
+                .ExecuteUpdateAsync(set => set.SetProperty(i => i.FieldsJson, """{"FacilityName":"Wellbore B"}"""));
         }
 
         var altered = await Assert.ThrowsAsync<DeliveryException>(() => _catalog.Caches().LoadAsync(Scope, write.Snapshot.Version));
@@ -305,7 +305,7 @@ public sealed class CacheTypeVersionTests : IDisposable
         {
             await db.DeliveryCacheItems
                 .Where(i => i.Scope == Scope && i.RecordId == "dev:master-data--Wellbore:A")
-                .ExecuteUpdateAsync(set => set.SetProperty(i => i.FieldsJson, """{"FacilityName":"NO A"}"""));
+                .ExecuteUpdateAsync(set => set.SetProperty(i => i.FieldsJson, """{"FacilityName":"Wellbore A"}"""));
             var row = await db.DeliveryCacheVersions.SingleAsync(v => v.Scope == Scope);
             var unitsHash = write.Snapshot.Type("UnitOfMeasure")!.ContentHash();
             row.TypesJson = row.TypesJson.Replace(unitsHash, new string('0', ContentHash.HexLength), StringComparison.Ordinal);

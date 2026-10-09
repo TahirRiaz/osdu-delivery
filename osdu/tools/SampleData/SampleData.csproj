@@ -5,7 +5,7 @@
     <RootNamespace>SqlFlow.Delivery.Tools.SampleData</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <IsPackable>false</IsPackable>
-    <Description>Exports the sample estate's data from the Recall tables in Databricks: the CSV files the pre-ingestion flows read, and the parquet payload chunks the delivery streams.</Description>
+    <Description>Generates the sample estate's synthetic data: the well log CSV files the pre-ingestion flows read, the parquet payload chunks the delivery streams, and the lookup tables the sample mapping translates through. Deterministic for a seed; no network, no credentials.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,10 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- One definition of the sample data, shared with the suites that read it back. -->
+    <!-- One definition of the sample data's files, shared with the suites that read them back and check that the committed
+         files are what this generator writes. -->
     <Compile Include="..\..\tests\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="SampleWellLogs.cs" />
     <Compile Include="..\..\tests\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="PandasMetadata.cs" />
-    <None Update="queries\*.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

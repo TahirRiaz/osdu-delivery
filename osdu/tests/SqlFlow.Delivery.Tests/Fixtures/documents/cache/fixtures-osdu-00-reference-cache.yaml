@@ -1,7 +1,7 @@
 # Cache flow: fixtures-osdu-00-reference-cache (test input, not an example)
 #
 # The reference data only the fixture mappings of this folder resolve against, beside what the sample estate's own
-# cache flows (osdu/samples/recall/cache) put in the same partition cache. The suites import its records from
+# cache flows (osdu/samples/welldb/cache) put in the same partition cache. The suites import its records from
 # Fixtures/cache-records.
 flowType: cache
 name: fixtures-osdu-00-reference-cache
@@ -26,7 +26,7 @@ types:
     name: TrajectoryStationPropertyType
     fields: [data.Code, data.Name, data.ID]
   # The wellbore trajectory fixture mapping resolves its units against the cache. The sample estate's
-  # recall-reference-00-cache declares UnitOfMeasure too, with the same paths under the same names, so the partition's
+  # osdu-reference-00-cache declares UnitOfMeasure too, with the same paths under the same names, so the partition's
   # cache holds one UnitOfMeasure type: every record either flow captured.
   - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
     name: UnitOfMeasure

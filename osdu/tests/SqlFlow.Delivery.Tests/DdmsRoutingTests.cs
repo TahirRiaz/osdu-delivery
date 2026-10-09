@@ -121,29 +121,29 @@ public sealed class DdmsRoutingTests
     [Fact]
     public void A_flow_that_names_its_paths_has_them_used_and_the_collection_supplies_the_rest()
     {
-        var options = new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms", RecordPath = "/petrodb/welllogs", DataPath = "/petrodb/welllogs/{id}/bulk" };
+        var options = new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms", RecordPath = "/facade-api/welllogs", DataPath = "/facade-api/welllogs/{id}/bulk" };
         var routing = DdmsRouting.Of(Flow(options));
         var paths = routing.For(WellLog);
 
         Assert.True(routing.NamesPaths);
-        Assert.Equal("/petrodb/welllogs", paths.Records);
-        Assert.Equal("/petrodb/welllogs/{id}/bulk", paths.Data);
+        Assert.Equal("/facade-api/welllogs", paths.Records);
+        Assert.Equal("/facade-api/welllogs/{id}/bulk", paths.Data);
         Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}", paths.Record);
         Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}/sessions", paths.Sessions);
 
         // A type no DDMS serves has nowhere to take the paths the flow leaves out from.
-        var bare = DdmsRouting.Of(Flow(new ProtocolOptions { RecordPath = "/petrodb/things" }, interfaceName: "things"));
+        var bare = DdmsRouting.Of(Flow(new ProtocolOptions { RecordPath = "/facade-api/things" }, interfaceName: "things"));
         Assert.Contains("names its own DDMS paths but not verifyPath", Assert.Throws<DeliveryException>(() => bare.For("work-product-component--Thing")).Message, StringComparison.Ordinal);
 
         var named = DdmsRouting.Of(Flow(
-            new ProtocolOptions { RecordPath = "/petrodb/things", VerifyPath = "/petrodb/things/{id}", DeletePath = "/petrodb/things/{id}" },
+            new ProtocolOptions { RecordPath = "/facade-api/things", VerifyPath = "/facade-api/things/{id}", DeletePath = "/facade-api/things/{id}" },
             interfaceName: "things"));
         var thing = named.For("work-product-component--Thing");
         Assert.Null(thing.Route);
         Assert.True(thing.Bulk);
         Assert.Null(named.Problem("work-product-component--Thing", sendsBulk: false));
         Assert.Contains("Name dataPath, sessionPath, sessionDataPath, sessionCommitPath", named.Problem("work-product-component--Thing", sendsBulk: true), StringComparison.Ordinal);
-        Assert.Equal("the paths the flow names (/petrodb/things)", thing.Describe());
+        Assert.Equal("the paths the flow names (/facade-api/things)", thing.Describe());
         Assert.Empty(named.ProbePaths);
     }
 
@@ -390,7 +390,7 @@ public sealed class DdmsRoutingTests
     [Fact]
     public void Paths_a_flow_names_for_a_wellbore_ddms_facade_are_refused_for_a_ddms_of_another_shape()
     {
-        var routing = DdmsRouting.Of(Flow(new ProtocolOptions { VerifyPath = "/petrodb/{id}", DataPath = "/petrodb/{id}/bulk" }, [Rafs], "samples"));
+        var routing = DdmsRouting.Of(Flow(new ProtocolOptions { VerifyPath = "/facade-api/{id}", DataPath = "/facade-api/{id}/bulk" }, [Rafs], "samples"));
         var refused = Assert.Throws<DeliveryException>(() => routing.For("work-product-component--DepthShift"));
         Assert.Contains("the flow names DDMS paths of its own (verifyPath, dataPath under target.protocolOptions of interface 'samples')", refused.Message, StringComparison.Ordinal);
         Assert.Contains("whose shape (rafsV2) says every call they take", refused.Message, StringComparison.Ordinal);

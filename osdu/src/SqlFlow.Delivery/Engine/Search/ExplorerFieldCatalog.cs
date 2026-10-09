@@ -47,7 +47,7 @@ internal static partial class ExplorerFieldCatalog
         foreach (var (key, value) in node)
         {
             // A key a query cannot name (a space, a character of the syntax) is not a property a page can ask for; a key holding
-            // dots, as an index augmentation names its properties (Equinor.WellboreName), reads as the path it spells.
+            // dots, as an index augmentation names its properties (Augmented.WellboreName), reads as the path it spells.
             var child = $"{path}.{key}";
             if (!OsduPath.IsPath(child))
             {

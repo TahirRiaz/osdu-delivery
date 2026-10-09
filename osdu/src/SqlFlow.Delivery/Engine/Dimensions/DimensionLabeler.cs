@@ -33,7 +33,7 @@ public sealed record KeyLabels(
 
 /// <summary>
 /// Reads the human-friendly label and the attributes of each key of a dimension (docs/dimension-plan.md, Keys and values,
-/// Attributes): a key naming an OSDU record (<c>dev:master-data--Wellbore:NO-15-9-19-A:</c>) is followed to the record it
+/// Attributes): a key naming an OSDU record (<c>dev:master-data--Wellbore:WB-0001:</c>) is followed to the record it
 /// names, and each path is read there (<c>data.FacilityName</c>); a label or an attribute of several steps follows every
 /// reference a step reads to the next records (<c>data.GeoContexts.GeoPoliticalEntityID</c>, then
 /// <c>data[GeoPoliticalEntityTypeID$=:Country:].GeoPoliticalEntityName</c>), and the first record reached that holds a value

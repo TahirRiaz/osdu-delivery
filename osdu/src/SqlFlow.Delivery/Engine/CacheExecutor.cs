@@ -124,11 +124,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         EngineContext context, CacheDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
         var payload = DeliveryRunPayload.Parse(parameters);
-        if (!payload.CarriesOnlyConfiguration)
-        {
-            throw new SqlFlowException(
-                "A cache flow's payload carries only the central configuration the control plane supplies: a refresh sweeps every declared type in full, so there is no submission, record or slice to name.");
-        }
+        payload.RefuseOtherThan(CacheDefinition.FlowTypeName, []);
 
         var (partition, supplied) = PartitionNames.SplitRunValues(
             parameters.Values, keptAsParameter: !flow.Partitioned && flow.Parameters.ContainsKey(PartitionNames.RunValue));

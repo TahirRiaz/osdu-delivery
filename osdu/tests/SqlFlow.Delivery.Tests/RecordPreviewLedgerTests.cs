@@ -137,7 +137,7 @@ public sealed class RecordPreviewLedgerTests : IDisposable
         {
             // Not an id this flow delivers to, so it is neither found in the ledger nor refused as one of this flow's ids:
             // it is read as a source key, which the flow's two key columns cannot split it into.
-            var preview = await new RecordPreviewer(runtime).PreviewAsync("dev:master-data--Wellbore:NO-15-5-7-AT2");
+            var preview = await new RecordPreviewer(runtime).PreviewAsync("dev:master-data--Wellbore:WB-B-1-7-ST2");
 
             Assert.False(preview.Found);
             Assert.Equal(PreviewKeyForms.SourceKey, preview.Asked.How);

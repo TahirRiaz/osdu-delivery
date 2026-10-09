@@ -32,8 +32,8 @@ public sealed class CachedReplaceTests : IDisposable
     public void Dispose() => _db.Dispose();
 
     /// <summary>The unit spellings of a source, as a dictionary of pairs is cached.</summary>
-    private static ReferenceType RecallUnits(params (string From, string? To)[] pairs)
-        => LookupCacheTests.Pairs("RecallUnits", pairs.Length > 0 ? pairs : [("M", "m"), ("METRE", "m"), ("FT", "ft"), ("NONE", null)]);
+    private static ReferenceType UnitAlias(params (string From, string? To)[] pairs)
+        => LookupCacheTests.Pairs("UnitAlias", pairs.Length > 0 ? pairs : [("M", "m"), ("METRE", "m"), ("FT", "ft"), ("NONE", null)]);
 
     /// <summary>A curve dictionary as a table type caches it: keyed by mnemonic, with a family and a unit.</summary>
     private static ReferenceType CurveClasses() => LookupCacheTests.Lookup(
@@ -66,7 +66,7 @@ public sealed class CachedReplaceTests : IDisposable
               Symbol:
                 $from: unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
+                  - replace: $cache.UnitAlias
               Description:
                 $from: unit
                 $modifiers:
@@ -77,18 +77,18 @@ public sealed class CachedReplaceTests : IDisposable
             """);
 
         var plain = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Modifiers.Single();
-        Assert.Equal(new CachedReplaceTable("RecallUnits", null, null), plain.Table);
+        Assert.Equal(new CachedReplaceTable("UnitAlias", null, null), plain.Table);
         Assert.Empty(plain.Replacements);
         Assert.Equal(ReplaceFallback.Keep, plain.Otherwise);
-        Assert.Equal("replace from $cache.RecallUnits", plain.ToString());
+        Assert.Equal("replace from $cache.UnitAlias", plain.ToString());
 
         var named = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Description").Modifiers.Single();
         Assert.Equal(new CachedReplaceTable("CurveClasses", "mnemonic", "curve_family"), named.Table);
         Assert.Equal("replace from $cache.CurveClasses (mnemonic to curve_family), otherwise ~", named.ToString());
 
         // A table read by a modifier alone is still a type the mapping reads, for the render, the intake and lineage alike.
-        Assert.Equal(["CurveClasses", "RecallUnits"], mapping.CacheTypesRead());
-        Assert.Equal(["CurveClasses", "RecallUnits"], DeliveryLineage.CacheTypes(mapping));
+        Assert.Equal(["CurveClasses", "UnitAlias"], mapping.CacheTypesRead());
+        Assert.Equal(["CurveClasses", "UnitAlias"], DeliveryLineage.CacheTypes(mapping));
 
         string Refused(string modifier) => Assert.Throws<FlowValidationException>(() => TestSchema.Mapping($"""
               Symbol:
@@ -96,12 +96,12 @@ public sealed class CachedReplaceTests : IDisposable
                 $modifiers:
             {modifier}
             """)).Message;
-        Assert.Contains("a table read from the cache is named $cache.<Type>, such as replace: $cache.UnitAlias", Refused("      - replace: RecallUnits"), StringComparison.Ordinal);
-        Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: $cache.Recall.Units"), StringComparison.Ordinal);
+        Assert.Contains("a table read from the cache is named $cache.<Type>, such as replace: $cache.UnitAlias", Refused("      - replace: UnitAlias"), StringComparison.Ordinal);
+        Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: $cache.Unit.Alias"), StringComparison.Ordinal);
         Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: search.Wellbore"), StringComparison.Ordinal);
-        Assert.Contains("replace's match names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        match: [a, b]"), StringComparison.Ordinal);
-        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        field: \"a b\""), StringComparison.Ordinal);
-        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        field: ~"), StringComparison.Ordinal);
+        Assert.Contains("replace's match names a field of the cached table", Refused("      - replace: $cache.UnitAlias\n        match: [a, b]"), StringComparison.Ordinal);
+        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: $cache.UnitAlias\n        field: \"a b\""), StringComparison.Ordinal);
+        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: $cache.UnitAlias\n        field: ~"), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -112,38 +112,38 @@ public sealed class CachedReplaceTests : IDisposable
                 $cache: UnitOfMeasure.id
                 $findBy: Code = unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
-            """, Cache(RecallUnits()));
+                  - replace: $cache.UnitAlias
+            """, Cache(UnitAlias()));
 
         var metre = renderer.Render(Record(" METRE "));
         Assert.False(metre.IsHeld, string.Join("; ", metre.Holds));
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", Data(metre, "Unit"));
-        Assert.Contains(new CacheUsage("RecallUnits", "METRE", "key", "METRE", CacheUsageKind.Match), metre.CacheUsages);
-        Assert.Contains(new CacheUsage("RecallUnits", "METRE", "value", "m", CacheUsageKind.Value), metre.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "METRE", "key", "METRE", CacheUsageKind.Match), metre.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "METRE", "value", "m", CacheUsageKind.Value), metre.CacheUsages);
         Assert.Contains(metre.CacheUsages, u => u.TypeName == "UnitOfMeasure" && u.Kind == CacheUsageKind.Match && u.Value == "m");
 
         // A key is matched ignoring case when that finds one row, and the row is recorded under its own key.
         var feet = renderer.Render(Record("ft"));
         Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", Data(feet, "Unit"));
-        Assert.Contains(new CacheUsage("RecallUnits", "FT", "key", "ft", CacheUsageKind.Match), feet.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "FT", "key", "ft", CacheUsageKind.Match), feet.CacheUsages);
 
         // A row that gives no value gives none, and what it gave (nothing) is recorded, so an edit giving it one reaches
         // this record; the entry is required, so the record is held.
         var none = renderer.Render(Record("NONE"));
         Assert.True(none.IsHeld);
         Assert.Contains("dataset.unit is empty, so there is nothing to find in the cache, and the entry is required", Assert.Single(none.Holds), StringComparison.Ordinal);
-        Assert.Contains(new CacheUsage("RecallUnits", "NONE", "value", string.Empty, CacheUsageKind.Empty), none.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "NONE", "value", string.Empty, CacheUsageKind.Empty), none.CacheUsages);
 
         // The partition's own spelling is listed too, ignoring case, so it is looked up like any other.
         var own = renderer.Render(Record("m"));
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", Data(own, "Unit"));
-        Assert.Contains(new CacheUsage("RecallUnits", "M", "key", "m", CacheUsageKind.Match), own.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "M", "key", "m", CacheUsageKind.Match), own.CacheUsages);
 
         // A spelling the dictionary does not list passes on unchanged, and the key it was looked up under is recorded, so a
         // dictionary that comes to list it reaches this record.
         var kb = renderer.Render(Record("kb"));
         Assert.True(kb.IsHeld);
-        Assert.Contains(new CacheUsage("RecallUnits", "KB", "value", "kb", CacheUsageKind.Unlisted), kb.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "KB", "value", "kb", CacheUsageKind.Unlisted), kb.CacheUsages);
     }
 
     [Fact]
@@ -199,8 +199,8 @@ public sealed class CachedReplaceTests : IDisposable
                 $from: unit
                 $required: false
                 $modifiers:
-                  - replace: $cache.RecallUnits
-            """, Cache(RecallUnits(("NONE", null)))).Render(Record("none"));
+                  - replace: $cache.UnitAlias
+            """, Cache(UnitAlias(("NONE", null)))).Render(Record("none"));
         Assert.False(empty.IsHeld, string.Join("; ", empty.Holds));
         Assert.Null(Data(empty, "Symbol"));
 
@@ -269,12 +269,12 @@ public sealed class CachedReplaceTests : IDisposable
 
         Assert.Contains(
             "osdu.data.Symbol: replace reads $cache.Nope, and version refs-1 of the cache of partition 'dev' holds no type 'Nope'",
-            Held("Nope", Cache(RecallUnits()), "M"),
+            Held("Nope", Cache(UnitAlias()), "M"),
             StringComparison.Ordinal);
 
         // Two keys answer to "ft" only once case is ignored, and they disagree: taking either writes a value nobody chose.
-        var clash = Held("RecallUnits", Cache(RecallUnits(("Ft", "ft"), ("FT", "foot"))), "ft");
-        Assert.Contains("'ft' matches the RecallUnits rows ", clash, StringComparison.Ordinal);
+        var clash = Held("UnitAlias", Cache(UnitAlias(("Ft", "ft"), ("FT", "foot"))), "ft");
+        Assert.Contains("'ft' matches the UnitAlias rows ", clash, StringComparison.Ordinal);
         Assert.Contains("'Ft'", clash, StringComparison.Ordinal);
         Assert.Contains("'FT'", clash, StringComparison.Ordinal);
         Assert.Contains("by key only once case is ignored in version refs-1 of the cache of partition 'dev', and they replace it with different values", clash, StringComparison.Ordinal);
@@ -284,8 +284,8 @@ public sealed class CachedReplaceTests : IDisposable
               Symbol:
                 $from: unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
-            """, Cache(RecallUnits(("Ft", "ft"), ("FT", "ft")))).Render(Record("ft"));
+                  - replace: $cache.UnitAlias
+            """, Cache(UnitAlias(("Ft", "ft"), ("FT", "ft")))).Render(Record("ft"));
         Assert.Equal("ft", Data(agreeing, "Symbol"));
         Assert.Equal(2, agreeing.CacheUsages.Count(u => u.Kind == CacheUsageKind.Match));
 
@@ -332,12 +332,12 @@ public sealed class CachedReplaceTests : IDisposable
                   - Code = unit
                   - Name = unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
+                  - replace: $cache.UnitAlias
             """;
-        Assert.DoesNotContain(Check(ThroughUnits, Cache(RecallUnits())), i => i.Message.Contains("replace", StringComparison.Ordinal));
+        Assert.DoesNotContain(Check(ThroughUnits, Cache(UnitAlias())), i => i.Message.Contains("replace", StringComparison.Ordinal));
 
         // Values the dictionary gives that no unit holds, by code or by name, are listed before any row arrives.
-        var unknown = Check(ThroughUnits, Cache(RecallUnits(("M", "m"), ("G/CM3", "g/cm3"), ("DEG", "dega"))));
+        var unknown = Check(ThroughUnits, Cache(UnitAlias(("M", "m"), ("G/CM3", "g/cm3"), ("DEG", "dega"))));
         var warning = Assert.Single(unknown, i => i.Severity == IssueSeverity.Warning && i.Message.Contains("its replace can give", StringComparison.Ordinal));
         Assert.Contains("2 of the 3 value(s) its replace can give find no UnitOfMeasure by Code/Name in cache version 'refs-1': 'dega', 'g/cm3'. A record whose value becomes one of them is held.", warning.Message, StringComparison.Ordinal);
         Assert.Equal("osdu.data.Unit", warning.Target);
@@ -367,8 +367,8 @@ public sealed class CachedReplaceTests : IDisposable
             return Assert.Single(issues, i => i.Severity == IssueSeverity.Error).Message;
         }
 
-        Assert.Contains("replace reads $cache.Nope, which cache version 'refs-1' does not hold. Cached: RecallUnits, UnitOfMeasure, Wellbore.", Error("      - replace: $cache.Nope", Cache(RecallUnits())), StringComparison.Ordinal);
-        Assert.Contains("replace matches the value on 'colour' of RecallUnits, which cache version 'refs-1' does not cache", Error("      - replace: $cache.RecallUnits\n        match: colour", Cache(RecallUnits())), StringComparison.Ordinal);
+        Assert.Contains("replace reads $cache.Nope, which cache version 'refs-1' does not hold. Cached: UnitAlias, UnitOfMeasure, Wellbore.", Error("      - replace: $cache.Nope", Cache(UnitAlias())), StringComparison.Ordinal);
+        Assert.Contains("replace matches the value on 'colour' of UnitAlias, which cache version 'refs-1' does not cache", Error("      - replace: $cache.UnitAlias\n        match: colour", Cache(UnitAlias())), StringComparison.Ordinal);
         Assert.Contains("replace replaces the value by 'colour' of CurveClasses, which cache version 'refs-1' does not cache. Cached: id, curve_family, mnemonic, unit.", Error("      - replace: $cache.CurveClasses\n        field: colour", Cache(CurveClasses())), StringComparison.Ordinal);
         Assert.Contains("lookup table CurveClasses holds 2 fields beside its key mnemonic", Error("      - replace: $cache.CurveClasses", Cache(CurveClasses())), StringComparison.Ordinal);
         Assert.Contains("$cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure), which have no key", Error("      - replace: $cache.UnitOfMeasure", Cache()), StringComparison.Ordinal);
@@ -395,7 +395,7 @@ public sealed class CachedReplaceTests : IDisposable
               Symbol:
                 $from: unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
+                  - replace: $cache.UnitAlias
             """));
         var resolver = new RenderResolver(new MappingCatalog(directory, new DeliveryDocumentLoader()), caches, templates, new SecretResolver([new EnvSecretProvider()]));
         var flow = Samples.Targeting(new FlowTarget
@@ -416,12 +416,12 @@ public sealed class CachedReplaceTests : IDisposable
         var none = await Assert.ThrowsAsync<FlowValidationException>(() => resolver.ResolveAsync(flow));
         Assert.Contains("reads the cache of partition 'dev', which holds no version yet", none.Message, StringComparison.Ordinal);
 
-        var write = await caches.MergeAsync("dev", "lookups", [RecallUnits()], new CacheCapture(null, "tests", "dictionary"), T0);
+        var write = await caches.MergeAsync("dev", "lookups", [UnitAlias()], new CacheCapture(null, "tests", "dictionary"), T0);
         var resolved = await resolver.ResolveAsync(flow);
         Assert.Equal(("dev", write.Snapshot.Version), (resolved.Context.CacheScope, resolved.Context.CacheVersion));
         var result = resolved.Renderer.Render(Record("METRE"));
         Assert.Equal("m", Data(result, "Symbol"));
-        Assert.Contains(new CacheUsage("RecallUnits", "METRE", "value", "m", CacheUsageKind.Value), result.CacheUsages);
+        Assert.Contains(new CacheUsage("UnitAlias", "METRE", "value", "m", CacheUsageKind.Value), result.CacheUsages);
     }
 
     [Fact]
@@ -433,9 +433,9 @@ public sealed class CachedReplaceTests : IDisposable
                 $from: unit
                 $required: false
                 $modifiers:
-                  - replace: $cache.RecallUnits
-            """, Cache(RecallUnits()));
-        var before = RecallUnits();
+                  - replace: $cache.UnitAlias
+            """, Cache(UnitAlias()));
+        var before = UnitAlias();
 
         // Five records built from METRE, three from FT, two from NONE (which gave no value), two from KB (unlisted).
         var metre = await DeliveredAsync(ledger, "METRE", 5, renderer.Render(Record("METRE")).CacheUsages);
@@ -445,7 +445,7 @@ public sealed class CachedReplaceTests : IDisposable
         Assert.Equal(12, metre.Count + feet.Count + none.Count + kb.Count);
 
         // METRE now gives metre, NONE gives m, and the dictionary comes to list kb; FT is untouched.
-        var after = RecallUnits(("M", "m"), ("METRE", "metre"), ("FT", "ft"), ("NONE", "m"), ("kb", "m"));
+        var after = UnitAlias(("M", "m"), ("METRE", "metre"), ("FT", "ft"), ("NONE", "m"), ("kb", "m"));
         var impact = await new CacheImpactAnalyzer(ledger, _clock, NullLogger.Instance)
             .AnalyzeAsync("dev", before, after, CacheChangeMode.Approve, "v1", "v2");
         Assert.Equal(9, impact.AffectedRecords);
@@ -460,7 +460,7 @@ public sealed class CachedReplaceTests : IDisposable
 
         var listed = Assert.Single(tags, t => t.Change == "listed");
         Assert.Equal(("kb", "value", "kb", "m", 2L), (listed.ItemId, listed.Path, listed.OldValue, listed.NewValue, listed.AffectedRecords));
-        Assert.Contains("RecallUnits now lists 'kb' as 'kb', giving value = 'm'", listed.Describe(), StringComparison.Ordinal);
+        Assert.Contains("UnitAlias now lists 'kb' as 'kb', giving value = 'm'", listed.Describe(), StringComparison.Ordinal);
 
         Assert.DoesNotContain(tags, t => t.ItemId == "FT");
     }

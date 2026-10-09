@@ -70,7 +70,7 @@ public sealed record RecordPreview
 
 /// <summary>
 /// The JSON a preview is written as, by a node answering the GUI and by the CLI alike: camelCase names, nulls left out,
-/// and text kept as it is (a placeholder's angle brackets, a Norwegian well name) rather than escaped, since the answer is
+/// and text kept as it is (a placeholder's angle brackets, a well name in letters beyond ASCII) rather than escaped, since the answer is
 /// read as JSON and never embedded in a page.
 /// </summary>
 public static class RecordPreviewJson

@@ -2164,7 +2164,7 @@ export interface MappingDraftSearch {
   description: string | null;
 }
 
-/** What a mapping makes its records' OSDU ids from: the delivery key (a GUID), or the key's own values (`RECALL::GAPI`). */
+/** What a mapping makes its records' OSDU ids from: the delivery key (a GUID), or the key's own values (`WELLDB::GAPI`). */
 export type MappingIdFrom = "deliveryKey" | "key";
 
 /** A mapping as the builder edits it: the header, the parameters and the entries. */
@@ -3403,7 +3403,7 @@ export const deliveryApi = {
     post<DeliveryTemplateDetail>("/api/v1/delivery/templates/preview", { kind, schema, scope: scope ?? null, release: release ?? null }),
   /** The releases of the OSDU data definitions (the Open Group's public schema repository), newest first; a 502 when it cannot be read. */
   osduReleases: () => get<DeliveryOsduReleases>("/api/v1/delivery/templates/osdu/releases"),
-  /** Reads the release list again from the repository and downloads `release` (the newest when omitted) when it is not local; needs the operate scope. */
+  /** Reads the release list again from the repository and downloads `release` (the newest when omitted) when it is not local; under the operate policy, which every signed-in user holds. */
   osduSync: (release?: string | null) =>
     post<DeliveryOsduSync>("/api/v1/delivery/templates/osdu/sync", { release: release ?? null }),
   /** Every record kind a release of the OSDU data definitions publishes; a 404 for a release it does not have. */

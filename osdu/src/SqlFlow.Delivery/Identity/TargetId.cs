@@ -21,7 +21,7 @@ public static class TargetId
     /// <summary>
     /// The id whose unique segment is the key's own values (<c>dataset.idFrom: key</c>), or null with why the values give
     /// none. Each value is trimmed, as the delivery key trims it, and keeps its case, since OSDU compares ids exactly. One
-    /// value is written as it stands, its colons kept, so a key such as <c>RECALL::GAPI</c> gives the code OSDU's catalogs
+    /// value is written as it stands, its colons kept, so a key such as <c>WELLDB::GAPI</c> gives the code OSDU's catalogs
     /// write (<c>LIS-LAS::GAPI</c>); with several, each value's own colons are escaped and the values are joined with ':'.
     /// Every other character an id does not carry, '%' among them, is percent-encoded (<see cref="IdSegment.Encode"/>), so
     /// two different keys of one mapping never give one id and the key can be read back from it (<see cref="KeyValues"/>).

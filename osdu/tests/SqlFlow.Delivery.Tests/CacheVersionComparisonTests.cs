@@ -131,7 +131,7 @@ public sealed class CacheVersionComparisonTests : IDisposable
     [Fact]
     public async Task The_history_says_what_each_version_changed_against_the_one_captured_before_it()
     {
-        await SeedAsync(Scope,First, Uom("m", "metre"), Wellbore("A", "NO 1/1-A"));
+        await SeedAsync(Scope,First, Uom("m", "metre"), Wellbore("A", "Wellbore 1/1-A"));
         await SeedEstateAsync();
         await using var db = _catalog.CreateDbContext();
 
@@ -181,8 +181,8 @@ public sealed class CacheVersionComparisonTests : IDisposable
 
     private async Task SeedEstateAsync()
     {
-        await SeedAsync(Scope,Earlier, Uom("m", "metre"), Uom("ft", "foot"), Uom("fT", "femtotesla"), Wellbore("A", "NO 1/1-A"));
-        await SeedAsync(Scope,Later, Uom("m", "Metre"), Uom("fT", "femtotesla"), Uom("km", "kilometre"), Wellbore("A", "NO 1/1-A"));
+        await SeedAsync(Scope,Earlier, Uom("m", "metre"), Uom("ft", "foot"), Uom("fT", "femtotesla"), Wellbore("A", "Wellbore 1/1-A"));
+        await SeedAsync(Scope,Later, Uom("m", "Metre"), Uom("fT", "femtotesla"), Uom("km", "kilometre"), Wellbore("A", "Wellbore 1/1-A"));
     }
 
     /// <summary>
@@ -193,7 +193,7 @@ public sealed class CacheVersionComparisonTests : IDisposable
     {
         var captured = DateTimeOffset.ParseExact(version, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal);
         var types = items.GroupBy(i => (i.Type, i.EntityType)).Select(g => new ReferenceType(g.Key.Type, g.Key.EntityType, g.Select(i => i.Record))).ToList();
-        var write = await _catalog.Caches().MergeAsync(scope, "recall-osdu-00-reference-cache", types, Capture, captured);
+        var write = await _catalog.Caches().MergeAsync(scope, "welldb-osdu-00-reference-cache", types, Capture, captured);
         Assert.True(write.Written);
         Assert.Equal(version, write.Snapshot.Version);
     }

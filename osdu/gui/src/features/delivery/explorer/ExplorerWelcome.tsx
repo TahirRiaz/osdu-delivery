@@ -57,8 +57,8 @@ function searches(partition: string | null): { icon: ReactNode; what: string; ex
   return [
     { icon: <Hash />, what: "A record id", example: `${partition ?? "dev"}:master-data--Wellbore:…`, does: "opens the record" },
     { icon: <TextCursorInput />, what: "The start of an id", example: "master-data--Well:", does: "ids starting with it" },
-    { icon: <Type />, what: "A name or any text", example: "Norway", does: "in every property" },
-    { icon: <TextSearch />, what: "A value in one column", example: "In wellbore_uwi: NO 34/10-A-30", does: "pick it at the field's start" },
+    { icon: <Type />, what: "A name or any text", example: "United States", does: "in every property" },
+    { icon: <TextSearch />, what: "A value in one column", example: "In wellbore_uwi: UWI-0001", does: "pick it at the field's start" },
     { icon: <Braces />, what: "A Lucene query", example: "createTime:[2024-01-01 TO *]", does: "with { } on, sent as written" },
   ];
 }

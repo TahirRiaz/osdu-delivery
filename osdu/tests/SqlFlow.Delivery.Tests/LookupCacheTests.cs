@@ -18,7 +18,7 @@ public sealed class LookupCacheTests : IDisposable
 
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    private static readonly CacheCapture Capture = new(null, "cli:tester", "dictionary dictionaries/RecallUnits.yaml");
+    private static readonly CacheCapture Capture = new(null, "cli:tester", "dictionary dictionaries/UnitAlias.yaml");
 
     private readonly OsduTestDatabase _catalog = new();
 
@@ -53,9 +53,9 @@ public sealed class LookupCacheTests : IDisposable
     [Fact]
     public void A_lookup_table_is_matched_on_its_key_and_its_fields_and_is_kept_under_a_lookup_entity_type()
     {
-        var units = Pairs("RecallUnits", ("M", "m"), ("METRES.", "m"), ("ft", "ft"), ("fT", "fT"), ("NONE", null));
+        var units = Pairs("UnitAlias", ("M", "m"), ("METRES.", "m"), ("ft", "ft"), ("fT", "fT"), ("NONE", null));
         Assert.True(units.IsLookup);
-        Assert.Equal("lookup--RecallUnits", units.EntityType);
+        Assert.Equal("lookup--UnitAlias", units.EntityType);
         Assert.Equal("key", units.Key);
 
         Assert.Equal("m", units.Value(units.Match("key", "metres.")!, "value")!.Text);
@@ -67,14 +67,14 @@ public sealed class LookupCacheTests : IDisposable
         // The key is written only for a lookup table, so a type of OSDU records hashes exactly as it did before lookups.
         var json = units.ToJson();
         Assert.Equal("key", json["key"]!.GetValue<string>());
-        var back = ReferenceType.FromJson("RecallUnits", json);
+        var back = ReferenceType.FromJson("UnitAlias", json);
         Assert.Equal("key", back.Key);
         Assert.Equal(units.Items.Select(i => i.Id), back.Items.Select(i => i.Id));
         Assert.Null(TestSchema.References().Type("UnitOfMeasure")!.ToJson()["key"]);
         Assert.False(TestSchema.References().Type("UnitOfMeasure")!.IsLookup);
 
         // A lookup table always names its key, and a type of OSDU records never does.
-        Assert.Throws<DeliveryException>(() => new ReferenceType("RecallUnits", "lookup--RecallUnits", []));
+        Assert.Throws<DeliveryException>(() => new ReferenceType("UnitAlias", "lookup--UnitAlias", []));
         Assert.Throws<DeliveryException>(() => new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure", [], "key"));
     }
 
@@ -82,7 +82,7 @@ public sealed class LookupCacheTests : IDisposable
     public void Lookup_keys_are_trimmed_non_empty_short_and_never_called_id()
     {
         Assert.Null(LookupKeys.Problem("METRES."));
-        Assert.Null(LookupKeys.Problem("LFP_AI"));
+        Assert.Null(LookupKeys.Problem("IMP_AI"));
         Assert.Null(LookupKeys.Problem("fT"));
         Assert.Null(LookupKeys.Problem("dev:reference-data--UnitOfMeasure:m"));
         Assert.Equal("is empty", LookupKeys.Problem("   "));
@@ -130,7 +130,7 @@ public sealed class LookupCacheTests : IDisposable
         // As a cache flow declares it, a dictionary type names only its dictionary; once read, it carries the document's key.
         var dictionary = new ReferenceTypeSpec
         {
-            Name = "RecallUnits", EntityType = ReferenceType.LookupEntityType("RecallUnits"), Origin = CacheOrigin.Dictionary, Dictionary = "RecallUnits",
+            Name = "UnitAlias", EntityType = ReferenceType.LookupEntityType("UnitAlias"), Origin = CacheOrigin.Dictionary, Dictionary = "UnitAlias",
         };
         dictionary.Validate();
         (dictionary with { Key = "key", Fields = [new ReferenceFieldSpec("value", "value")] }).Validate();
@@ -180,16 +180,16 @@ public sealed class LookupCacheTests : IDisposable
     [Fact]
     public void A_captured_lookup_table_replaces_its_whole_type()
     {
-        var current = WithLookups(Pairs("RecallUnits", ("M", "m"), ("FT", "ft")));
+        var current = WithLookups(Pairs("UnitAlias", ("M", "m"), ("FT", "ft")));
 
         // Another flow's membership keeps an OSDU record the capture no longer finds, but a lookup table has one flow, and
         // what it captured is the whole type.
         var members = new Dictionary<CacheMemberKey, IReadOnlySet<string>>(CacheMemberKey.Comparer)
         {
-            [new CacheMemberKey("RecallUnits", "FT")] = new HashSet<string>(StringComparer.Ordinal) { "someone-else" },
+            [new CacheMemberKey("UnitAlias", "FT")] = new HashSet<string>(StringComparer.Ordinal) { "someone-else" },
         };
-        var plan = CacheMerge.Apply(current, members, "lookups", [Pairs("RecallUnits", ("M", "metre"))], [], "v2", T0.AddDays(1));
-        var merged = plan.Snapshot.Type("RecallUnits")!;
+        var plan = CacheMerge.Apply(current, members, "lookups", [Pairs("UnitAlias", ("M", "metre"))], [], "v2", T0.AddDays(1));
+        var merged = plan.Snapshot.Type("UnitAlias")!;
         Assert.Equal(["M"], merged.Items.Select(i => i.Id));
         Assert.Equal("metre", merged.Value(merged.Items[0], "value")!.Text);
         Assert.Equal("key", merged.Key);
@@ -202,23 +202,23 @@ public sealed class LookupCacheTests : IDisposable
     public async Task A_lookup_table_round_trips_through_the_store_with_keys_osdu_would_never_mint()
     {
         var store = _catalog.Caches();
-        var units = Pairs("RecallUnits", ("METRES.", "m"), ("LFP_AI", "Equinor-AI"), ("ft", "ft"), ("fT", "fT"), ("NONE", null));
+        var units = Pairs("UnitAlias", ("METRES.", "m"), ("IMP_AI", "Local-AI"), ("ft", "ft"), ("fT", "fT"), ("NONE", null));
         var write = await store.MergeAsync(Scope, "lookups", [units, TestSchema.References().Type("UnitOfMeasure")!], Capture, T0);
         Assert.True(write.Written);
 
         var info = Assert.Single(await store.ListVersionsAsync(Scope));
-        Assert.Equal("key", info.Types.Single(t => t.Name == "RecallUnits").Key);
+        Assert.Equal("key", info.Types.Single(t => t.Name == "UnitAlias").Key);
         Assert.Null(info.Types.Single(t => t.Name == "UnitOfMeasure").Key);
-        Assert.Equal("dictionary dictionaries/RecallUnits.yaml", info.Origin);
+        Assert.Equal("dictionary dictionaries/UnitAlias.yaml", info.Origin);
 
         // Read through a store that has never seen it, so the rows come from the database and the hash is checked there.
         var back = (await _catalog.Caches().LoadAsync(Scope, write.Snapshot.Version))!;
-        var type = back.Type("RecallUnits")!;
+        var type = back.Type("UnitAlias")!;
         Assert.True(type.IsLookup);
         Assert.Equal("key", type.Key);
         Assert.Equal("fT", type.Match("key", "fT")!.Id);
         Assert.Equal("ft", type.Match("key", "ft")!.Id);
-        Assert.Equal("Equinor-AI", type.Value(type.Match("key", "LFP_AI")!, "value")!.Text);
+        Assert.Equal("Local-AI", type.Value(type.Match("key", "IMP_AI")!, "value")!.Text);
         Assert.Null(type.Value(type.Match("key", "NONE")!, "value"));
 
         var again = await store.MergeAsync(Scope, "lookups", [units], Capture, T0.AddHours(1));
@@ -232,20 +232,20 @@ public sealed class LookupCacheTests : IDisposable
     public async Task A_lookup_key_the_cache_could_not_hold_is_refused_before_anything_is_written(string key)
     {
         var store = _catalog.Caches();
-        var bad = new ReferenceType("RecallUnits", "lookup--RecallUnits", [new ReferenceItem(key, new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase))], "key");
+        var bad = new ReferenceType("UnitAlias", "lookup--UnitAlias", [new ReferenceItem(key, new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase))], "key");
         var ex = await Assert.ThrowsAsync<DeliveryException>(() => store.MergeAsync(Scope, "lookups", [bad], Capture, T0));
-        Assert.Contains("lookup table RecallUnits has keys the cache cannot hold", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("lookup table UnitAlias has keys the cache cannot hold", ex.Message, StringComparison.Ordinal);
         Assert.Empty(await store.ListVersionsAsync(Scope));
     }
 
     [Fact]
     public void A_lookup_table_has_no_id_to_write_but_every_field_reads_like_a_cached_one()
     {
-        var units = Pairs("RecallUnits", ("M", "m"), ("dev:reference-data--UnitOfMeasure:m", "m, written as an id"));
+        var units = Pairs("UnitAlias", ("M", "m"), ("dev:reference-data--UnitOfMeasure:m", "m, written as an id"));
         var references = WithLookups(units);
         var byId = TestSchema.Mapping("""
               Symbol:
-                $cache: RecallUnits.id
+                $cache: UnitAlias.id
                 $findBy: key = unit
             """);
         var held = new MappingRenderer(byId, TestSchema.Build(), references, TestSchema.Context()).Render(Record("M"));
@@ -253,12 +253,12 @@ public sealed class LookupCacheTests : IDisposable
         Assert.Contains("is a lookup table in version refs-1 of the cache of partition 'dev', whose rows are not OSDU records, so it has no id to write", Assert.Single(held.Holds), StringComparison.Ordinal);
 
         var issues = Preflight.Check(byId, TestSchema.Build(), references, TestSchema.Context(), sourceColumns: null);
-        Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads the id of a RecallUnits row, and RecallUnits is a lookup table whose rows are not OSDU records", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads the id of a UnitAlias row, and UnitAlias is a lookup table whose rows are not OSDU records", StringComparison.Ordinal));
 
         // A field reads like any cached field, and a value shaped like an OSDU id is only a key in a table of no OSDU records.
         var byField = new MappingRenderer(TestSchema.Mapping("""
               Symbol:
-                $cache: RecallUnits.value
+                $cache: UnitAlias.value
                 $findBy: key = unit
             """), TestSchema.Build(), references, TestSchema.Context());
         Assert.Equal("m", byField.Render(Record("m")).Document["data"]!["Symbol"]!.GetValue<string>());
@@ -311,7 +311,7 @@ public sealed class LookupCacheTests : IDisposable
         Assert.Contains("names a column '[mnemonic]'", Refused(Tables.Replace("key: mnemonic", "key: \"[mnemonic]\"", StringComparison.Ordinal)), StringComparison.Ordinal);
         Assert.Contains("which takes no 'query'", Refused(Tables.Replace("    key: mnemonic\n", "    key: mnemonic\n    query: \"*\"\n", StringComparison.Ordinal)), StringComparison.Ordinal);
         Assert.Contains("a table column takes 'column' and 'as'", Refused(Tables.Replace("{ column: curve_main_family, as: mainFamily }", "{ path: curve_main_family }", StringComparison.Ordinal)), StringComparison.Ordinal);
-        Assert.Contains("names more than one origin", Refused(Tables.Replace("  - table: OsduData.arc.CurveDictionary\n", "  - table: OsduData.arc.CurveDictionary\n    dictionary: RecallUnits\n", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.Contains("names more than one origin", Refused(Tables.Replace("  - table: OsduData.arc.CurveDictionary\n", "  - table: OsduData.arc.CurveDictionary\n    dictionary: UnitAlias\n", StringComparison.Ordinal)), StringComparison.Ordinal);
 
         // A connection with no table to read, and a key on a type of OSDU records, are settings that would do nothing.
         Assert.Contains("declares no type read from a table there", Refused("""
@@ -345,7 +345,7 @@ public sealed class LookupCacheTests : IDisposable
         // flow, one refresh, one version of the partition's cache holding all three, read by a mapping the same way.
         var flow = new Documents.DeliveryDocumentLoader().ParseCache("""
             flowType: cache
-            name: recall-combined-00-cache
+            name: welldb-combined-00-cache
             source:
               endpoint: ${env:OSDU_URL}
               connection: ${env:OSDU_DATA_DB}
@@ -358,8 +358,8 @@ public sealed class LookupCacheTests : IDisposable
             types:
               - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
                 fields: [data.Code, data.Name, data.ID]
-              - table: OsduData.arc.CacheRecallUnits
-                name: RecallUnits
+              - table: OsduData.arc.UnitAlias
+                name: UnitAlias
                 key: source_unit
                 fields: [osdu_unit]
               - dictionary: CurveClasses
@@ -368,20 +368,20 @@ public sealed class LookupCacheTests : IDisposable
         Assert.Equal("${env:OSDU_URL}", flow.Source.Endpoint);
         Assert.Equal("${env:OSDU_DATA_DB}", flow.Source.Connection);
         Assert.Equal(
-            [(CacheOrigin.Osdu, "reference-data--UnitOfMeasure"), (CacheOrigin.Table, "lookup--RecallUnits"), (CacheOrigin.Dictionary, "lookup--CurveClasses")],
+            [(CacheOrigin.Osdu, "reference-data--UnitOfMeasure"), (CacheOrigin.Table, "lookup--UnitAlias"), (CacheOrigin.Dictionary, "lookup--CurveClasses")],
             flow.Types.Select(t => (t.Origin, t.EntityType)));
         var references = flow.CredentialReferences().Select(r => r.Key).ToList();
         Assert.Contains("source.endpoint", references);
         Assert.Contains("source.connection", references);
         Assert.Contains("source.auth.secretRef", references);
         var read = Assert.Single(new Documents.CacheFlowDocument { Flow = flow }.DeclaredObjects);
-        Assert.Equal(("OsduData", "arc", "CacheRecallUnits"), (read.Database, read.Schema, read.Name));
+        Assert.Equal(("OsduData", "arc", "UnitAlias"), (read.Database, read.Schema, read.Name));
     }
 
     [Fact]
     public void A_lookup_table_json_carries_its_key_between_entity_type_and_items()
     {
-        var json = Pairs("RecallUnits", ("M", "m")).ToJson();
+        var json = Pairs("UnitAlias", ("M", "m")).ToJson();
         Assert.Equal(["entityType", "key", "items"], json.Select(kv => kv.Key));
         Assert.IsType<JsonArray>(json["items"]);
     }

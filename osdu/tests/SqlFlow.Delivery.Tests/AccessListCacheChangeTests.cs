@@ -9,7 +9,7 @@ using static SqlFlow.Delivery.Tests.AccessListTests;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// What a refresh of the wellbores or of the access group map does to well logs already delivered with the viewers they
+/// What a refresh of the wellbores or of the access groups does to well logs already delivered with the viewers they
 /// gave: a group the data office lists for a field later, a wellbore loaded after its logs, a wellbore given its field, and a
 /// country group that comes to name a field each reach the records built without them, and a change nothing read reaches
 /// none. Every record is judged from the dependency set its render left behind, never by rendering the estate again.
@@ -78,29 +78,29 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task A_group_the_data_office_lists_for_a_field_later_reaches_every_log_built_without_it()
     {
-        await DeliveredAsync("NO 16/3-A-1", 4);
+        await DeliveredAsync("WELLBORE B-1", 4);
 
-        var impact = await AnalyzeAsync(Groups(), Groups(Item("dev:data-governance--AccessGroupMap:linge-extra",
-            ("FieldIDList", $"[\"{MartinLinge}\"]"), ("FieldList", "[\"MARTIN LINGE\"]"),
-            ("EntitlementGroupEmail", "\"data.office.martin.linge.partners.viewers@x\""))));
+        var impact = await AnalyzeAsync(Groups(), Groups(Item("dev:reference-data--AccessGroup:field-b-extra",
+            ("FieldIDList", $"[\"{FieldB}\"]"), ("FieldList", "[\"FIELD B\"]"),
+            ("EntitlementGroupEmail", "\"data.office.field.b.partners.viewers@x\""))));
 
         Assert.Equal(4, impact.AffectedRecords);
         var tag = await OnlyTagAsync();
         Assert.Equal("relisted", tag.Change);
         Assert.Equal("FieldIDList", tag.Path);
-        Assert.Equal(CacheUsage.ListingKey(MartinLinge), tag.ItemId);
+        Assert.Equal(CacheUsage.ListingKey(FieldB), tag.ItemId);
         Assert.Equal(string.Empty, tag.OldValue ?? string.Empty);
-        Assert.Equal("dev:data-governance--AccessGroupMap:linge-extra", tag.NewValue);
-        Assert.Contains("AccessGroupMap rows whose FieldIDList holds", tag.Describe(), StringComparison.Ordinal);
+        Assert.Equal("dev:reference-data--AccessGroup:field-b-extra", tag.NewValue);
+        Assert.Contains("AccessGroup rows whose FieldIDList holds", tag.Describe(), StringComparison.Ordinal);
         Assert.Equal(4, tag.AffectedRecords);
     }
 
     [Fact]
     public async Task A_group_listed_for_a_field_no_log_lies_in_reaches_none_of_them()
     {
-        await DeliveredAsync("NO 16/3-A-1", 2);
+        await DeliveredAsync("WELLBORE B-1", 2);
 
-        var impact = await AnalyzeAsync(Groups(), Groups(Item("dev:data-governance--AccessGroupMap:elsewhere",
+        var impact = await AnalyzeAsync(Groups(), Groups(Item("dev:reference-data--AccessGroup:elsewhere",
             ("FieldIDList", "[\"dev:master-data--Field:ELSEWHERE:\"]"), ("FieldList", "[\"ELSEWHERE\"]"),
             ("EntitlementGroupEmail", "\"data.office.elsewhere.viewers@x\""))));
 
@@ -111,62 +111,62 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task A_country_group_that_comes_to_name_a_field_stops_being_a_country_group_of_the_logs_it_reached()
     {
-        await DeliveredAsync("NO 1/1-X", 3);
+        await DeliveredAsync("WELLBORE X-1", 3);
 
-        var narrowed = new ReferenceType("AccessGroupMap", "data-governance--AccessGroupMap", Groups().Items.Select(item => item.Id.EndsWith(":no-contractors", StringComparison.Ordinal)
-            ? Item(item.Id, ("GeoPoliticalEntityID", $"\"{Norway}\""), ("FieldList", "[\"TROLL\"]"), ("EntitlementGroupEmail", "\"data.office.norway.contractors.viewers@x\""))
+        var narrowed = new ReferenceType("AccessGroup", "reference-data--AccessGroup", Groups().Items.Select(item => item.Id.EndsWith(":us-contractors", StringComparison.Ordinal)
+            ? Item(item.Id, ("GeoPoliticalEntityID", $"\"{UnitedStates}\""), ("FieldList", "[\"FIELD D\"]"), ("EntitlementGroupEmail", "\"data.office.us.contractors.viewers@x\""))
             : item));
         var impact = await AnalyzeAsync(Groups(), narrowed);
 
         Assert.Equal(3, impact.AffectedRecords);
         var tag = await OnlyTagAsync();
-        Assert.Equal("dev:data-governance--AccessGroupMap:no-contractors", tag.ItemId);
+        Assert.Equal("dev:reference-data--AccessGroup:us-contractors", tag.ItemId);
         Assert.Equal("FieldList", tag.Path);
-        Assert.Equal("TROLL", tag.NewValue);
+        Assert.Equal("FIELD D", tag.NewValue);
     }
 
     [Fact]
     public async Task A_group_s_changed_address_reaches_the_logs_that_carry_it()
     {
-        await DeliveredAsync("NO 16/3-A-1", 2);
+        await DeliveredAsync("WELLBORE B-1", 2);
 
-        var renamed = new ReferenceType("AccessGroupMap", "data-governance--AccessGroupMap", Groups().Items.Select(item => item.Id.EndsWith(":no-permanent", StringComparison.Ordinal)
-            ? Item(item.Id, ("GeoPoliticalEntityID", $"\"{Norway}\""), ("EntitlementGroupEmail", "\"data.office.norway.employees.viewers@x\""))
+        var renamed = new ReferenceType("AccessGroup", "reference-data--AccessGroup", Groups().Items.Select(item => item.Id.EndsWith(":us-permanent", StringComparison.Ordinal)
+            ? Item(item.Id, ("GeoPoliticalEntityID", $"\"{UnitedStates}\""), ("EntitlementGroupEmail", "\"data.office.us.employees.viewers@x\""))
             : item));
         await AnalyzeAsync(Groups(), renamed);
 
         var tag = await OnlyTagAsync();
         Assert.Equal("changed", tag.Change);
         Assert.Equal("EntitlementGroupEmail", tag.Path);
-        Assert.Equal("data.office.norway.viewers@x", tag.OldValue);
-        Assert.Equal("data.office.norway.employees.viewers@x", tag.NewValue);
+        Assert.Equal("data.office.us.viewers@x", tag.OldValue);
+        Assert.Equal("data.office.us.employees.viewers@x", tag.NewValue);
     }
 
     [Fact]
     public async Task A_wellbore_loaded_after_its_logs_reaches_them_by_the_name_they_found_no_wellbore_by()
     {
-        await DeliveredAsync("NO 99/9-Z-9", 2, optionalWellbore: true);
+        await DeliveredAsync("WELLBORE Z-9", 2, optionalWellbore: true);
 
         var impact = await AnalyzeAsync(Wellbores(), Wellbores(Item("dev:master-data--Wellbore:late",
-            ("FacilityName", "\"NO 99/9-Z-9\""),
-            ("GeoContexts.FieldID", $"[\"{MartinLinge}\"]"))));
+            ("FacilityName", "\"WELLBORE Z-9\""),
+            ("GeoContexts.FieldID", $"[\"{FieldB}\"]"))));
 
         Assert.Equal(2, impact.AffectedRecords);
         var tags = await _ledger.ListTagsAsync("approved", 10, 0);
         var tag = Assert.Single(tags, t => t.Path == "FacilityName");
         Assert.Equal("listed", tag.Change);
         Assert.Equal("dev:master-data--Wellbore:late", tag.ItemId);
-        Assert.Equal("NO 99/9-Z-9", tag.NewValue);
-        Assert.Contains("Wellbore now lists 'NO 99/9-Z-9' as 'dev:master-data--Wellbore:late'", tag.Describe(), StringComparison.Ordinal);
+        Assert.Equal("WELLBORE Z-9", tag.NewValue);
+        Assert.Contains("Wellbore now lists 'WELLBORE Z-9' as 'dev:master-data--Wellbore:late'", tag.Describe(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task A_wellbore_given_its_field_reaches_the_logs_built_without_the_field_s_groups()
     {
-        await DeliveredAsync("NO 1/1-X", 2);
+        await DeliveredAsync("WELLBORE X-1", 2);
 
         var placed = new ReferenceType("Wellbore", "master-data--Wellbore", Wellbores().Items.Select(item => item.Id.EndsWith(":nofield", StringComparison.Ordinal)
-            ? Item(item.Id, ("FacilityName", "\"NO 1/1-X\""), ("GeoContexts.FieldID", $"[\"{MartinLinge}\"]"), ("GeoContexts.GeoPoliticalEntityID", $"[\"{Norway}\"]"))
+            ? Item(item.Id, ("FacilityName", "\"WELLBORE X-1\""), ("GeoContexts.FieldID", $"[\"{FieldB}\"]"), ("GeoContexts.GeoPoliticalEntityID", $"[\"{UnitedStates}\"]"))
             : item));
         var impact = await AnalyzeAsync(Wellbores(), placed);
 
@@ -175,7 +175,7 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
         Assert.Equal("changed", tag.Change);
         Assert.Equal("GeoContexts.FieldID", tag.Path);
         Assert.Null(tag.OldValue);
-        Assert.Contains(MartinLinge, tag.NewValue, StringComparison.Ordinal);
+        Assert.Contains(FieldB, tag.NewValue, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -183,39 +183,39 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
     {
         // Three logs of a field no group lists yet, two of a wellbore the cache does not hold, one complete, and one of a
         // wellbore whose GeoContexts name its country and an area no access group names.
-        await DeliveredAsync("NO 2/2-N", 3, cache: Cache(Wellbores(Item("dev:master-data--Wellbore:new1",
-            ("FacilityName", "\"NO 2/2-N\""),
+        await DeliveredAsync("WELLBORE N-1", 3, cache: Cache(Wellbores(Item("dev:master-data--Wellbore:new1",
+            ("FacilityName", "\"WELLBORE N-1\""),
             ("GeoContexts.FieldID", "[\"dev:master-data--Field:NEW:\"]")))));
-        await DeliveredAsync("NO 99/9-Z-9", 2, optionalWellbore: true);
-        await DeliveredAsync("NO 16/3-A-1", 1);
-        await DeliveredAsync("NO 33/9-1", 1, cache: Cache(Wellbores(Item("dev:master-data--Wellbore:tampen",
-            ("FacilityName", "\"NO 33/9-1\""),
-            ("GeoContexts.FieldID", $"[\"{MartinLinge}\"]"),
-            ("GeoContexts.GeoPoliticalEntityID", $"[\"{Norway}\", \"dev:master-data--GeoPoliticalEntity:TAMPEN:\"]")))));
+        await DeliveredAsync("WELLBORE Z-9", 2, optionalWellbore: true);
+        await DeliveredAsync("WELLBORE B-1", 1);
+        await DeliveredAsync("WELLBORE E-1", 1, cache: Cache(Wellbores(Item("dev:master-data--Wellbore:area1",
+            ("FacilityName", "\"WELLBORE E-1\""),
+            ("GeoContexts.FieldID", $"[\"{FieldB}\"]"),
+            ("GeoContexts.GeoPoliticalEntityID", $"[\"{UnitedStates}\", \"dev:master-data--GeoPoliticalEntity:AREA-A:\"]")))));
 
         var listing = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 50, skip: 0);
         var gaps = listing.Items;
         Assert.Equal(gaps.Count, listing.Total);
 
-        var field = Assert.Single(gaps, g => g.TypeName == "AccessGroupMap" && g.Path == "FieldIDList" && g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW:"));
+        var field = Assert.Single(gaps, g => g.TypeName == "AccessGroup" && g.Path == "FieldIDList" && g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW:"));
         Assert.Equal(CacheUsageKind.Listed, field.Kind);
         Assert.Equal(3, field.Records);
         var wellbore = Assert.Single(gaps, g => g.TypeName == "Wellbore" && g.Path == "FacilityName");
         Assert.Equal(CacheUsageKind.Unlisted, wellbore.Kind);
-        Assert.Equal("NO 99/9-Z-9", wellbore.Value);
+        Assert.Equal("WELLBORE Z-9", wellbore.Value);
         Assert.Equal(2, wellbore.Records);
         Assert.Equal(gaps.Max(g => g.Records), gaps[0].Records);
 
         // A complete log leaves no gap, and a key that found its rows is none either, in whichever form it found them: the
         // field's groups name it without the version separator and the country's with it.
-        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(MartinLinge.TrimEnd(':')) || g.Key == CacheUsage.ListingKey(MartinLinge));
-        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(Norway.TrimEnd(':')) || g.Key == CacheUsage.ListingKey(Norway));
+        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(FieldB.TrimEnd(':')) || g.Key == CacheUsage.ListingKey(FieldB));
+        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(UnitedStates.TrimEnd(':')) || g.Key == CacheUsage.ListingKey(UnitedStates));
 
         // A key no form of which found a row is one gap, not one per form.
         Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW"));
 
         // The country's groups were found, so the area beside it, which no group names, left the log wanting nothing.
-        Assert.DoesNotContain(gaps, g => g.Key.Contains("TAMPEN", StringComparison.Ordinal));
+        Assert.DoesNotContain(gaps, g => g.Key.Contains("AREA-A", StringComparison.Ordinal));
 
         // A page is a slice of the same order, and every page counts them all.
         var second = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 1, skip: 1);
@@ -230,7 +230,7 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
 
         // The data office lists a group for the new field: the refresh raises a change for the three logs, and what was
         // missing is listed with the changes from then on, not as missing.
-        await AnalyzeAsync(Groups(), Groups(Item("dev:data-governance--AccessGroupMap:new",
+        await AnalyzeAsync(Groups(), Groups(Item("dev:reference-data--AccessGroup:new",
             ("FieldIDList", "[\"dev:master-data--Field:NEW:\"]"), ("FieldList", "[\"NEW\"]"),
             ("EntitlementGroupEmail", "\"data.office.new.viewers@x\""))));
         Assert.Equal(3, Assert.Single(await _ledger.ListTagsAsync("approved", 10, 0), t => t.Path == "FieldIDList").AffectedRecords);
@@ -240,16 +240,16 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task A_listing_survives_the_ledger_as_the_render_wrote_it()
     {
-        var usages = await DeliveredAsync("NO 16/3-A-1", 1);
+        var usages = await DeliveredAsync("WELLBORE B-1", 1);
         var set = await _ledger.EnsureCacheSetAsync(Scope, usages);
         var entries = await _ledger.ListCacheSetAsync(set);
 
         // The country is asked for as the wellbore writes it and without its version separator: two keys, one listing each.
         var listings = entries.Where(e => e.Kind == CacheUsageKind.Listed && e.Path == "GeoPoliticalEntityID").ToList();
-        Assert.Equal([CacheUsage.ListingKey(Norway.TrimEnd(':')), CacheUsage.ListingKey(Norway)], listings.Select(e => e.ItemId).Order(StringComparer.Ordinal));
-        var listing = Assert.Single(listings, e => e.ItemId == CacheUsage.ListingKey(Norway));
+        Assert.Equal([CacheUsage.ListingKey(UnitedStates.TrimEnd(':')), CacheUsage.ListingKey(UnitedStates)], listings.Select(e => e.ItemId).Order(StringComparer.Ordinal));
+        var listing = Assert.Single(listings, e => e.ItemId == CacheUsage.ListingKey(UnitedStates));
         Assert.Equal(
-            "dev:data-governance--AccessGroupMap:martin-linge, dev:data-governance--AccessGroupMap:no-contractors, dev:data-governance--AccessGroupMap:no-permanent",
+            "dev:reference-data--AccessGroup:field-b, dev:reference-data--AccessGroup:us-contractors, dev:reference-data--AccessGroup:us-permanent",
             listing.ValueText);
     }
 }

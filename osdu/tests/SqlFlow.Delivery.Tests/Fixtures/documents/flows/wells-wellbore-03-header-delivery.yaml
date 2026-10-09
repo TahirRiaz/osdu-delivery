@@ -15,12 +15,12 @@ partitions:
 source:
   connection: ${env:OSDU_DATA_DB}
   record:
-    object: OsduData.arc.Wellbore
+    object: OsduData.silver.Wellbore
     key: [facility_name]
     primaryKey: RecId
   datasets:
     aliases:
-      object: OsduData.arc.WellboreAlias
+      object: OsduData.silver.WellboreAlias
       join:
         facility_name: facility_name
       orderBy: [alias_name]

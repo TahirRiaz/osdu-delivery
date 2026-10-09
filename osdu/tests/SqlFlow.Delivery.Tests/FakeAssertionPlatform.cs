@@ -66,7 +66,7 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
             record["legal"] = new JsonObject
             {
                 ["legaltags"] = new JsonArray((legalTags ?? ["dev-legal"]).Select(t => (JsonNode?)JsonValue.Create(t)).ToArray()),
-                ["otherRelevantDataCountries"] = new JsonArray("NO"),
+                ["otherRelevantDataCountries"] = new JsonArray("US"),
             };
         }
 

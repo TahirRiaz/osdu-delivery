@@ -32,7 +32,7 @@ public class ProtocolTests
     {
         handler ??= new FakeHttpHandler();
         var runtime = new HttpRuntime(new FlowReliability { Retry = new FlowRetry { Attempts = 2, BaseDelayMs = 1, MaxDelayMs = 1 } }, new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
-        var client = new OsduHttpClient(runtime, "http://localhost/petrodb", new TargetAuth { Type = TargetAuthType.None }, new Dictionary<string, string> { ["data-partition-id"] = "dev" });
+        var client = new OsduHttpClient(runtime, "http://localhost/facade-api", new TargetAuth { Type = TargetAuthType.None }, new Dictionary<string, string> { ["data-partition-id"] = "dev" });
         return (client, handler, runtime);
     }
 
@@ -792,7 +792,7 @@ public class DeliverRunScopeTests
         Assert.Equal(RedeliverScope.Metadata, Of(logs, "Record"));
         Assert.Equal(RedeliverScope.Metadata, Of(logs, "Metadata"));
         Assert.Equal(
-            "'recall-welllog-03-header-delivery' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
+            "'welldb-welllog-03-header-delivery' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
             Assert.Throws<DeliveryException>(() => Of(logs, RedeliverScopes.Files)).Message);
 
         // The file route sends the record and its files.
@@ -879,13 +879,13 @@ public class DeliverRunScopeTests
 /// <summary>What a deliver run reports: its own work, and the submission it worked on alongside.</summary>
 public class DeliverOutcomeTests
 {
-    private const string Source = "OsduData.arc.WellLog";
+    private const string Source = "OsduData.silver.WellLog";
 
     private static SubmissionState Submission(long planned, long delivered) => new()
     {
         SubmissionId = Guid.NewGuid(),
         FlowId = Guid.NewGuid(),
-        FlowName = "recall-welllog-03-header-delivery",
+        FlowName = "welldb-welllog-03-header-delivery",
         MappingReference = "WellLog@1.4.0",
         RenderContext = "{}",
         SourceObject = Source,

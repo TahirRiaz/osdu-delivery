@@ -91,8 +91,8 @@ public sealed class UrlGuard
         Check(to);
     }
 
-    /// <summary>A URL as a message names it: without its query string, where a signed URL carries its credential.</summary>
-    internal static string Describe(Uri url) => url.IsAbsoluteUri ? url.GetLeftPart(UriPartial.Path) : url.OriginalString.Split('?')[0];
+    /// <summary>A URL as a message names it: without its user info and query string, where a URL carries a credential.</summary>
+    internal static string Describe(Uri url) => HeaderRedaction.DescribeUrl(url);
 
     private bool IsAllowed(string host)
     {

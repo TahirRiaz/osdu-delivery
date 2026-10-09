@@ -18,8 +18,8 @@ public class DimensionCleanerTests
         IsPairs = true,
         Entries =
         [
-            new("Statoil", new Dictionary<string, string?> { ["value"] = "Equinor ASA" }),
-            new("EQUINOR", new Dictionary<string, string?> { ["value"] = "Equinor ASA" }),
+            new("Oldco", new Dictionary<string, string?> { ["value"] = "Newco Ltd" }),
+            new("NEWCO", new Dictionary<string, string?> { ["value"] = "Newco Ltd" }),
             new("Retired", new Dictionary<string, string?> { ["value"] = null }),
             new("ft", new Dictionary<string, string?> { ["value"] = "foot" }),
             new("fT", new Dictionary<string, string?> { ["value"] = "femtotesla" }),
@@ -56,7 +56,7 @@ public class DimensionCleanerTests
     [InlineData(CleanStepKind.CollapseSpaces, "a \t\n b", "a b")]
     [InlineData(CleanStepKind.Upper, "gamma ray", "GAMMA RAY")]
     [InlineData(CleanStepKind.Lower, "GAMMA Ray", "gamma ray")]
-    [InlineData(CleanStepKind.FoldSeparators, "NO 15/9-19 SR", "no-15-9-19-sr")]
+    [InlineData(CleanStepKind.FoldSeparators, "Wellbore A/1-19 ST", "wellbore-a-1-19-st")]
     [InlineData(CleanStepKind.Nfkc, "ＧＲ", "GR")]
     [InlineData(CleanStepKind.Nfc, "é", "é")]
     public void Each_plain_step_does_what_its_name_says(CleanStepKind kind, string original, string clean)
@@ -77,7 +77,7 @@ public class DimensionCleanerTests
     public void A_replace_can_name_the_groups_it_matched()
     {
         var cleaner = Cleaner(new CleanStep { Kind = CleanStepKind.Replace, Pattern = @"^(\w+)_(\d+)$", With = "$2-$1" });
-        Assert.Equal("15-NO", cleaner.Clean("NO_15").Value);
+        Assert.Equal("15-WB", cleaner.Clean("WB_15").Value);
     }
 
     [Theory]
@@ -138,9 +138,9 @@ public class DimensionCleanerTests
     public void A_map_replaces_a_listed_value_with_the_dictionarys_and_matches_case_when_that_finds_one_entry()
     {
         var cleaner = Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators" });
-        Assert.Equal("Equinor ASA", cleaner.Clean("Statoil").Value);
-        Assert.Equal("Equinor ASA", cleaner.Clean("statoil").Value);
-        Assert.Equal("Equinor ASA", cleaner.Clean("Equinor").Value);
+        Assert.Equal("Newco Ltd", cleaner.Clean("Oldco").Value);
+        Assert.Equal("Newco Ltd", cleaner.Clean("oldco").Value);
+        Assert.Equal("Newco Ltd", cleaner.Clean("Newco").Value);
     }
 
     [Fact]
@@ -156,13 +156,13 @@ public class DimensionCleanerTests
     [Fact]
     public void An_unlisted_value_is_kept_dropped_or_replaced_as_the_map_says()
     {
-        Assert.Equal(CleanResult.Member("Aker BP"), Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators" }).Clean("Aker BP"));
+        Assert.Equal(CleanResult.Member("Acme Oil"), Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators" }).Clean("Acme Oil"));
 
-        var dropped = Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators", Otherwise = MapOtherwise.LeaveOut }).Clean("Aker BP");
+        var dropped = Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators", Otherwise = MapOtherwise.LeaveOut }).Clean("Acme Oil");
         Assert.Equal(CleanOutcome.Dropped, dropped.Outcome);
         Assert.Contains("does not list it", dropped.Note, StringComparison.Ordinal);
 
-        var other = Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators", Otherwise = MapOtherwise.Text, OtherwiseText = "Other" }).Clean("Aker BP");
+        var other = Cleaner(new CleanStep { Kind = CleanStepKind.Map, Dictionary = "Operators", Otherwise = MapOtherwise.Text, OtherwiseText = "Other" }).Clean("Acme Oil");
         Assert.Equal("Other", other.Value);
     }
 

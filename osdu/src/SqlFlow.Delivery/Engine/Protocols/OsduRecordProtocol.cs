@@ -29,7 +29,11 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public const string DefaultBulkDeletePath = "/api/storage/v2/records/delete";
     public const string DefaultVerifyBatchPath = "/api/storage/v2/query/records";
 
-    /// <summary>Record ids the storage service accepts in one bulk soft delete request.</summary>
+    /// <summary>
+    /// Record ids this route sends in one bulk soft delete request. The storage service's specification sets no limit on
+    /// the list (openapi storage v2, <c>POST /records/delete</c>); the bound is this route's own, so one request carries a
+    /// bounded body and a chunk the service does not delete whole falls back to a bounded number of single deletes.
+    /// </summary>
     public const int MaxBulkDelete = 500;
 
     /// <summary>Record ids one batched read takes (openapi storage v2, MultiRecordIds caps the list at 100).</summary>
@@ -268,7 +272,7 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
 
     /// <summary>
     /// The reversible scope goes through the storage service's bulk soft delete (openapi storage v2,
-    /// <c>POST /records/delete</c>), which takes up to <see cref="MaxBulkDelete"/> ids per request and answers 204
+    /// <c>POST /records/delete</c>), sent <see cref="MaxBulkDelete"/> ids at a time (this route's chunk size), which answers 204
     /// when it deleted them all or 207 when it did not. A 207, and a status that rejects the whole request, fall
     /// back to removing that chunk one record at a time, so every record still reports its own outcome instead of
     /// sharing a guess. The two purges have no bulk endpoint and always go one at a time.

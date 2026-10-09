@@ -20,14 +20,18 @@ public sealed class SampleRecordTests
     internal static readonly IReadOnlyDictionary<string, string> Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         [RenderContext.DataPartitionParameter] = Samples.SamplePartition,
-        ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
-        ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
-        ["legalTag"] = "dev-equinor-osdu-reference-default",
+        ["aclOwner"] = "data.welldb.owners@dev.dataservices.energy",
+        ["aclViewer"] = "data.welldb.viewers@dev.dataservices.energy",
+        ["legalTag"] = "dev-osdu-default-legal",
     };
 
+    /// <summary>
+    /// Two sample logs: a sidetrack whose deep resistivity the well database gives no business value, and a gamma ray and
+    /// resistivity log with a business value on every curve.
+    /// </summary>
     [Theory]
-    [InlineData("12359/1")]
-    [InlineData("22494/1")]
+    [InlineData("LOG-0003/1")]
+    [InlineData("LOG-0005/1")]
     public async Task A_sample_log_renders_the_record_kept_for_it(string logId)
     {
         var log = SampleWellLogs.Logs().Single(l => l.LogId == logId);
@@ -37,7 +41,7 @@ public sealed class SampleRecordTests
             new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> { ["curves"] = SampleWellLogs.CurveRows(log) },
             Wellbore(log.WellboreUwi));
 
-        RenderedRecord.AssertIs(RenderedRecord.Expected(WellLogVersions.CurrentMapping, logId.Replace('/', '_')), result);
+        RenderedRecord.AssertIsKept(WellLogVersions.CurrentMapping, logId.Replace('/', '_'), result);
     }
 
     [Fact]
@@ -48,7 +52,7 @@ public sealed class SampleRecordTests
             Row(("facility_name", " SAMPLE-WELLBORE-A "), ("facility_description", "Sample wellbore A"), ("facility_id", "srn:master-data/Wellbore:A")),
             new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> { ["aliases"] = [Row(("alias_name", "WB-A"))] });
 
-        RenderedRecord.AssertIs(RenderedRecord.Expected("Wellbore@1.0.0", "wellbore-A"), result);
+        RenderedRecord.AssertIsKept("Wellbore@1.0.0", "wellbore-A", result);
     }
 
     [Fact]
@@ -57,7 +61,7 @@ public sealed class SampleRecordTests
         var result = await RenderAsync(
             "WellboreTrajectory@1.3.0",
             Row(
-                ("source_project", "NO_15_9"),
+                ("source_project", "PROJECT_A"),
                 ("survey_id", "T-1001"),
                 ("wellbore_uwi", "OSDU-DEV-1-A"),
                 ("survey_name", " GYRO_2026 "),
@@ -77,7 +81,7 @@ public sealed class SampleRecordTests
             },
             Wellbore("OSDU-DEV-1-A"));
 
-        RenderedRecord.AssertIs(RenderedRecord.Expected("WellboreTrajectory@1.3.0", "T-1001"), result);
+        RenderedRecord.AssertIsKept("WellboreTrajectory@1.3.0", "T-1001", result);
     }
 
     [Fact]
@@ -85,9 +89,9 @@ public sealed class SampleRecordTests
     {
         var result = await RenderAsync(
             "Document@1.0.0",
-            Row(("doc_id", "D-0001"), ("doc_title", " Well report NO 15/9 A "), ("doc_description", "Geological observations over the logged interval.")));
+            Row(("doc_id", "D-0001"), ("doc_title", " Well report Wellbore A-1 "), ("doc_description", "Geological observations over the logged interval.")));
 
-        RenderedRecord.AssertIs(RenderedRecord.Expected("Document@1.0.0", "D-0001"), result);
+        RenderedRecord.AssertIsKept("Document@1.0.0", "D-0001", result);
     }
 
     /// <summary>A platform that holds the wellbore named <paramref name="facilityName"/>, under the id the suites give it in the sample partition.</summary>

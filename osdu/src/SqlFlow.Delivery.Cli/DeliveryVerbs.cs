@@ -263,22 +263,24 @@ internal static class DeliveryVerbs
     }
 
     /// <summary>
-    /// Opens the flow's ingestion tables on this machine, through the flow's own connection reference, and reports what a
-    /// run would read now: the tables and their columns, the key columns with the SQL types the window and key parameters
-    /// are typed by, the flow's system columns, the window the scope's watermark leaves, and how many records are in it.
-    /// Nothing is planned, rendered or delivered.
+    /// Opens the flow's ingestion tables on this machine, through the flow's own connection reference, the way a run opens
+    /// them (<see cref="Planner.OpenAsync"/>), and reports what the next run would read now: the tables and their columns,
+    /// the key columns with the SQL types the window and key parameters are typed by, the flow's system columns, the window
+    /// the run would read (<see cref="ScopeReads"/>) and why, and how many records are in it. The mapping is checked against
+    /// the tables as a run checks it (every dataset column, label column and child dataset it reads), so a mapping that
+    /// reads a column the table lacks fails here, naming the column. Nothing is planned, rendered or delivered.
     /// </summary>
-    private static async Task<JsonObject> ReadAsync(EngineContext engine, FlowRuntime runtime, CancellationToken ct)
+    internal static async Task<JsonObject> ReadAsync(EngineContext engine, FlowRuntime runtime, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(runtime);
         var flow = runtime.Flow;
-        var scope = Planner.ScopeKey(runtime.Parameters);
-        var watermark = engine.Ledger is { } ledger ? await ledger.GetWatermarkAsync(flow.Id, scope, ct).ConfigureAwait(false) : null;
-        var selection = watermark is null
-            ? SourceSelection.Full()
-            : SourceSelection.Incremental(watermark.UpdatedThroughUtc.AddSeconds(-flow.Source.Incremental.OverlapSeconds));
-
-        var source = engine.Sources.Open(flow, runtime.Parameters, engine.Loggers);
-        var header = await source.OpenAsync(selection, null, ct).ConfigureAwait(false);
+        var read = await ScopeReads.DecideAsync(engine.Ledger, flow, runtime.Parameters, runtime.Mapping.Context, ct).ConfigureAwait(false);
+        var opened = await runtime.Planner.OpenAsync(flow, runtime.Mapping, runtime.Parameters, read.Selection, gate: false, ct: ct).ConfigureAwait(false);
+        var header = opened.Source;
+        var selection = read.Selection;
+        var scope = read.Scope;
+        var watermark = read.Watermark;
         var columns = new JsonObject();
         foreach (var (dataset, names) in header.Columns.OrderBy(c => c.Key, StringComparer.Ordinal).Take(MaxDatasetsShown + 1))
         {
@@ -289,6 +291,7 @@ internal static class DeliveryVerbs
         {
             ["scope"] = scope,
             ["selection"] = selection.Describe(),
+            ["why"] = read.Why(flow, runtime.Mapping.Context),
             ["watermark"] = watermark is null ? null : watermark.UpdatedThroughUtc.ToString("O", CultureInfo.InvariantCulture),
             ["window"] = new JsonObject
             {
@@ -309,12 +312,19 @@ internal static class DeliveryVerbs
                 ["inserted"] = flow.Source.SystemColumns.Inserted,
             },
             ["columns"] = columns,
+
+            // What the preflight says of the mapping against the tables without stopping a run, as a run logs it.
+            ["issues"] = new JsonArray(opened.Issues
+                .Where(i => i.Severity == IssueSeverity.Warning)
+                .Select(i => (JsonNode)JsonValue.Create(i.ToString()))
+                .ToArray()),
         };
     }
 
     private static void WriteRead(CliVerbContext context, JsonObject read)
     {
         context.Out.WriteLine($"    scope       {read["scope"]?.GetValue<string>()} ({read["selection"]?.GetValue<string>()})");
+        context.Out.WriteLine($"    reads       {read["why"]?.GetValue<string>()}");
         var from = read["window"]?["from"]?.GetValue<string>();
         var to = read["window"]?["to"]?.GetValue<string>();
         context.Out.WriteLine($"    window      {(from is null ? "everything" : "after " + from)} through {to}");
@@ -332,6 +342,14 @@ internal static class DeliveryVerbs
             {
                 var count = names is JsonArray array ? array.Count : 0;
                 context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"    table       {dataset}: {count} column(s)"));
+            }
+        }
+
+        if (read["issues"] is JsonArray issues)
+        {
+            foreach (var issue in issues)
+            {
+                context.Out.WriteLine($"    issue       {issue?.GetValue<string>()}");
             }
         }
     }

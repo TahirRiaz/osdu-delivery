@@ -177,7 +177,7 @@ internal static class PreviewKeys
     /// A source key as the Records page shows it (<c>system:part/part</c>), or the key's value alone. With one key column the
     /// whole text is the value. With several, the parts are separated as the product writes them: <c>a | b</c> (how a key
     /// tuple reads) is taken as written; otherwise the slashes of <c>a/b</c> (how a source key reads) are the separators,
-    /// and since a part can hold a slash itself (a Recall log id does), every way of choosing them is a reading.
+    /// and since a part can hold a slash itself (a well database's log id may), every way of choosing them is a reading.
     /// </summary>
     private static PreviewKey SourceKeyText(string text, string system, IReadOnlyList<string> columns)
     {

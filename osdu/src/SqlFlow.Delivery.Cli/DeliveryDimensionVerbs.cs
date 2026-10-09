@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Cli.Hosting;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Json;
@@ -83,7 +84,8 @@ internal static class DeliveryDimensionVerbs
     /// <summary>
     /// Removes the dimension --dimension names, which the flow file no longer declares, and everything kept of it in the
     /// flow's partition, for good (<see cref="DimensionRemoval"/>): one the file declares is refused, and so is one a cache
-    /// flow captures. The removal is an activity of the flow, recorded under the operating system user who ran it.
+    /// flow captures. The removal is an activity of the flow, recorded under the operating system user and machine that ran
+    /// it (<c>cli:&lt;user&gt;@&lt;machine&gt;</c>), as every command line action is.
     /// </summary>
     private static async Task<int> RemoveAsync(CliVerbContext context, ILedger ledger, DimensionFlowDefinition flow, TimeProvider clock, CancellationToken ct)
     {
@@ -103,7 +105,7 @@ internal static class DeliveryDimensionVerbs
         var dimension = held.FirstOrDefault(d => string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase))
             ?? throw new FlowValidationException(
                 $"{flow.LedgerName} holds no dimension named '{name}'{(held.Count == 0 ? string.Empty : $"; it holds {string.Join(", ", held.Select(d => d.Name).Order(StringComparer.Ordinal))}")}.");
-        var removed = await DimensionRemoval.RemoveAsync(ledger, dimension, $"cli:{Environment.UserName}", clock, ct).ConfigureAwait(false);
+        var removed = await DimensionRemoval.RemoveAsync(ledger, dimension, RunActors.LocalAccount(), clock, ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject

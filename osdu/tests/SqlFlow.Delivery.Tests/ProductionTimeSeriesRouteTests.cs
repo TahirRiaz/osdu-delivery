@@ -590,13 +590,13 @@ public sealed class ProductionTimeSeriesRouteTests
         Assert.Empty(platform.Calls);
 
         // The target's declared ceiling bounds the requests below the DDMS's limit.
-        var ceilinged = new FakeOsduPlatform();
-        using var bounded = new Rig(ceilinged, ceiling: 2_000);
+        var capped = new FakeOsduPlatform();
+        using var bounded = new Rig(capped, ceiling: 2_000);
         var points = Files(("oil.json", Series(("OIL", Enumerable.Range(0, 100).Select(i => (Day0 + (i * Day), (JsonNode?)JsonValue.Create(i + 0.5)))))));
         var outcome = await bounded.Protocol.DeliverAsync(Work(Values(Standard), points));
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
-        Assert.All(ceilinged.Calls.Where(c => c.Method == HttpMethod.Post), c => Assert.True(Encoding.UTF8.GetByteCount(c.Body!) <= 2_000));
-        Assert.True(ceilinged.Calls.Count(c => c.Method == HttpMethod.Post) > 1);
+        Assert.All(capped.Calls.Where(c => c.Method == HttpMethod.Post), c => Assert.True(Encoding.UTF8.GetByteCount(c.Body!) <= 2_000));
+        Assert.True(capped.Calls.Count(c => c.Method == HttpMethod.Post) > 1);
 
         var tiny = new FakeOsduPlatform();
         using var cramped = new Rig(tiny, ceiling: 500);

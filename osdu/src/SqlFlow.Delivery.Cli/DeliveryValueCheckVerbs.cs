@@ -8,6 +8,7 @@ using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Checks;
 using SqlFlow.Delivery.Engine.Preview;
+using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Cli;
 
@@ -66,14 +67,7 @@ internal static class DeliveryValueCheckVerbs
             await rows.WriteLineAsync(string.Join(',', RowColumns)).ConfigureAwait(false);
         }
 
-        var checks = new List<ValueCheck>(flows.Count);
-        foreach (var flow in flows)
-        {
-            using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow, values, ct).ConfigureAwait(false);
-            var label = flow.Interface is null ? flow.Label : $"{flow.Label} / {flow.Interface}";
-            checks.Add(await new ValueChecker(runtime).CheckAsync(request, rows is null ? null : occurrence => rows.WriteLine(Line(label, occurrence)), ct).ConfigureAwait(false));
-        }
-
+        var checks = await ChecksAsync(engine, flows, values, request, rows, ct).ConfigureAwait(false);
         if (context.Arguments.GetOption("--out") is { } output)
         {
             await WriteAsync(output, checks, ct).ConfigureAwait(false);
@@ -99,6 +93,26 @@ internal static class DeliveryValueCheckVerbs
         // A row that holds its record, or writes a value the template does not accept, fails the check; a variable an
         // optional entry leaves out is the mapping's to decide, and is reported without failing it.
         return checks.All(c => c.Rows.WithHeld == 0 && c.Rows.WithInvalid == 0 && c.Rows.Keyless == 0) ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The check of each flow, one interface at a time, every failing row written to <paramref name="rows"/> (the
+    /// <c>--rows</c> file, its header already written) as the check meets it, under the flow's label: the flow, and its
+    /// interface when it has one (<c>flow/interface</c>), as a run names it.
+    /// </summary>
+    internal static async Task<IReadOnlyList<ValueCheck>> ChecksAsync(
+        EngineContext engine, IReadOnlyList<FlowDefinition> flows, IReadOnlyDictionary<string, string> values, ValueCheckRequest request, TextWriter? rows, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentNullException.ThrowIfNull(flows);
+        var checks = new List<ValueCheck>(flows.Count);
+        foreach (var flow in flows)
+        {
+            using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow, values, ct).ConfigureAwait(false);
+            checks.Add(await new ValueChecker(runtime).CheckAsync(request, rows is null ? null : occurrence => rows.WriteLine(Line(flow.Label, occurrence)), ct).ConfigureAwait(false));
+        }
+
+        return checks;
     }
 
     /// <summary>One line of the <c>--rows</c> file.</summary>
@@ -180,9 +194,13 @@ internal static class DeliveryValueCheckVerbs
         }
     }
 
-    private static void WriteText(TextWriter writer, ValueCheck check)
+    internal static void WriteText(TextWriter writer, ValueCheck check)
     {
-        var name = check.Interface is null ? check.Flow : $"{check.Flow} / {check.Interface}";
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(check);
+
+        // The check's flow is the flow's label, which names its interface already (flow/interface).
+        var name = check.Flow;
         var rows = check.Rows;
         var failing = rows.WithHeld + rows.WithInvalid;
         writer.WriteLine($"{(failing == 0 && rows.Keyless == 0 ? "OK " : "!! ")} {name}: {check.Inputs.Mapping} on {check.Inputs.Kind}{(check.Inputs.CacheVersion is { } cache ? $", cache {cache}" : string.Empty)}");

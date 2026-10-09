@@ -186,7 +186,7 @@ public sealed partial class RecordExplorer
     /// <summary>The condition no record meets: one without an id, of which there is none.</summary>
     private static ExplorerFilter Nothing => new() { Path = "id", Index = OsduFieldIndex.Keyword, Condition = ExplorerCondition.Missing };
 
-    /// <summary>A condition as a note says it after the term: <c>is NO 34/10-A-30</c>, <c>is one of A, B</c>.</summary>
+    /// <summary>A condition as a note says it after the term: <c>is Wellbore A-1</c>, <c>is one of A, B</c>.</summary>
     private static string Spoken(ExplorerFilter filter)
     {
         var values = filter.Compared();

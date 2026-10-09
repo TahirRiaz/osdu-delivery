@@ -187,7 +187,7 @@ public static class MappingCoverage
         }
 
         // A free key of an object that takes them (osdu.tags.DeliveredBy) and a path inside an open object
-        // (osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit) are no variables of the template, but targets the
+        // (osdu.data.ExtensionProperties.WellDB.Curves[].OriginalUnit) are no variables of the template, but targets the
         // mapping fills, so they are covered the same way and a view can show them under the object that holds them. Inside
         // an open object the objects between it and the target are listed first, so a holder always comes before what it
         // holds, which is the order the roll-up reads.

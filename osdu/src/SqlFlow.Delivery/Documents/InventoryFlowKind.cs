@@ -73,13 +73,12 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
     {
         ArgumentNullException.ThrowIfNull(parameters);
         DeliveryOperations.RefuseBuiltInOverrides(parameters, InventoryFlowDefinition.FlowTypeName, "a build reads every id the kind holds; name the inventories to build in the payload.");
+        // A run names the inventories it works on, and a remove run what it removes and the partition it acts in, beside the
+        // central configuration; which operation takes which is settled below.
         var payload = DeliveryRunPayload.Parse(parameters);
-        if (payload.Force || payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Rerender || payload.Slices.Count > 0
-            || payload.Interface is not null || payload.Interfaces.Count > 0 || payload.SelectsTests || payload.SelectsDimensions)
-        {
-            throw new SqlFlowException(
-                "An inventory flow's payload names the inventories a run builds or reconciles (inventories), and for a removal what it removes (removal, confirm), and nothing else; an inventory has no submission, record, slice, interface, test or dimension to name.");
-        }
+        payload.RefuseOtherThan(
+            InventoryFlowDefinition.FlowTypeName,
+            [DeliveryRunPayload.InventoriesProperty, DeliveryRunPayload.RemovalProperty, DeliveryRunPayload.ConfirmProperty]);
 
         var operation = Operation(parameters);
         if (operation == DeliveryOperations.Remove)

@@ -353,7 +353,7 @@ export function useValueCheckSession(mappingId: string, reference: string): Valu
   const missing = parameters.filter((p) => p.required && (p.default === null || p.default === undefined) && (values[p.name] ?? "").trim() === "");
   let blocked: string | null = null;
   if (!canOperate) {
-    blocked = "A check runs on a node, which takes the operate scope.";
+    blocked = "A check runs on a node, which takes a signed-in session.";
   } else if (flowsQuery.isPending) {
     blocked = "Finding the flows that render with this mapping.";
   } else if (flow === null) {

@@ -13,7 +13,7 @@ import { E2E, databaseOf } from "../playwright.config";
  * tables, which the pre and ingestion flows load from the sample files. The seed spec runs those flows through the CLI
  * host, so the tables a plan reads are made the way production makes them.
  *
- * It is the sample estate (`osdu/samples/recall`: the well log chain, its lookup tables and their cache flow) with the
+ * It is the sample estate (`osdu/samples/welldb`: the well log chain, its lookup tables and their cache flow) with the
  * documents the suites keep beside it as fixtures (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/documents`): the wellbore
  * flows, a source that delivers several kinds as interfaces, a retrieval flow, the Wellbore, Document and
  * WellboreTrajectory mappings, and the cache flow of the reference data those mappings read. The sample well log chain is
@@ -46,8 +46,8 @@ export default function globalSetup(): void {
   const fixtureDocuments = resolve(here, "..", "..", FIXTURE_DOCUMENTS);
 
   // The repository holds one folder per source, which is what the catalog and the GUI call a project: everything the
-  // recall source needs (its flows, the mappings they pin, the cache they read and the drop-off folder the pre flows
-  // load from) sits under `recall/`, and a second source would be a folder beside it rather than more files mixed into
+  // welldb source needs (its flows, the mappings they pin, the cache they read and the drop-off folder the pre flows
+  // load from) sits under `welldb/`, and a second source would be a folder beside it rather than more files mixed into
   // the same `flows/` and `mappings/`.
   const sourceDir = join(repoDir, SOURCE);
 
@@ -122,7 +122,7 @@ export default function globalSetup(): void {
   git("config", "user.email", "e2e@sqlflow.test");
   git("config", "user.name", "OSDU Delivery E2E");
   git("add", "-A");
-  git("commit", "-m", "e2e fixture: the recall delivery estate");
+  git("commit", "-m", "e2e fixture: the welldb delivery estate");
   const headSha = git("rev-parse", "HEAD");
 
   // Tests read the repo path, the source folder inside it, the exact commit to expect and the database the chain loads
@@ -149,10 +149,10 @@ export default function globalSetup(): void {
  * lives under it, so the catalog and the GUI see one project named after the source rather than a repository whose top
  * level is a pile of file kinds.
  */
-export const SOURCE = "recall";
+export const SOURCE = "welldb";
 
 /** The sample estate the fixture repository is built from, relative to the OSDU module's folder. */
-export const SAMPLES = join("samples", "recall");
+export const SAMPLES = join("samples", "welldb");
 
 /** The documents the suites keep beside the sample estate, relative to the OSDU module's folder. */
 export const FIXTURE_DOCUMENTS = join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "documents");
@@ -167,23 +167,23 @@ export const CACHE = "fixtures-osdu-00-reference-cache";
 export const CACHE_RECORDS = join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "cache-records");
 
 /** The cache flow holding the lookup tables in the same partition's cache: `<SOURCE>/cache/<LOOKUPS>.yaml`. */
-export const LOOKUPS = "recall-lookups-00-cache";
+export const LOOKUPS = "welldb-lookups-00-cache";
 
 /**
  * The cache flow capturing the partition's reference data from OSDU into the same cache, which every id the well log
  * mapping builds is checked against: `<SOURCE>/cache/<REFERENCE>.yaml`, whose capture the seed imports from
  * `REFERENCE_RECORDS`.
  */
-export const REFERENCE = "recall-reference-00-cache";
+export const REFERENCE = "osdu-reference-00-cache";
 
 /** The records the seed imports as the reference flow's capture, relative to the OSDU module's folder. */
 export const REFERENCE_RECORDS = join("samples", "cache-records");
 
 /** The delivery flow the specs run: the sample's well log delivery, with the logSource its one required parameter. */
-export const DELIVERY_FLOW = "recall-welllog-03-header-delivery";
+export const DELIVERY_FLOW = "welldb-welllog-03-header-delivery";
 
 /** The log source the sample's schedule delivers, and so the value the specs run the delivery flow with. */
-export const LOG_SOURCE = "STAT_COMP";
+export const LOG_SOURCE = "COMPOSITE";
 
 /** The source that delivers several kinds as interfaces, each with a ledger of its own. */
 export const INTERFACES_FLOW = "wells-source-03-interfaces-delivery";
@@ -237,12 +237,12 @@ export const REPO_NAME = "e2e-repo";
  * cache flow that holds the tables, rather than among the flows of the source's data.
  */
 export const CACHE_LOADING_FLOWS = [
-  "recall-cachecurvedictionary-01-pre",
-  "recall-cachecurvedictionary-02-ing",
-  "recall-cacheunits-01-curve-pre",
-  "recall-cacheunits-02-curve-ing",
-  "recall-cacheunits-01-depth-pre",
-  "recall-cacheunits-02-depth-ing",
+  "welldb-curvedictionary-01-pre",
+  "welldb-curvedictionary-02-ing",
+  "welldb-unitalias-01-pre",
+  "welldb-unitalias-02-ing",
+  "welldb-depthunitalias-01-pre",
+  "welldb-depthunitalias-02-ing",
 ] as const;
 
 /** The folder of the source a flow of the estate sits in. */
@@ -252,10 +252,10 @@ export function folderOf(flow: string): "cache" | "flows" {
 
 /** The delivery flows of the fixture estate, and the pre and ingestion flows that fill the tables they read. */
 export const CHAIN = [
-  "recall-welllog-01-header-pre",
-  "recall-welllog-01-curves-pre",
-  "recall-welllog-02-header-ing",
-  "recall-welllog-02-curves-ing",
+  "welldb-welllog-01-header-pre",
+  "welldb-welllog-01-curves-pre",
+  "welldb-welllog-02-header-ing",
+  "welldb-welllog-02-curves-ing",
   DELIVERY_FLOW,
   ...CACHE_LOADING_FLOWS,
   // The fixture flows: the wellbore chain, and the estate in the shape a source takes, several kinds as interfaces each
@@ -266,10 +266,10 @@ export const CHAIN = [
 
 /** The flows that load the ingestion tables, in the order they have to run: the pre flows land files, the ing flows key them. */
 export const LOADING_FLOWS = [
-  "recall-welllog-01-header-pre",
-  "recall-welllog-01-curves-pre",
-  "recall-welllog-02-header-ing",
-  "recall-welllog-02-curves-ing",
+  "welldb-welllog-01-header-pre",
+  "welldb-welllog-01-curves-pre",
+  "welldb-welllog-02-header-ing",
+  "welldb-welllog-02-curves-ing",
   ...CACHE_LOADING_FLOWS,
 ] as const;
 

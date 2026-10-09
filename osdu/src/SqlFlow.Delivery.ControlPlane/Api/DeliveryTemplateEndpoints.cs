@@ -581,7 +581,7 @@ public static class DeliveryTemplateEndpoints
     {
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         var references = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (name, supplied) in DeliveryDestination.Supplied(flow.Render.Parameters, DeliveryDestination.Parameters, flow.Partition))
+        foreach (var (name, supplied) in DeliveryDestination.Supplied(flow, DeliveryDestination.Parameters))
         {
             if (!supplied.Contains("${", StringComparison.Ordinal))
             {

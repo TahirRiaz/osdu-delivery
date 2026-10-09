@@ -22,7 +22,7 @@ partitions:
 parameters:
   logSource:
     required: true
-    description: The log source the well logs are read from (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
+    description: The log source the well logs are read from (COMPOSITE, CPI, CORE, ILT, PLT, PRESSURE).
 
 source:
   connection: ${env:OSDU_DATA_DB}
@@ -55,13 +55,13 @@ interfaces:
   # The master data the logs point at, delivered through the storage service: no files, so nothing is streamed.
   wellbores:
     record:
-      object: OsduData.arc.Wellbore
+      object: OsduData.silver.Wellbore
       key: [facility_name]
       primaryKey: RecId
     # The mapping repeats the alternative names of a wellbore, which are rows of their own table.
     datasets:
       aliases:
-        object: OsduData.arc.WellboreAlias
+        object: OsduData.silver.WellboreAlias
         join:
           facility_name: facility_name
         orderBy: [alias_name]
@@ -70,13 +70,13 @@ interfaces:
   # The logs, which refer to the wellbores above; `after` says so outright, and their mapping's reference says it again.
   welllogs:
     record:
-      object: OsduData.arc.WellLog
+      object: OsduData.silver.WellLog
       key: [source_project, log_id]
       primaryKey: RecId
     # The mapping repeats the curves of a log, which are rows of their own table.
     datasets:
       curves:
-        object: OsduData.arc.WellLogCurve
+        object: OsduData.silver.WellLogCurve
         join:
           source_project: source_project
           log_id: log_id
@@ -88,12 +88,12 @@ interfaces:
   # route, and the trajectory collection of the Wellbore DDMS is where its entity type goes.
   trajectories:
     record:
-      object: OsduData.arc.WellboreTrajectory
+      object: OsduData.silver.WellboreTrajectory
       key: [source_project, survey_id]
       primaryKey: RecId
     datasets:
       stations:
-        object: OsduData.arc.WellboreTrajectoryStation
+        object: OsduData.silver.WellboreTrajectoryStation
         join:
           source_project: source_project
           survey_id: survey_id
@@ -111,7 +111,7 @@ interfaces:
   # which registers each file as a dataset and then writes the record naming them.
   documents:
     record:
-      object: OsduData.arc.Document
+      object: OsduData.silver.Document
       key: [doc_id]
       primaryKey: RecId
     files:

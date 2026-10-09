@@ -588,7 +588,11 @@ public sealed class DeliveryActivity
 
     public Guid? DeliveryKey { get; set; }
 
-    /// <summary>The platform run the activity ran as, when it was a run (deliver, plan, verify, replan).</summary>
+    /// <summary>
+    /// The platform run the activity ran in, when it ran in one: every operation of a run, an intervention a run's payload
+    /// asked for, an inventory removal. Null for an intervention through the control plane, the GUI or the command line. A
+    /// plan run records no activity.
+    /// </summary>
     public Guid? RunId { get; set; }
 
     public string? Summary { get; set; }
@@ -884,6 +888,13 @@ public sealed class DeliveryInventoryRecord
 
     /// <summary>The latest version its versions were read at (<c>versions: all</c>), so a rebuild reads versions only for what moved.</summary>
     public long? VersionsAt { get; set; }
+
+    /// <summary>
+    /// When a reconcile last asked storage for it, a ledger expecting it and the read not listing it; null when none has. The
+    /// ids a ledger expects are asked for least recently asked first, so builds bounded by <c>maxMissingChecks</c> take turns
+    /// through every one of them.
+    /// </summary>
+    public DateTime? CheckedUtc { get; set; }
 
     /// <summary>What the ledgers hold of it: tracked, drifted, unconfirmed, stale, superseded, undoing, forgotten, orphan, foreign, missing, unlisted, gone or unreconciled.</summary>
     public string Finding { get; set; } = string.Empty;
@@ -1480,7 +1491,11 @@ public sealed class DeliveryCacheVersion
     /// <summary>The platform run that captured the version; null for one imported from files.</summary>
     public Guid? RunId { get; set; }
 
-    /// <summary>Who asked for it: the run's trigger (manual:&lt;user&gt;, schedule:&lt;name&gt;), or cli:&lt;user&gt; for an import.</summary>
+    /// <summary>
+    /// Who asked for it: the capturing run's requester as SQLFlow records it (the token's subject for a run a person queued,
+    /// schedule:&lt;name&gt; for one a schedule fired, cli:&lt;user&gt;@&lt;machine&gt; for a direct CLI run), or
+    /// cli:&lt;user&gt;@&lt;machine&gt; for an import from the command line.
+    /// </summary>
     public string CapturedBy { get; set; } = string.Empty;
 
     /// <summary>Where the content came from: the OSDU endpoint reference a capture searched, or the directory an import read.</summary>
@@ -2137,7 +2152,7 @@ public sealed class DeliveryDimensionValue
     public string? Note { get; set; }
 
     /// <summary>
-    /// The label the dimension read for it from the record it names (<c>NO 15/9-19 A</c> for a wellbore's id), before
+    /// The label the dimension read for it from the record it names (<c>Wellbore A-1</c> for a wellbore's id), before
     /// cleaning; null for a dimension that reads no label, or when the build could not read one.
     /// </summary>
     public string? Label { get; set; }
@@ -2326,6 +2341,9 @@ public static partial class DeliveryConfigNames
 
     /// <summary>The longest accepted value. A value is an identifier, a URL or a reference, never a document.</summary>
     public const int MaxValueLength = 1000;
+
+    /// <summary>The longest accepted description of what a property is for: the width of its column.</summary>
+    public const int MaxDescriptionLength = 400;
 
     /// <summary>The most properties one run carries, which bounds what a queued run writes into its payload.</summary>
     public const int MaxPerRun = 64;
@@ -3202,7 +3220,7 @@ public static class DeliveryModel
             // A key's attributes, read with it a page at a time: one row per value, so a collected attribute holds several,
             // and a key holds a value of an attribute once.
             e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.AttributeId, a.Value }).IsUnique();
-            // The keys an attribute value holds (Country is Norway), and an attribute's values: one seek either way.
+            // The keys an attribute value holds (Country is US), and an attribute's values: one seek either way.
             e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.AttributeId, a.Value });
         });
 
@@ -3424,7 +3442,7 @@ public static class DeliveryModel
             e.HasKey(c => c.Id);
             e.Property(c => c.Name).HasMaxLength(DeliveryConfigNames.MaxNameLength).IsRequired();
             e.Property(c => c.Value).HasMaxLength(DeliveryConfigNames.MaxValueLength).IsRequired();
-            e.Property(c => c.Description).HasMaxLength(400);
+            e.Property(c => c.Description).HasMaxLength(DeliveryConfigNames.MaxDescriptionLength);
             e.Property(c => c.UpdatedBy).HasMaxLength(200).IsRequired();
             e.Property(c => c.Partition).HasMaxLength(200);
             // One value per name per scope: the control plane's own value is the row with no repository, and a value for

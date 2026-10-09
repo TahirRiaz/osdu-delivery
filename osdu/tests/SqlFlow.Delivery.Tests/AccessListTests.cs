@@ -12,7 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// A record's viewers widened by the access groups a data office maintains per field and per country: a lookup finds the
-/// row's wellbore once in the cache, its field and country ids key a <c>$findAll</c> over the cached access group map, and
+/// row's wellbore once in the cache, its field and country ids key a <c>$findAll</c> over the cached access groups, and
 /// the access list is the flow's own group followed by every group those give, each once. Missing data never holds the
 /// record: it goes out with what was found, and what was looked for is recorded so a later cache version reaches it.
 /// </summary>
@@ -20,13 +20,13 @@ public sealed class AccessListTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    internal const string Norway = "dev:master-data--GeoPoliticalEntity:Norway:";
-    internal const string UnitedKingdom = "dev:master-data--GeoPoliticalEntity:UnitedKingdom:";
-    internal const string MartinLinge = "dev:master-data--Field:MARTINLINGE:";
-    internal const string Alba = "dev:master-data--Field:ALBA:";
+    internal const string UnitedStates = "dev:master-data--GeoPoliticalEntity:UnitedStates:";
+    internal const string Mexico = "dev:master-data--GeoPoliticalEntity:Mexico:";
+    internal const string FieldB = "dev:master-data--Field:FIELD-B:";
+    internal const string FieldA = "dev:master-data--Field:FIELD-A:";
 
     /// <summary>
-    /// The access list and WellboreID of a Recall-style well log: the flow's group, the groups of the wellbore's field, and
+    /// The access list and WellboreID of a WellDB-style well log: the flow's group, the groups of the wellbore's field, and
     /// the country groups of its country, which are the rows naming the country and no field.
     /// </summary>
     internal const string Access = """
@@ -34,10 +34,10 @@ public sealed class AccessListTests
           owners: [owners@x]
           viewers:
             - viewers@x
-            - $cache: AccessGroupMap.EntitlementGroupEmail
+            - $cache: AccessGroup.EntitlementGroupEmail
               $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
               $required: false
-            - $cache: AccessGroupMap.EntitlementGroupEmail
+            - $cache: AccessGroup.EntitlementGroupEmail
               $findAll:
                 - GeoPoliticalEntityID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
                 - FieldList is empty
@@ -45,7 +45,7 @@ public sealed class AccessListTests
               $required: false
         legal:
           legaltags: [tag]
-          otherRelevantDataCountries: [NO]
+          otherRelevantDataCountries: [US]
         """;
 
     internal const string Lookups = """
@@ -84,44 +84,44 @@ public sealed class AccessListTests
 
     internal static ReferenceType Wellbores(params ReferenceItem[] extra) => new("Wellbore", "master-data--Wellbore",
     [
-        Item("dev:master-data--Wellbore:ml1",
-            ("FacilityName", "\"NO 16/3-A-1\""),
-            ("GeoContexts.FieldID", $"[\"{MartinLinge}\"]"),
-            ("GeoContexts.GeoPoliticalEntityID", $"[\"{Norway}\"]")),
-        Item("dev:master-data--Wellbore:uk1",
-            ("FacilityName", "\"UK 9/8-A1\""),
-            ("NameAliases.AliasName", "[\"ALBA A1\"]"),
-            ("GeoContexts.FieldID", $"[\"{Alba}\"]"),
-            ("GeoContexts.GeoPoliticalEntityID", $"[\"{UnitedKingdom}\"]")),
+        Item("dev:master-data--Wellbore:fb1",
+            ("FacilityName", "\"WELLBORE B-1\""),
+            ("GeoContexts.FieldID", $"[\"{FieldB}\"]"),
+            ("GeoContexts.GeoPoliticalEntityID", $"[\"{UnitedStates}\"]")),
+        Item("dev:master-data--Wellbore:mx1",
+            ("FacilityName", "\"WELLBORE A-1\""),
+            ("NameAliases.AliasName", "[\"FIELD A A1\"]"),
+            ("GeoContexts.FieldID", $"[\"{FieldA}\"]"),
+            ("GeoContexts.GeoPoliticalEntityID", $"[\"{Mexico}\"]")),
         Item("dev:master-data--Wellbore:nofield",
-            ("FacilityName", "\"NO 1/1-X\""),
-            ("GeoContexts.GeoPoliticalEntityID", $"[\"{Norway}\"]")),
+            ("FacilityName", "\"WELLBORE X-1\""),
+            ("GeoContexts.GeoPoliticalEntityID", $"[\"{UnitedStates}\"]")),
         .. extra,
     ]);
 
-    internal static ReferenceType Groups(params ReferenceItem[] extra) => new("AccessGroupMap", "data-governance--AccessGroupMap",
+    internal static ReferenceType Groups(params ReferenceItem[] extra) => new("AccessGroup", "reference-data--AccessGroup",
     [
-        // Norway's two country groups: the country, and no field.
-        Item("dev:data-governance--AccessGroupMap:no-contractors",
-            ("GeoPoliticalEntityID", $"\"{Norway}\""), ("GeoPoliticalEntityName", "\"Norway\""),
-            ("EntitlementGroupEmail", "\"data.office.norway.contractors.viewers@x\"")),
-        Item("dev:data-governance--AccessGroupMap:no-permanent",
-            ("GeoPoliticalEntityID", $"\"{Norway}\""), ("GeoPoliticalEntityName", "\"Norway\""),
-            ("EntitlementGroupEmail", "\"data.office.norway.viewers@x\"")),
-        // Martin Linge's field group names its field without the version separator, and its country too, but it is a field
+        // The United States' two country groups: the country, and no field.
+        Item("dev:reference-data--AccessGroup:us-contractors",
+            ("GeoPoliticalEntityID", $"\"{UnitedStates}\""), ("GeoPoliticalEntityName", "\"United States\""),
+            ("EntitlementGroupEmail", "\"data.office.us.contractors.viewers@x\"")),
+        Item("dev:reference-data--AccessGroup:us-permanent",
+            ("GeoPoliticalEntityID", $"\"{UnitedStates}\""), ("GeoPoliticalEntityName", "\"United States\""),
+            ("EntitlementGroupEmail", "\"data.office.us.viewers@x\"")),
+        // Field B's field group names its field without the version separator, and its country too, but it is a field
         // group: it names a field.
-        Item("dev:data-governance--AccessGroupMap:martin-linge",
-            ("GeoPoliticalEntityID", $"\"{Norway}\""), ("GeoPoliticalEntityName", "\"Norway\""),
-            ("FieldList", "[\"MARTIN LINGE\"]"), ("FieldIDList", $"[\"{MartinLinge.TrimEnd(':')}\"]"),
-            ("EntitlementGroupEmail", "\"data.office.martin.linge.viewers@x\"")),
-        // The United Kingdom's group is both its country group and the field group of Alba, written in two cases.
-        Item("dev:data-governance--AccessGroupMap:uk-country",
-            ("GeoPoliticalEntityID", $"\"{UnitedKingdom}\""), ("GeoPoliticalEntityName", "\"United Kingdom\""),
-            ("EntitlementGroupEmail", "\"data.office.united.kingdom.viewers@x\"")),
-        Item("dev:data-governance--AccessGroupMap:uk-fields",
-            ("GeoPoliticalEntityID", $"\"{UnitedKingdom}\""), ("GeoPoliticalEntityName", "\"United Kingdom\""),
-            ("FieldList", "[\"ALBA\", \"BRESSAY\"]"), ("FieldIDList", $"[\"{Alba}\", \"dev:master-data--Field:BRESSAY:\"]"),
-            ("EntitlementGroupEmail", "\"DATA.OFFICE.UNITED.KINGDOM.VIEWERS@x\"")),
+        Item("dev:reference-data--AccessGroup:field-b",
+            ("GeoPoliticalEntityID", $"\"{UnitedStates}\""), ("GeoPoliticalEntityName", "\"United States\""),
+            ("FieldList", "[\"FIELD B\"]"), ("FieldIDList", $"[\"{FieldB.TrimEnd(':')}\"]"),
+            ("EntitlementGroupEmail", "\"data.office.field.b.viewers@x\"")),
+        // Mexico's group is both its country group and the field group of Field A, written in two cases.
+        Item("dev:reference-data--AccessGroup:mx-country",
+            ("GeoPoliticalEntityID", $"\"{Mexico}\""), ("GeoPoliticalEntityName", "\"Mexico\""),
+            ("EntitlementGroupEmail", "\"data.office.mexico.viewers@x\"")),
+        Item("dev:reference-data--AccessGroup:mx-fields",
+            ("GeoPoliticalEntityID", $"\"{Mexico}\""), ("GeoPoliticalEntityName", "\"Mexico\""),
+            ("FieldList", "[\"FIELD A\", \"FIELD C\"]"), ("FieldIDList", $"[\"{FieldA}\", \"dev:master-data--Field:FIELD-C:\"]"),
+            ("EntitlementGroupEmail", "\"DATA.OFFICE.MEXICO.VIEWERS@x\"")),
         .. extra,
     ]);
 
@@ -169,7 +169,7 @@ public sealed class AccessListTests
         Assert.Equal(3, viewers.ValueNodes.Count());
 
         var field = viewers.Parts[1].FindAll!;
-        Assert.Equal("AccessGroupMap", field.Type);
+        Assert.Equal("AccessGroup", field.Type);
         Assert.Equal("FieldIDList", field.Field);
         Assert.Same(lookup, field.Operand.Lookup);
         Assert.Equal("GeoContexts.FieldID", field.Operand.LookupPath);
@@ -183,7 +183,7 @@ public sealed class AccessListTests
 
         // What the mapping reads through the lookup counts wherever it is read: its column, and both types.
         Assert.Equal(["dataset.wellbore_uwi"], viewers.Columns.Select(c => c.ToString()).Distinct());
-        Assert.Equal(["AccessGroupMap", "Wellbore"], mapping.CacheTypesRead().Order(StringComparer.Ordinal));
+        Assert.Equal(["AccessGroup", "Wellbore"], mapping.CacheTypesRead().Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -191,49 +191,49 @@ public sealed class AccessListTests
     {
         var renderer = Renderer();
 
-        var linge = renderer.Render(Record("NO 16/3-A-1"));
-        Assert.False(linge.IsHeld, string.Join("; ", linge.Holds));
-        Assert.Equal("dev:master-data--Wellbore:ml1:", linge.Document["data"]!["WellboreID"]!.GetValue<string>());
+        var fieldB = renderer.Render(Record("WELLBORE B-1"));
+        Assert.False(fieldB.IsHeld, string.Join("; ", fieldB.Holds));
+        Assert.Equal("dev:master-data--Wellbore:fb1:", fieldB.Document["data"]!["WellboreID"]!.GetValue<string>());
 
         // The field group names the field without the version separator the wellbore's reference carries: one record.
-        // Both Norwegian country groups are read, and the Martin Linge row, which names a field, is not one of them.
+        // Both United States country groups are read, and the Field B row, which names a field, is not one of them.
         Assert.Equal(
-            ["viewers@x", "data.office.martin.linge.viewers@x", "data.office.norway.contractors.viewers@x", "data.office.norway.viewers@x"],
-            Viewers(linge));
+            ["viewers@x", "data.office.field.b.viewers@x", "data.office.us.contractors.viewers@x", "data.office.us.viewers@x"],
+            Viewers(fieldB));
 
         // A group given as the field's and as the country's, in two cases, is one member of the list.
-        var alba = renderer.Render(Record("UK 9/8-A1"));
-        Assert.Equal(["viewers@x", "DATA.OFFICE.UNITED.KINGDOM.VIEWERS@x"], Viewers(alba));
+        var fieldA = renderer.Render(Record("WELLBORE A-1"));
+        Assert.Equal(["viewers@x", "DATA.OFFICE.MEXICO.VIEWERS@x"], Viewers(fieldA));
 
         // The wellbore is found by an alias when no wellbore carries the name.
-        Assert.Equal(Viewers(alba), Viewers(renderer.Render(Record("ALBA A1"))));
+        Assert.Equal(Viewers(fieldA), Viewers(renderer.Render(Record("FIELD A A1"))));
     }
 
     [Fact]
     public void A_wellbore_in_no_field_takes_its_country_s_groups_and_records_the_field_it_was_built_without()
     {
-        var result = Renderer().Render(Record("NO 1/1-X"));
+        var result = Renderer().Render(Record("WELLBORE X-1"));
 
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
-        Assert.Equal(["viewers@x", "data.office.norway.contractors.viewers@x", "data.office.norway.viewers@x"], Viewers(result));
+        Assert.Equal(["viewers@x", "data.office.us.contractors.viewers@x", "data.office.us.viewers@x"], Viewers(result));
         Assert.Contains(new CacheUsage("Wellbore", "dev:master-data--Wellbore:nofield", "GeoContexts.FieldID", string.Empty, CacheUsageKind.Empty), result.CacheUsages);
     }
 
     [Fact]
     public void A_wellbore_the_cache_does_not_hold_holds_the_record_that_needs_its_id_and_leaves_the_viewers_at_the_flow_s_group()
     {
-        var result = Renderer().Render(Record("NO 99/9-Z-9"));
+        var result = Renderer().Render(Record("WELLBORE Z-9"));
 
         Assert.True(result.IsHeld);
-        Assert.Contains(result.Holds, h => h.StartsWith("osdu.data.WellboreID: no Wellbore matches 'NO 99/9-Z-9' by FacilityName/NameAliases.AliasName", StringComparison.Ordinal));
+        Assert.Contains(result.Holds, h => h.StartsWith("osdu.data.WellboreID: no Wellbore matches 'WELLBORE Z-9' by FacilityName/NameAliases.AliasName", StringComparison.Ordinal));
         Assert.Equal(["viewers@x"], Viewers(result));
 
         // Each value no wellbore answered to is recorded, so a capture that brings the wellbore in reaches the record.
-        Assert.Contains(new CacheUsage("Wellbore", "NO 99/9-Z-9", "FacilityName", "NO 99/9-Z-9", CacheUsageKind.Unlisted), result.CacheUsages);
-        Assert.Contains(new CacheUsage("Wellbore", "NO 99/9-Z-9", "NameAliases.AliasName", "NO 99/9-Z-9", CacheUsageKind.Unlisted), result.CacheUsages);
+        Assert.Contains(new CacheUsage("Wellbore", "WELLBORE Z-9", "FacilityName", "WELLBORE Z-9", CacheUsageKind.Unlisted), result.CacheUsages);
+        Assert.Contains(new CacheUsage("Wellbore", "WELLBORE Z-9", "NameAliases.AliasName", "WELLBORE Z-9", CacheUsageKind.Unlisted), result.CacheUsages);
 
         // Where the id is optional too, nothing holds: the record goes out with the flow's group alone.
-        var optional = Renderer(Mapping(data: "WellboreID: { $lookup: wellbore.id, $required: false }")).Render(Record("NO 99/9-Z-9"));
+        var optional = Renderer(Mapping(data: "WellboreID: { $lookup: wellbore.id, $required: false }")).Render(Record("WELLBORE Z-9"));
         Assert.False(optional.IsHeld, string.Join("; ", optional.Holds));
         Assert.Equal(["viewers@x"], Viewers(optional));
     }
@@ -241,31 +241,31 @@ public sealed class AccessListTests
     [Fact]
     public void Every_key_is_recorded_with_the_rows_it_found_none_included_and_every_field_a_row_was_judged_by()
     {
-        var linge = Renderer().Render(Record("NO 16/3-A-1"));
+        var fieldB = Renderer().Render(Record("WELLBORE B-1"));
 
         // The field id is asked for as the wellbore writes it and without its version separator.
-        Assert.Contains(CacheUsage.Listing("AccessGroupMap", "FieldIDList", MartinLinge, []), linge.CacheUsages);
-        Assert.Contains(CacheUsage.Listing("AccessGroupMap", "FieldIDList", MartinLinge.TrimEnd(':'), ["dev:data-governance--AccessGroupMap:martin-linge"]), linge.CacheUsages);
+        Assert.Contains(CacheUsage.Listing("AccessGroup", "FieldIDList", FieldB, []), fieldB.CacheUsages);
+        Assert.Contains(CacheUsage.Listing("AccessGroup", "FieldIDList", FieldB.TrimEnd(':'), ["dev:reference-data--AccessGroup:field-b"]), fieldB.CacheUsages);
 
         // The country key found three rows; two passed as having no field, one did not, and each is recorded as judged.
         Assert.Contains(
-            CacheUsage.Listing("AccessGroupMap", "GeoPoliticalEntityID", Norway,
-                ["dev:data-governance--AccessGroupMap:martin-linge", "dev:data-governance--AccessGroupMap:no-contractors", "dev:data-governance--AccessGroupMap:no-permanent"]),
-            linge.CacheUsages);
-        Assert.Contains(new CacheUsage("AccessGroupMap", "dev:data-governance--AccessGroupMap:no-permanent", "FieldList", string.Empty, CacheUsageKind.Empty), linge.CacheUsages);
-        Assert.Contains(new CacheUsage("AccessGroupMap", "dev:data-governance--AccessGroupMap:no-permanent", "FieldIDList", string.Empty, CacheUsageKind.Empty), linge.CacheUsages);
-        Assert.Contains(new CacheUsage("AccessGroupMap", "dev:data-governance--AccessGroupMap:martin-linge", "FieldList", "MARTIN LINGE", CacheUsageKind.Value), linge.CacheUsages);
-        Assert.Contains(new CacheUsage("AccessGroupMap", "dev:data-governance--AccessGroupMap:no-permanent", "EntitlementGroupEmail", "data.office.norway.viewers@x", CacheUsageKind.Value), linge.CacheUsages);
+            CacheUsage.Listing("AccessGroup", "GeoPoliticalEntityID", UnitedStates,
+                ["dev:reference-data--AccessGroup:field-b", "dev:reference-data--AccessGroup:us-contractors", "dev:reference-data--AccessGroup:us-permanent"]),
+            fieldB.CacheUsages);
+        Assert.Contains(new CacheUsage("AccessGroup", "dev:reference-data--AccessGroup:us-permanent", "FieldList", string.Empty, CacheUsageKind.Empty), fieldB.CacheUsages);
+        Assert.Contains(new CacheUsage("AccessGroup", "dev:reference-data--AccessGroup:us-permanent", "FieldIDList", string.Empty, CacheUsageKind.Empty), fieldB.CacheUsages);
+        Assert.Contains(new CacheUsage("AccessGroup", "dev:reference-data--AccessGroup:field-b", "FieldList", "FIELD B", CacheUsageKind.Value), fieldB.CacheUsages);
+        Assert.Contains(new CacheUsage("AccessGroup", "dev:reference-data--AccessGroup:us-permanent", "EntitlementGroupEmail", "data.office.us.viewers@x", CacheUsageKind.Value), fieldB.CacheUsages);
 
         // A field no access group lists yet is recorded as listing none, which is how a record built without its group is
         // found once the data office lists one.
         var newField = Renderer(cache: Cache(Wellbores(Item("dev:master-data--Wellbore:new1",
-            ("FacilityName", "\"NO 2/2-N\""),
-            ("GeoContexts.FieldID", "[\"dev:master-data--Field:NEW:\"]"))))).Render(Record("NO 2/2-N"));
+            ("FacilityName", "\"WELLBORE N-1\""),
+            ("GeoContexts.FieldID", "[\"dev:master-data--Field:NEW:\"]"))))).Render(Record("WELLBORE N-1"));
         Assert.False(newField.IsHeld, string.Join("; ", newField.Holds));
         Assert.Equal(["viewers@x"], Viewers(newField));
-        Assert.Contains(CacheUsage.Listing("AccessGroupMap", "FieldIDList", "dev:master-data--Field:NEW:", []), newField.CacheUsages);
-        Assert.Contains(CacheUsage.Listing("AccessGroupMap", "FieldIDList", "dev:master-data--Field:NEW", []), newField.CacheUsages);
+        Assert.Contains(CacheUsage.Listing("AccessGroup", "FieldIDList", "dev:master-data--Field:NEW:", []), newField.CacheUsages);
+        Assert.Contains(CacheUsage.Listing("AccessGroup", "FieldIDList", "dev:master-data--Field:NEW", []), newField.CacheUsages);
     }
 
     [Fact]
@@ -276,16 +276,16 @@ public sealed class AccessListTests
               owners: [owners@x]
               viewers:
                 - viewers@x
-                - $cache: AccessGroupMap.EntitlementGroupEmail
+                - $cache: AccessGroup.EntitlementGroupEmail
                   $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
             legal:
               legaltags: [tag]
-              otherRelevantDataCountries: [NO]
+              otherRelevantDataCountries: [US]
             """);
 
-        var result = Renderer(mapping).Render(Record("NO 1/1-X"));
+        var result = Renderer(mapping).Render(Record("WELLBORE X-1"));
         Assert.True(result.IsHeld);
-        Assert.Contains("osdu.acl.viewers: $lookup.wellbore.GeoContexts.FieldID gives no value, so no AccessGroupMap row is found by FieldIDList", Assert.Single(result.Holds), StringComparison.Ordinal);
+        Assert.Contains("osdu.acl.viewers: $lookup.wellbore.GeoContexts.FieldID gives no value, so no AccessGroup row is found by FieldIDList", Assert.Single(result.Holds), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -293,19 +293,19 @@ public sealed class AccessListTests
     {
         var mapping = Mapping(record: TestSchema.Envelope, lookups: string.Empty, data: """
             Aliases:
-              $cache: AccessGroupMap.EntitlementGroupEmail
+              $cache: AccessGroup.EntitlementGroupEmail
               $findAll: GeoPoliticalEntityName = country
               $modifiers: [trim]
             """);
 
         var result = Renderer(mapping).Render(new SourceRecord
         {
-            Row = SourceRow.FromStrings(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["name"] = "log-1", ["depth"] = "1", ["country"] = " united KINGDOM " }),
+            Row = SourceRow.FromStrings(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["name"] = "log-1", ["depth"] = "1", ["country"] = " meXICO " }),
             Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase),
         });
 
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
-        Assert.Equal(["data.office.united.kingdom.viewers@x"], result.Document["data"]!["Aliases"]!.AsArray().Select(v => v!.GetValue<string>()));
+        Assert.Equal(["data.office.mexico.viewers@x"], result.Document["data"]!["Aliases"]!.AsArray().Select(v => v!.GetValue<string>()));
     }
 
     [Fact]
@@ -316,7 +316,7 @@ public sealed class AccessListTests
         var viewers = shape.Document["acl"]!["viewers"]!.AsArray().Select(v => v!.GetValue<string>()).ToList();
         Assert.Equal(3, viewers.Count);
         Assert.Equal("viewers@x", viewers[0]);
-        Assert.Equal("<string from cache.AccessGroupMap.EntitlementGroupEmail of every AccessGroupMap row where FieldIDList = $lookup.wellbore.GeoContexts.FieldID, optional>", viewers[1]);
+        Assert.Equal("<string from cache.AccessGroup.EntitlementGroupEmail of every AccessGroup row where FieldIDList = $lookup.wellbore.GeoContexts.FieldID, optional>", viewers[1]);
         Assert.Contains("GeoPoliticalEntityID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID and FieldList is empty and FieldIDList is empty", viewers[2], StringComparison.Ordinal);
     }
 
@@ -325,11 +325,11 @@ public sealed class AccessListTests
         acl:
           owners: [owners@x]
           viewers:
-            - $cache: AccessGroupMap.EntitlementGroupEmail
+            - $cache: AccessGroup.EntitlementGroupEmail
               $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
         legal:
           legaltags: [tag]
-          otherRelevantDataCountries: [NO]
+          otherRelevantDataCountries: [US]
         """, "must list at least one literal text value, which every record carries")]
     [InlineData("""
         acl:
@@ -338,9 +338,9 @@ public sealed class AccessListTests
         legal:
           legaltags:
             - tag
-            - $cache: AccessGroupMap.EntitlementGroupEmail
+            - $cache: AccessGroup.EntitlementGroupEmail
               $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
-          otherRelevantDataCountries: [NO]
+          otherRelevantDataCountries: [US]
         """, "the legal tags are a literal list: the legal service checks them before a run")]
     [InlineData("""
         acl:
@@ -352,7 +352,7 @@ public sealed class AccessListTests
                 - $value: x
         legal:
           legaltags: [tag]
-          otherRelevantDataCountries: [NO]
+          otherRelevantDataCountries: [US]
         """, "an item of a list gives what it reads")]
     [InlineData("""
         acl:
@@ -363,7 +363,7 @@ public sealed class AccessListTests
             - $lookup: wellbore.FacilityName
         legal:
           legaltags: [tag]
-          otherRelevantDataCountries: [NO]
+          otherRelevantDataCountries: [US]
         """, "is a list, and an item of a list is a value or an object, never a list of its own")]
     public void A_list_of_values_is_refused_where_it_cannot_be_what_it_says(string record, string expected)
     {
@@ -384,7 +384,7 @@ public sealed class AccessListTests
     [InlineData("$findAll: FieldIDList = 'x'\n$modifiers: [trim]", "this node's $findAll reads none")]
     public void A_findAll_is_refused_where_it_cannot_say_which_rows_it_reads(string settings, string expected)
     {
-        var data = "WellboreID: { $lookup: wellbore.id }\nAliases:\n  $cache: AccessGroupMap.EntitlementGroupEmail\n" + TestSchema.Indented(settings, 2);
+        var data = "WellboreID: { $lookup: wellbore.id }\nAliases:\n  $cache: AccessGroup.EntitlementGroupEmail\n" + TestSchema.Indented(settings, 2);
         var ex = Assert.Throws<FlowValidationException>(() => Mapping(data: data));
         Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
     }
@@ -404,7 +404,7 @@ public sealed class AccessListTests
     [InlineData("lookups:\n  wellbore:\n    $cache: Wellbore.id\n    $findBy: FacilityName = wellbore_uwi\n", "names the cached type the record is found in")]
     [InlineData("lookups:\n  wellbore:\n    $cache: Wellbore\n    $findBy: FacilityName = wellbore_uwi\n    $required: false\n", "decides for the node that reads a lookup, not for the lookup")]
     [InlineData("lookups:\n  wellbore:\n    $cache: Wellbore\n    $findBy: FacilityName = wellbore_uwi\n    $modifiers: [ref]\n", "a lookup finds a record in the cache")]
-    [InlineData("lookups:\n  wellbore:\n    $cache: Wellbore\n    $findBy: FacilityName = 'NO 1'\n    $modifiers: [trim]\n", "this lookup's $findBy reads none")]
+    [InlineData("lookups:\n  wellbore:\n    $cache: Wellbore\n    $findBy: FacilityName = 'WELLBORE 1'\n    $modifiers: [trim]\n", "this lookup's $findBy reads none")]
     [InlineData("lookups:\n  wellbore: Wellbore\n", "names the cached type its record is found in and how")]
     public void A_lookup_is_refused_where_it_cannot_say_which_record_it_finds(string lookups, string expected)
     {
@@ -431,11 +431,11 @@ public sealed class AccessListTests
     public void The_gate_refuses_a_findAll_whose_fields_the_cache_does_not_capture()
     {
         // No group row holds a FieldList: every row would pass as a country group, so the gate refuses rather than widen.
-        var groups = new ReferenceType("AccessGroupMap", "data-governance--AccessGroupMap",
+        var groups = new ReferenceType("AccessGroup", "reference-data--AccessGroup",
             Groups().Items.Select(i => new ReferenceItem(i.Id, i.Fields.Where(f => f.Key != "FieldList").ToDictionary(StringComparer.OrdinalIgnoreCase))));
         var issues = Preflight.Check(Mapping(), TestSchema.Build(), Cache(groups: groups), TestSchema.Context(), sourceColumns: null);
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error
-            && i.Message.Contains("reads only the AccessGroupMap rows whose FieldList is empty, and no row of cache version 'refs-1' holds a FieldList, so every row would pass", StringComparison.Ordinal));
+            && i.Message.Contains("reads only the AccessGroup rows whose FieldList is empty, and no row of cache version 'refs-1' holds a FieldList, so every row would pass", StringComparison.Ordinal));
 
         // A key field the cache holds nowhere, and a lookup path no wellbore holds.
         var keyless = Mapping(record: Access.Replace("FieldIDList = $lookup", "FieldIdentifiers = $lookup", StringComparison.Ordinal)
@@ -454,7 +454,7 @@ public sealed class AccessListTests
         var mapping = Mapping(data: """
             WellboreID: { $lookup: wellbore.id }
             Symbol:
-              $cache: AccessGroupMap.EntitlementGroupEmail
+              $cache: AccessGroup.EntitlementGroupEmail
               $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
             """);
         var issues = Preflight.Check(mapping, TestSchema.Build(), Cache(), TestSchema.Context(), sourceColumns: null);
@@ -483,22 +483,22 @@ public sealed class AccessListTests
                     - viewers@x
                     - $value: wellbores@x
                       $when: not empty(wellbore_uwi)
-                    - $cache: AccessGroupMap.EntitlementGroupEmail
+                    - $cache: AccessGroup.EntitlementGroupEmail
                       $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
                       $required: false
-                    - $cache: AccessGroupMap.EntitlementGroupEmail
+                    - $cache: AccessGroup.EntitlementGroupEmail
                       $findAll:
                         - GeoPoliticalEntityID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
                         - FieldList is empty
                         - FieldIDList is empty
                       $required: false
-                    - $cache: AccessGroupMap.EntitlementGroupEmail
-                      $findAll: GeoPoliticalEntityName = 'United Kingdom'
+                    - $cache: AccessGroup.EntitlementGroupEmail
+                      $findAll: GeoPoliticalEntityName = 'Mexico'
                       $when: not empty(wellbore_uwi)
                       $required: false
                 legal:
                   legaltags: [tag]
-                  otherRelevantDataCountries: [NO]
+                  otherRelevantDataCountries: [US]
                 """,
             data: """
                 WellboreID: { $lookup: wellbore.id }
@@ -512,7 +512,7 @@ public sealed class AccessListTests
                   - $lookup: wellbore.FacilityName
                     $required: false
                     $description: The wellbore's name, when the lookup finds it.
-                  - $cache: AccessGroupMap.GeoPoliticalEntityName
+                  - $cache: AccessGroup.GeoPoliticalEntityName
                     $findAll: FieldList = wellbore_uwi
                     $modifiers: [upper]
                     $required: false
@@ -539,7 +539,7 @@ public sealed class AccessListTests
         Assert.Equal("not empty(wellbore_uwi)", viewers.Items[1].When);
         Assert.Equal("wellbore.GeoContexts.FieldID", viewers.Items[2].FindAll!.Lookup);
         Assert.Equal(["FieldList", "FieldIDList"], viewers.Items[3].FindAll!.Empty);
-        Assert.Equal("United Kingdom", viewers.Items[4].FindAll!.Literal);
+        Assert.Equal("Mexico", viewers.Items[4].FindAll!.Literal);
 
         var aliases = draft.Entries.Single(e => e.Target == "osdu.data.Aliases");
         Assert.Equal(MappingDraftInput.Lookup, aliases.Items[1].Input);
@@ -555,7 +555,7 @@ public sealed class AccessListTests
         Assert.Equal(yaml, MappingBuilder.ToYaml(again));
 
         // And it renders every row exactly as the document it was opened from.
-        foreach (var uwi in new[] { "NO 16/3-A-1", "UK 9/8-A1", "ALBA A1", "NO 1/1-X", "nowhere", null })
+        foreach (var uwi in new[] { "WELLBORE B-1", "WELLBORE A-1", "FIELD A A1", "WELLBORE X-1", "nowhere", null })
         {
             var before = Renderer(original).Render(Record(uwi));
             var after = Renderer(reread).Render(Record(uwi));

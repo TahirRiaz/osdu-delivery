@@ -39,7 +39,7 @@ record:
     viewers: ["{$param.aclViewer}"]
   legal:
     legaltags: ["{$param.legalTag}"]
-    otherRelevantDataCountries: [NO]
+    otherRelevantDataCountries: [US]
   tags:
     DeliveredBy: osdu-delivery
 

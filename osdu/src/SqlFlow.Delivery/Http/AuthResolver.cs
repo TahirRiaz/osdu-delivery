@@ -151,11 +151,11 @@ public sealed class AuthResolver
         }
         catch (JsonException ex)
         {
-            throw new DeliveryException($"Token endpoint '{tokenUrl}' did not return JSON: {ex.Message}", ex);
+            throw new DeliveryException($"Token endpoint '{HeaderRedaction.DescribeUrl(tokenUrl)}' did not return JSON: {ex.Message}", ex);
         }
 
         var accessToken = JsonPathReader.SelectValue(root, token.TokenPath)
-            ?? throw new DeliveryException($"Token endpoint '{tokenUrl}' response has no value at path '{token.TokenPath}'.");
+            ?? throw new DeliveryException($"Token endpoint '{HeaderRedaction.DescribeUrl(tokenUrl)}' response has no value at path '{token.TokenPath}'.");
         var lifetime = JsonPathReader.SelectValue(root, "expires_in") is { } expires && double.TryParse(expires, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds)
             ? TimeSpan.FromSeconds(seconds)
             : TimeSpan.FromMinutes(30);
@@ -175,11 +175,11 @@ public sealed class AuthResolver
             }
             catch (JsonException ex)
             {
-                throw new DeliveryException($"OIDC discovery document '{discoveryUrl}' is not valid JSON: {ex.Message}", ex);
+                throw new DeliveryException($"OIDC discovery document '{HeaderRedaction.DescribeUrl(discoveryUrl)}' is not valid JSON: {ex.Message}", ex);
             }
 
             return JsonPathReader.SelectValue(root, "token_endpoint")
-                ?? throw new DeliveryException($"OIDC discovery document '{discoveryUrl}' has no 'token_endpoint'.");
+                ?? throw new DeliveryException($"OIDC discovery document '{HeaderRedaction.DescribeUrl(discoveryUrl)}' has no 'token_endpoint'.");
         }
 
         var url = token.Url ?? throw new DeliveryException("The token block needs a 'url' (or a 'discoveryUrl' to resolve it).");

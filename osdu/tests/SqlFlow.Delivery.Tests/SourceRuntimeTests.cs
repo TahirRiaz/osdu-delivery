@@ -87,9 +87,9 @@ public sealed class MemoryEstate : IIngestionSourceFactory
 [Collection(SqlServerSuite.Name)]
 public sealed class SourceRuntimeTests : IDisposable
 {
-    private const string WellboreTable = "OsduData.arc.Wellbore";
-    private const string ArchiveTable = "OsduData.arc.WellboreArchive";
-    private const string WellLogTable = "OsduData.arc.WellLog";
+    private const string WellboreTable = "OsduData.silver.Wellbore";
+    private const string ArchiveTable = "OsduData.silver.WellboreArchive";
+    private const string WellLogTable = "OsduData.silver.WellLog";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -127,7 +127,7 @@ public sealed class SourceRuntimeTests : IDisposable
                 archive:
                   record: { object: {{ArchiveTable}}, key: [facility_name], primaryKey: RecId }
                   datasets:
-                    aliases: { object: OsduData.arc.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                    aliases: { object: OsduData.silver.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
                   mapping: {{archiveMapping}}
               """
             : string.Empty;
@@ -144,11 +144,11 @@ public sealed class SourceRuntimeTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
-                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
-                legalTag: dev-equinor-osdu-reference-default
+                aclOwner: data.welldb.owners@dev.dataservices.energy
+                aclViewer: data.welldb.viewers@dev.dataservices.energy
+                legalTag: dev-osdu-default-legal
             target:
-              endpoint: http://localhost:9/petrodb
+              endpoint: http://localhost:9/facade-api
               headers:
                 data-partition-id: {{Samples.SampleCacheScope}}
               protocolOptions:
@@ -162,13 +162,13 @@ public sealed class SourceRuntimeTests : IDisposable
               wellbores:
                 record: { object: {{WellboreTable}}, key: [facility_name], primaryKey: RecId }
                 datasets:
-                  aliases: { object: OsduData.arc.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                  aliases: { object: OsduData.silver.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
                 mapping: {{wellboreMapping}}
                 {{wellbores}}
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.silver.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: {{welllogMapping}}
                 {{(welllogsAfter ? "after: [wellbores]" : string.Empty)}}
@@ -323,7 +323,7 @@ public sealed class SourceRuntimeTests : IDisposable
     {
         var source = Load(SourceYaml(welllogMapping: "WellLog@9.9.9"));
         var estate = await EstateAsync();
-        estate[WellboreTable].ShapeProblem = "the table OsduData.arc.Wellbore, declared under interfaces.wellbores.record.object, was not found";
+        estate[WellboreTable].ShapeProblem = "the table OsduData.silver.Wellbore, declared under interfaces.wellbores.record.object, was not found";
         _protocols["wellbores"].Reachable = false;
         var engine = Engine(estate);
 
@@ -334,7 +334,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.Contains("The preflight of 'wells' found 3 problem(s), so nothing was planned or sent", result.Error, StringComparison.Ordinal);
         Assert.Contains("interface 'welllogs':", result.Error, StringComparison.Ordinal);
         Assert.Contains("WellLog@9.9.9", result.Error, StringComparison.Ordinal);
-        Assert.Contains("interface 'wellbores': Flow 'wells/wellbores': the table OsduData.arc.Wellbore", result.Error, StringComparison.Ordinal);
+        Assert.Contains("interface 'wellbores': Flow 'wells/wellbores': the table OsduData.silver.Wellbore", result.Error, StringComparison.Ordinal);
         Assert.Contains("interface 'wellbores': the storage route's service is failing (HTTP 503) at /about", result.Error, StringComparison.Ordinal);
         Assert.Empty(_protocols["wellbores"].Deliveries);
         Assert.Empty(_protocols["welllogs"].Deliveries);
@@ -634,7 +634,7 @@ public sealed class SourceRuntimeTests : IDisposable
 
         Assert.False(result.Success);
         Assert.IsType<OperationFailure>(result.Result);
-        Assert.Contains("'recall-welllog-03-header-delivery' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
+        Assert.Contains("'welldb-welllog-03-header-delivery' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
         Assert.Contains("the next run carries on from there", result.Error, StringComparison.Ordinal);
 
         // The two tries that failed are charged; the records the stop reached before they were sent are handed back untried.

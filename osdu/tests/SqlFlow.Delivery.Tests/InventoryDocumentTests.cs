@@ -47,7 +47,7 @@ public class InventoryDocumentTests
     {
         var flow = Parse(Head + """
             parameters:
-              country: { default: NO }
+              country: { default: US }
             owners: [delivery-sp@contoso.com, 5f2c0e1a-app]
             maxMissingChecks: 2500
             inventories:
@@ -55,7 +55,7 @@ public class InventoryDocumentTests
                 description: Every well log.
                 kind: "*:*:work-product-component--WellLog:*"
                 versions: all
-              - name: NorwegianWells
+              - name: CountryWells
                 kind: "osdu:wks:master-data--Well:1.*.*"
                 query: 'data.Country:"{country}" AND data.Partition:"{partition}"'
             """);

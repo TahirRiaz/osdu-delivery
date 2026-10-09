@@ -57,7 +57,7 @@ record:
     viewers: ["{$param.aclViewer}"]
   legal:
     legaltags: ["{$param.legalTag}"]
-    otherRelevantDataCountries: [NO]
+    otherRelevantDataCountries: [US]
   tags:
     DeliveredBy: osdu-delivery
 
@@ -96,7 +96,7 @@ record:
           - id = elev_meas_ref
         $modifiers:
           - split: { separator: " ", part: 2 }
-          - replace: $cache.RecallDepthUnits
+          - replace: $cache.DepthUnitAlias
       VerticalMeasurementTypeID: "{$param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
 
     # The station properties: one item per row of the stations child dataset, whose columns a bare name reads under
@@ -120,4 +120,4 @@ record:
             - id = property_unit
           $modifiers:
             # The source's spelling becomes the partition's unit code through the curve unit map: DEG becomes dega.
-            - replace: $cache.RecallUnits
+            - replace: $cache.UnitAlias

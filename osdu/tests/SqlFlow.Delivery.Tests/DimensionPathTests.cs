@@ -16,11 +16,11 @@ public class DimensionPathTests
         {
           "id": "dev:master-data--Wellbore:1",
           "data": {
-            "FacilityName": "NO 15/9-F-1",
+            "FacilityName": "Wellbore A/1-F-1",
             "GeoContexts": [
-              { "GeoPoliticalEntityID": "dev:master-data--GeoPoliticalEntity:NorthSea:", "GeoTypeID": "dev:reference-data--GeoPoliticalEntityType:Region:" },
-              { "GeoPoliticalEntityID": "dev:master-data--GeoPoliticalEntity:Norway:", "GeoTypeID": "dev:reference-data--GeoPoliticalEntityType:Country:" },
-              { "FieldID": "dev:master-data--Field:STATFJORD:" }
+              { "GeoPoliticalEntityID": "dev:master-data--GeoPoliticalEntity:RegionA:", "GeoTypeID": "dev:reference-data--GeoPoliticalEntityType:Region:" },
+              { "GeoPoliticalEntityID": "dev:master-data--GeoPoliticalEntity:UnitedStates:", "GeoTypeID": "dev:reference-data--GeoPoliticalEntityType:Country:" },
+              { "FieldID": "dev:master-data--Field:FIELD-A:" }
             ]
           }
         }
@@ -31,9 +31,9 @@ public class DimensionPathTests
     [Fact]
     public void A_path_reads_every_value_it_reaches_stepping_into_arrays()
     {
-        Assert.Equal(["NO 15/9-F-1"], Path("data.FacilityName").Read(Wellbore));
+        Assert.Equal(["Wellbore A/1-F-1"], Path("data.FacilityName").Read(Wellbore));
         Assert.Equal(
-            ["dev:master-data--GeoPoliticalEntity:NorthSea:", "dev:master-data--GeoPoliticalEntity:Norway:"],
+            ["dev:master-data--GeoPoliticalEntity:RegionA:", "dev:master-data--GeoPoliticalEntity:UnitedStates:"],
             Path("data.GeoContexts.GeoPoliticalEntityID").Read(Wellbore));
         Assert.Empty(Path("data.Nothing.Here").Read(Wellbore));
     }
@@ -42,16 +42,16 @@ public class DimensionPathTests
     public void A_filter_keeps_the_objects_whose_property_equals_or_contains_its_text()
     {
         var country = Path("data.GeoContexts[GeoTypeID*=country].GeoPoliticalEntityID");
-        Assert.Equal(["dev:master-data--GeoPoliticalEntity:Norway:"], country.Read(Wellbore));
+        Assert.Equal(["dev:master-data--GeoPoliticalEntity:UnitedStates:"], country.Read(Wellbore));
         Assert.Equal(["data.GeoContexts.GeoPoliticalEntityID", "data.GeoContexts.GeoTypeID"], country.ReturnedFields);
 
         // An ends-with filter compares the end of the text, ignoring case.
-        Assert.Equal(["dev:master-data--GeoPoliticalEntity:Norway:"], Path("data.GeoContexts[GeoTypeID$=type:COUNTRY:].GeoPoliticalEntityID").Read(Wellbore));
+        Assert.Equal(["dev:master-data--GeoPoliticalEntity:UnitedStates:"], Path("data.GeoContexts[GeoTypeID$=type:COUNTRY:].GeoPoliticalEntityID").Read(Wellbore));
 
         // An exact filter compares the whole text, case included.
         Assert.Empty(Path("data.GeoContexts[GeoTypeID=Country].GeoPoliticalEntityID").Read(Wellbore));
         Assert.Equal(
-            ["dev:master-data--GeoPoliticalEntity:NorthSea:"],
+            ["dev:master-data--GeoPoliticalEntity:RegionA:"],
             Path("data.GeoContexts[GeoTypeID=dev:reference-data--GeoPoliticalEntityType:Region:].GeoPoliticalEntityID").Read(Wellbore));
     }
 
@@ -74,7 +74,7 @@ public class DimensionPathTests
     [InlineData("dev:reference-data--UnitOfMeasure:us%2Fft:", "us/ft")]
     [InlineData("dev:reference-data--UnitOfMeasure:gAPI:", "gAPI")]
     [InlineData("dev:reference-data--LogType:Interpreted", "Interpreted")]
-    [InlineData("dev:master-data--Wellbore:NO-15-9-F-1:1234567", "NO-15-9-F-1")]
+    [InlineData("dev:master-data--Wellbore:Wellbore-A-1-F-1:1234567", "Wellbore-A-1-F-1")]
     [InlineData("dev:reference-data--UnitOfMeasure:100%25:", "100%")]
     [InlineData("dev:reference-data--UnitOfMeasure:bad%zz:", "bad%zz")]
     [InlineData("GR", "GR")]

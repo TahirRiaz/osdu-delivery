@@ -42,16 +42,23 @@
     <Compile Include="..\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="Fixtures\PandasMetadata.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleEstate.cs" Link="Fixtures\SampleEstate.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\MetricsCapture.cs" Link="Fixtures\MetricsCapture.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\RepositoryRoot.cs" Link="Fixtures\RepositoryRoot.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Where the repository is, baked in when the suite is built: a suite built into an artifacts folder outside the
+         repository cannot find it by walking up from its own binaries (RepositoryRoot). -->
+    <AssemblyMetadata Include="RepositoryRoot" Value="$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\'))" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- The sample estate the submission and template suites run against, copied next to the binaries so the suites
          work wherever the build output lands. The data files come too: a submission lands its records beside them. -->
-    <Content Include="..\..\samples\recall\flows\**" Link="samples\recall\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall\mappings\**" Link="samples\recall\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall\cache\**" Link="samples\recall\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall\data\**" Link="samples\recall\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\recall\schedules.yaml" Link="samples\recall\schedules.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\flows\**" Link="samples\welldb\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\mappings\**" Link="samples\welldb\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\cache\**" Link="samples\welldb\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\data\**" Link="samples\welldb\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\schedules.yaml" Link="samples\welldb\schedules.yaml" CopyToOutputDirectory="PreserveNewest" />
     <!-- Beside the source folder, not inside it: a template and a cache both live in the module's database, so neither
          is repository content. These files stand in for what a capture against OSDU would have written. -->
     <Content Include="..\..\samples\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
@@ -61,7 +68,7 @@
     <Content Include="..\SqlFlow.Delivery.Tests\Fixtures\**" Link="Fixtures\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- Linked a second time, into the fixture mappings folder, for MappingYaml's fallback; a None item copies the same
          way a Content item does, and the SDK only flags two Content items sharing a source as duplicates. -->
-    <None Include="..\..\samples\recall\mappings\**" Link="Fixtures\documents\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\samples\welldb\mappings\**" Link="Fixtures\documents\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

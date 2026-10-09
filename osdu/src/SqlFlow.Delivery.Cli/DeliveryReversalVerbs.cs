@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using SqlFlow.Cli.Hosting;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Reversals;
 using SqlFlow.Delivery.Json;
@@ -13,8 +14,8 @@ namespace SqlFlow.Delivery.Cli;
 /// <summary>
 /// <c>sqlflow records reverse</c> and <c>sqlflow records reversals</c> (docs/reversal-plan.md): what reversing a run or a
 /// submission would reach, the reversal itself, run in this process as a reverse run of the flow runs on a node (the same
-/// runtime, the same ledger writes, recorded as <c>cli:&lt;user&gt;</c>'s), and the reversals the ledger keeps with their
-/// counts.
+/// runtime, the same ledger writes, recorded as <c>cli:&lt;user&gt;@&lt;machine&gt;</c>'s), and the reversals the ledger
+/// keeps with their counts.
 /// </summary>
 internal static class DeliveryReversalVerbs
 {
@@ -43,7 +44,7 @@ internal static class DeliveryReversalVerbs
         }
 
         using var runtime = FlowRuntime.ForTarget(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow);
-        runtime.Actor = $"cli:{Environment.UserName}";
+        runtime.Actor = RunActors.LocalAccount();
         var summary = await runtime.ReverseAsync(source, ct).ConfigureAwait(false);
         if (context.Json)
         {

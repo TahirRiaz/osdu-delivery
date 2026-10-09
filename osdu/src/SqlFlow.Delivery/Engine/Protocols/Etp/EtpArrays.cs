@@ -9,7 +9,7 @@ namespace SqlFlow.Delivery.Engine.Protocols.Etp;
 
 /// <summary>
 /// One array a record delivers into its dataspace: where it lives, what it holds, and where its values come from
-/// (osdu/docs/reference/flow/ddms.md, "Reservoir DDMS (etp)"). The path is the array's identity inside the dataspace
+/// (osdu/docs/reference/flow/ddms-services.md, "Reservoir DDMS (etp)"). The path is the array's identity inside the dataspace
 /// and is what the object's XML names (osdu/specs/reservoir-ddms/INTEGRATION.md sections 5.1 and 5.3).
 /// </summary>
 /// <param name="Path">The array's path in the dataspace, without a leading slash.</param>

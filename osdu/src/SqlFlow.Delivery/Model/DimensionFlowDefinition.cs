@@ -326,7 +326,7 @@ public sealed record DimensionSpec
     /// Further facts of each key read the way its label is, each under a name: a path of the record the key names
     /// (<c>SpudDate: data.SpudDate</c>), or several read through its references (<c>Country:
     /// [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]</c>). A key keeps each attribute's value, so a
-    /// dimension's values and keys can be looked up and a search picked by them (<c>Wellbore where Country is Norway</c>).
+    /// dimension's values and keys can be looked up and a search picked by them (<c>Wellbore where Country is United States</c>).
     /// </summary>
     public IReadOnlyList<DimensionAttributeSpec> Attributes { get; init; } = [];
 

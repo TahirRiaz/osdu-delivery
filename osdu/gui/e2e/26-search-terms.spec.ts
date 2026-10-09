@@ -5,9 +5,9 @@ import type { APIRequestContext } from "@playwright/test";
 // The search terms (osdu/docs/reference/concepts/search-terms.md): the columns of the source systems the mappings of
 // active delivery flows read, extracted by the seed's repository sync from the sample estate's WellLog mapping. The
 // Search terms page lists them with the property each fills, and refines one: renamed, noted, deleted from the explorer
-// and offered again; and deletes several at once, picked by their boxes, and restores them. The
-// explorer offers the terms beside the record's own properties: a value typed as Recall holds it is carried through the
-// mapping, here through the wellbore search the mapping makes, and asked of OSDU's own search like any condition.
+// and offered again; and deletes several at once, picked by their boxes, and restores them. The explorer offers the
+// terms beside the record's own properties: a value typed as the well database holds it is carried through the mapping,
+// here through the wellbore search the mapping makes, and asked of OSDU's own search like any condition.
 //
 // Nothing here reaches an OSDU: the explorer reads the e2e stand-in, which holds the platform's wellbores and the two
 // well logs this spec gives it for as long as it runs. What the spec makes of a term is reset before and after it, so
@@ -18,8 +18,8 @@ const LOG_TYPE = "work-product-component--WellLog";
 
 /** The two logs this spec holds in the stand-in, each naming a wellbore the stand-in holds. */
 const LOGS = [
-  { id: `${PARTITION}:${LOG_TYPE}:e2e-terms-log-a`, name: "e2e terms log A", wellbore: "NO-33-9-C-28-A" },
-  { id: `${PARTITION}:${LOG_TYPE}:e2e-terms-log-b`, name: "e2e terms log B", wellbore: "NO-33-9-C-28-B" },
+  { id: `${PARTITION}:${LOG_TYPE}:e2e-terms-log-a`, name: "e2e terms log A", wellbore: "Wellbore-B-2-A" },
+  { id: `${PARTITION}:${LOG_TYPE}:e2e-terms-log-b`, name: "e2e terms log B", wellbore: "Wellbore-B-2-B" },
 ];
 
 const TERMS_API = `${E2E.apiBaseUrl}/api/v1/delivery/search-terms`;
@@ -33,7 +33,7 @@ interface TermRow {
 /** The two WellLog terms the spec deletes together and restores, by their tables' names and columns. */
 const PICKED = ["WellLog.index_min", "WellLog.index_max"];
 
-/** The id of the WellLog term of the Recall column `column`, as the seed's sync extracted it. */
+/** The id of the WellLog term of the well database's column `column`, as the seed's sync extracted it. */
 async function termId(request: APIRequestContext, column: string): Promise<string> {
   const session = await adminSession(request);
   const response = await request.get(`${TERMS_API}?entityType=${LOG_TYPE}`, { headers: { Authorization: `Bearer ${session.token}` } });
@@ -80,7 +80,7 @@ test.describe.serial("search terms", () => {
             id: log.id,
             kind: `osdu:wks:${LOG_TYPE}:1.4.0`,
             acl: { viewers: [E2E.osdu.OSDU_ACL_VIEWER], owners: [E2E.osdu.OSDU_ACL_OWNER] },
-            legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["NO"], status: "compliant" },
+            legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["US"], status: "compliant" },
             data: { Name: log.name, WellboreID: `${PARTITION}:master-data--Wellbore:${log.wellbore}:` },
             createUser: "e2e-stand-in",
             createTime: "2026-10-08T00:00:00.000Z",
@@ -112,8 +112,8 @@ test.describe.serial("search terms", () => {
     await expect(adminPage.getByTestId("page-delivery-search-terms")).toBeVisible();
     await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}`);
 
-    // The Recall columns the WellLog mapping reads, each with the property it fills and how. The grid draws the rows in
-    // view, so a term is found by the page's own find, by its column.
+    // The well database's columns the WellLog mapping reads, each with the property it fills and how. The grid draws the
+    // rows in view, so a term is found by the page's own find, by its column.
     const grid = adminPage.getByTestId("search-terms-grid");
     const find = adminPage.getByTestId("search-terms-find");
     await expect(grid.getByTestId("search-terms-grid-row").first()).toBeVisible({ timeout: 60_000 });
@@ -133,7 +133,7 @@ test.describe.serial("search terms", () => {
     const sheet = adminPage.getByTestId("search-term-sheet");
     await expect(sheet.getByTestId("search-term-routes")).toContainText("Wellbore by FacilityName");
     await sheet.getByTestId("search-term-name").fill("Wellbore UWI");
-    await sheet.getByTestId("search-term-note").fill("The wellbore's name as Recall keeps it.");
+    await sheet.getByTestId("search-term-note").fill("The wellbore's name as the well database keeps it.");
     await sheet.getByTestId("search-term-save").click();
     const renamed = grid.getByTestId("search-terms-grid-row").filter({ hasText: "Wellbore UWI" });
     await expect(renamed).toContainText("wellbore_uwi", { timeout: 30_000 });
@@ -206,7 +206,7 @@ test.describe.serial("search terms", () => {
     await expect(rows.last()).toContainText("Searched");
   });
 
-  test("searches the explorer by a source column, its value as Recall holds it, beside a property", async ({ adminPage }) => {
+  test("searches the explorer by a source column, its value as the well database holds it, beside a property", async ({ adminPage }) => {
     await adminPage.goto(`/delivery/explorer?kind=*:*:${LOG_TYPE}:*`);
     const grid = adminPage.getByTestId("explorer-grid");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
@@ -223,18 +223,18 @@ test.describe.serial("search terms", () => {
     const editor = adminPage.getByTestId("explorer-filter-editor");
     await expect(editor.getByTestId("explorer-filter-term")).toHaveText("Wellbore UWI");
     await expect(editor.getByTestId("explorer-filter-hint")).toContainText("Typed as the source column holds it");
-    await editor.getByTestId("explorer-filter-held-value").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
-    await expect(editor.getByTestId("explorer-filter-value")).toHaveValue("NO 33/9-C-28 B");
+    await editor.getByTestId("explorer-filter-held-value").filter({ hasText: "Wellbore B-2 B" }).click({ timeout: 60_000 });
+    await expect(editor.getByTestId("explorer-filter-value")).toHaveValue("Wellbore B-2 B");
     await editor.getByTestId("explorer-filter-apply").click();
 
     // The wellbore the name finds is read first, and the log naming it is the one listed: OSDU's search answers both.
     const chips = adminPage.getByTestId("explorer-filter");
     await expect(chips).toHaveCount(1);
-    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 B");
+    await expect(chips.first()).toContainText("Wellbore UWI is Wellbore B-2 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
     await expect(grid).toContainText("e2e terms log B");
     await adminPage.getByTestId("explorer-sent-toggle").click();
-    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText(`${PARTITION}:master-data--Wellbore:NO-33-9-C-28-B:`);
+    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText(`${PARTITION}:master-data--Wellbore:Wellbore-B-2-B:`);
     await adminPage.keyboard.press("Escape");
     await expect(adminPage.getByTestId("explorer-notes")).toBeVisible();
 
@@ -243,7 +243,7 @@ test.describe.serial("search terms", () => {
     await expect(editor.getByTestId("explorer-filter-term")).toHaveText("Wellbore UWI", { timeout: 30_000 });
     await adminPage.keyboard.press("Escape");
     await adminPage.reload();
-    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 B", { timeout: 60_000 });
+    await expect(chips.first()).toContainText("Wellbore UWI is Wellbore B-2 B", { timeout: 60_000 });
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
 
     // A property's condition holds beside the term's, as before: no log B is named A.
@@ -271,21 +271,21 @@ test.describe.serial("search terms", () => {
     await expect(field).toHaveAttribute("placeholder", "Type a Wellbore UWI, as the source holds it");
 
     // As a value is typed, the values listed are the wellbores' names, which the mapping finds a wellbore by.
-    await field.fill("NO 33/9-C-28");
+    await field.fill("Wellbore B-2");
     const options = adminPage.getByTestId("explorer-search-in");
-    await expect(options.getByTestId("explorer-search-in-scoped")).toContainText("Wellbore UWI is NO 33/9-C-28");
-    await options.getByTestId("explorer-search-in-held").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
+    await expect(options.getByTestId("explorer-search-in-scoped")).toContainText("Wellbore UWI is Wellbore B-2");
+    await options.getByTestId("explorer-search-in-held").filter({ hasText: "Wellbore B-2 B" }).click({ timeout: 60_000 });
     const chips = adminPage.getByTestId("explorer-filter");
     await expect(chips).toHaveCount(1);
-    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 B");
+    await expect(chips.first()).toContainText("Wellbore UWI is Wellbore B-2 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
     await expect(grid).toContainText("e2e terms log B");
 
     // Another value searched in the column replaces the condition it had.
-    await field.fill("NO 33/9-C-28 A");
+    await field.fill("Wellbore B-2 A");
     await field.press("Enter");
     await expect(chips).toHaveCount(1);
-    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 A");
+    await expect(chips.first()).toContainText("Wellbore UWI is Wellbore B-2 A");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
     await expect(grid).toContainText("e2e terms log A");
   });
@@ -300,15 +300,15 @@ test.describe.serial("search terms", () => {
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
 
     const within = adminPage.getByTestId("explorer-search-input");
-    await within.fill("NO 33/9-C-28 A");
+    await within.fill("Wellbore B-2 A");
     const options = adminPage.getByTestId("explorer-search-in");
     const option = options.getByTestId("explorer-search-in-term");
-    await expect(option).toContainText("Wellbore UWI is NO 33/9-C-28 A", { timeout: 60_000 });
+    await expect(option).toContainText("Wellbore UWI is Wellbore B-2 A", { timeout: 60_000 });
     await expect(options.getByTestId("explorer-search-in-choose")).toContainText("Pick another property or source column");
     await option.click();
 
     const chips = adminPage.getByTestId("explorer-filter");
-    await expect(chips.first()).toContainText("Wellbore UWI is NO 33/9-C-28 A");
+    await expect(chips.first()).toContainText("Wellbore UWI is Wellbore B-2 A");
     await expect(within).toHaveValue("");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
     await expect(grid).toContainText("e2e terms log A");

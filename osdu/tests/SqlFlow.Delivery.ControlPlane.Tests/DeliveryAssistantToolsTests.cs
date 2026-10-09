@@ -20,20 +20,8 @@ public sealed class DeliveryAssistantToolsTests
     private static readonly Regex Tool = new(
         @"#\[tool\(((?:[^\]]|\][^\)])*?)\)\]\s*(?:pub\s+)?async\s+fn\s+(\w+)", RegexOptions.Singleline | RegexOptions.CultureInvariant);
 
-    private static string RepositoryRoot()
-    {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
-        {
-            if (File.Exists(Path.Combine(directory.FullName, "OsduDelivery.sln")))
-            {
-                return directory.FullName;
-            }
-        }
-
-        throw new Xunit.Sdk.XunitException($"No OsduDelivery.sln above {AppContext.BaseDirectory}; the tests read the MCP server's sources from the repository.");
-    }
-
-    private static string HostCrate => Path.Combine(RepositoryRoot(), "osdu", "hosts", "osdu-delivery-mcp", "src");
+    /// <summary>The MCP server's sources, read from the repository the suite was built from.</summary>
+    private static string HostCrate => SqlFlow.Delivery.Tests.RepositoryRoot.Combine("osdu", "hosts", "osdu-delivery-mcp", "src");
 
     /// <summary>The delivery tools, by name, each with the text of its attribute (its description).</summary>
     private static IReadOnlyDictionary<string, string> DeliveryTools()
@@ -56,7 +44,7 @@ public sealed class DeliveryAssistantToolsTests
     /// <summary>The tools SQLFlow's own server defines.</summary>
     private static IReadOnlySet<string> SqlFlowTools()
     {
-        var path = Path.Combine(RepositoryRoot(), "sqlflow", "tools", "sqlflow-mcp", "src", "server.rs");
+        var path = SqlFlow.Delivery.Tests.RepositoryRoot.Combine("sqlflow", "tools", "sqlflow-mcp", "src", "server.rs");
         Assert.True(File.Exists(path), $"Expected SQLFlow's MCP server source at {path}.");
         var names = Tool.Matches(File.ReadAllText(path)).Select(m => m.Groups[2].Value).ToHashSet(StringComparer.Ordinal);
         Assert.True(names.Count > 40, $"Only found {names.Count} SQLFlow tools; the parse is probably wrong.");
@@ -128,10 +116,10 @@ public sealed class DeliveryAssistantToolsTests
     [Fact]
     public void TheAssistantIsGivenNoToolThatStartsWork()
     {
-        // An operator's action says the scope it needs in its description, and nothing else does: that is what the
+        // An operator's action says it is one in its description, and nothing else does: that is what the
         // exclusion list is checked against, so an action added to the server cannot be allowed by being forgotten.
         var tools = DeliveryTools();
-        var actions = tools.Where(tool => tool.Value.Contains("(operate scope)", StringComparison.Ordinal)).Select(tool => tool.Key).Order(StringComparer.Ordinal).ToList();
+        var actions = tools.Where(tool => tool.Value.Contains("(operator action)", StringComparison.Ordinal)).Select(tool => tool.Key).Order(StringComparer.Ordinal).ToList();
 
         Assert.Equal(actions, DeliveryAssistantTools.Excluded.Order(StringComparer.Ordinal).ToList());
         Assert.DoesNotContain(DeliveryAssistantTools.Allowed, actions.Contains);

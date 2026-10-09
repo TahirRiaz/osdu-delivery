@@ -165,12 +165,12 @@ public class ExpressionTests
     [Fact]
     public void Text_is_cleaned_and_searched_ignoring_case()
     {
-        Assert.Equal("NO 1/1", Eval("upper(trim(t))", ("t", "  no 1/1 ")));
+        Assert.Equal("WB 1/1", Eval("upper(trim(t))", ("t", "  wb 1/1 ")));
         Assert.Equal("gr api", Eval("lower(t)", ("t", "GR API")));
         Assert.Equal("MD-MD", Eval("replace(t, \"dept\", \"MD\")", ("t", "DEPT-Dept")));
         Assert.True(Test("contains(t, \"gamma\")", ("t", "Natural GAMMA ray")));
-        Assert.True(Test("startsWith(t, \"no \")", ("t", "NO 1/1")));
-        Assert.True(Test("endsWith(t, \"-A\")", ("t", "NO 1/1-a")));
+        Assert.True(Test("startsWith(t, \"wb \")", ("t", "WB 1/1")));
+        Assert.True(Test("endsWith(t, \"-A\")", ("t", "WB 1/1-a")));
         Assert.False(Test("contains(t, \"x\")", ("t", null)));
         Assert.Contains("replace needs the text to find", EvalProblem("replace(t, f, \"x\")", ("t", "abc"), ("f", "")), StringComparison.Ordinal);
     }
@@ -293,7 +293,7 @@ public class ExpressionTests
         var result = renderer.Render(Record());
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         var data = result.Document["data"]!;
-        Assert.Equal("NO 1/1-A (REGULAR)", data["Symbol"]!.GetValue<string>());
+        Assert.Equal("WB 1/1-A (REGULAR)", data["Symbol"]!.GetValue<string>());
         Assert.Equal(3.81, data["Depth"]!.GetValue<double>());
         Assert.Equal(6, data["Count"]!.GetValue<long>());
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", data["Unit"]!.GetValue<string>());
@@ -377,7 +377,7 @@ public class ExpressionTests
     private static MappingRenderer Renderer(string data)
         => new(TestSchema.Mapping(data, baseData: "Name: { $from: name }"), TestSchema.Build(), TestSchema.References(), TestSchema.Context());
 
-    private static SourceRecord Record(string? depth = "12.5", string? wellbore = "NO 1/1-A")
+    private static SourceRecord Record(string? depth = "12.5", string? wellbore = "WB 1/1-A")
         => new()
         {
             Row = SourceRow.FromStrings(new Dictionary<string, string?>

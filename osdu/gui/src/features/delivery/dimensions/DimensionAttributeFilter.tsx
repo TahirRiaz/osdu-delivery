@@ -22,7 +22,7 @@ function grouped(conditions: DimensionAttributeCondition[], attributes: Delivery
 }
 
 /**
- * Narrowing by the attributes a dimension's keys hold: a chip per attribute picked (<c>Country: Norway, Denmark</c>, any of
+ * Narrowing by the attributes a dimension's keys hold: a chip per attribute picked (<c>Country: United States, Canada</c>, any of
  * its values), and a picker that lists the dimension's attributes and then the values the one chosen holds, the most records
  * first, found by what is typed. Several attributes are all to hold, by the same key.
  */

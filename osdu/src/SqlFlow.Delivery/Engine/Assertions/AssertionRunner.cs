@@ -43,25 +43,33 @@ public sealed record AssertionRunOutcome(
     public long RowsLoaded => Tests - Skipped;
 
     /// <summary>What the run came to, as a run's error states it when its tests fail it.</summary>
-    public string Describe()
+    public string Describe() => string.Create(CultureInfo.InvariantCulture, $"assertion flow '{Flow}' in partition '{Partition}': {Tally()}.");
+
+    /// <summary>
+    /// How the tests came out, as the run's report keeps it for its reason when its tests failed or errored (and
+    /// <see cref="Describe"/> says it after the flow and partition): how many were evaluated and passed, then the tests that
+    /// failed, each on an assertion of severity error (the severity that fails a test, and so the report), the tests that
+    /// errored, the tests that warned, and those skipped, the first ten of each named.
+    /// </summary>
+    public string Tally()
     {
         var parts = new List<string>();
-        void Add(int count, string outcome)
+        void Add(int count, string outcome, string why)
         {
             if (count > 0)
             {
                 var names = Results.Where(r => r.Outcome == outcome).Select(r => r.Test).Take(10).ToList();
-                parts.Add(string.Create(CultureInfo.InvariantCulture, $"{count} {outcome} ({string.Join(", ", names)}{(count > names.Count ? ", ..." : string.Empty)})"));
+                parts.Add(string.Create(CultureInfo.InvariantCulture, $"{count} {outcome}{why} ({string.Join(", ", names)}{(count > names.Count ? ", ..." : string.Empty)})"));
             }
         }
 
-        Add(Failed, TestOutcomes.Failed);
-        Add(Errored, TestOutcomes.Errored);
-        Add(Warned, TestOutcomes.Warned);
+        Add(Failed, TestOutcomes.Failed, " on an assertion of severity error");
+        Add(Errored, TestOutcomes.Errored, string.Empty);
+        Add(Warned, TestOutcomes.Warned, string.Empty);
         var evaluatedPassed = parts.Count == 0;
-        Add(Skipped, TestOutcomes.Skipped);
+        Add(Skipped, TestOutcomes.Skipped, string.Empty);
         var tail = parts.Count == 0 ? "every test passed" : evaluatedPassed ? "every test evaluated passed; " + string.Join("; ", parts) : string.Join("; ", parts);
-        return string.Create(CultureInfo.InvariantCulture, $"assertion flow '{Flow}' in partition '{Partition}': {Tests - Skipped} of {Tests} test(s) evaluated, {Passed} passed; {tail}.");
+        return string.Create(CultureInfo.InvariantCulture, $"{Tests - Skipped} of {Tests} test(s) evaluated, {Passed} passed; {tail}");
     }
 }
 
@@ -178,65 +186,13 @@ public sealed class AssertionRunner
                 results.Add(result);
             }
 
-            // What this module changed in OSDU lately, which the search index may not list yet: read once, before any test is judged.
-            var settling = await IndexSettling.ReadAsync(ledger, partition, runnable, Now, ct).ConfigureAwait(false);
-            using var http = new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, _transport, _allowLoopback, observer: _context.HttpObserver);
-            var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, _context.Secrets, ct).ConfigureAwait(false);
-            var search = new OsduSearch(client, flow.Source.QueryPath, flow.Source.SearchPath, _log);
-            var storage = new StorageRecords(client, flow.Source.RecordQueryPath);
-            var legal = new LegalTagValidator(client, flow.Source.LegalPath + "/legaltags:validate", _context.Time);
-            var bulk = new WellboreBulk(client, flow.Source.DdmsRoot);
-            var concurrency = Math.Max(1, flow.Reliability.Concurrency);
-            await Parallel.ForEachAsync(
-                runnable,
-                new ParallelOptions { MaxDegreeOfParallelism = concurrency, CancellationToken = ct },
-                async (test, token) =>
-                {
-                    // A test that does not fit its template is reported as such whatever changed; one that fits and reads a
-                    // type this module changed within its settle window is skipped, saying why, rather than judged on an index
-                    // that may not list the change yet.
-                    if (fits[test.Name].Problems.Count == 0 && settling.Why(test) is { } unsettled)
-                    {
-                        var skippedNow = Skipped(test, unsettled);
-                        await RecordAsync(ledger, run, entry.FlowId, skippedNow, token).ConfigureAwait(false);
-                        Log(skippedNow);
-                        lock (gate)
-                        {
-                            results.Add(skippedNow);
-                        }
-
-                        return;
-                    }
-
-                    var scope = new TestScope
-                    {
-                        Test = test,
-                        Template = fits[test.Name].Template,
-                        Examples = flow.Defaults.Examples,
-                        Query = new OsduSearchQuery
-                        {
-                            Kind = test.Kind,
-                            Query = test.Query,
-                            Spatial = test.Spatial,
-                            Sort = test.Sort.Select(s => (s.Field, s.Descending)).ToList(),
-                        },
-                        Search = search,
-                        Storage = storage,
-                        Legal = legal,
-                        Bulk = bulk,
-                        Ledger = ledger,
-                        Partition = partition,
-                        Concurrency = concurrency,
-                        Logger = _log,
-                    };
-                    var result = await TestEvaluator.EvaluateAsync(scope, fits[test.Name], _context.Time, token).ConfigureAwait(false);
-                    await RecordAsync(ledger, run, entry.FlowId, result, token).ConfigureAwait(false);
-                    Log(result);
-                    lock (gate)
-                    {
-                        results.Add(result);
-                    }
-                }).ConfigureAwait(false);
+            // A run with no test to judge here records the ones it skipped and asks OSDU nothing. So a run that recorded every
+            // test it selected has always completed, and only a run that stopped (cancelled, or failing part way) leaves some
+            // unrecorded: that is how the report's surfaces tell a stopped run from one whose tests errored.
+            if (runnable.Count > 0)
+            {
+                await JudgeAsync(ledger, run, entry.FlowId, partition, runnable, fits, results, gate, ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -251,16 +207,91 @@ public sealed class AssertionRunner
 
         var counts = Counts(results, selected.Count);
         var status = counts.Failed > 0 ? AssertionRunStatus.Failed : counts.Errored > 0 ? AssertionRunStatus.Errored : AssertionRunStatus.Passed;
-        await CloseAsync(ledger, run.AssertionRunId, status, counts, null).ConfigureAwait(false);
         var ordered = results
             .OrderBy(r => r.Outcome switch { TestOutcomes.Failed => 0, TestOutcomes.Errored => 1, TestOutcomes.Warned => 2, TestOutcomes.Passed => 3, _ => 4 })
             .ThenBy(r => r.Test, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        return new AssertionRunOutcome(
+        var outcome = new AssertionRunOutcome(
             DeliveryOperations.Test, run.AssertionRunId, flow.Name, partition, status,
             counts.Tests, counts.Passed, counts.Failed, counts.Warned, counts.Errored, counts.Skipped,
             ordered.Take(AssertionRunOutcome.MaxNamed).Select(Summary).ToList(),
             Math.Max(0, ordered.Count - AssertionRunOutcome.MaxNamed));
+
+        // A report its tests did not pass says why on its row: how many failed (on the severity that fails a test) or errored,
+        // and which, beside the rest. It records every test it selected, which is what tells it from a run that stopped.
+        await CloseAsync(ledger, run.AssertionRunId, status, counts, status == AssertionRunStatus.Passed ? null : outcome.Tally()).ConfigureAwait(false);
+        return outcome;
+    }
+
+    /// <summary>
+    /// Judges the tests that run in the partition, as many at once as the flow's concurrency allows, recording each result the
+    /// moment it is known and adding it to <paramref name="results"/>.
+    /// </summary>
+    private async Task JudgeAsync(
+        ILedger ledger, AssertionRunState run, Guid flowId, string partition, IReadOnlyList<AssertionTest> runnable,
+        IReadOnlyDictionary<string, TemplateFit> fits, List<TestResult> results, Lock gate, CancellationToken ct)
+    {
+        var flow = _flow;
+
+        // What this module changed in OSDU lately, which the search index may not list yet: read once, before any test is judged.
+        var settling = await IndexSettling.ReadAsync(ledger, partition, runnable, Now, ct).ConfigureAwait(false);
+        using var http = new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, _transport, _allowLoopback, observer: _context.HttpObserver);
+        var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, _context.Secrets, ct).ConfigureAwait(false);
+        var search = new OsduSearch(client, flow.Source.QueryPath, flow.Source.SearchPath, _log);
+        var storage = new StorageRecords(client, flow.Source.RecordQueryPath);
+        var legal = new LegalTagValidator(client, flow.Source.LegalPath + "/legaltags:validate", _context.Time);
+        var bulk = new WellboreBulk(client, flow.Source.DdmsRoot);
+        var concurrency = Math.Max(1, flow.Reliability.Concurrency);
+        await Parallel.ForEachAsync(
+            runnable,
+            new ParallelOptions { MaxDegreeOfParallelism = concurrency, CancellationToken = ct },
+            async (test, token) =>
+            {
+                // A test that does not fit its template is reported as such whatever changed; one that fits and reads a
+                // type this module changed within its settle window is skipped, saying why, rather than judged on an index
+                // that may not list the change yet.
+                if (fits[test.Name].Problems.Count == 0 && settling.Why(test) is { } unsettled)
+                {
+                    var skippedNow = Skipped(test, unsettled);
+                    await RecordAsync(ledger, run, flowId, skippedNow, token).ConfigureAwait(false);
+                    Log(skippedNow);
+                    lock (gate)
+                    {
+                        results.Add(skippedNow);
+                    }
+
+                    return;
+                }
+
+                var scope = new TestScope
+                {
+                    Test = test,
+                    Template = fits[test.Name].Template,
+                    Examples = flow.Defaults.Examples,
+                    Query = new OsduSearchQuery
+                    {
+                        Kind = test.Kind,
+                        Query = test.Query,
+                        Spatial = test.Spatial,
+                        Sort = test.Sort.Select(s => (s.Field, s.Descending)).ToList(),
+                    },
+                    Search = search,
+                    Storage = storage,
+                    Legal = legal,
+                    Bulk = bulk,
+                    Ledger = ledger,
+                    Partition = partition,
+                    Concurrency = concurrency,
+                    Logger = _log,
+                };
+                var result = await TestEvaluator.EvaluateAsync(scope, fits[test.Name], _context.Time, token).ConfigureAwait(false);
+                await RecordAsync(ledger, run, flowId, result, token).ConfigureAwait(false);
+                Log(result);
+                lock (gate)
+                {
+                    results.Add(result);
+                }
+            }).ConfigureAwait(false);
     }
 
     /// <summary>Checks and counts the tests the run selects, evaluating nothing and recording nothing.</summary>

@@ -25,7 +25,9 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// <remarks>
 /// A failure answers as a problem whose words say which side failed, every resolved secret redacted from them: the platform
 /// or the database refusing or failing (502), not answering in time (504), or the request naming something the flow cannot
-/// serve (422). A request the caller abandons stops the operation.
+/// serve (422). A request the caller abandons stops the operation. The reads change nothing and leave only this runner's
+/// log line; the probe, an operator action, is run through here by <see cref="TargetProbes"/>, which records it in the audit
+/// trail and counts it.
 /// </remarks>
 internal static partial class DirectOperationRunner
 {
@@ -40,7 +42,10 @@ internal static partial class DirectOperationRunner
         return await RunAsync(db, config, operations, flow, operation, arguments, RequestActor.Label(user), loggers, ct).ConfigureAwait(false);
     }
 
-    /// <summary>The same, for a caller that is not a request (the scheduled probe): the actor is given rather than read from a principal.</summary>
+    /// <summary>
+    /// The same, for a caller that names the actor itself rather than having it read from a principal: the target probe
+    /// (<see cref="TargetProbes"/>), which runs for a person and for the schedule alike and records itself in the audit trail.
+    /// </summary>
     public static async Task<Results<ContentHttpResult, ProblemHttpResult>> RunAsync(
         CatalogDbContext db, DeliveryConfigStore config, DirectOperations operations, DeliveryEndpoints.FlowContext flow, string operation,
         IReadOnlyDictionary<string, string> arguments, string actor, ILoggerFactory loggers, CancellationToken ct)

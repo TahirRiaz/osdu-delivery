@@ -88,7 +88,7 @@ public sealed record ValueExpectation
 /// <param name="Path">The finding's path, as the verdict lists it.</param>
 /// <param name="Rule">The finding's rule.</param>
 /// <param name="Expected">The key of what the schema expects there (<see cref="ValidationGuidance.Expectations"/>), or null when the schema describes nothing there.</param>
-/// <param name="Found">The value found there, in words: <c>null</c>, <c>absent</c>, <c>'NO 33/9'</c>, <c>a list of 3 items</c>.</param>
+/// <param name="Found">The value found there, in words: <c>null</c>, <c>absent</c>, <c>'Wellbore A-1'</c>, <c>a list of 3 items</c>.</param>
 /// <param name="Advice">How to make the value meet the schema, or null when there is nothing to say beyond the message.</param>
 public sealed record FindingGuide(string Path, string Rule, string? Expected, string Found, string? Advice);
 

@@ -502,6 +502,9 @@ internal static partial class FlowMapper
             }
 
             var problems = WorkflowTemplate.Problems(stage.Context, $"{stageAt}.context").ToList();
+
+            // A credential is never written into the document, whether or not OSDU Delivery knows the workflow's contract.
+            problems.AddRange(WorkflowContextCheck.CheckCredentials(contract, stage.Context, $"{stageAt}.context"));
             if (contract is not null)
             {
                 problems.AddRange(WorkflowContextCheck.CheckTemplate(contract, stage.Context, contract.AddsPayload, $"{stageAt}.context"));

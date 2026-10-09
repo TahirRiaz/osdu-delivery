@@ -13,19 +13,19 @@ namespace SqlFlow.Delivery.Tests;
 public class ReferenceFoldTests
 {
     [Theory]
-    [InlineData("NO 15/9-19 SR", "no-15-9-19-sr")]
-    [InlineData("NO_15_9-19_SR", "no-15-9-19-sr")]
-    [InlineData("no-15-9-19-sr", "no-15-9-19-sr")]
-    [InlineData("  NO   15 / 9 - 19   SR  ", "no-15-9-19-sr")]
-    [InlineData("NO.15.9.19.SR", "no-15-9-19-sr")]
+    [InlineData("Wellbore A/1-19 ST", "wellbore-a-1-19-st")]
+    [InlineData("Wellbore_A_1-19_ST", "wellbore-a-1-19-st")]
+    [InlineData("wellbore-a-1-19-st", "wellbore-a-1-19-st")]
+    [InlineData("  Wellbore   A / 1 - 19   ST  ", "wellbore-a-1-19-st")]
+    [InlineData("Wellbore.A.1.19.ST", "wellbore-a-1-19-st")]
     public void The_same_name_spelled_different_ways_folds_to_one_key(string value, string key)
         => Assert.Equal(key, ReferenceKeyFold.Separators(value));
 
     [Theory]
-    [InlineData("15/9-19", "15-9-19")]
-    [InlineData("15/9-20", "15-9-20")]
-    [InlineData("SLEIPNER ØST", "sleipner-øst")]
-    [InlineData("Sleipner Øst", "sleipner-øst")]
+    [InlineData("A/1-19", "a-1-19")]
+    [InlineData("A/1-20", "a-1-20")]
+    [InlineData("FIELD ÆØÅ", "field-æøå")]
+    [InlineData("Field Æøå", "field-æøå")]
     public void Letters_and_digits_decide_the_key_and_non_ascii_letters_survive(string value, string key)
         => Assert.Equal(key, ReferenceKeyFold.Separators(value));
 
@@ -41,20 +41,20 @@ public class ReferenceFoldTests
     [Fact]
     public void Two_genuinely_different_names_never_fold_together()
     {
-        Assert.NotEqual(ReferenceKeyFold.Separators("NO 15/9-19"), ReferenceKeyFold.Separators("NO 15/9-20"));
+        Assert.NotEqual(ReferenceKeyFold.Separators("Wellbore A/1-19"), ReferenceKeyFold.Separators("Wellbore A/1-20"));
         Assert.NotEqual(ReferenceKeyFold.Separators("GR"), ReferenceKeyFold.Separators("GRD"));
     }
 
     [Fact]
     public void A_folded_match_is_only_reached_when_the_mapping_asked_for_it()
     {
-        var type = Wellbores(("w1", "NO_15_9-19_SR"));
+        var type = Wellbores(("w1", "Wellbore_A_1-19_ST"));
 
         // Off by default, which is what keeps every mapping that never heard of the fold matching as it always did.
-        Assert.Null(type.Match("FacilityName", "NO 15/9-19 SR"));
-        Assert.Equal(ReferenceMatchKind.None, type.Find("FacilityName", "NO 15/9-19 SR").Kind);
+        Assert.Null(type.Match("FacilityName", "Wellbore A/1-19 ST"));
+        Assert.Equal(ReferenceMatchKind.None, type.Find("FacilityName", "Wellbore A/1-19 ST").Kind);
 
-        var found = type.Find("FacilityName", "NO 15/9-19 SR", ignoreSeparators: true);
+        var found = type.Find("FacilityName", "Wellbore A/1-19 ST", ignoreSeparators: true);
         Assert.Equal("w1", found.Item?.Id);
         Assert.Equal(ReferenceMatchKind.IgnoringSeparators, found.Kind);
     }
@@ -62,15 +62,15 @@ public class ReferenceFoldTests
     [Fact]
     public void An_exact_match_is_never_decided_by_a_looser_tier()
     {
-        // 'NO 15/9-19' is held exactly by one record and folds to the same key as another. The exact holder wins, so
+        // 'Wellbore A/1-19' is held exactly by one record and folds to the same key as another. The exact holder wins, so
         // turning the fold on cannot move a value that already resolved.
-        var type = Wellbores(("exact", "NO 15/9-19"), ("folds", "NO_15_9_19"));
-        Assert.Equal("exact", type.Find("FacilityName", "NO 15/9-19", ignoreSeparators: true).Item?.Id);
-        Assert.Equal(ReferenceMatchKind.Exact, type.Find("FacilityName", "NO 15/9-19", ignoreSeparators: true).Kind);
+        var type = Wellbores(("exact", "Wellbore A/1-19"), ("folds", "Wellbore_A_1_19"));
+        Assert.Equal("exact", type.Find("FacilityName", "Wellbore A/1-19", ignoreSeparators: true).Item?.Id);
+        Assert.Equal(ReferenceMatchKind.Exact, type.Find("FacilityName", "Wellbore A/1-19", ignoreSeparators: true).Kind);
 
         // And a case-insensitive hit still beats the fold, for the same reason.
-        var cased = Wellbores(("cased", "no 15/9-19"), ("folds", "NO_15_9_19"));
-        var match = cased.Find("FacilityName", "NO 15/9-19", ignoreSeparators: true);
+        var cased = Wellbores(("cased", "wellbore a/1-19"), ("folds", "Wellbore_A_1_19"));
+        var match = cased.Find("FacilityName", "Wellbore A/1-19", ignoreSeparators: true);
         Assert.Equal("cased", match.Item?.Id);
         Assert.Equal(ReferenceMatchKind.IgnoringCase, match.Kind);
     }
@@ -78,8 +78,8 @@ public class ReferenceFoldTests
     [Fact]
     public void A_folded_key_several_records_answer_to_resolves_to_none_of_them()
     {
-        var type = Wellbores(("w1", "NO_15_9-19"), ("w2", "NO 15/9 19"));
-        var found = type.Find("FacilityName", "no-15-9-19", ignoreSeparators: true);
+        var type = Wellbores(("w1", "Wellbore_A_1-19"), ("w2", "Wellbore A/1 19"));
+        var found = type.Find("FacilityName", "wellbore-a-1-19", ignoreSeparators: true);
         Assert.Null(found.Item);
         Assert.True(found.IsCaseAmbiguous);
         Assert.Equal(["w1", "w2"], found.CaseVariants.Select(v => v.Id));
@@ -91,13 +91,13 @@ public class ReferenceFoldTests
     {
         var item = new ReferenceItem("w1", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Alias"] = ReferenceValue.From(new System.Text.Json.Nodes.JsonArray("NO 15/9-19", "15/9-19 SR")),
+            ["Alias"] = ReferenceValue.From(new System.Text.Json.Nodes.JsonArray("Wellbore A/1-19", "A/1-19 ST")),
         });
         var type = new ReferenceType("Wellbore", "master-data--Wellbore", [item]);
 
-        Assert.Equal("w1", type.Find("Alias", "no_15_9_19", ignoreSeparators: true).Item?.Id);
-        Assert.Equal("w1", type.Find("Alias", "15-9-19-sr", ignoreSeparators: true).Item?.Id);
-        Assert.Null(type.Find("Alias", "no_15_9_20", ignoreSeparators: true).Item);
+        Assert.Equal("w1", type.Find("Alias", "wellbore_a_1_19", ignoreSeparators: true).Item?.Id);
+        Assert.Equal("w1", type.Find("Alias", "a-1-19-st", ignoreSeparators: true).Item?.Id);
+        Assert.Null(type.Find("Alias", "wellbore_a_1_20", ignoreSeparators: true).Item);
     }
 
     [Fact]

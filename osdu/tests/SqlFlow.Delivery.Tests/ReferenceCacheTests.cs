@@ -28,7 +28,7 @@ public class ReferenceCacheTests
             {
               "id": "dev:master-data--Wellbore:1",
               "data": {
-                "FacilityName": "NO 1/1-A",
+                "FacilityName": "WB 1/1-A",
                 "NameAlias": [
                   { "AliasName": "1/1-A", "AliasNameTypeID": "dev:reference-data--AliasNameType:Short:" },
                   { "AliasName": "WELL A" }
@@ -38,7 +38,7 @@ public class ReferenceCacheTests
             }
             """);
 
-        Assert.Equal("NO 1/1-A", Assert.Single(JsonPathReader.SelectNodes(hit, "data.FacilityName")).GetValue<string>());
+        Assert.Equal("WB 1/1-A", Assert.Single(JsonPathReader.SelectNodes(hit, "data.FacilityName")).GetValue<string>());
         Assert.Equal(["1/1-A", "WELL A"], JsonPathReader.SelectNodes(hit, "data.NameAlias.AliasName").Select(n => n.GetValue<string>()));
         Assert.Equal("1/1-A", Assert.Single(JsonPathReader.SelectNodes(hit, "data.NameAlias[0].AliasName")).GetValue<string>());
         Assert.Equal("wells", Assert.Single(JsonPathReader.SelectNodes(hit, "data.Tags.source")).GetValue<string>());
@@ -74,16 +74,16 @@ public class ReferenceCacheTests
         });
 
         const string GammaRay = "dev:reference-data--LogCurveFamily:Gamma%20Ray";
-        const string Impedance = "dev:reference-data--LogCurveFamily:EQ-Acoustic%20Impedance%20Compressional";
+        const string Impedance = "dev:reference-data--LogCurveFamily:Local-Acoustic%20Impedance%20Compressional";
         var families = new ReferenceType("LogCurveFamily", "reference-data--LogCurveFamily",
-            [Item(GammaRay, "Gamma Ray"), Item(Impedance, "EQ-Acoustic Impedance Compressional")]);
+            [Item(GammaRay, "Gamma Ray"), Item(Impedance, "Local-Acoustic Impedance Compressional")]);
 
         // A curve dictionary names a family by the code its id ends with, encoded as ids encode it: the record id, that
         // code and the code decoded all find the one record.
         Assert.Equal(GammaRay, families.Match("id", GammaRay)?.Id);
         Assert.Equal(GammaRay, families.Match("id", "Gamma%20Ray")?.Id);
         Assert.Equal(GammaRay, families.Match("id", "Gamma Ray")?.Id);
-        Assert.Equal(Impedance, families.Match("id", "EQ-Acoustic%20Impedance%20Compressional")?.Id);
+        Assert.Equal(Impedance, families.Match("id", "Local-Acoustic%20Impedance%20Compressional")?.Id);
 
         // Case is ignored only when that finds exactly one record, as for any other field, and a part of a code is no code.
         Assert.Equal(GammaRay, families.Match("id", "gamma%20ray")?.Id);
@@ -109,18 +109,18 @@ public class ReferenceCacheTests
         [
             new ReferenceItem("dev:master-data--Wellbore:1", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
             {
-                ["FacilityName"] = ReferenceValue.Of("NO 1/1-A"),
+                ["FacilityName"] = ReferenceValue.Of("WB 1/1-A"),
                 ["Alias"] = ReferenceValue.From(JsonNode.Parse("""["1/1-A", "WELL A"]""")!),
             }),
             new ReferenceItem("dev:master-data--Wellbore:2", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
             {
-                ["FacilityName"] = ReferenceValue.Of("NO 2/2-B"),
+                ["FacilityName"] = ReferenceValue.Of("WB 2/2-B"),
             }),
         ]);
 
         Assert.Equal("dev:master-data--Wellbore:1", type.Match("Alias", "1/1-A")!.Id);
         Assert.Equal("dev:master-data--Wellbore:1", type.Match("Alias", " well a ")!.Id);
-        Assert.Equal("dev:master-data--Wellbore:1", type.Match("data.FacilityName", "NO 1/1-A")!.Id);
+        Assert.Equal("dev:master-data--Wellbore:1", type.Match("data.FacilityName", "WB 1/1-A")!.Id);
         Assert.Equal("dev:master-data--Wellbore:2", type.Match("id", "dev:master-data--Wellbore:2")!.Id);
         Assert.Null(type.Match("Alias", "nothing"));
         Assert.True(type.HasField("Alias"));
@@ -185,7 +185,7 @@ public class ReferenceCacheTests
         [
             new ReferenceItem("dev:master-data--Wellbore:1", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
             {
-                ["FacilityName"] = ReferenceValue.Of("NO 1/1-A"),
+                ["FacilityName"] = ReferenceValue.Of("WB 1/1-A"),
                 ["Alias"] = ReferenceValue.From(JsonNode.Parse("""["1/1-A", "WELL A"]""")!),
                 ["Depth"] = ReferenceValue.From(JsonValue.Create(1234.5)),
                 ["Tags"] = ReferenceValue.From(JsonNode.Parse("""{ "source": "wells" }""")!),
@@ -250,13 +250,13 @@ public class ReferenceCacheTests
     private static CacheDefinition CacheFlow(string types, string extra = "") => new DeliveryDocumentLoader().ParseCache(
         """
         flowType: cache
-        name: recall-osdu-00-reference-cache
+        name: welldb-osdu-00-reference-cache
         source:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: dev }
 
         """ + extra + "\ntypes:\n" + types + "\n",
-        "cache/recall-osdu-00-reference-cache.yaml");
+        "cache/welldb-osdu-00-reference-cache.yaml");
 
     [Fact]
     public void A_cache_flow_reads_paths_written_either_way()
@@ -330,7 +330,7 @@ public class ReferenceCacheTests
             """,
             "onChange: approve\n");
 
-        Assert.Equal("recall-osdu-00-reference-cache", cache.Name);
+        Assert.Equal("welldb-osdu-00-reference-cache", cache.Name);
         Assert.Equal("dev", cache.Scope);
         Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
         var wellbore = cache.Types[0];
@@ -453,7 +453,7 @@ public class ReferenceCacheTests
 
         // A flow still naming a cache is refused: the cache it reads is its partition's, whatever it names.
         var named = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: recall-osdu-00-reference-cache", StringComparison.Ordinal), "flow.yaml"));
+            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: welldb-osdu-00-reference-cache", StringComparison.Ordinal), "flow.yaml"));
         Assert.Contains("render.cache is not a setting any more", named.Message, StringComparison.Ordinal);
     }
 
@@ -461,7 +461,7 @@ public class ReferenceCacheTests
     public async Task A_mapping_that_reads_the_cache_renders_against_the_cache_of_the_partition_the_flow_delivers_to()
     {
         var engine = Samples.Engine(ledger: null);
-        var values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
+        var values = new Dictionary<string, string> { ["logSource"] = "COMPOSITE" };
         var flow = Samples.LocalFlow(Samples.NewTempDirectory());
 
         using (var runtime = await FlowRuntime.CreateAsync(engine, flow, values))
@@ -495,8 +495,8 @@ public class ReferenceCacheTests
 
     /// <summary>
     /// The sample mapping once declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as 0.21
-    /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which petrodb-api's curve unit map writes
-    /// as the partition's `v/v`. The sample mapping's own curve unit entry is rendered here against the sample template and
+    /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which the well database's unit spellings
+    /// translate to the partition's `v/v`. The sample mapping's own curve unit entry is rendered here against the sample template and
     /// cache, through the curve unit map it reads from the cache, so the map and the cached reference data have to agree for
     /// this to pass. The cache holds `%` as well as `v/v`, so replacing the unit back with `%` would resolve rather than
     /// hold: only the rendered id catches it.
@@ -506,8 +506,8 @@ public class ReferenceCacheTests
     {
         var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load("WellLog@1.4.0");
         var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
-        Assert.Equal("RecallUnits", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Table!.CacheType);
-        var units = Samples.SampleLookups().Single(t => t.Name == "RecallUnits");
+        Assert.Equal("UnitAlias", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Table!.CacheType);
+        var units = Samples.SampleLookups().Single(t => t.Name == "UnitAlias");
         Assert.Equal("v/v", units.Match("source_unit", "V/V")!.Select("osdu_unit")!.Text);
 
         var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope);
@@ -526,18 +526,18 @@ public class ReferenceCacheTests
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [RenderContext.DataPartitionParameter] = "dev",
-                ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
-                ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
-                ["legalTag"] = "dev-equinor-osdu-reference-default",
+                ["aclOwner"] = "data.welldb.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.welldb.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-osdu-default-legal",
             },
         };
         // The wellbore the log belongs to is searched for, and the sample platform holds it.
         var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, mapping);
-        var log = SampleWellLogs.Logs().Single(l => l.LogId == "22494/1");
+        var log = SampleWellLogs.Logs().Single(l => l.LogId == "LOG-0005/1");
         var search = new FixedRecordSearch([("data.FacilityName", log.WellboreUwi, "dev:master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(log.WellboreUwi))]);
         var renderer = new MappingRenderer(mapping, schema, references, context, searches, search);
-        // The neutron porosity of NO 15/5-7 AT2, as Recall describes it, in place of the log's own curves.
-        var nphi = SampleWellLogs.CurveRows(SampleWellLogs.Logs().Single(l => l.LogId == "9982/1")).Single(c => c["curve_id"] == "NPHI");
+        // The neutron porosity of Wellbore A-1, as the well database describes it, in place of the log's own curves.
+        var nphi = SampleWellLogs.CurveRows(SampleWellLogs.Logs().Single(l => l.LogId == "LOG-0001/1")).Single(c => c["curve_id"] == "NPHI");
         var porosity = await Samples.RenderSettledAsync(renderer, new SourceRecord
         {
             Row = SourceRow.FromStrings(SampleWellLogs.LogRow(log)),
@@ -667,7 +667,7 @@ public class CachedLookupTests
         ]),
         new ReferenceType("Wellbore", "master-data--Wellbore",
         [
-            ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A" }),
+            ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string> { ["FacilityName"] = "WB 1/1-A" }),
         ]),
     ]);
 

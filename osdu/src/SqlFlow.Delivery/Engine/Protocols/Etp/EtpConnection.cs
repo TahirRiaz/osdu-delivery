@@ -63,7 +63,7 @@ public sealed class EtpConnection
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (!Uri.TryCreate(endpoint.TrimEnd('/') + "/" + path.TrimStart('/'), UriKind.Absolute, out var url))
         {
-            throw new FlowValidationException($"The target endpoint '{endpoint}' with the ETP path '{path}' is not a URL.");
+            throw new FlowValidationException($"The target endpoint '{HeaderRedaction.DescribeUrl(endpoint)}' with the ETP path '{path}' is not a URL.");
         }
 
         return new UriBuilder(url)
@@ -72,7 +72,7 @@ public sealed class EtpConnection
             {
                 "https" or "wss" => "wss",
                 "http" or "ws" => "ws",
-                _ => throw new FlowValidationException($"The target endpoint '{endpoint}' is not an http or https URL, so it has no ETP WebSocket."),
+                _ => throw new FlowValidationException($"The target endpoint '{HeaderRedaction.DescribeUrl(endpoint)}' is not an http or https URL, so it has no ETP WebSocket."),
             },
         }.Uri;
     }

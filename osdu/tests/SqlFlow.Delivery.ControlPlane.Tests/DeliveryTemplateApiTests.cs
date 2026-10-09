@@ -189,7 +189,11 @@ public sealed class DeliveryTemplateApiTests
         var config = new DeliveryConfigStore(() => SampleEstate.Context(cs));
         try
         {
-            await config.SetAsync(repoId, null, "OSDU_ACL_OWNER", "owners@" + suffix + ".example", null, "tests", DateTime.UtcNow);
+            await using (var catalog = CatalogDatabase.Create(cs))
+            {
+                await config.SetAsync(repoId, null, "OSDU_ACL_OWNER", "owners@" + suffix + ".example", null, "tests", DateTime.UtcNow, catalog);
+            }
+
             var repos = await ReadAsync<List<DeliveryBuilderRepoDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/repos"));
             var repo = Assert.Single(repos, r => r.RepoId == repoId);
             Assert.Equal(sourceId, repo.SourceId);
@@ -201,7 +205,7 @@ public sealed class DeliveryTemplateApiTests
             // The check renders with what a run would: the values the flow writes out, and for the aclOwner it leaves out the
             // kind's own ${env:OSDU_ACL_OWNER}, resolved from the repository's central configuration as a run resolves it.
             Assert.Equal("dev", flow.Parameters["dataPartition"]);
-            Assert.Equal("data.sdd-well-logs.viewers@dev.dataservices.energy", flow.Parameters["aclViewer"]);
+            Assert.Equal("data.welldb.viewers@dev.dataservices.energy", flow.Parameters["aclViewer"]);
             Assert.Equal("owners@" + suffix + ".example", flow.Parameters["aclOwner"]);
             // A reference the control plane cannot resolve leaves the value to the author, and the listing says which it is.
             Assert.False(flow.Parameters.ContainsKey("legalTag"));
@@ -217,8 +221,8 @@ public sealed class DeliveryTemplateApiTests
             Assert.Null(Assert.Single(cache.Types, c => c.Name == "VerticalMeasurementType").Key);
 
             // A lookup table names its key, so the builder can say what a replace reading it matches on by default.
-            var units = Assert.Single(cache.Types, c => c.Name == "RecallUnits");
-            Assert.Equal(("lookup--RecallUnits", "source_unit"), (units.EntityType, units.Key));
+            var units = Assert.Single(cache.Types, c => c.Name == "UnitAlias");
+            Assert.Equal(("lookup--UnitAlias", "source_unit"), (units.EntityType, units.Key));
             Assert.Equal(["osdu_unit"], units.Fields);
             Assert.Equal("mnemonic", Assert.Single(cache.Types, c => c.Name == "CurveDictionary").Key);
 
@@ -254,7 +258,7 @@ public sealed class DeliveryTemplateApiTests
 
             var draft = await ReadAsync<MappingDraft>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/draft", new
             {
-                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "recall",
+                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "welldb",
             }));
             var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID");
             Assert.True(prefilled.Prefilled);
@@ -272,7 +276,7 @@ public sealed class DeliveryTemplateApiTests
 
             // A curve's unit is a coalesce, opened as its alternatives in order: the unit table, the partition's own units, and
             // the table's translation unverified. A replace reading a cached table opens with the table, and nothing the table
-            // settles: RecallUnits names its key and its one field, so the draft leaves both out, and a spelling it does not
+            // settles: UnitAlias names its key and its one field, so the draft leaves both out, and a spelling it does not
             // list is kept as it is. The ref after it writes the translated unit as the reference to that unit.
             var curveUnit = Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].CurveUnit");
             Assert.Equal(MappingDraftInput.Coalesce, curveUnit.Input);
@@ -281,7 +285,7 @@ public sealed class DeliveryTemplateApiTests
             var unitModifiers = curveUnit.Alternatives[0].Modifiers;
             Assert.Equal(["replace", "ref"], unitModifiers.Select(m => m.Kind));
             var unit = unitModifiers[0];
-            Assert.Equal(("RecallUnits", (string?)null, (string?)null, "keep"), (unit.Table, unit.Match, unit.Field, unit.OtherwiseKind));
+            Assert.Equal(("UnitAlias", (string?)null, (string?)null, "keep"), (unit.Table, unit.Match, unit.Field, unit.OtherwiseKind));
             Assert.Null(unit.Replacements);
 
             // An id built from a cached table opens as its template, whole: the curve's family is the code the curve
@@ -295,14 +299,14 @@ public sealed class DeliveryTemplateApiTests
             var parameters = new Dictionary<string, string>
             {
                 ["dataPartition"] = "dev",
-                ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
-                ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
-                ["legalTag"] = "dev-equinor-osdu-reference-default",
+                ["aclOwner"] = "data.welldb.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.welldb.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-osdu-default-legal",
             };
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("    WellboreID:\n      $search: Wellbore\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
-            Assert.Contains("          $coalesce:\n            - $from: curve_unit\n              $modifiers:\n                - replace: $cache.RecallUnits\n                - ref\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("          $coalesce:\n            - $from: curve_unit\n              $modifiers:\n                - replace: $cache.UnitAlias\n                - ref\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
             Assert.Contains("            - id: \"{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:\"\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
 
             // A cached table the partition's cache does not hold is refused by the check, naming what it does hold.
@@ -321,7 +325,7 @@ public sealed class DeliveryTemplateApiTests
             var shape = await ReadAsync<DeliveryMappingShapeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/shape", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml", parameters }));
             Assert.Empty(shape.Issues);
             Assert.NotNull(shape.Record);
-            Assert.Equal("dev:work-product-component--WellLog:<delivery key from recall, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
+            Assert.Equal("dev:work-product-component--WellLog:<delivery key from welldb, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
             Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
             Assert.Equal("dev", Assert.Single(shape.Parameters, p => p.Name == "dataPartition").Value);
 
@@ -364,7 +368,7 @@ public sealed class DeliveryTemplateApiTests
             // Without a partition named there is no cache to check the cache entries against, and the check says so.
             var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope = (string?)null, draft = parsed.Draft, parameters }));
             Assert.False(noCache.Valid);
-            Assert.Contains(noCache.Issues, i => i.Message.Contains("replace reads $cache.RecallUnits, which cache version 'none' does not hold", StringComparison.Ordinal));
+            Assert.Contains(noCache.Issues, i => i.Message.Contains("replace reads $cache.UnitAlias, which cache version 'none' does not hold", StringComparison.Ordinal));
         }
         finally
         {
@@ -458,7 +462,7 @@ public sealed class DeliveryTemplateApiTests
             var store = new OsduCacheStore(() => SampleEstate.Context(cs));
             var captured = new ReferenceType(
                 "Wellbore", "master-data--Wellbore",
-                [ReferenceItem.FromText(shared + ":master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "NO 1/1-A", ["Alias"] = "WELL A" })]);
+                [ReferenceItem.FromText(shared + ":master-data--Wellbore:1", new Dictionary<string, string> { ["FacilityName"] = "WB 1/1-A", ["Alias"] = "WELL A" })]);
             Assert.True((await store.MergeAsync(shared, projectB, [captured], new CacheCapture(null, "tests", "seeded"), DateTimeOffset.UtcNow)).Written);
             var refreshed = Assert.Single(
                 await ReadAsync<List<DeliveryCacheDto>>(await SendAsync(client, reader, HttpMethod.Get, "/api/v1/delivery/caches?repoId=" + repoId)),
@@ -642,7 +646,7 @@ public sealed class DeliveryTemplateApiTests
                 source:
                   connection: {SourceConnectionReference}
                   record:
-                    object: OsduData.arc.WellLog
+                    object: OsduData.silver.WellLog
                     key: [source_project, log_id]
                   lastModified: update_date
                   work: ../.work/{flowName}
@@ -650,7 +654,7 @@ public sealed class DeliveryTemplateApiTests
                   mapping: WellLog@1.4.0
                   parameters:
                     dataPartition: dev
-                    aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+                    aclViewer: data.welldb.viewers@dev.dataservices.energy
                     legalTag: {UnsetReference}
                 target:
                   endpoint: https://osdu.example.test
@@ -710,7 +714,7 @@ public sealed class DeliveryTemplateApiTests
                 Scope = scope,
                 Origin = "table",
                 Connection = SourceConnectionReference,
-                SourceObject = "OsduData.arc." + lookup.Name,
+                SourceObject = "OsduData.silver." + lookup.Name,
                 KeyField = lookup.Key,
                 DictionaryPath = null,
                 RelativePath = "cache/" + cacheFlowName + "-lookups.yaml",

@@ -918,7 +918,7 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
                 <Input
                   list={allMode === "column" ? columnsList : undefined}
                   className="h-8 min-w-40 flex-1 font-mono text-[12px]"
-                  placeholder={allMode === "column" ? columnPlaceholder : "Norway"}
+                  placeholder={allMode === "column" ? columnPlaceholder : "United States"}
                   value={allValue}
                   onChange={(event) => setAllValue(event.target.value)}
                   data-testid="mapping-builder-entry-findall-value"

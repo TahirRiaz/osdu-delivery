@@ -1,45 +1,26 @@
-using System.Text.Json;
-using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
-using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane.Configuration;
-using SqlFlow.Delivery.Diagnostics;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Operations;
-using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
-using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.ControlPlane.Background;
-
-/// <summary>The outcomes a settled probe is recorded and counted under; the vocabulary the metric's <c>outcome</c> tag uses.</summary>
-public static class ProbeOutcomes
-{
-    /// <summary>The service answered under the flow's credentials.</summary>
-    public const string Reachable = "reachable";
-
-    /// <summary>The service refused the call or did not answer at all. The target is there to be alerted on.</summary>
-    public const string Unreachable = "unreachable";
-
-    /// <summary>The probe itself could not run: the flow file could not be read, a credential would not resolve, the host stopped while it ran.</summary>
-    public const string Error = "error";
-}
 
 /// <summary>
 /// Probes the target of every active delivery flow on a schedule, so a deployment learns that an OSDU stopped answering
 /// without an operator pressing "Probe target" (go-live map OPS-2). Each pass runs the probe the operator's button runs
-/// (<see cref="DeliveryEndpoints.ProbeTargetAsync"/>, <c>delivery-probe</c> in this process under the flow's own
-/// credentials), once per interface of each flow, since each interface has a target of its own. What comes back is
-/// recorded in the ledger's audit trail as a <c>probe</c> activity by <c>service:schedule</c>, and counted on
+/// (<see cref="TargetProbes.RunAsync"/>, <c>delivery-probe</c> in this process under the flow's own credentials), once per
+/// interface of each flow, since each interface has a target of its own. What comes back is recorded in the ledger's audit
+/// trail as a <c>probe</c> activity by <c>service:schedule</c>, as an operator's probe is by the operator, and counted on
 /// <c>osdu_delivery.probes</c>, so the last result per flow and interface is readable without asking for anything and an
 /// alert can be built on either.
 /// </summary>
@@ -48,10 +29,12 @@ public static class ProbeOutcomes
 /// live OSDU for every interface it covers. <c>:IntervalMinutes</c> paces it (never under
 /// <see cref="TargetProbeOptions.MinimumIntervalMinutes"/>), <c>:Pipelines</c> narrows it to named flows and
 /// <c>:MaxPerPass</c> bounds one pass of a large estate.</para>
-/// <para>A probe answers within its own bounded wait (<see cref="Engine.Operations.TargetClients.Interactive"/>), so a pass
-/// opens each probe's activity, runs the probe and closes the activity with what it found, <see cref="Concurrency"/> at a
-/// time. An activity a pass leaves open (the host stopped while the probe ran) is found again from the ledger by the next
-/// pass and closed as unfinished, so nothing stays open forever and nothing is lost across a restart.</para>
+/// <para>A probe answers within its own bounded wait (<see cref="TargetClients.Interactive"/>), so a pass runs each probe,
+/// which opens its activity and closes it with what it found, <see cref="Concurrency"/> at a time. A probe's activity still
+/// open <see cref="TargetProbes.UnfinishedAfter"/> after it started, scheduled or asked for (the host stopped while it
+/// ran), is found again from the ledger by a later pass and closed as unfinished, so nothing stays open forever and nothing
+/// is lost across a restart; one younger than that may still be running, here or on another replica, and is left to
+/// finish.</para>
 /// <para>Hosted on every replica. The control plane runs one today (go-live map OPS-3); were it ever more, each replica
 /// would keep its own schedule, which costs one extra probe per interval per replica and records each outcome correctly,
 /// since a pass only settles the probes whose activities it can still find open.</para>
@@ -59,7 +42,7 @@ public static class ProbeOutcomes
 public sealed partial class ScheduledTargetProbeService : BackgroundService
 {
     /// <summary>The activity kind every probe is recorded under, scheduled or not.</summary>
-    public const string ActivityKind = "probe";
+    public const string ActivityKind = TargetProbes.ActivityKind;
 
     /// <summary>The actor the scheduled probe records its activities under.</summary>
     public const string ScheduleActor = "service:schedule";
@@ -67,14 +50,8 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     /// <summary>The probes one pass runs at once: enough that a few silent targets do not hold up the estate.</summary>
     public const int Concurrency = 4;
 
-    /// <summary>The activity outcome of a probe still running.</summary>
-    private const string Running = "running";
-
     /// <summary>Delivery pipelines one pass reads. Past this an estate is narrowed with <c>:Pipelines</c>.</summary>
     private const int MaxPipelinesPerPass = 1000;
-
-    /// <summary>Open probes one pass closes, which is at most one per interface probed.</summary>
-    private const int MaxOpenProbes = 1000;
 
     private readonly IServiceProvider _services;
     private readonly TimeProvider _clock;
@@ -119,7 +96,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             }
             catch (Exception ex)
             {
-                LogPassError(Redacted(ex));
+                LogPassError(TargetProbes.Redacted(ex));
             }
 
             try
@@ -162,8 +139,9 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    // One flow's target must never stop the rest of the estate being probed.
-                    LogProbeNotRun(flow.Flow.Label, Redacted(ex));
+                    // One flow's target must never stop the rest of the estate being probed. What the probe could record of
+                    // the failure it recorded; this says the pass went on without it.
+                    LogProbeNotRun(flow.Flow.Label, TargetProbes.Redacted(ex));
                 }
             }).ConfigureAwait(false);
 
@@ -262,194 +240,42 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     }
 
     /// <summary>
-    /// Probes one interface and records what it found, in the ledger of the partition the interface delivers to. That ledger
-    /// is registered first, the way a run registers it (<see cref="LedgerRegistration"/>), so a flow whose partition cannot be
-    /// worked out here, or whose ledger belongs to another partition than its header now names, is reported and not probed.
-    /// Each probe has a scope of its own, since probes run side by side and a database context serves one at a time.
+    /// Probes one interface through the path the operator's button takes (<see cref="TargetProbes.RunAsync"/>), which records
+    /// what it found in the ledger of the partition the interface delivers to under <see cref="ScheduleActor"/>, counts it and
+    /// logs it. Each probe has a scope of its own, since probes run side by side and a database context serves one at a time.
     /// </summary>
     private async Task ProbeOneAsync(DeliveryEndpoints.FlowContext flow, CancellationToken ct)
     {
         await using var scope = _services.CreateAsyncScope();
         var services = scope.ServiceProvider;
-        var catalog = services.GetRequiredService<CatalogDbContext>();
-        var ledger = services.GetRequiredService<ILedger>();
-        var config = services.GetRequiredService<DeliveryConfigStore>();
-        var configured = await DeliveryEndpoints.ConfiguredAsync(services.GetRequiredService<EngineContext>(), config, flow, ct).ConfigureAwait(false);
-        var placed = await LedgerRegistration.RegisterAsync(ledger, flow.Flow, configured.Secrets, keptWhenUnresolved: true, ct).ConfigureAwait(false);
-        var target = flow.Flow.Target;
-
-        // What the activity records about the target is what the target view already shows: the endpoint as the document
-        // declares it (a reference, never a resolved secret), the partition its ledger is kept under and the protocol.
-        // Redacted regardless, since nothing the ledger stores is allowed to carry a credential.
-        var parameters = Redacted(JsonSerializer.Serialize(new
-        {
-            pipelineId = flow.Pipeline.Id,
-            @interface = flow.Flow.Interface,
-            endpoint = target.Endpoint,
-            partition = placed.Partition,
-            protocol = DeliveryProtocols.Name(target.Protocol),
-        }));
-
-        var activity = await ledger.StartActivityAsync(
-            new ActivityRecord
-            {
-                FlowId = flow.FlowId,
-                FlowName = flow.Flow.Label,
-                Kind = ActivityKind,
-                Actor = ScheduleActor,
-                StartedUtc = _clock.GetUtcNow().UtcDateTime,
-                ParametersJson = parameters,
-            },
+        await TargetProbes.RunAsync(
+            services.GetRequiredService<CatalogDbContext>(),
+            services.GetRequiredService<ILedger>(),
+            services.GetRequiredService<DeliveryConfigStore>(),
+            services.GetRequiredService<DirectOperations>(),
+            services.GetRequiredService<EngineContext>(),
+            _clock,
+            services.GetRequiredService<ILoggerFactory>(),
+            flow,
+            ScheduleActor,
             ct).ConfigureAwait(false);
-        var probe = new OpenProbe(activity.ActivityId, flow.Flow.Label, placed.Partition, flow.Flow.Interface);
-
-        string outcome, summary;
-        try
-        {
-            var answer = await DeliveryEndpoints.ProbeTargetAsync(
-                catalog, config, services.GetRequiredService<DirectOperations>(), flow, ScheduleActor, services.GetRequiredService<ILoggerFactory>(), ct).ConfigureAwait(false);
-            (outcome, summary) = answer.Result switch
-            {
-                ContentHttpResult { ResponseContent: { } json } => FromResult(json),
-                ProblemHttpResult problem => (ProbeOutcomes.Error, CouldNotRun(problem.ProblemDetails.Detail ?? problem.ProblemDetails.Title ?? "no reason was given")),
-                _ => (ProbeOutcomes.Error, "the probe answered with nothing to record"),
-            };
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        {
-            // A failure the probe does not describe itself (the configuration could not be read) is still this probe's
-            // outcome, closed now. Only a host that is stopping leaves the activity open, for the next pass to close.
-            (outcome, summary) = (ProbeOutcomes.Error, CouldNotRun(ex.Message));
-        }
-
-        await SettleAsync(ledger, probe, outcome, summary, ct).ConfigureAwait(false);
     }
-
-    /// <summary>A probe that could not run, in the words the audit trail records it with, redacted.</summary>
-    private static string CouldNotRun(string reason) => $"the probe could not run: {Redacted(reason)}";
 
     // ---- Settling ----------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Closes the probes an earlier pass left open: the host stopped while they ran, or they were queued for a node before
-    /// probes ran in the control plane. Read from the ledger, so a restart loses none; none of them can report any more.
+    /// Closes the probes of every ledger left open past <see cref="TargetProbes.UnfinishedAfter"/>, scheduled or asked for
+    /// (<see cref="TargetProbes.CloseUnfinishedAsync"/>), including those of flows no pass covers any more.
     /// </summary>
-    private async Task CloseUnfinishedAsync(ILedger ledger, CancellationToken ct)
-    {
-        var running = await ledger.ListActivitiesAsync(
-            new ActivityQuery { Kind = ActivityKind, Actor = ScheduleActor, Outcome = Running, Max = MaxOpenProbes }, ct).ConfigureAwait(false);
-        foreach (var activity in running)
-        {
-            ct.ThrowIfCancellationRequested();
-            await SettleAsync(
-                ledger,
-                new OpenProbe(activity.ActivityId, activity.FlowName, activity.Partition, InterfaceOf(activity.ParametersJson)),
-                ProbeOutcomes.Error,
-                "the probe did not finish: the control plane stopped while it ran, or it was queued for a node before probes ran in the control plane",
-                ct).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>Closes one probe's activity with what it found, counts it, and says so in the log.</summary>
-    private async Task SettleAsync(ILedger ledger, OpenProbe probe, string outcome, string summary, CancellationToken ct)
-    {
-        // The audit trail's outcome is what an operator acts on, so a target that would not answer reads failed there;
-        // the metric's outcome tag keeps the four cases apart.
-        var recorded = outcome == ProbeOutcomes.Reachable ? "completed" : "failed";
-
-        try
-        {
-            await ledger.CompleteActivityAsync(probe.ActivityId, recorded, summary, null, _clock.GetUtcNow().UtcDateTime, ct: ct).ConfigureAwait(false);
-        }
-        catch (DeliveryException ex)
-        {
-            // The activity went (a prune, a restored database): the outcome is still counted, and nothing is carried over.
-            LogActivityGone(probe.ActivityId, probe.Where, Redacted(ex));
-        }
-
-        DeliveryMetrics.ProbeSettled(probe.FlowLabel, probe.Partition, probe.Interface, outcome);
-        if (outcome == ProbeOutcomes.Reachable)
-        {
-            LogReachable(probe.Where, summary);
-        }
-        else
-        {
-            LogNotReachable(probe.Where, outcome, summary);
-        }
-    }
-
-    /// <summary>The probe's own result, as <c>delivery-probe</c> wrote it: reachable or not, with the status and the path it asked on.</summary>
-    private static (string Outcome, string Summary) FromResult(string? resultJson)
-    {
-        if (string.IsNullOrWhiteSpace(resultJson))
-        {
-            return (ProbeOutcomes.Error, "the probe finished without recording a result");
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(resultJson);
-            var root = document.RootElement;
-            var reachable = root.TryGetProperty("reachable", out var answered) && answered.ValueKind == JsonValueKind.True;
-            var status = root.TryGetProperty("status", out var code) && code.TryGetInt32(out var value) ? value : 0;
-            var path = root.TryGetProperty("path", out var asked) ? asked.GetString() ?? string.Empty : string.Empty;
-            var detail = root.TryGetProperty("detail", out var said) ? said.GetString() ?? string.Empty : string.Empty;
-            var summary =
-                $"{(reachable ? ProbeOutcomes.Reachable : ProbeOutcomes.Unreachable)}: {(status > 0 ? $"HTTP {status}" : "no answer")} " +
-                $"at {(path.Length == 0 ? "the target" : path)}{(detail.Length == 0 ? string.Empty : $" ({detail})")}";
-            return (reachable ? ProbeOutcomes.Reachable : ProbeOutcomes.Unreachable, Redacted(summary));
-        }
-        catch (JsonException ex)
-        {
-            return (ProbeOutcomes.Error, $"the probe's result could not be read: {Redacted(ex.Message)}");
-        }
-    }
-
-    /// <summary>The interface an open activity's parameters name; null for a flow in the single form, or parameters that cannot be read.</summary>
-    private static string? InterfaceOf(string? parametersJson)
-    {
-        if (string.IsNullOrWhiteSpace(parametersJson))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(parametersJson);
-            var root = document.RootElement;
-            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("interface", out var name) && name.ValueKind == JsonValueKind.String
-                ? name.GetString()
-                : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>A message as it may be stored and shown: every resolved secret, token and key redacted out of it.</summary>
-    private static string Redacted(string text) => HeaderRedaction.RedactMessage(SecretHygiene.RedactedMessage(text));
-
-    private static string Redacted(Exception ex) => HeaderRedaction.RedactMessage(SecretHygiene.RedactedMessage(ex));
+    private Task CloseUnfinishedAsync(ILedger ledger, CancellationToken ct)
+        => TargetProbes.CloseUnfinishedAsync(
+            ledger, null, _clock, _services.GetRequiredService<ILoggerFactory>().CreateLogger(TargetProbes.LogCategory), ct);
 
     /// <summary>An active delivery pipeline a pass covers.</summary>
     private sealed record PipelineRef(Guid Id, string Name);
 
-    /// <summary>A probe whose activity waits for its outcome.</summary>
-    private sealed record OpenProbe(long ActivityId, string FlowLabel, string? Partition, string? Interface)
-    {
-        /// <summary>The flow and the partition whose target was probed, as a log line names them.</summary>
-        public string Where => Partition is null ? FlowLabel : $"{FlowLabel}@{Partition}";
-    }
-
     [LoggerMessage(Level = LogLevel.Information, Message = "Scheduled probe probed {Probes} target(s).")]
     private partial void LogProbed(int probes);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Scheduled probe of {Flow}: {Summary}")]
-    private partial void LogReachable(string flow, string summary);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe of {Flow} settled {Outcome}: {Summary}")]
-    private partial void LogNotReachable(string flow, string outcome, string summary);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe skipped flow {Flow}: {Detail}")]
     private partial void LogFlowUnreadable(string flow, string detail);
@@ -462,9 +288,6 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Osdu:TargetProbe:Pipelines names no active delivery pipeline: {Names}")]
     private partial void LogUnknownPipelines(string names);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe could not record activity {ActivityId} of {Flow}: {Error}")]
-    private partial void LogActivityGone(long activityId, string flow, string error);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Scheduled probe pass error: {Error}")]
     private partial void LogPassError(string error);

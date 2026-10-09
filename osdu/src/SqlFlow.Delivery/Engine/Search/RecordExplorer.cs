@@ -983,7 +983,7 @@ public sealed partial class RecordExplorer
     /// <summary>
     /// Every value a hit holds at <paramref name="path"/>, through any list on the way (each of a wellbore's geographic contexts),
     /// whichever way the service projected it: as nested objects, or under a name holding dots itself, as the record's root
-    /// carries a projected path (<c>data.Code</c>) and an index augmentation names its properties (<c>Equinor.WellboreName</c>).
+    /// carries a projected path (<c>data.Code</c>) and an index augmentation names its properties (<c>Augmented.WellboreName</c>).
     /// The first <see cref="MaxColumnValues"/>, each cut at <see cref="MaxColumnValueLength"/> characters.
     /// </summary>
     internal static IReadOnlyList<string> ValuesAt(JsonObject hit, string path)

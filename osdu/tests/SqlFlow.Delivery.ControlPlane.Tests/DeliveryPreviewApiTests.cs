@@ -47,8 +47,8 @@ public sealed class DeliveryPreviewApiTests
             flowType: delivery
             name: {{flowName}}
             parameters:
-              logSource: { required: true, description: The Recall log source a run reads }
-              project: { default: NORWAY_WELLDB }
+              logSource: { required: true, description: The well database's log source a run reads }
+              project: { default: PROJECT_A }
             source:
               connection: ${env:OSDU_DATA_DB}
               work: ../.work/{logSource}
@@ -61,10 +61,10 @@ public sealed class DeliveryPreviewApiTests
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
-                record: { object: OsduData.arc.Wellbore, key: [facility_name] }
+                record: { object: OsduData.silver.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
+                record: { object: OsduData.silver.WellLog, key: [source_project, log_id] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
             """;
@@ -102,8 +102,8 @@ public sealed class DeliveryPreviewApiTests
             {
                 DeliveryKey = key,
                 FlowId = logsLedger,
-                SourceKey = "recall:NORWAY_WELLDB/12359/1",
-                Label = "NO 33/9-C-28 B",
+                SourceKey = "welldb:PROJECT_A/LOG-0004",
+                Label = "Wellbore B-2 B",
                 MappingName = "WellLog",
                 Status = RecordStatus.Pending,
                 PendingDocumentRef = "1:0:10",
@@ -133,29 +133,29 @@ public sealed class DeliveryPreviewApiTests
                 var logSource = parameters.Single(p => p.GetProperty("name").GetString() == "logSource");
                 Assert.True(logSource.GetProperty("required").GetBoolean());
                 Assert.Equal(JsonValueKind.Null, logSource.GetProperty("default").ValueKind);
-                Assert.Equal("The Recall log source a run reads", logSource.GetProperty("description").GetString());
+                Assert.Equal("The well database's log source a run reads", logSource.GetProperty("description").GetString());
                 var project = parameters.Single(p => p.GetProperty("name").GetString() == "project");
-                Assert.Equal("NORWAY_WELLDB", project.GetProperty("default").GetString());
+                Assert.Equal("PROJECT_A", project.GetProperty("default").GetString());
             }
 
             // A preview of a named key, with the scope's values: run at once, given both and the interface.
             var previewPath = $"/api/v1/delivery/flows/{pipelineId:D}/preview?interface=welllogs";
-            var queued = await RanAsync(client, token, previewPath, new { key = "  NORWAY_WELLDB/12359/1 ", values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } });
+            var queued = await RanAsync(client, token, previewPath, new { key = "  PROJECT_A/LOG-0004 ", values = new Dictionary<string, string> { ["logSource"] = "COMPOSITE" } });
             Assert.Equal("delivery-preview", queued.Operation);
             Assert.Equal(flowName, queued.SourceRef);
-            Assert.Equal("NORWAY_WELLDB/12359/1", queued.Argument("key"));
+            Assert.Equal("PROJECT_A/LOG-0004", queued.Argument("key"));
             Assert.Equal("welllogs", queued.Argument("interface"));
-            Assert.Equal("STAT_COMP", JsonDocument.Parse(queued.Argument("values")!).RootElement.GetProperty("logSource").GetString());
+            Assert.Equal("COMPOSITE", JsonDocument.Parse(queued.Argument("values")!).RootElement.GetProperty("logSource").GetString());
 
             // Without a key it previews the scope's first record, and carries no key.
-            var first = await RanAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } });
+            var first = await RanAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = "COMPOSITE" } });
             Assert.Null(first.Argument("key"));
 
             // What the operation would refuse is refused here, before it runs.
             await RefusedAsync(client, token, previewPath, new { key = "x" }, "needs a value for logSource");
             await RefusedAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = " " } }, "needs a value for logSource");
             await RefusedAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = "S", ["region"] = "north" } }, "declares no parameter 'region'");
-            await RefusedAsync(client, token, previewPath, new { key = "NORWAY\nWELLDB", values = new Dictionary<string, string> { ["logSource"] = "S" } }, "control character");
+            await RefusedAsync(client, token, previewPath, new { key = "PROJECT\nA", values = new Dictionary<string, string> { ["logSource"] = "S" } }, "control character");
             await RefusedAsync(client, token, previewPath, new { key = new string('k', ComputeTaskPayload.MaxArgumentLength + 1), values = new Dictionary<string, string> { ["logSource"] = "S" } }, "characters long");
             await RefusedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/preview", new { values = new Dictionary<string, string> { ["logSource"] = "S" } }, "name the one this request is about with ?interface=");
             Assert.Empty(operations.Given);
@@ -172,18 +172,18 @@ public sealed class DeliveryPreviewApiTests
 
             // A read by id takes a reference as a document holds it and reads the record, at its latest version.
             var readPath = $"/api/v1/delivery/flows/{pipelineId:D}/osdu/read?interface=welllogs";
-            var read = await RanAsync(client, token, readPath, new { targetId = " dev:master-data--Wellbore:NO-33-9-C-28-B: " });
+            var read = await RanAsync(client, token, readPath, new { targetId = " dev:master-data--Wellbore:Wellbore-B-2-B: " });
             Assert.Equal("delivery-read", read.Operation);
-            Assert.Equal("dev:master-data--Wellbore:NO-33-9-C-28-B", read.Argument("targetId"));
-            var versioned = await RanAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B:1712345678901234" });
-            Assert.Equal("dev:master-data--Wellbore:NO-33-9-C-28-B", versioned.Argument("targetId"));
+            Assert.Equal("dev:master-data--Wellbore:Wellbore-B-2-B", read.Argument("targetId"));
+            var versioned = await RanAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:Wellbore-B-2-B:1712345678901234" });
+            Assert.Equal("dev:master-data--Wellbore:Wellbore-B-2-B", versioned.Argument("targetId"));
             Assert.Null(versioned.Argument("version"));
 
             // A version to read at rides beside the id, and a record's own read takes one too; a version that is not
             // one is refused before anything runs.
-            var atVersion = await RanAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 1712345678901234L });
+            var atVersion = await RanAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:Wellbore-B-2-B", version = 1712345678901234L });
             Assert.Equal("1712345678901234", atVersion.Argument("version"));
-            await RefusedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 0 }, "is not a record version");
+            await RefusedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:Wellbore-B-2-B", version = 0 }, "is not a record version");
             var recordReadPath = $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/read";
             var recordRead = await RanAsync(client, token, recordReadPath, new { version = 3 });
             Assert.Equal("delivery-read", recordRead.Operation);
@@ -193,7 +193,7 @@ public sealed class DeliveryPreviewApiTests
             await RefusedAsync(client, token, recordReadPath, new { version = -1 }, "is not a record version");
 
             await RefusedAsync(client, token, readPath, new { targetId = "" }, "Name the OSDU id to read");
-            await RefusedAsync(client, token, readPath, new { targetId = "NO 33/9-C-28 B" }, "is not an OSDU record id");
+            await RefusedAsync(client, token, readPath, new { targetId = "Wellbore B-2 B" }, "is not an OSDU record id");
             await RefusedAsync(client, token, readPath, new { targetId = "dev:Wellbore:x" }, "is not an OSDU record id");
             await RefusedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:" + new string('x', 1100) }, "an OSDU id is at most");
             Assert.Empty(operations.Given);

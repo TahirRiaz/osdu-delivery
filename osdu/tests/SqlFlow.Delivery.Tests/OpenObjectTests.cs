@@ -66,8 +66,8 @@ public sealed class OpenObjectTests
     };
 
     /// <summary>
-    /// Recall's own unit spellings beside the curves, as the Recall well log mappings keep them: additional information,
-    /// so a curve without a unit, or a log without curves, holds nothing.
+    /// The well database's own unit spellings beside the curves, as the WellDB well log mappings keep them: additional
+    /// information, so a curve without a unit, or a log without curves, holds nothing.
     /// </summary>
     private const string Originals = """
         Curves:
@@ -76,8 +76,8 @@ public sealed class OpenObjectTests
           $item:
             CurveID: { $from: curve_id }
         ExtensionProperties:
-          Recall:
-            Source: RECALL
+          WellDB:
+            Source: WELLDB
             Project: { $from: project }
             Curves:
               $forEach: curves
@@ -110,7 +110,7 @@ public sealed class OpenObjectTests
 
     private static SourceRecord Log(params (string Id, string? Unit)[] curves) => new()
     {
-        Row = SourceRow.FromStrings(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["name"] = "log-1", ["project"] = "NORWAY_WELLDB" }),
+        Row = SourceRow.FromStrings(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["name"] = "log-1", ["project"] = "PROJECT_A" }),
         Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase)
         {
             ["curves"] = curves.Select(c => SourceRow.FromStrings(new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["curve_id"] = c.Id, ["curve_unit"] = c.Unit })).ToList(),
@@ -145,7 +145,7 @@ public sealed class OpenObjectTests
         Assert.Equal(TemplateVariableShape.Whole, extension.Shape);
         Assert.Null(extension.Inside);
 
-        foreach (var text in new[] { "osdu.data.ExtensionProperties.Recall", "osdu.data.ExtensionProperties.Recall.Curves", "osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit" })
+        foreach (var text in new[] { "osdu.data.ExtensionProperties.WellDB", "osdu.data.ExtensionProperties.WellDB.Curves", "osdu.data.ExtensionProperties.WellDB.Curves[].OriginalUnit" })
         {
             var inside = template.Find(Path(text))!;
             Assert.Equal(text, inside.Path.Text);
@@ -187,9 +187,9 @@ public sealed class OpenObjectTests
         Assert.Equal(
             CanonicalJson.Canonicalize("""
                 {
-                  "Recall": {
-                    "Source": "RECALL",
-                    "Project": "NORWAY_WELLDB",
+                  "WellDB": {
+                    "Source": "WELLDB",
+                    "Project": "PROJECT_A",
                     "Curves": [
                       { "CurveID": "MD", "OriginalUnit": "M" },
                       { "CurveID": "GR", "OriginalUnit": "GAPI" },
@@ -213,7 +213,7 @@ public sealed class OpenObjectTests
 
         // A list the mapping defines and no row fills is written empty where the object holding it is, as anywhere.
         Assert.Equal(
-            CanonicalJson.Canonicalize("""{ "Recall": { "Source": "RECALL", "Project": "NORWAY_WELLDB", "Curves": [] } }"""),
+            CanonicalJson.Canonicalize("""{ "WellDB": { "Source": "WELLDB", "Project": "PROJECT_A", "Curves": [] } }"""),
             CanonicalJson.ToString(result.Document["data"]!["ExtensionProperties"]!));
     }
 
@@ -222,7 +222,7 @@ public sealed class OpenObjectTests
     {
         var mapping = Mapping("""
             ExtensionProperties:
-              Recall:
+              WellDB:
                 Curves:
                   $forEach: curves
                   $item:
@@ -231,7 +231,7 @@ public sealed class OpenObjectTests
             """);
 
         var result = new MappingRenderer(mapping, Schema(), Cache(), Context()).Render(Log(("GR", "GAPI"), ("CALI", null)));
-        Assert.Equal(["osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit: dataset.curves.curve_unit is empty, and the entry is required"], result.Holds);
+        Assert.Equal(["osdu.data.ExtensionProperties.WellDB.Curves[].OriginalUnit: dataset.curves.curve_unit is empty, and the entry is required"], result.Holds);
     }
 
     [Fact]
@@ -240,7 +240,7 @@ public sealed class OpenObjectTests
         var whole = Assert.Single(Errors(Mapping("ExtensionProperties: { $from: project }")));
         Assert.Contains("is one value, and osdu.data.ExtensionProperties is an object the schema does not break into properties; fill the properties inside it instead", whole.Message, StringComparison.Ordinal);
 
-        var literal = Mapping("ExtensionProperties: { $value: { Recall: { Source: RECALL } } }");
+        var literal = Mapping("ExtensionProperties: { $value: { WellDB: { Source: WELLDB } } }");
         Assert.Empty(Errors(literal));
 
         var sealedObject = Assert.Single(Errors(Mapping("Sealed:\n  Note: { $from: project }")));
@@ -250,10 +250,10 @@ public sealed class OpenObjectTests
     [Fact]
     public void What_a_mapping_writes_inside_an_open_object_is_covered_under_it_each_holder_before_what_it_holds()
     {
-        // Recall itself has no entry: it is listed for what it holds, ahead of it, as every holder is.
+        // WellDB itself has no entry: it is listed for what it holds, ahead of it, as every holder is.
         var report = MappingCoverage.Of(Mapping("""
             ExtensionProperties:
-              Recall:
+              WellDB:
                 Curves:
                   $forEach: curves
                   $item:
@@ -261,26 +261,26 @@ public sealed class OpenObjectTests
                     OriginalUnit:
                       $from: curve_unit
                       $required: false
-                Source: RECALL
+                Source: WELLDB
             """), OsduTemplate.From(Schema()));
 
         var inside = report.Variables.SkipWhile(v => v.Target != "osdu.data.ExtensionProperties").ToList();
         Assert.Equal(
             [
                 "osdu.data.ExtensionProperties",
-                "osdu.data.ExtensionProperties.Recall",
-                "osdu.data.ExtensionProperties.Recall.Curves",
-                "osdu.data.ExtensionProperties.Recall.Curves[].CurveID",
-                "osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit",
-                "osdu.data.ExtensionProperties.Recall.Source",
+                "osdu.data.ExtensionProperties.WellDB",
+                "osdu.data.ExtensionProperties.WellDB.Curves",
+                "osdu.data.ExtensionProperties.WellDB.Curves[].CurveID",
+                "osdu.data.ExtensionProperties.WellDB.Curves[].OriginalUnit",
+                "osdu.data.ExtensionProperties.WellDB.Source",
             ],
             inside.Select(v => v.Target).Where(t => t.StartsWith("osdu.data.ExtensionProperties", StringComparison.Ordinal)));
 
         var byTarget = inside.ToDictionary(v => v.Target);
-        Assert.Equal(CoverageState.Always, byTarget["osdu.data.ExtensionProperties.Recall.Source"].State);
-        Assert.True(byTarget["osdu.data.ExtensionProperties.Recall.Source"].Direct);
-        Assert.Equal(CoverageState.Sometimes, byTarget["osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit"].State);
-        Assert.False(byTarget["osdu.data.ExtensionProperties.Recall"].Direct);
+        Assert.Equal(CoverageState.Always, byTarget["osdu.data.ExtensionProperties.WellDB.Source"].State);
+        Assert.True(byTarget["osdu.data.ExtensionProperties.WellDB.Source"].Direct);
+        Assert.Equal(CoverageState.Sometimes, byTarget["osdu.data.ExtensionProperties.WellDB.Curves[].OriginalUnit"].State);
+        Assert.False(byTarget["osdu.data.ExtensionProperties.WellDB"].Direct);
         Assert.NotEqual(CoverageState.Empty, byTarget["osdu.data.ExtensionProperties"].State);
         Assert.DoesNotContain(report.Issues, issue => issue.Target?.StartsWith("osdu.data.ExtensionProperties", StringComparison.Ordinal) == true);
     }
@@ -297,7 +297,7 @@ public sealed class OpenObjectTests
         var refused = Assert.Throws<FlowValidationException>(() => RouteChecks.CheckPreserved(Flow(["Datasets", "ExtensionProperties"]), mapping, "logs.yaml")).Message;
         Assert.StartsWith(
             "logs.yaml: target.protocolOptions.preserveDataKeys carries data.ExtensionProperties over from the record OSDU holds into every update, in place of what the mapping renders, "
-            + "and Logged@1.0.0 writes osdu.data.ExtensionProperties.Recall.Source, osdu.data.ExtensionProperties.Recall.Project, osdu.data.ExtensionProperties.Recall.Curves, ",
+            + "and Logged@1.0.0 writes osdu.data.ExtensionProperties.WellDB.Source, osdu.data.ExtensionProperties.WellDB.Project, osdu.data.ExtensionProperties.WellDB.Curves, ",
             refused,
             StringComparison.Ordinal);
         Assert.EndsWith(
@@ -312,7 +312,7 @@ public sealed class OpenObjectTests
     [Fact]
     public void A_mapping_that_writes_a_preserved_key_whole_is_refused_too()
     {
-        var mapping = Mapping("ExtensionProperties: { $value: { Recall: { Source: RECALL } } }");
+        var mapping = Mapping("ExtensionProperties: { $value: { WellDB: { Source: WELLDB } } }");
         var refused = Assert.Throws<FlowValidationException>(() => RouteChecks.CheckPreserved(Flow(["ExtensionProperties"]), mapping, "logs.yaml")).Message;
         Assert.Contains("Logged@1.0.0 writes osdu.data.ExtensionProperties:", refused, StringComparison.Ordinal);
     }

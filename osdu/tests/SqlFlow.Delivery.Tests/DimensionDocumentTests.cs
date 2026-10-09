@@ -46,7 +46,7 @@ public class DimensionDocumentTests
     {
         var flow = Parse(Head + """
             parameters:
-              country: { default: NO }
+              country: { default: US }
             dimensions:
               - name: CurveMnemonic
                 kind: "osdu:wks:work-product-component--WellLog:*"

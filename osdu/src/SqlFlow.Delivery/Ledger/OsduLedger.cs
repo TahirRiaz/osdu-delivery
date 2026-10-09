@@ -1727,25 +1727,30 @@ public sealed partial class OsduLedger : ILedger
         return rows.Select(ToState).ToList();
     }
 
-    public async Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default)
+    public async Task RecordVerifyAsync(
+        Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, long? activityId = null, CancellationToken ct = default)
     {
         var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         await using var db = Open();
         var entity = await db.DeliveryRecords.FirstOrDefaultAsync(r => r.PartitionId == partition && r.FlowId == flowId && r.DeliveryKey == key.Value, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Record {key} is not in the ledger of flow {flowId:D}.");
+        if (requeue && outcome is VerifyOutcome.Drifted or VerifyOutcome.Missing)
+        {
+            // Reconciling is a redelivery of all of the record, marked by the statement every redelivery marks with: it
+            // forgets what OSDU holds and the source version it was planned under, and asks the flow's next run to plan the
+            // record again, which reads it by key whatever its incremental window holds. Only a record OSDU holds by the
+            // ledger's account is marked; one a run took up since the pass read it is that run's.
+            var observed = observedVersion?.ToString(CultureInfo.InvariantCulture) ?? "none";
+            var expected = entity.TargetVersion?.ToString(CultureInfo.InvariantCulture) ?? "none";
+            var note = $"verify: {StatusText.Of(outcome)} (observed version {observed}, expected {expected}); redelivery requested, the flow's next deliver run sends it again";
+            await RedeliverKeysAsync(db, partition, flowId, [key.Value], RedeliverScope.All, marker: null, deliveredOnly: true, activityId, note, nowUtc, ct).ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+            entity = await db.DeliveryRecords.FirstAsync(r => r.PartitionId == partition && r.FlowId == flowId && r.DeliveryKey == key.Value, ct).ConfigureAwait(false);
+        }
+
         entity.LastVerifiedUtc = nowUtc;
         entity.LastVerifyOutcome = StatusText.Of(outcome);
         entity.UpdatedUtc = nowUtc;
-        if (requeue && outcome is VerifyOutcome.Drifted or VerifyOutcome.Missing)
-        {
-            // Force redelivery of everything we hold: clear the hashes so the next intake sees a change.
-            entity.MetadataHash = null;
-            entity.PayloadHash = null;
-            entity.PayloadModifiedUtc = null;
-            entity.SourceFingerprint = null;
-            entity.LastError = $"verify: {outcome.ToString().ToLowerInvariant()} (observed version {observedVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}, expected {entity.TargetVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}); redelivery queued on next submission";
-        }
-
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 

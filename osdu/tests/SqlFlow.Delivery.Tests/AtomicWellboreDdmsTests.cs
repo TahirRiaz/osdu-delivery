@@ -169,7 +169,7 @@ public sealed class AtomicWellboreDdmsTests
         Assert.Empty(alone.Rows);
 
         var wellbore = new UnitLedger(Unit());
-        var document = FakeOsduPlatform.Record(WellboreId, "osdu:wks:master-data--Wellbore:1.0.0", new JsonObject { ["FacilityName"] = "15/9-F-1" });
+        var document = FakeOsduPlatform.Record(WellboreId, "osdu:wks:master-data--Wellbore:1.0.0", new JsonObject { ["FacilityName"] = "A/1-F-1" });
         Assert.True((await rig.Protocol.DeliverAsync(rig.Work(wellbore, document, null))).Succeeded);
         Assert.Empty(wellbore.Rows);
     }

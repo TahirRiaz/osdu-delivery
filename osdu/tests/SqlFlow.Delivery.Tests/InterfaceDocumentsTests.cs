@@ -214,9 +214,9 @@ public sealed class InterfaceDocumentsTests
         Assert.Null(flow.Interface);
         Assert.Null(flow.AdoptedLedger);
         Assert.Null(flow.RouteReason);
-        Assert.Equal("recall-welllog-03-header-delivery", flow.Label);
-        Assert.Equal("recall-welllog-03-header-delivery", flow.LedgerName);
-        Assert.Equal(FlowId.Of("recall-welllog-03-header-delivery"), flow.Id);
+        Assert.Equal("welldb-welllog-03-header-delivery", flow.Label);
+        Assert.Equal("welldb-welllog-03-header-delivery", flow.LedgerName);
+        Assert.Equal(FlowId.Of("welldb-welllog-03-header-delivery"), flow.Id);
         Assert.Same(flow, source.Interface(null));
         Assert.Empty(source.Names);
         Assert.Equal(new FlowFailWhen(), flow.FailWhen);
@@ -233,17 +233,17 @@ public sealed class InterfaceDocumentsTests
     {
         var source = _loader.ParseSource(Source(Wells + """
               logs:
-                ledger: recall-welllog-03-header-delivery
+                ledger: welldb-welllog-03-header-delivery
                 record: { object: Petrel.ing.WellLog, key: [uwi, log_id] }
                 mapping: WellLog@1.4.0
             """), "petrel.yaml");
 
         var logs = source.Interface("logs");
-        Assert.Equal("recall-welllog-03-header-delivery", logs.AdoptedLedger);
-        Assert.Equal("recall-welllog-03-header-delivery", logs.LedgerName);
+        Assert.Equal("welldb-welllog-03-header-delivery", logs.AdoptedLedger);
+        Assert.Equal("welldb-welllog-03-header-delivery", logs.LedgerName);
         Assert.Equal("petrel/logs", logs.Label);
-        Assert.Equal(FlowId.Of("recall-welllog-03-header-delivery"), logs.Id);
-        Assert.Same(logs, source.ByFlowId(FlowId.Of("recall-welllog-03-header-delivery")));
+        Assert.Equal(FlowId.Of("welldb-welllog-03-header-delivery"), logs.Id);
+        Assert.Same(logs, source.ByFlowId(FlowId.Of("welldb-welllog-03-header-delivery")));
         Assert.Null(source.ByFlowId(FlowId.Of("petrel/logs")));
     }
 

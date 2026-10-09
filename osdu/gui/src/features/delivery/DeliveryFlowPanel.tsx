@@ -178,8 +178,16 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     }
   }, [finishedRemoval, queryClient]);
 
-  // A probe asks the target's info endpoint under the flow's credentials and answers at once, reachable or not.
-  const probeTarget = useMutation({ mutationFn: () => deliveryApi.probe(pipelineId, scope) });
+  // A probe asks the target's info endpoint under the flow's credentials and answers at once, reachable or not. It is
+  // recorded on the audit trail whatever it found (a probe that could not run is a failed entry), so the trail's listings
+  // and its flow list are read again once it settles: the trail opened next shows the probe, not what it cached before.
+  const probeTarget = useMutation({
+    mutationFn: () => deliveryApi.probe(pipelineId, scope),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "activities"] });
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "activity-flows"] });
+    },
+  });
   const releaseAll = useMutation({
     mutationFn: (run: boolean) => deliveryApi.releaseFlow(pipelineId, undefined, scope, run),
     onSuccess: (result) => {

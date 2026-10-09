@@ -203,7 +203,7 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
           <Textarea
             id={`${idPrefix}-values`}
             className="min-h-16 font-mono text-[12px]"
-            placeholder="country=NO"
+            placeholder="country=US"
             value={valuesText}
             onChange={(event) => setValuesText(event.target.value)}
             data-testid="trigger-values"

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Engine.Workflows;
@@ -13,8 +14,43 @@ namespace SqlFlow.Delivery.Engine.Workflows;
 public static class WorkflowContextCheck
 {
     /// <summary>
-    /// What a template shows before any record fills it: every key the contract requires is there, no credential is
-    /// written into the document, and every value that is not a placeholder has the shape the workflow reads.
+    /// The credentials a template writes, whatever workflow it is sent to, with a contract or without one: a value under a key
+    /// the contract marks a credential, and a value under any other key named as a secret
+    /// (<see cref="HeaderRedaction.IsSecretName"/>, the one name test the flow loader and the redactor use), is a single
+    /// <c>{secret:name}</c> placeholder. The placeholder names a reference declared under the route's <c>secrets</c>, is
+    /// resolved only for the request that carries it, and reads <see cref="WorkflowTemplate.Redacted"/> wherever the context
+    /// is kept or shown (the record's step history, the log). A literal would be sent to the Workflow service and kept in the
+    /// ledger as written. A value that does not read as a template is left to <see cref="WorkflowTemplate.Problems"/>.
+    /// </summary>
+    public static IReadOnlyList<string> CheckCredentials(WorkflowContract? contract, JsonObject template, string where)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        var problems = new List<string>();
+        var covered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var key in (contract?.Keys ?? []).Where(k => k.Secret))
+        {
+            covered.Add(key.Path);
+            var node = Find(template, key.Path, out var present);
+            if (present && !IsSecretPlaceholder(node))
+            {
+                problems.Add($"{where}: '{Display(key.Path)}' is a credential ({key.Source}); give it as {{secret:name}} with the reference under secrets, never as a value in the document.");
+            }
+        }
+
+        foreach (var (path, name, node) in Leaves(template, string.Empty, string.Empty))
+        {
+            if (!covered.Contains(path) && HeaderRedaction.IsSecretName(name) && HoldsValue(node) && !IsSecretPlaceholder(node))
+            {
+                problems.Add($"{where}: '{Display(path)}' is named as a secret; give it as {{secret:name}} with the reference under secrets, never as a value in the document.");
+            }
+        }
+
+        return problems;
+    }
+
+    /// <summary>
+    /// What a template shows before any record fills it: every key the contract requires is there, and every value that is
+    /// not a placeholder has the shape the workflow reads. Its credentials are <see cref="CheckCredentials"/>'.
     /// </summary>
     public static IReadOnlyList<string> CheckTemplate(WorkflowContract contract, JsonObject template, bool addsPayload, string where)
     {
@@ -41,15 +77,10 @@ public static class WorkflowContextCheck
                 continue;
             }
 
-            var placeholders = node is JsonValue value && value.TryGetValue<string>(out var text) ? WorkflowTemplate.Parse(text) : [];
-            if (key.Secret)
+            // A credential's rule is CheckCredentials', which every template goes through; a value that does not read as a
+            // template is reported by WorkflowTemplate.Problems, and its shape says nothing until it reads.
+            if (key.Secret || !TryParse(node, out var placeholders))
             {
-                var single = node is JsonValue v && v.TryGetValue<string>(out var t) && placeholders.Count == 1 && placeholders[0].Length == t.Length;
-                if (!single || placeholders[0].Name != "secret")
-                {
-                    problems.Add($"{where}: '{Display(key.Path)}' is a credential ({key.Source}); give it as {{secret:name}} with the reference under secrets, never as a value in the document.");
-                }
-
                 continue;
             }
 
@@ -201,6 +232,75 @@ public static class WorkflowContextCheck
     }
 
     private static string Display(string path) => path.Replace('/', '.');
+
+    /// <summary>The placeholders a value holds (none for a value that is not text), or false when its text does not read as a template.</summary>
+    private static bool TryParse(JsonNode? node, out IReadOnlyList<Placeholder> placeholders)
+    {
+        placeholders = [];
+        if (node is not JsonValue value || !value.TryGetValue<string>(out var text))
+        {
+            return true;
+        }
+
+        try
+        {
+            placeholders = WorkflowTemplate.Parse(text);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Whether <paramref name="node"/> is text that is exactly one <c>{secret:name}</c> placeholder; text that does not read is not one.</summary>
+    private static bool IsSecretPlaceholder(JsonNode? node)
+        => node is JsonValue value && value.TryGetValue<string>(out var text)
+           && TryParse(node, out var placeholders)
+           && placeholders.Count == 1 && placeholders[0].Length == text.Length && placeholders[0].Name == "secret";
+
+    /// <summary>Whether a leaf holds a value that could be a credential: text that is not empty and reads as a template, a number or a flag; null is none.</summary>
+    private static bool HoldsValue(JsonNode? node)
+        => node switch
+        {
+            null => false,
+            JsonValue value when value.TryGetValue<string>(out var text) => text.Length > 0 && TryParse(node, out _),
+            _ => true,
+        };
+
+    /// <summary>
+    /// Every value of a template that is not an object or a list, with its <c>/</c>-separated path and the key it is
+    /// written under; an item of a list is written under the list's key, so a list of secrets is read as secrets.
+    /// </summary>
+    private static IEnumerable<(string Path, string Name, JsonNode? Node)> Leaves(JsonNode? node, string path, string name)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (key, value) in obj)
+                {
+                    foreach (var leaf in Leaves(value, path.Length == 0 ? key : path + "/" + key, key))
+                    {
+                        yield return leaf;
+                    }
+                }
+
+                break;
+            case JsonArray array:
+                for (var i = 0; i < array.Count; i++)
+                {
+                    foreach (var leaf in Leaves(array[i], path + "[" + i.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]", name))
+                    {
+                        yield return leaf;
+                    }
+                }
+
+                break;
+            default:
+                yield return (path, name, node);
+                break;
+        }
+    }
 
     private static string Describe(ContextValueType type) => type switch
     {

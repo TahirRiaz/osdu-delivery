@@ -79,9 +79,10 @@ public sealed class RenderResolver
         }
 
         // Where a record goes and under whose access and legal terms belongs to the kind, not to any one mapping: a
-        // parameter the kind owns that the flow leaves out takes the reference the kind names for it. A flow that names
-        // its own value still wins, so a document can pin a destination when it has to.
-        var supplied = DeliveryDestination.Supplied(flow.Render.Parameters, mapping.Parameters.Keys, flow.Partition);
+        // parameter the kind owns that the flow leaves out takes the value the kind gives it, the partition the flow is
+        // bound to (its partitions' or its header's, the one its requests carry and its cache is read in) or the reference
+        // the kind names. A flow that names its own value still wins, so a document can pin a destination when it has to.
+        var supplied = DeliveryDestination.Supplied(flow, mapping.Parameters.Keys);
 
         // What reaches a mapping from outside it is deployment configuration, not mapping content: the partition, the
         // legal tag and the access groups of an estate all differ between test and production while the mapping stays the

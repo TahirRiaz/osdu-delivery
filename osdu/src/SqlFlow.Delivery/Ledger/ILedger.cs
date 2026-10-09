@@ -1521,14 +1521,18 @@ public sealed record ActivityRecord
 
     public required string FlowName { get; init; }
 
-    /// <summary>deliver, plan, intake, drain, verify, replan, submit, release, redeliver, delete, poll, notification.</summary>
+    /// <summary>
+    /// What was done. The operations of a run: deliver (a replan records one too), intake, drain, verify, sync, undo, reverse,
+    /// delete-ledger. The interventions: release, redeliver, rerender, delete, restore-previous, purge. And probe (the target
+    /// probe), remove-dimension and inventory-remove. A plan run records none: it changes nothing.
+    /// </summary>
     public required string Kind { get; init; }
 
     /// <summary>
     /// Who acted. For a run, its requester as SQLFlow records it: the token's subject for a run a person queued,
     /// schedule:&lt;name&gt; for one a schedule fired, cli:&lt;user&gt;@&lt;machine&gt; for a direct CLI run, unknown
-    /// when none was recorded. For an intervention: user:&lt;subject&gt; through the control plane, cli:&lt;user&gt;
-    /// from the command line. service:schedule for the scheduled target probe.
+    /// when none was recorded. For an intervention: user:&lt;subject&gt; through the control plane,
+    /// cli:&lt;user&gt;@&lt;machine&gt; from the command line. service:schedule for the scheduled target probe.
     /// </summary>
     public required string Actor { get; init; }
 
@@ -1546,7 +1550,12 @@ public sealed record ActivityRecord
     /// <summary>Set when the action targeted one record.</summary>
     public Guid? DeliveryKey { get; init; }
 
-    /// <summary>The platform run the activity ran as, when it was a run (deliver, plan, verify, replan).</summary>
+    /// <summary>
+    /// The platform run the activity ran in, when it ran in one: every operation of a run, an intervention a run's payload
+    /// asked for (a redelivery or bringing records up to date before a deliver), an inventory removal. Null for an
+    /// intervention through the control plane, the GUI or the command line, which no run carries. A plan run records no
+    /// activity, so no activity names one.
+    /// </summary>
     public Guid? RunId { get; init; }
 
     public string? Summary { get; init; }
@@ -1787,8 +1796,9 @@ public interface ILedger
     Task ReconcileInventoryAsync(Guid flowId, int inventoryId, IReadOnlyList<string> owners, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// The ids a ledger of the partition expects that the inventory's read did not list, at most <paramref name="max"/>; with
-    /// <paramref name="typePrefix"/> (an inventory covering its entity type whole), the ledgers' ids of the type too.
+    /// The ids a ledger of the partition expects that the inventory's read did not list, at most <paramref name="max"/>, the
+    /// least recently asked of storage first; with <paramref name="typePrefix"/> (an inventory covering its entity type whole),
+    /// the ledgers' ids of the type too.
     /// </summary>
     Task<IReadOnlyList<InventoryCandidate>> InventoryCandidatesAsync(Guid flowId, int inventoryId, string? typePrefix, int max, CancellationToken ct = default);
 
@@ -1922,6 +1932,47 @@ public interface ILedger
     /// </summary>
     Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, IReadOnlyCollection<Guid> except, DateTime nowUtc, int max, CancellationToken ct = default);
 
+    /// <summary>
+    /// The submissions of the flow no run may be working on any more, other than those <paramref name="except"/> names, at
+    /// most <paramref name="max"/>: first those left unsettled (received, planned or running) with no lease that has not run
+    /// out holding any of their work, the oldest first; then the settled ones still holding due records
+    /// (<see cref="ListSettledSubmissionsWithDueWorkAsync"/>). Whether a run still works on one is not decided here: taking
+    /// it over is what answers that (<see cref="TakeOverSubmissionAsync"/>). A caller walking all of them asks again naming
+    /// the ones it took.
+    /// </summary>
+    Task<IReadOnlyList<SubmissionState>> ListUnattendedSubmissionsAsync(Guid flowId, IReadOnlyCollection<Guid> except, DateTime nowUtc, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether a lease of the flow that has not run out at <paramref name="nowUtc"/> holds work of the submission: one of its
+    /// batches, or one of its records under a lease of the whole flow. Such a lease is a worker sending it now.
+    /// </summary>
+    Task<bool> IsSubmissionLeasedAsync(Guid flowId, Guid submissionId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// The submissions of the flow that platform run <paramref name="runId"/> registered and that are not settled yet
+    /// (received, planned or running), the newest first: what an attempt of the run that was interrupted left, which the
+    /// run's next attempt resumes rather than registering another.
+    /// </summary>
+    Task<IReadOnlyList<SubmissionState>> ListUnsettledSubmissionsOfRunAsync(Guid flowId, Guid runId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Holds submission <paramref name="submissionId"/> for the run working on it, until the hold is disposed: a shared,
+    /// session-owned application lock on the module's database, on a connection of its own. Any number of runs hold one
+    /// submission at once (a fan-out's coordinator and its members do); a process that stops frees its holds with its
+    /// connections. The hold waits a short while for a run taking the submission over to finish taking it, and is refused,
+    /// naming the submission, when one does not.
+    /// </summary>
+    /// <exception cref="DeliveryException">The submission could not be held in time.</exception>
+    Task<SubmissionHold> HoldSubmissionAsync(Guid submissionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Takes over submission <paramref name="submissionId"/> when no run holds it any more (<see cref="HoldSubmissionAsync"/>):
+    /// the run that registered it, its fan-out members and any run naming it have all ended. The answer is a hold of the
+    /// caller's own, as a run working on the submission has; null when a run still holds it, which is then left to that run.
+    /// Two runs taking one submission over never both get it while either holds it.
+    /// </summary>
+    Task<SubmissionHold?> TakeOverSubmissionAsync(Guid submissionId, CancellationToken ct = default);
+
     /// <summary>Registers a work batch the intake wrote (idempotent on submission and index).</summary>
     Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default);
 
@@ -2047,7 +2098,17 @@ public interface ILedger
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
 
-    Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default);
+    /// <summary>
+    /// Records what the drift pass found of one delivered record. With <paramref name="requeue"/> (the flow's
+    /// <c>verify.reconcile</c>), a record found drifted or missing that OSDU still holds by the ledger's account is marked
+    /// for redelivery of all of it by the one statement every redelivery marks records with
+    /// (<see cref="ForceRedeliverAsync(Guid, IEnumerable{DeliveryKey}?, RedeliverSelection, long?, DateTime, CancellationToken)"/>):
+    /// what OSDU holds and the source version it was planned under are forgotten, and the flow's next deliver run plans it
+    /// again whatever its incremental window reads, named under the verify's activity <paramref name="activityId"/> when
+    /// given. The mark is written before the outcome, so a write that fails between the two leaves the record queued and
+    /// verified again by the next pass, never verified and not queued.
+    /// </summary>
+    Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, long? activityId = null, CancellationToken ct = default);
 
     /// <summary>
     /// Releases held, failed, deleted or reverted records: those with a pending document go back to pending for the worker,

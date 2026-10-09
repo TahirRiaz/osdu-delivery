@@ -35,7 +35,7 @@ public sealed class DeliveryExplorerDimensionApiTests
     private const string Country = "data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    /// <summary>The recall estate's Wellbore dimension, as the builder sends it, under a name of this test's own.</summary>
+    /// <summary>The well database estate's Wellbore dimension, as the builder sends it, under a name of this test's own.</summary>
     private static object Draft(string name, string kind = WellLog, string? path = "data.WellboreID", object[]? attributes = null, object[]? clean = null) => new
     {
         name,
@@ -61,10 +61,10 @@ public sealed class DeliveryExplorerDimensionApiTests
     /// <summary>An example as the operation answers it: the key's row as a build would make it.</summary>
     private const string Example = """
         {"connection":"c","partition":"p","correlationId":"x","answeredUtc":"2026-10-03T00:00:00Z","answer":{
-          "key":"dev:master-data--Wellbore:W1:","label":"NO 16/2-9 S","labelFrom":"dev:master-data--Wellbore:W1","problem":null,
-          "value":"NO 16/2-9 S","leftOut":null,"note":null,
-          "attributes":[{"name":"Country","value":"Norway","from":"dev:master-data--GeoPoliticalEntity:Norway","records":null},
-                        {"name":"Source","value":"Recall","from":"Recall","records":2}],
+          "key":"dev:master-data--Wellbore:W1:","label":"WB B/2-9 S","labelFrom":"dev:master-data--Wellbore:W1","problem":null,
+          "value":"WB B/2-9 S","leftOut":null,"note":null,
+          "attributes":[{"name":"Country","value":"United States","from":"dev:master-data--GeoPoliticalEntity:US","records":null},
+                        {"name":"Source","value":"WellDB","from":"WellDB","records":2}],
           "records":3,"filter":"data.WellboreID.keyword:\"dev:master-data--Wellbore:W1:\"","notes":["one note"]}}
         """;
 
@@ -189,8 +189,8 @@ public sealed class DeliveryExplorerDimensionApiTests
 
             // The example row is the operation's answer, as the builder shows it.
             var example = composed.GetProperty("example");
-            Assert.Equal(("NO 16/2-9 S", 3), (example.GetProperty("value").GetString(), example.GetProperty("records").GetInt32()));
-            Assert.Equal(["Norway", "Recall"], example.GetProperty("attributes").EnumerateArray().Select(a => a.GetProperty("value").GetString()));
+            Assert.Equal(("WB B/2-9 S", 3), (example.GetProperty("value").GetString(), example.GetProperty("records").GetInt32()));
+            Assert.Equal(["United States", "WellDB"], example.GetProperty("attributes").EnumerateArray().Select(a => a.GetProperty("value").GetString()));
             Assert.Equal(JsonValueKind.Null, composed.GetProperty("exampleProblem").ValueKind);
 
             // The operation was given the item exactly as written, the key, and how the key and the collected path are indexed,
@@ -352,7 +352,7 @@ public sealed class DeliveryExplorerDimensionApiTests
             using (var read = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/keys", new
             {
                 kind = WellLog,
-                query = " data.Source:\"Recall\" ",
+                query = " data.Source:\"WellDB\" ",
                 path = " data.WellboreID ",
             }, estate.Headed))
             {
@@ -362,7 +362,7 @@ public sealed class DeliveryExplorerDimensionApiTests
             var ran = operations.Last();
             Assert.Equal((ExploreOperation.DimensionKeysAction, estate.ConnectionFlow), (ran.Argument(ExploreOperation.ActionArgument), ran.SourceRef));
             var request = JsonSerializer.Deserialize<DimensionKeysRequest>(LongArgument.Read(ran, ExploreOperation.KeysArgument)!, ExploreOperation.BuilderJson)!;
-            Assert.Equal((WellLog, "data.Source:\"Recall\"", "data.WellboreID"), (request.Kind, request.Query, request.Path));
+            Assert.Equal((WellLog, "data.Source:\"WellDB\"", "data.WellboreID"), (request.Kind, request.Query, request.Path));
             Assert.Equal(new DimensionFieldWire("data.WellboreID", "text", null), request.KeyField);
             Assert.False(request.KeyFieldGuessed);
 

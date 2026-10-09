@@ -33,8 +33,8 @@ public sealed class DeliveryModuleDatabaseTests
     private static readonly DateTime Now = new(2026, 9, 18, 9, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The mapping documents a copy of the sample estate holds, which is what a reconciliation of it writes: the Recall
-    /// well log mapping, and the wellbore fixture mapping the copy puts beside it (<see cref="SampleEstate.CopyTo"/>).
+    /// The mapping documents a copy of the sample estate holds, which is what a reconciliation of it writes: the well
+    /// database's well log mapping, and the wellbore fixture mapping the copy puts beside it (<see cref="SampleEstate.CopyTo"/>).
     /// </summary>
     private static readonly string[] SampleMappings = ["WellLog@1.4.0", SampleEstate.WellboreMapping];
 

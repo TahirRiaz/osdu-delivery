@@ -54,10 +54,10 @@ public sealed class CachedReferenceTests : IDisposable
         }
 
         return new ReferenceType(
-            "RecallUnitAliases",
+            "SourceUnitAliases",
             "reference-data--ExternalUnitOfMeasure",
             rows.Select(r => ReferenceItem.FromText(
-                $"dev:reference-data--ExternalUnitOfMeasure:Recall.{r.Code}",
+                $"dev:reference-data--ExternalUnitOfMeasure:WellDB.{r.Code}",
                 new Dictionary<string, string> { ["Code"] = r.Code, ["UnitOfMeasureID"] = r.Unit })));
     }
 
@@ -65,7 +65,7 @@ public sealed class CachedReferenceTests : IDisposable
 
     private const string ThroughAliases = """
           Unit:
-            $cache: RecallUnitAliases.UnitOfMeasureID
+            $cache: SourceUnitAliases.UnitOfMeasureID
             $findBy: Code = unit
         """;
 
@@ -90,8 +90,8 @@ public sealed class CachedReferenceTests : IDisposable
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", Unit(metre));
 
         // What found the alias, what it gave, and the unit record the reference names are all dependencies of the record.
-        Assert.Contains(metre.CacheUsages, u => u.TypeName == "RecallUnitAliases" && u.Kind == CacheUsageKind.Match && u.Path == "Code" && u.Value == "M");
-        Assert.Contains(metre.CacheUsages, u => u.TypeName == "RecallUnitAliases" && u.Kind == CacheUsageKind.Value && u.Path == "UnitOfMeasureID");
+        Assert.Contains(metre.CacheUsages, u => u.TypeName == "SourceUnitAliases" && u.Kind == CacheUsageKind.Match && u.Path == "Code" && u.Value == "M");
+        Assert.Contains(metre.CacheUsages, u => u.TypeName == "SourceUnitAliases" && u.Kind == CacheUsageKind.Value && u.Path == "UnitOfMeasureID");
         Assert.Contains(new CacheUsage("UnitOfMeasure", "dev:reference-data--UnitOfMeasure:m", "id", "dev:reference-data--UnitOfMeasure:m", CacheUsageKind.Match), metre.CacheUsages);
 
         // An id cached without the colon that separates a version is written with it, as a relationship takes it.
@@ -103,7 +103,7 @@ public sealed class CachedReferenceTests : IDisposable
     {
         const string Optional = """
               Unit:
-                $cache: RecallUnitAliases.UnitOfMeasureID
+                $cache: SourceUnitAliases.UnitOfMeasureID
                 $findBy: Code = unit
                 $required: false
             """;
@@ -112,7 +112,7 @@ public sealed class CachedReferenceTests : IDisposable
         var missing = renderer.Render(Record("GAPI"));
         Assert.True(missing.IsHeld);
         Assert.Contains(
-            "osdu.data.Unit: RecallUnitAliases 'dev:reference-data--ExternalUnitOfMeasure:Recall.GAPI' names dev:reference-data--UnitOfMeasure:gAPI at 'UnitOfMeasureID', and version refs-1 of the cache of partition 'dev' holds no such reference-data--UnitOfMeasure record in UnitOfMeasure, so the reference would point at nothing",
+            "osdu.data.Unit: SourceUnitAliases 'dev:reference-data--ExternalUnitOfMeasure:WellDB.GAPI' names dev:reference-data--UnitOfMeasure:gAPI at 'UnitOfMeasureID', and version refs-1 of the cache of partition 'dev' holds no such reference-data--UnitOfMeasure record in UnitOfMeasure, so the reference would point at nothing",
             Assert.Single(missing.Holds),
             StringComparison.Ordinal);
 
@@ -136,7 +136,7 @@ public sealed class CachedReferenceTests : IDisposable
 
         var issues = Check(Cache(Units(), Aliases()));
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Target == "osdu.data.Unit" && i.Message.Contains(
-            "writes 'UnitOfMeasureID' of RecallUnitAliases to osdu.data.Unit, which points to reference-data--UnitOfMeasure, and 1 of the 5 value(s) it holds in cache version 'refs-1' are not OSDU record ids: 'not an id'",
+            "writes 'UnitOfMeasureID' of SourceUnitAliases to osdu.data.Unit, which points to reference-data--UnitOfMeasure, and 1 of the 5 value(s) it holds in cache version 'refs-1' are not OSDU record ids: 'not an id'",
             StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains(
             "1 of the ids it holds in cache version 'refs-1' name records of another entity type (reference-data--LogCurveBusinessValue): 'dev:reference-data--LogCurveBusinessValue:High:'",
@@ -206,13 +206,13 @@ public sealed class CachedReferenceTests : IDisposable
     [Fact]
     public void The_translation_example_in_the_documents_passes_the_gate_and_renders_the_unit_it_translates_to()
     {
-        // A Recall unit spelling, translated by OSDU's own ExternalUnitOfMeasure records.
+        // A well database unit spelling, translated by OSDU's own ExternalUnitOfMeasure records.
         var cache = Cache(Units(), Aliases(clean: true));
         Assert.Empty(Preflight.Check(TestSchema.Mapping(ThroughAliases), TestSchema.Build(), cache, TestSchema.Context(), sourceColumns: null));
 
         var key = DeliveryKey.Derive("test", ["well-1"]).Value.ToString("N");
         RenderedRecord.AssertIs(
-            $$$"""{"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"well-1","Depth":1,"Unit":"dev:reference-data--UnitOfMeasure:m:"}}""",
+            $$$"""{"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["US"]},"data":{"Name":"well-1","Depth":1,"Unit":"dev:reference-data--UnitOfMeasure:m:"}}""",
             Renderer(cache).Render(Record("M")));
     }
 

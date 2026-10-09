@@ -59,10 +59,10 @@ public sealed class DeliveryInterfacesApiTests
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
-                record: { object: OsduData.arc.Wellbore, key: [facility_name] }
+                record: { object: OsduData.silver.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
+                record: { object: OsduData.silver.WellLog, key: [source_project, log_id] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
             """;

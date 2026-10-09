@@ -21,7 +21,7 @@ public sealed class CoalesceTests
 
     /// <summary>The units a capture of the partition found (m, ft), and a lookup table translating a source's spellings.</summary>
     private static ReferenceSnapshot Cache() => new("refs-1", T0, TestSchema.References().Types.Append(
-        LookupCacheTests.Pairs("RecallUnits", ("FEET", "ft"), ("PSIA", "psia"))));
+        LookupCacheTests.Pairs("UnitAlias", ("FEET", "ft"), ("PSIA", "psia"))));
 
     private static MappingRenderer Renderer(string entries, ReferenceSnapshot? cache = null)
         => new(TestSchema.Mapping(entries), TestSchema.Build(), cache ?? Cache(), TestSchema.Context());
@@ -47,12 +47,12 @@ public sealed class CoalesceTests
                 $findBy: Code = unit
               - $from: unit
                 $modifiers:
-                  - replace: $cache.RecallUnits
+                  - replace: $cache.UnitAlias
                   - ref
               - $from: unit
                 $unverified: true
                 $modifiers:
-                  - replace: $cache.RecallUnits
+                  - replace: $cache.UnitAlias
                   - ref
         """;
 
@@ -187,7 +187,7 @@ public sealed class CoalesceTests
                     $findBy: Code = unit
                   - $from: unit
                     $modifiers:
-                      - replace: $cache.RecallUnits
+                      - replace: $cache.UnitAlias
                       - ref
             """).Render(Record(("unit", "PSIA")));
 

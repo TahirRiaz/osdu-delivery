@@ -46,8 +46,8 @@ public enum SkipTier
     Approval,
 
     /// <summary>
-    /// The drop carries the row (or its payload files) as last modified before the version the ledger already holds,
-    /// delivered or queued: a replayed or late drop, which must never take OSDU back to an earlier version.
+    /// The row the run reads (or its payload files) is last modified before the version the ledger already holds,
+    /// delivered or queued: a replayed or late row, which must never take OSDU back to an earlier version.
     /// </summary>
     Stale,
 }
@@ -59,14 +59,14 @@ public sealed record ChangeDecision(PlannedAction Action, SkipTier SkipTier, boo
 
 /// <summary>
 /// The per-record gates (design.md section 6.6) and the two independently decided hashes (section 6.3). Pure: given
-/// what the ledger holds and what the drop presents, decide what to send.
+/// what the ledger holds and what the row the run reads presents, decide what to send.
 /// </summary>
 public static class ChangeDetector
 {
     /// <summary>
     /// Tier 1: can the record be skipped without rendering? True when the ledger holds a delivered record whose
     /// source version (the fingerprint, or the last-modified moment), payload hash and render context all match what
-    /// the drop presents. Pass the <see cref="Expected"/> state, so work already queued counts as held.
+    /// the row the run reads presents. Pass the <see cref="Expected"/> state, so work already queued counts as held.
     /// </summary>
     public static bool CanSkipWithoutRender(RecordState? existing, SourceVersion source, string? payloadHash, string renderContext, FlowChange change)
     {
@@ -181,7 +181,7 @@ public static class ChangeDetector
     /// <summary>
     /// What OSDU will hold for the record once the work already queued for it lands: the record as it is when nothing
     /// is queued, else its delivered state with the queued document, payload and source version in their place. A
-    /// drop that brings exactly what is queued changes nothing; one that brings something else replaces the queue.
+    /// row that brings exactly what is queued changes nothing; one that brings something else replaces the queue.
     /// </summary>
     public static RecordState? Expected(RecordState? existing)
     {
@@ -211,8 +211,8 @@ public static class ChangeDetector
         => existing is null ? null : Latest(existing.PayloadModifiedUtc, existing is { HasPendingWork: true, PendingPayload: true } ? existing.PendingPayloadModifiedUtc : null);
 
     /// <summary>
-    /// Whether a blocked record (held, failed, deleted or reverted, and not released) stays blocked for the version the drop
-    /// carries. It does until the source moves: past the moment it was left at when the flow orders its rows by a
+    /// Whether a blocked record (held, failed, deleted or reverted, and not released) stays blocked for the version the row
+    /// the run reads carries. It does until the source moves: past the moment it was left at when the flow orders its rows by a
     /// last-modified column, to a different fingerprint otherwise. A row that says nothing about its version, or a
     /// record left at no known version under a fingerprint flow, needs a release.
     /// </summary>

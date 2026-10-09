@@ -24,7 +24,7 @@ namespace SqlFlow.Delivery.Tests;
 /// </summary>
 public class RecordExplorerTests
 {
-    private const string Wellbore = "dev:master-data--Wellbore:NO-33-9-C-28-B";
+    private const string Wellbore = "dev:master-data--Wellbore:WB-C-3-C-28-B";
 
     private static ExplorerReading Read(string? text, string? kind = null, bool lucene = false)
         => RecordExplorer.Interpret(new ExplorerSearch { Text = text, Kind = kind, Lucene = lucene }, "dev");
@@ -33,7 +33,7 @@ public class RecordExplorerTests
     public void Nothing_typed_is_every_record_and_a_lucene_query_goes_as_written()
     {
         Assert.Equal(new ExplorerReading("everything", null), Read("  "));
-        Assert.Equal(new ExplorerReading("lucene", "data.FacilityName:\"NO 33*\""), Read(" data.FacilityName:\"NO 33*\" ", lucene: true));
+        Assert.Equal(new ExplorerReading("lucene", "data.FacilityName:\"WB C*\""), Read(" data.FacilityName:\"WB C*\" ", lucene: true));
     }
 
     [Fact]
@@ -43,32 +43,32 @@ public class RecordExplorerTests
 
         Assert.Equal("id", reading.Reading);
         Assert.Equal(
-            "id:\"dev:master-data--Wellbore:NO-33-9-C-28-B\" OR id:dev\\:master\\-data\\-\\-Wellbore\\:NO\\-33\\-9\\-C\\-28\\-B* OR id:dev\\:*\\:NO\\-33\\-9\\-C\\-28\\-B",
+            "id:\"dev:master-data--Wellbore:WB-C-3-C-28-B\" OR id:dev\\:master\\-data\\-\\-Wellbore\\:WB\\-C\\-3\\-C\\-28\\-B* OR id:dev\\:*\\:WB\\-C\\-3\\-C\\-28\\-B",
             reading.Query);
-        Assert.Equal("id:\"dev:master-data--Wellbore:NO-33-9-C-28-B\" OR id:dev\\:master\\-data\\-\\-Wellbore\\:NO\\-33\\-9\\-C\\-28\\-B*", reading.Plainer);
+        Assert.Equal("id:\"dev:master-data--Wellbore:WB-C-3-C-28-B\" OR id:dev\\:master\\-data\\-\\-Wellbore\\:WB\\-C\\-3\\-C\\-28\\-B*", reading.Plainer);
         Assert.Equal("the same unique part under another type", reading.Dropped);
     }
 
     [Fact]
     public void The_start_of_an_id_finds_the_ids_that_start_with_it_in_the_partition_when_it_starts_at_its_type()
     {
-        Assert.Equal(new ExplorerReading("idPrefix", "id:dev\\:master\\-data\\-\\-Wellbore\\:NO\\-33*"), Read("master-data--Wellbore:NO-33"));
+        Assert.Equal(new ExplorerReading("idPrefix", "id:dev\\:master\\-data\\-\\-Wellbore\\:WB\\-C*"), Read("master-data--Wellbore:WB-C"));
         Assert.Equal(new ExplorerReading("idPrefix", "id:test\\:work\\-product\\-component\\-\\-WellLog\\:*"), Read("test:work-product-component--WellLog:"));
     }
 
     [Fact]
     public void Text_is_a_phrase_and_one_word_in_a_kind_of_one_type_may_also_be_the_end_of_an_id_of_it()
     {
-        Assert.Equal(new ExplorerReading("text", "\"NO 33/9-C-28 B\""), Read("NO 33/9-C-28 B", "*:*:master-data--Wellbore:*"));
+        Assert.Equal(new ExplorerReading("text", "\"WB C/3-C-28 B\""), Read("WB C/3-C-28 B", "*:*:master-data--Wellbore:*"));
 
-        var reading = Read("NO-33-9-C-28-B", "*:*:master-data--Wellbore:*");
+        var reading = Read("WB-C-3-C-28-B", "*:*:master-data--Wellbore:*");
         Assert.Equal(
-            "\"NO-33-9-C-28-B\" OR id:\"dev:master-data--Wellbore:NO-33-9-C-28-B\" OR id:dev\\:master\\-data\\-\\-Wellbore\\:NO\\-33\\-9\\-C\\-28\\-B*",
+            "\"WB-C-3-C-28-B\" OR id:\"dev:master-data--Wellbore:WB-C-3-C-28-B\" OR id:dev\\:master\\-data\\-\\-Wellbore\\:WB\\-C\\-3\\-C\\-28\\-B*",
             reading.Query);
-        Assert.Equal("\"NO-33-9-C-28-B\"", reading.Plainer);
+        Assert.Equal("\"WB-C-3-C-28-B\"", reading.Plainer);
 
         // In every kind, a word is a phrase alone; a minted unique part is looked for at the end of any id of the partition.
-        Assert.Equal(new ExplorerReading("text", "\"Gullfaks\""), Read("Gullfaks"));
+        Assert.Equal(new ExplorerReading("text", "\"FieldA\""), Read("FieldA"));
         var minted = Read("26c5ab12-4f1e-4d2a-9b7e-0c1d2e3f4a5b");
         Assert.Equal("\"26c5ab12-4f1e-4d2a-9b7e-0c1d2e3f4a5b\" OR id:dev\\:*\\:26c5ab12\\-4f1e\\-4d2a\\-9b7e\\-0c1d2e3f4a5b*", minted.Query);
         Assert.Equal("\"26c5ab12-4f1e-4d2a-9b7e-0c1d2e3f4a5b\"", minted.Plainer);
@@ -94,13 +94,13 @@ public class RecordExplorerTests
         var filters = new[]
         {
             new ExplorerFilter { Path = "data.FacilityTypeID", Value = "dev:reference-data--FacilityType:Wellbore:" },
-            new ExplorerFilter { Path = "legal.legaltags", Index = OsduFieldIndex.Keyword, Value = "dev-equinor-private" },
+            new ExplorerFilter { Path = "legal.legaltags", Index = OsduFieldIndex.Keyword, Value = "dev-osdu-private-legal" },
         };
 
         Assert.Equal(
-            "(\"NO 33\") AND data.FacilityTypeID.keyword:\"dev:reference-data--FacilityType:Wellbore:\" AND legal.legaltags:\"dev-equinor-private\"",
-            RecordExplorer.Compose("\"NO 33\"", filters));
-        Assert.Equal("legal.legaltags:\"dev-equinor-private\"", RecordExplorer.Compose(null, filters[1..]));
+            "(\"WB C\") AND data.FacilityTypeID.keyword:\"dev:reference-data--FacilityType:Wellbore:\" AND legal.legaltags:\"dev-osdu-private-legal\"",
+            RecordExplorer.Compose("\"WB C\"", filters));
+        Assert.Equal("legal.legaltags:\"dev-osdu-private-legal\"", RecordExplorer.Compose(null, filters[1..]));
         Assert.Null(RecordExplorer.Compose(null, []));
     }
 
@@ -125,7 +125,7 @@ public class RecordExplorerTests
     {
         var search = new ExplorerSearch
         {
-            Text = "NO 33",
+            Text = "WB C",
             Kind = "*:*:master-data--Wellbore:*",
             Filters = [new ExplorerFilter { Path = "acl.viewers", Index = OsduFieldIndex.Keyword, Value = "data.default.viewers@dev.dataservices.energy" }],
             Sort = ExplorerSort.Modified,
@@ -155,7 +155,7 @@ public class RecordExplorerTests
                     ["version"] = 1712345678901234,
                     ["modifyTime"] = "2026-09-01T10:00:00.000Z",
                     ["modifyUser"] = "loader@dev",
-                    ["data"] = new JsonObject { ["FacilityName"] = "NO 33/9-C-28 B", ["Name"] = "not this one" },
+                    ["data"] = new JsonObject { ["FacilityName"] = "WB C/3-C-28 B", ["Name"] = "not this one" },
                 },
                 new JsonObject { ["id"] = "dev:reference-data--UnitOfMeasure:m", ["kind"] = "osdu:wks:reference-data--UnitOfMeasure:1.0.0", ["data.Code"] = "m" },
                 new JsonObject { ["kind"] = "osdu:wks:master-data--Wellbore:1.1.0" }),
@@ -167,7 +167,7 @@ public class RecordExplorerTests
         {
             var page = await explorer.SearchAsync(new ExplorerSearch
             {
-                Text = "NO 33",
+                Text = "WB C",
                 Kind = "*:*:master-data--Wellbore:*",
                 Sort = ExplorerSort.Modified,
                 Offset = 100,
@@ -175,17 +175,17 @@ public class RecordExplorerTests
                 Facet = new ExplorerField { Path = "data.FacilityTypeID" },
             }, CancellationToken.None);
 
-            Assert.Equal(("text", "\"NO 33\"", 1234567L, 100), (page.Reading, page.Query, page.Total, page.Offset));
+            Assert.Equal(("text", "\"WB C\"", 1234567L, 100), (page.Reading, page.Query, page.Total, page.Offset));
             Assert.Null(page.Refusal);
             Assert.Empty(page.Notes);
             Assert.Equal(2, page.Hits.Count);
-            Assert.Equal(new ExplorerHit(Wellbore, "osdu:wks:master-data--Wellbore:1.1.0", 1712345678901234, "NO 33/9-C-28 B", "data.FacilityName", null, null, "2026-09-01T10:00:00.000Z", "loader@dev"), page.Hits[0]);
+            Assert.Equal(new ExplorerHit(Wellbore, "osdu:wks:master-data--Wellbore:1.1.0", 1712345678901234, "WB C/3-C-28 B", "data.FacilityName", null, null, "2026-09-01T10:00:00.000Z", "loader@dev"), page.Hits[0]);
             Assert.Equal(("m", "data.Code"), (page.Hits[1].Name, page.Hits[1].NameField));
             Assert.Equal(new ExplorerBucket("dev:reference-data--FacilityType:Wellbore:", 2), Assert.Single(page.Facet!));
 
             var body = JsonNode.Parse(Assert.Single(handler.Calls).Body!)!;
             Assert.Equal("*:*:master-data--Wellbore:*", body["kind"]!.GetValue<string>());
-            Assert.Equal("\"NO 33\"", body["query"]!.GetValue<string>());
+            Assert.Equal("\"WB C\"", body["query"]!.GetValue<string>());
             Assert.Equal((100, 100, true), (body["offset"]!.GetValue<int>(), body["limit"]!.GetValue<int>(), body["trackTotalCount"]!.GetValue<bool>()));
             Assert.Equal("data.FacilityTypeID.keyword", body["aggregateBy"]!.GetValue<string>());
             Assert.Equal(["modifyTime"], body["sort"]!["field"]!.AsArray().Select(f => f!.GetValue<string>()));
@@ -274,14 +274,14 @@ public class RecordExplorerTests
         var (explorer, runtime) = Explorer(handler);
         using (runtime)
         {
-            var types = await explorer.TypesAsync(new ExplorerSearch { Text = "NO 33", Kind = "*:*:master-data--Wellbore:*", Offset = 300 }, CancellationToken.None);
+            var types = await explorer.TypesAsync(new ExplorerSearch { Text = "WB C", Kind = "*:*:master-data--Wellbore:*", Offset = 300 }, CancellationToken.None);
 
             Assert.Equal(("text", 20L, 15L), (types.Reading, types.Total, types.Listed));
             Assert.Equal(["osdu:wks:master-data--Wellbore:1.1.0", "osdu:wks:work-product-component--WellLog:1.4.0"], types.Kinds.Select(k => k.Kind));
 
             // The list is what a kind is picked from, so the kind in view, its order and its page do not narrow it.
             var body = JsonNode.Parse(Assert.Single(handler.Calls).Body!)!;
-            Assert.Equal(("*:*:*:*", "kind", "\"NO 33\""), (body["kind"]!.GetValue<string>(), body["aggregateBy"]!.GetValue<string>(), body["query"]!.GetValue<string>()));
+            Assert.Equal(("*:*:*:*", "kind", "\"WB C\""), (body["kind"]!.GetValue<string>(), body["aggregateBy"]!.GetValue<string>(), body["query"]!.GetValue<string>()));
             Assert.Null(body["offset"]);
             Assert.Null(body["sort"]);
         }
@@ -302,7 +302,7 @@ public class RecordExplorerTests
                         ["id"] = Wellbore,
                         ["data"] = new JsonObject
                         {
-                            ["FacilityName"] = "NO 33/9-C-28 B",
+                            ["FacilityName"] = "WB C/3-C-28 B",
                             ["SpudDate"] = "2019-03-01T00:00:00Z",
                             ["TotalDepth"] = 3120.5,
                             ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = "dev:x--Y:z:" }),
@@ -358,10 +358,10 @@ public class RecordExplorerTests
                     ["id"] = Wellbore,
                     ["data"] = new JsonObject
                     {
-                        ["FacilityName"] = "NO 33/9-C-28 B",
-                        ["GeoContexts"] = new JsonArray(new JsonObject { ["FieldID"] = "dev:master-data--Field:GULLFAKS:", ["GeoTypeID"] = "dev:reference-data--GeoPoliticalEntityType:Field:" }),
+                        ["FacilityName"] = "WB C/3-C-28 B",
+                        ["GeoContexts"] = new JsonArray(new JsonObject { ["FieldID"] = "dev:master-data--Field:FIELD-A:", ["GeoTypeID"] = "dev:reference-data--GeoPoliticalEntityType:Field:" }),
                         // What an index augmentation adds: no schema declares it, and the index names it with a dot.
-                        ["Equinor.WellboreName"] = "NO 33/9-C-28 B",
+                        ["Augmented.WellboreName"] = "WB C/3-C-28 B",
                         ["Remarks"] = new JsonArray(new JsonObject { ["Remark"] = "left out: the list is not indexed inside" }),
                     },
                 }),
@@ -381,14 +381,14 @@ public class RecordExplorerTests
             Assert.Equal(
                 [
                     "data.FacilityName", "data.GeoContexts.FieldID", "data.GeoContexts.GeoPoliticalEntityID", "data.GeoContexts.GeoTypeID",
-                    "data.NameAliases.AliasName", "data.SpudDate", "data.TotalDepth", "data.Equinor.WellboreName",
+                    "data.NameAliases.AliasName", "data.SpudDate", "data.TotalDepth", "data.Augmented.WellboreName",
                 ],
                 content.Select(f => f.Path));
             Assert.Equal(new ExplorerFieldInfo("data.FacilityName", "text", null, "schema", "Facility Name", "The name of the facility."), content[0]);
             Assert.Equal(new ExplorerFieldInfo("data.GeoContexts.FieldID", "text", "data.GeoContexts", "schema", "Field ID"), content[1]);
             Assert.Equal(("data.NameAliases", "schema"), (content[4].Nested, content[4].Origin));
             Assert.Equal(("date", "number"), (content[5].Index, content[6].Index));
-            Assert.Equal(new ExplorerFieldInfo("data.Equinor.WellboreName", "text", Origin: "records"), content[7]);
+            Assert.Equal(new ExplorerFieldInfo("data.Augmented.WellboreName", "text", Origin: "records"), content[7]);
             Assert.Contains(fields.Notes!, n => n.StartsWith("1 value the schema of " + Kind + " declares is left out", StringComparison.Ordinal));
 
             var body = JsonNode.Parse(handler.Calls.Single(c => c.Method == HttpMethod.Post).Body!)!;
@@ -425,26 +425,26 @@ public class RecordExplorerTests
         ExplorerFilter Filter(ExplorerCondition condition, string path = "data.Source", OsduFieldIndex index = OsduFieldIndex.Text, string? value = null, string? to = null, IReadOnlyList<string>? values = null, string? nested = null)
             => new() { Path = path, Index = index, Condition = condition, Value = value, To = to, Values = values, Nested = nested };
 
-        Assert.Equal("data.Source.keyword:\"Recall\"", Filter(ExplorerCondition.Is, value: "Recall").Clause());
-        Assert.Equal("NOT (data.Source.keyword:\"Recall\")", Filter(ExplorerCondition.IsNot, value: "Recall").Clause());
-        Assert.Equal("(data.Source.keyword:(\"Recall\" OR \"RECALL\"))", Filter(ExplorerCondition.AnyOf, values: ["Recall", "RECALL"]).Clause());
-        Assert.Equal("data.Source:\"recall database\"", Filter(ExplorerCondition.Contains, value: "recall database").Clause());
-        Assert.Equal("data.Source.keyword:RECALL\\ D*", Filter(ExplorerCondition.StartsWith, value: "RECALL D").Clause());
+        Assert.Equal("data.Source.keyword:\"WellDB\"", Filter(ExplorerCondition.Is, value: "WellDB").Clause());
+        Assert.Equal("NOT (data.Source.keyword:\"WellDB\")", Filter(ExplorerCondition.IsNot, value: "WellDB").Clause());
+        Assert.Equal("(data.Source.keyword:(\"WellDB\" OR \"WELLDB\"))", Filter(ExplorerCondition.AnyOf, values: ["WellDB", "WELLDB"]).Clause());
+        Assert.Equal("data.Source:\"welldb database\"", Filter(ExplorerCondition.Contains, value: "welldb database").Clause());
+        Assert.Equal("data.Source.keyword:WELLDB\\ D*", Filter(ExplorerCondition.StartsWith, value: "WELLDB D").Clause());
         Assert.Equal("data.TotalDepth:[\"1000\" TO \"2000\"}", Filter(ExplorerCondition.Range, "data.TotalDepth", OsduFieldIndex.Number, "1000", "2000").Clause());
         Assert.Equal("createTime:[\"2026-01-01\" TO *]", Filter(ExplorerCondition.Range, "createTime", OsduFieldIndex.Date, "2026-01-01", "").Clause());
         Assert.Equal("_exists_:data.Source", Filter(ExplorerCondition.Exists).Clause());
-        Assert.Equal("NOT (_exists_:data.Equinor.FieldId)", Filter(ExplorerCondition.Missing, "data.Equinor.FieldId").Clause());
+        Assert.Equal("NOT (_exists_:data.Augmented.FieldId)", Filter(ExplorerCondition.Missing, "data.Augmented.FieldId").Clause());
         Assert.Equal(
-            "nested(data.GeoContexts, (FieldID.keyword:\"dev:master-data--Field:GULLFAKS:\"))",
-            Filter(ExplorerCondition.Is, "data.GeoContexts.FieldID", value: "dev:master-data--Field:GULLFAKS:", nested: "data.GeoContexts").Clause());
+            "nested(data.GeoContexts, (FieldID.keyword:\"dev:master-data--Field:FIELD-A:\"))",
+            Filter(ExplorerCondition.Is, "data.GeoContexts.FieldID", value: "dev:master-data--Field:FIELD-A:", nested: "data.GeoContexts").Clause());
 
         // The service refuses a query that only excludes; one that also reads text or includes needs no start.
-        var missing = Filter(ExplorerCondition.Missing, "data.Equinor.FieldId");
-        Assert.Equal("_exists_:id AND NOT (_exists_:data.Equinor.FieldId)", RecordExplorer.Compose(null, [missing]));
-        Assert.Equal("(\"NO 34\") AND NOT (_exists_:data.Equinor.FieldId)", RecordExplorer.Compose("\"NO 34\"", [missing]));
+        var missing = Filter(ExplorerCondition.Missing, "data.Augmented.FieldId");
+        Assert.Equal("_exists_:id AND NOT (_exists_:data.Augmented.FieldId)", RecordExplorer.Compose(null, [missing]));
+        Assert.Equal("(\"WB D\") AND NOT (_exists_:data.Augmented.FieldId)", RecordExplorer.Compose("\"WB D\"", [missing]));
         Assert.Equal(
-            "(data.Source.keyword:(\"Recall\" OR \"RECALL\")) AND NOT (_exists_:data.Equinor.FieldId)",
-            RecordExplorer.Compose(null, [Filter(ExplorerCondition.AnyOf, values: ["Recall", "RECALL"]), missing]));
+            "(data.Source.keyword:(\"WellDB\" OR \"WELLDB\")) AND NOT (_exists_:data.Augmented.FieldId)",
+            RecordExplorer.Compose(null, [Filter(ExplorerCondition.AnyOf, values: ["WellDB", "WELLDB"]), missing]));
     }
 
     [Theory]
@@ -482,12 +482,12 @@ public class RecordExplorerTests
             Kind = "*:*:work-product-component--WellLog:*",
             Filters =
             [
-                new ExplorerFilter { Path = "data.Source", Condition = ExplorerCondition.AnyOf, Values = ["Recall", "RECALL"] },
-                new ExplorerFilter { Path = "data.GeoContexts.FieldID", Nested = "data.GeoContexts", Value = "dev:master-data--Field:GULLFAKS:" },
+                new ExplorerFilter { Path = "data.Source", Condition = ExplorerCondition.AnyOf, Values = ["WellDB", "WELLDB"] },
+                new ExplorerFilter { Path = "data.GeoContexts.FieldID", Nested = "data.GeoContexts", Value = "dev:master-data--Field:FIELD-A:" },
                 new ExplorerFilter { Path = "data.TotalDepth", Index = OsduFieldIndex.Number, Condition = ExplorerCondition.Range, Value = "10", To = "20" },
             ],
             Facet = new ExplorerField { Path = "data.GeoContexts.FieldID", Nested = "data.GeoContexts" },
-            Columns = ["data.Equinor.WellboreName"],
+            Columns = ["data.Augmented.WellboreName"],
         };
 
         var json = search.ToJson();
@@ -510,31 +510,31 @@ public class RecordExplorerTests
                     ["id"] = Wellbore,
                     ["data"] = new JsonObject
                     {
-                        ["Equinor.WellboreName"] = "NO 34/10-A-30",
-                        ["GeoContexts"] = new JsonArray(new JsonObject { ["FieldID"] = "dev:master-data--Field:GULLFAKS:" }, new JsonObject { ["GeoTypeID"] = "x" }, new JsonObject { ["FieldID"] = "dev:master-data--Field:SNORRE:" }),
+                        ["Augmented.WellboreName"] = "WB D/4-A-30",
+                        ["GeoContexts"] = new JsonArray(new JsonObject { ["FieldID"] = "dev:master-data--Field:FIELD-A:" }, new JsonObject { ["GeoTypeID"] = "x" }, new JsonObject { ["FieldID"] = "dev:master-data--Field:FIELD-B:" }),
                         ["TotalDepth"] = 3120.5,
                         ["Remark"] = new string('r', RecordExplorer.MaxColumnValueLength + 10),
                     },
                 },
-                new JsonObject { ["id"] = Wellbore + "-2", ["data"] = new JsonObject { ["Equinor"] = new JsonObject { ["WellboreName"] = "NO 34/10-B-1" } } }),
+                new JsonObject { ["id"] = Wellbore + "-2", ["data"] = new JsonObject { ["Augmented"] = new JsonObject { ["WellboreName"] = "WB D/4-B-1" } } }),
             ["totalCount"] = 2,
         }.ToJsonString());
         var (explorer, runtime) = Explorer(handler);
         using (runtime)
         {
-            var columns = new[] { "data.Equinor.WellboreName", "data.GeoContexts.FieldID", "data.TotalDepth", "data.Remark" };
+            var columns = new[] { "data.Augmented.WellboreName", "data.GeoContexts.FieldID", "data.TotalDepth", "data.Remark" };
             var page = await explorer.SearchAsync(new ExplorerSearch { Kind = "*:*:master-data--Wellbore:*", Columns = columns }, CancellationToken.None);
 
             var first = page.Hits[0].Values!;
-            Assert.Equal(["NO 34/10-A-30"], first["data.Equinor.WellboreName"]);
-            Assert.Equal(["dev:master-data--Field:GULLFAKS:", "dev:master-data--Field:SNORRE:"], first["data.GeoContexts.FieldID"]);
+            Assert.Equal(["WB D/4-A-30"], first["data.Augmented.WellboreName"]);
+            Assert.Equal(["dev:master-data--Field:FIELD-A:", "dev:master-data--Field:FIELD-B:"], first["data.GeoContexts.FieldID"]);
             Assert.Equal(["3120.5"], first["data.TotalDepth"]);
             Assert.Equal(RecordExplorer.MaxColumnValueLength, first["data.Remark"][0].Length);
             Assert.EndsWith("...", first["data.Remark"][0], StringComparison.Ordinal);
 
             // A column a record holds nothing at is left out of its values.
-            Assert.Equal(["data.Equinor.WellboreName"], page.Hits[1].Values!.Keys);
-            Assert.Equal(["NO 34/10-B-1"], page.Hits[1].Values!["data.Equinor.WellboreName"]);
+            Assert.Equal(["data.Augmented.WellboreName"], page.Hits[1].Values!.Keys);
+            Assert.Equal(["WB D/4-B-1"], page.Hits[1].Values!["data.Augmented.WellboreName"]);
 
             var returned = JsonNode.Parse(Assert.Single(handler.Calls).Body!)!["returnedFields"]!.AsArray().Select(f => f!.GetValue<string>()).ToList();
             Assert.All(columns, c => Assert.Contains(c, returned));
@@ -573,17 +573,17 @@ public class RecordExplorerTests
         var (explorer, runtime) = Explorer(handler);
         using (runtime)
         {
-            var search = new ExplorerSearch { Kind = "*:*:work-product-component--WellLog:*", Filters = [ThroughWellbores(ExplorerCondition.Contains, "NO 34")] };
+            var search = new ExplorerSearch { Kind = "*:*:work-product-component--WellLog:*", Filters = [ThroughWellbores(ExplorerCondition.Contains, "WB D")] };
             var page = await explorer.SearchAsync(search, CancellationToken.None);
 
             // The wellbores first, by their name's words; then the logs naming one of them, in the reference form a log writes.
             Assert.Equal("(data.WellboreID.keyword:(\"dev:master-data--Wellbore:W1:\" OR \"dev:master-data--Wellbore:W2:\"))", page.Query);
             Assert.Equal(4, page.Total);
             var note = Assert.Single(page.Notes);
-            Assert.StartsWith("Wellbore name contains NO 34: 2 Wellbore records found by data.FacilityName:\"NO 34\"", note, StringComparison.Ordinal);
+            Assert.StartsWith("Wellbore name contains WB D: 2 Wellbore records found by data.FacilityName:\"WB D\"", note, StringComparison.Ordinal);
 
             var found = JsonNode.Parse(handler.Calls[0].Body!)!;
-            Assert.Equal(("osdu:wks:master-data--Wellbore:*", "data.FacilityName:\"NO 34\"", ExplorerVia.MaxFound), (found["kind"]!.GetValue<string>(), found["query"]!.GetValue<string>(), found["limit"]!.GetValue<int>()));
+            Assert.Equal(("osdu:wks:master-data--Wellbore:*", "data.FacilityName:\"WB D\"", ExplorerVia.MaxFound), (found["kind"]!.GetValue<string>(), found["query"]!.GetValue<string>(), found["limit"]!.GetValue<int>()));
             Assert.Equal(["id"], found["returnedFields"]!.AsArray().Select(f => f!.GetValue<string>()));
 
             // The next page of the same search reads the wellbores no more.
@@ -603,11 +603,11 @@ public class RecordExplorerTests
         var (explorer, runtime) = Explorer(handler);
         using (runtime)
         {
-            var none = await explorer.SearchAsync(new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.Is, "NO 99")] }, CancellationToken.None);
+            var none = await explorer.SearchAsync(new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.Is, "WB Z")] }, CancellationToken.None);
             Assert.Equal("_exists_:id AND NOT (_exists_:id)", none.Query);
             Assert.Contains("no record is found by it", Assert.Single(none.Notes), StringComparison.Ordinal);
 
-            var every = await explorer.SearchAsync(new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.IsNot, "NO 99")] }, CancellationToken.None);
+            var every = await explorer.SearchAsync(new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.IsNot, "WB Z")] }, CancellationToken.None);
             Assert.Null(every.Query);
             Assert.Contains("it leaves every record", Assert.Single(every.Notes), StringComparison.Ordinal);
         }
@@ -620,7 +620,7 @@ public class RecordExplorerTests
             .OnMatch(r => Body(r).Contains("aggregateBy", StringComparison.Ordinal), _ => FakeHttpHandler.Json(HttpStatusCode.OK, new JsonObject
             {
                 ["results"] = new JsonArray(),
-                ["aggregations"] = new JsonArray(new JsonObject { ["key"] = "EQUINOR", ["count"] = 3 }, new JsonObject { ["key"] = "STATOIL", ["count"] = 1 }),
+                ["aggregations"] = new JsonArray(new JsonObject { ["key"] = "PROJECT_A", ["count"] = 3 }, new JsonObject { ["key"] = "PROJECT_B", ["count"] = 1 }),
                 ["totalCount"] = 4,
             }.ToJsonString()))
             .OnMatch(_ => true, _ => FakeHttpHandler.Json(HttpStatusCode.OK, Result(1, "dev:work-product-component--WellLog:L1")));
@@ -631,13 +631,13 @@ public class RecordExplorerTests
             {
                 Path = "id",
                 Index = OsduFieldIndex.Keyword,
-                Value = "9982/1",
+                Value = "LOG-0001/1",
                 Via = new ExplorerVia
                 {
-                    Term = "Recall log id",
+                    Term = "WellDB log id",
                     Key = new ExplorerViaKey
                     {
-                        Systems = ["recall"],
+                        Systems = ["welldb"],
                         EntityType = "work-product-component--WellLog",
                         Columns = ["source_project", "log_id"],
                         Given = "log_id",
@@ -649,7 +649,7 @@ public class RecordExplorerTests
             var page = await explorer.SearchAsync(new ExplorerSearch { Filters = [filter] }, CancellationToken.None);
 
             // Each id is the delivery's own: the key's values in its order, under the source system, in the partition read.
-            var ids = new[] { "EQUINOR", "STATOIL" }.Select(p => TargetId.Compose("dev", "work-product-component--WellLog", DeliveryKey.Derive("recall", [p, "9982/1"])));
+            var ids = new[] { "PROJECT_A", "PROJECT_B" }.Select(p => TargetId.Compose("dev", "work-product-component--WellLog", DeliveryKey.Derive("welldb", [p, "LOG-0001/1"])));
             Assert.Equal($"(id:({string.Join(" OR ", ids.Select(i => $"\"{i}\""))}))", page.Query);
             Assert.Contains("2 record ids made from source_project and log_id with 2 values of source_project (tags.SourceProject)", Assert.Single(page.Notes), StringComparison.Ordinal);
 
@@ -663,7 +663,7 @@ public class RecordExplorerTests
     [InlineData(ExplorerCondition.Exists, "compares at least one value")]
     public void A_condition_through_other_records_that_cannot_be_read_as_asked_is_refused(ExplorerCondition condition, string said)
     {
-        var filter = ThroughWellbores(condition, "NO 34") with { Value = condition == ExplorerCondition.Exists ? null : "NO 34", To = "NO 35" };
+        var filter = ThroughWellbores(condition, "WB D") with { Value = condition == ExplorerCondition.Exists ? null : "WB D", To = "WB E" };
 
         Assert.Contains(said, new ExplorerSearch { Filters = [filter] }.Problem(), StringComparison.Ordinal);
     }
@@ -699,7 +699,7 @@ public class RecordExplorerTests
               endpoint: http://localhost
               protocol: ddms
             """);
-        var record = new JsonObject { ["id"] = Wellbore, ["kind"] = "osdu:wks:master-data--Wellbore:1.1.0", ["version"] = 2, ["data"] = new JsonObject { ["FacilityName"] = "NO 33/9-C-28 B" } };
+        var record = new JsonObject { ["id"] = Wellbore, ["kind"] = "osdu:wks:master-data--Wellbore:1.1.0", ["version"] = 2, ["data"] = new JsonObject { ["FacilityName"] = "WB C/3-C-28 B" } };
         var handler = new FakeHttpHandler()
             .OnMatch(r => Path(r) == "/api/storage/v2/records/versions/" + Wellbore, _ => FakeHttpHandler.Json(HttpStatusCode.OK, "{\"recordId\":\"" + Wellbore + "\",\"versions\":[1,2]}"))
             .OnMatch(r => Path(r) == "/api/storage/v2/records/" + Wellbore, _ => FakeHttpHandler.Json(HttpStatusCode.OK, record.ToJsonString()))
@@ -710,14 +710,14 @@ public class RecordExplorerTests
         Assert.True(read["found"]!.GetValue<bool>());
         Assert.Equal((Wellbore, "explorer-route"), (read["targetId"]!.GetValue<string>(), read["flow"]!.GetValue<string>()));
         Assert.Equal([2L, 1L], read["versions"]!.AsArray().Select(v => v!.GetValue<long>()));
-        Assert.Equal("NO 33/9-C-28 B", read["record"]!["data"]!["FacilityName"]!.GetValue<string>());
+        Assert.Equal("WB C/3-C-28 B", read["record"]!["data"]!["FacilityName"]!.GetValue<string>());
 
         var searched = JsonNode.Parse(await operation.ExecuteAsync(
-            Task(flowFile, ExploreOperation.SearchAction, new() { [ExploreOperation.SearchArgument] = new ExplorerSearch { Text = "master-data--Wellbore:NO" }.ToJson() }),
+            Task(flowFile, ExploreOperation.SearchAction, new() { [ExploreOperation.SearchArgument] = new ExplorerSearch { Text = "master-data--Wellbore:WB" }.ToJson() }),
             CancellationToken.None))!;
         Assert.Equal(("dev", "explorer-route"), (searched["partition"]!.GetValue<string>(), searched["connection"]!.GetValue<string>()));
         Assert.Equal(7, searched["answer"]!["total"]!.GetValue<long>());
-        Assert.Equal("id:dev\\:master\\-data\\-\\-Wellbore\\:NO*", searched["answer"]!["query"]!.GetValue<string>());
+        Assert.Equal("id:dev\\:master\\-data\\-\\-Wellbore\\:WB*", searched["answer"]!["query"]!.GetValue<string>());
         Assert.False(string.IsNullOrEmpty(searched["correlationId"]!.GetValue<string>()));
 
         // Every request carried the partition the flow is bound to, and each read is the storage or search service's own.

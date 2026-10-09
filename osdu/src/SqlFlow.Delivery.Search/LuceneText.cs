@@ -12,7 +12,7 @@ namespace SqlFlow.Delivery.Search;
 /// </para>
 /// <para>
 /// The same builder sets <c>defaultOperator(OR)</c>, so a bare multi-word value is read as its words OR'd together:
-/// <c>data.FacilityName:NO 15/9-A-1</c> asks for records matching <c>NO</c> or <c>15/9-A-1</c>, which is most of a
+/// <c>data.FacilityName:Wellbore A-1</c> asks for records matching <c>Wellbore</c> or <c>A-1</c>, which is most of a
 /// partition. A value is therefore always written as a quoted phrase, never bare.
 /// </para>
 /// <para>

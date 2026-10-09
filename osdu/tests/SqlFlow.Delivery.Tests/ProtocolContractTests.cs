@@ -23,7 +23,7 @@ public sealed class ProtocolContractTests
           "id": "dev:work-product-component--WellLog:contract-1",
           "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
           "acl": { "viewers": ["data.default.viewers@dev.example.com"], "owners": ["data.default.owners@dev.example.com"] },
-          "legal": { "legaltags": ["dev-public"], "otherRelevantDataCountries": ["NO"] },
+          "legal": { "legaltags": ["dev-public"], "otherRelevantDataCountries": ["US"] },
           "data": { "Name": "GR run 1", "WellboreID": "dev:master-data--Wellbore:wb-1:", "Curves": [{ "CurveID": "MD" }, { "CurveID": "GR" }], "ReferenceCurveID": "MD" }
         }
         """;
@@ -218,7 +218,7 @@ public sealed class ProtocolContractTests
         };
         return "{\"id\":\"" + id + "\",\"kind\":\"osdu:wks:" + collection.EntityType + ":1.0.0\","
             + "\"acl\":{\"viewers\":[\"data.default.viewers@dev.example.com\"],\"owners\":[\"data.default.owners@dev.example.com\"]},"
-            + "\"legal\":{\"legaltags\":[\"dev-public\"],\"otherRelevantDataCountries\":[\"NO\"]},\"data\":" + data + "}";
+            + "\"legal\":{\"legaltags\":[\"dev-public\"],\"otherRelevantDataCountries\":[\"US\"]},\"data\":" + data + "}";
     }
 
     [Theory]

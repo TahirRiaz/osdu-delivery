@@ -1,4 +1,3 @@
-using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
@@ -69,12 +68,9 @@ public sealed class RetrievalFlowKind : IFlowDocumentKind
         ArgumentNullException.ThrowIfNull(parameters);
         DeliveryOperations.RefuseBuiltInOverrides(
             parameters, RetrievalDefinition.FlowTypeName, "force in the payload restarts an incremental retrieval at its declared start.");
-        var payload = DeliveryRunPayload.Parse(parameters);
-        if (payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Rerender || payload.Slices.Count > 0 || payload.SelectsTests
-            || payload.SelectsDimensions || payload.SelectsInventories)
-        {
-            throw new SqlFlowException("A retrieval flow's payload carries only force; a retrieval has no submission, records, slices, tests, dimensions or inventories to name.");
-        }
+
+        // A retrieval names nothing but whether it restarts at its declared start, beside the central configuration.
+        DeliveryRunPayload.Parse(parameters).RefuseOtherThan(RetrievalDefinition.FlowTypeName, [DeliveryRunPayload.ForceProperty]);
     }
 
     /// <summary>Whether a retrieval run restarts an incremental flow at its declared start.</summary>

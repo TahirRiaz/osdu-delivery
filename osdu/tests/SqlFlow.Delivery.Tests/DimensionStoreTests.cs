@@ -111,8 +111,8 @@ public sealed class DimensionStoreTests : IDisposable
         var ledger = await LedgerAsync();
         var originals = Enumerable.Range(0, 20_000)
             .Select(i => new DimensionOriginalWrite(
-                $"dev:master-data--Wellbore:{i:D6}:", $"NO {i:D6}", null, null, 3, true,
-                Attributes: [new DimensionAttributeState("Country", "Norway", "dev:master-data--GeoPoliticalEntity:NO"), new DimensionAttributeState("Field", "Not specified", null)]))
+                $"dev:master-data--Wellbore:{i:D6}:", $"US {i:D6}", null, null, 3, true,
+                Attributes: [new DimensionAttributeState("Country", "United States", "dev:master-data--GeoPoliticalEntity:US"), new DimensionAttributeState("Field", "Not specified", null)]))
             .ToArray();
         var (dimension, first) = await BuildAsync(ledger, originals);
         Assert.Equal(20_000L, first.Originals);
@@ -124,7 +124,7 @@ public sealed class DimensionStoreTests : IDisposable
         Assert.Equal(new DimensionChangeCounts(0, 0, 0, 0, 0, 0, 0), second.Changes);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(30), $"A rebuild of 20,000 keys that changed nothing took {watch.Elapsed.TotalSeconds:N1} s.");
         var keys = await ledger.ListDimensionValuesAsync(dimension.DimensionId, new DimensionValueQuery(null, null, false, false, null, 2));
-        Assert.All(keys, k => Assert.Equal([("Country", "Norway"), ("Field", "Not specified")], k.Attributes.Select(a => (a.Name, a.Value))));
+        Assert.All(keys, k => Assert.Equal([("Country", "United States"), ("Field", "Not specified")], k.Attributes.Select(a => (a.Name, a.Value))));
     }
 
     [Fact]

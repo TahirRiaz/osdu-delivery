@@ -19,12 +19,12 @@ public sealed class AssertionDocumentTests
     /// <summary>A flow using every subject an assertion can have, in the forms a document writes them.</summary>
     internal const string Full = """
         flowType: assertion
-        name: recall-welllog-04-header-assertion
-        description: What the Recall well logs look like in OSDU.
-        batch: recall
+        name: welldb-welllog-04-header-assertion
+        description: What the well database's logs look like in OSDU.
+        batch: welldb
         partitions: [dev, test]
         parameters:
-          logSource: { default: STAT_COMP, description: The Recall log source. }
+          logSource: { default: COMPOSITE, description: The well database's log source. }
         source:
           endpoint: http://localhost
           ddmsRoot: /api/os-wellbore-ddms
@@ -35,7 +35,7 @@ public sealed class AssertionDocumentTests
         reliability: { concurrency: 2, retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }
         tests:
           - name: wellbores
-            description: Every wellbore Recall delivered is there, whole.
+            description: Every wellbore the well database delivered is there, whole.
             tags: [smoke, wellbore]
             kind: osdu:wks:master-data--Wellbore:1.3.0
             query: 'data.Source:"{logSource}"'
@@ -71,12 +71,12 @@ public sealed class AssertionDocumentTests
               - recordSet:
                   columns: [data.FacilityName, data.SequenceNumber]
                   mode: ordered
-                  rows: [["15/9-F-11", 1], ["15/9-F-12", null]]
+                  rows: [["A/1-F-11", 1], ["A/1-F-12", null]]
               - conforms: true
                 severity: info
               - indexed: true
               - legal: valid
-              - delivered: recall-welllog-03-header-delivery
+              - delivered: welldb-welllog-03-header-delivery
                 exact: true
           - name: log-curves
             tags: [bulk]
@@ -132,7 +132,7 @@ public sealed class AssertionDocumentTests
     public void A_full_document_maps_every_subject_with_its_operands()
     {
         var flow = Parse(Full);
-        Assert.Equal("recall-welllog-04-header-assertion", flow.Name);
+        Assert.Equal("welldb-welllog-04-header-assertion", flow.Name);
         Assert.Equal(["dev", "test"], flow.Partitions);
         Assert.False(flow.FollowsRegistry);
         Assert.Equal(FailRunOn.Warning, flow.FailRunOn);
@@ -198,7 +198,7 @@ public sealed class AssertionDocumentTests
         Assert.IsType<LegalAssertion>(assertions[13]);
         var delivered = Assert.IsType<DeliveredAssertion>(assertions[14]);
         Assert.True(delivered.Exact);
-        Assert.Equal("recall-welllog-03-header-delivery", delivered.Flow);
+        Assert.Equal("welldb-welllog-03-header-delivery", delivered.Flow);
 
         var logs = flow.Tests[1];
         Assert.True(logs.ByIds);
@@ -406,7 +406,7 @@ public sealed class AssertionDocumentTests
         Assert.Throws<SqlFlowException>(() => AssertionFlowKind.Operation(new RunParameters { Operation = DeliveryOperations.Deliver }));
 
         kind.ValidateParameters(new RunParameters { Operation = DeliveryOperations.Test, Payload = """{"tests":["wellbores"],"tags":["smoke"]}""" });
-        Assert.Contains("names the tests a run runs", Assert.Throws<SqlFlowException>(
+        Assert.Contains("payload recordKeys does not apply to an assertion flow", Assert.Throws<SqlFlowException>(
             () => kind.ValidateParameters(new RunParameters { Payload = """{"recordKeys":["2f3d9c3c-0000-0000-0000-000000000001"]}""" })).Message);
         Assert.Contains("is not a name", Assert.Throws<SqlFlowException>(
             () => kind.ValidateParameters(new RunParameters { Payload = """{"tests":["a b"]}""" })).Message);
@@ -453,7 +453,7 @@ public sealed class AssertionDocumentTests
         Assert.Contains("does not test partition 'prod'", Assert.Throws<DeliveryException>(() => flow.ForRun("prod", registry)).Message);
         Assert.Contains("tests one partition per run", Assert.Throws<DeliveryException>(() => flow.ForRun("*", registry)).Message);
         Assert.NotEqual(flow.ForRun("dev", registry).LedgerId, flow.ForRun("test", registry).LedgerId);
-        Assert.Equal("recall-welllog-04-header-assertion@dev", flow.ForRun("dev", registry).LedgerName);
+        Assert.Equal("welldb-welllog-04-header-assertion@dev", flow.ForRun("dev", registry).LedgerName);
         Assert.Throws<InvalidOperationException>(() => flow.LedgerId);
 
         var header = Parse("flowType: assertion\nname: h\nsource: { endpoint: http://x, headers: { data-partition-id: dev } }\ntests: [{ name: a, kind: 'a:b:c:1.0.0', assert: [{ count: 1 }] }]");

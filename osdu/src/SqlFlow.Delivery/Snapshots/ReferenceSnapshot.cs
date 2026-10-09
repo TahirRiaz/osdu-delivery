@@ -316,8 +316,8 @@ public sealed class ReferenceType
     /// </para>
     /// <para>
     /// With <paramref name="ignoreSeparators"/> a third and last attempt folds punctuation and spacing away on both
-    /// sides (<see cref="ReferenceKeyFold"/>), so a name a source writes as <c>NO 15/9-19 SR</c> finds the record OSDU
-    /// holds as <c>NO_15_9-19_SR</c>. It is opt-in per mapping entry, because a fold that helps a facility name is
+    /// sides (<see cref="ReferenceKeyFold"/>), so a name a source writes as <c>Wellbore A/1-2 ST</c> finds the record OSDU
+    /// holds as <c>Wellbore_A_1-2_ST</c>. It is opt-in per mapping entry, because a fold that helps a facility name is
     /// exactly wrong for a unit code, and it keeps the same discipline as the case tier: several items under one folded
     /// key match none of them and are listed, rather than one being picked.
     /// </para>
@@ -733,14 +733,14 @@ public enum ReferenceMatchKind
 /// The folded form of a name, for matching one system's spelling of it against another's.
 /// <para>
 /// Source systems and OSDU write the same facility name differently, because each grew its own convention for the
-/// spaces, slashes, underscores and hyphens between the parts that carry the meaning: <c>NO 15/9-19 SR</c>,
-/// <c>NO_15_9-19_SR</c> and <c>no-15-9-19-sr</c> all name one wellbore. Folding keeps the letters and digits, in order,
+/// spaces, slashes, underscores and hyphens between the parts that carry the meaning: <c>Wellbore A/1-2 ST</c>,
+/// <c>Wellbore_A_1-2_ST</c> and <c>wellbore-a-1-2-st</c> all name one wellbore. Folding keeps the letters and digits, in order,
 /// and replaces every run of anything else with a single separator, so those three fold to one key while two genuinely
 /// different names stay apart.
 /// </para>
 /// <para>
 /// It is not a general normaliser and deliberately does nothing clever: no transliteration, no accent stripping, no
-/// abbreviation. Letters outside ASCII are kept (Norwegian names carry æ, ø and å), lower-cased invariantly, so folding
+/// abbreviation. Letters outside ASCII are kept (names in many languages carry æ, ø and å), lower-cased invariantly, so folding
 /// never depends on the machine's locale.
 /// </para>
 /// </summary>

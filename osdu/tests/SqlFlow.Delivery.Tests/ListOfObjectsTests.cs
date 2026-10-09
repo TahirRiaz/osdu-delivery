@@ -30,11 +30,11 @@ public sealed class ListOfObjectsTests
 
     private const string Unevaluated = "dev:reference-data--TechnicalAssuranceType:Unevaluated:";
 
-    /// <summary>The Recall well log's technical assurance: certified for a log source starting "stat_", and unevaluated otherwise.</summary>
+    /// <summary>The WellDB well log's technical assurance: certified for a log source starting "comp", and unevaluated otherwise.</summary>
     private const string Assurance = """
         TechnicalAssurances:
           - TechnicalAssuranceTypeID:
-              $expr: iif(startsWith(log_source, "stat_"), "Certified", "Unevaluated")
+              $expr: iif(startsWith(log_source, "comp"), "Certified", "Unevaluated")
               $modifiers:
                 - id: "{$param.dataPartition}:reference-data--TechnicalAssuranceType:{$value}:"
             Comment: Set by the conversion
@@ -201,12 +201,12 @@ public sealed class ListOfObjectsTests
 
         Assert.Equal(
             Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","Comment":"Set by the conversion"}]"""),
-            Assurances(Rendered(mapping, ("log_source", "STAT_COMP"))));
+            Assurances(Rendered(mapping, ("log_source", "COMPOSITE"))));
         Assert.Equal(
             Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Unevaluated}}","Comment":"Set by the conversion"}]"""),
-            Assurances(Rendered(mapping, ("log_source", "RECALL"))));
+            Assurances(Rendered(mapping, ("log_source", "WELLDB"))));
 
-        // A blank source is not "stat_", so the failsafe holds for it too.
+        // A blank source is not "comp", so the failsafe holds for it too.
         Assert.Equal(
             Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Unevaluated}}","Comment":"Set by the conversion"}]"""),
             Assurances(Rendered(mapping, ("log_source", null))));
@@ -450,7 +450,7 @@ public sealed class ListOfObjectsTests
             legal:
               legaltags:
                 - Tag: { $from: tag }
-              otherRelevantDataCountries: [NO]
+              otherRelevantDataCountries: [US]
             """)).Message;
         Assert.Contains("record.legal.legaltags reads values with record.legal.legaltags[0], and the legal tags are a literal list", legal, StringComparison.Ordinal);
 
@@ -462,7 +462,7 @@ public sealed class ListOfObjectsTests
                 - Group: { $from: group }
             legal:
               legaltags: [tag]
-              otherRelevantDataCountries: [NO]
+              otherRelevantDataCountries: [US]
             """)).Message;
         Assert.Contains("record.acl.viewers must list at least one literal text value", viewers, StringComparison.Ordinal);
     }
@@ -580,7 +580,7 @@ public sealed class ListOfObjectsTests
 
         var items = shape.Document["data"]!["TechnicalAssurances"]!.AsArray();
         Assert.Equal(2, items.Count);
-        Assert.StartsWith("<string from iif(startsWith(log_source, \"stat_\"), \"Certified\", \"Unevaluated\")", items[0]!["TechnicalAssuranceTypeID"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.StartsWith("<string from iif(startsWith(log_source, \"comp\"), \"Certified\", \"Unevaluated\")", items[0]!["TechnicalAssuranceTypeID"]!.GetValue<string>(), StringComparison.Ordinal);
         Assert.Equal("Set by the conversion", items[0]!["Comment"]!.GetValue<string>());
         Assert.Equal("""{"Comment":"fixed"}""", items[1]!.ToJsonString());
     }
@@ -631,7 +631,7 @@ public sealed class ListOfObjectsTests
         Assert.Equal(yaml, MappingBuilder.ToYaml(again).ReplaceLineEndings("\n"));
 
         // What it wrote renders as the original does.
-        var row = new[] { ("log_source", (string?)"stat_x"), ("note", "n"), ("reviewer", "r@x"), ("unit", "ft") };
+        var row = new[] { ("log_source", (string?)"comp_x"), ("note", "n"), ("reviewer", "r@x"), ("unit", "ft") };
         Assert.Equal(Assurances(Rendered(original, row)), Assurances(Rendered(reread, row)));
     }
 

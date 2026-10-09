@@ -381,14 +381,26 @@ public sealed record FlowSystemColumns
     /// </summary>
     public string? Inserted { get; init; } = DefaultInserted;
 
-    /// <summary>The file the row was landed from; null when the flow opts out (<c>fileName: ~</c>).</summary>
+    /// <summary>
+    /// The file the row was landed from: each record's origin file in the ledger. Used when the table carries it; null when
+    /// the flow opts out (<c>fileName: ~</c>).
+    /// </summary>
     public string? FileName { get; init; } = DefaultFileName;
 
-    /// <summary>The row's position in that file; null when the flow opts out.</summary>
+    /// <summary>The row's position in that file: each record's origin row in the ledger. Used when the table carries it; null when the flow opts out.</summary>
     public string? RowNumber { get; init; } = DefaultRowNumber;
 
     /// <summary>The soft-delete stamp; used when the table carries it, unless the flow opts out.</summary>
     public string? Deleted { get; init; } = DefaultDeleted;
+
+    /// <summary>
+    /// Whether the flow named <see cref="FileName"/> itself, so a table without it is refused rather than read without one:
+    /// a misspelt name would otherwise lose every record's origin file without a word.
+    /// </summary>
+    public bool FileNameDeclared { get; init; }
+
+    /// <summary>Whether the flow named <see cref="RowNumber"/> itself, so a table without it is refused rather than read without one.</summary>
+    public bool RowNumberDeclared { get; init; }
 
     /// <summary>Whether the flow named <see cref="Deleted"/> itself, so a table without it is refused rather than read without one.</summary>
     public bool DeletedDeclared { get; init; }

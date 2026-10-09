@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Ledger;
@@ -145,7 +146,9 @@ internal sealed class StorageInventoryReader(OsduHttpClient client, InventorySou
 
     /// <summary>
     /// The exact kinds <paramref name="kind"/> names: itself when it has no wildcard, else every schema the schema service lists
-    /// that it matches, in every status and scope. A plan counts with the same expansion a build reads with.
+    /// that it matches, in every status and scope, each segment matched as the search service matches a kind (a <c>*</c>
+    /// standing for any text within its segment, so <c>1.*.*</c> takes every 1.x.y version; osdu/specs/core/search,
+    /// <c>kind</c>: "Wildcards are supported per segment"). A plan counts with the same expansion a build reads with.
     /// </summary>
     public static async Task<IReadOnlyList<string>> KindsAsync(OsduHttpClient client, TimeProvider time, InventorySource source, string kind, InventoryReadStats stats, CancellationToken ct)
     {
@@ -165,7 +168,7 @@ internal sealed class StorageInventoryReader(OsduHttpClient client, InventorySou
             {
                 var listing = await reader.ListAsync(status, scope, ct).ConfigureAwait(false);
                 stats.Request();
-                foreach (var schema in listing.Schemas.Where(s => InventoryRows.Matches(kind, s.Id)))
+                foreach (var schema in listing.Schemas.Where(s => KindPatterns.Matches(kind, s.Id)))
                 {
                     kinds.Add(schema.Id);
                 }
@@ -293,7 +296,7 @@ internal sealed class StorageVersions(OsduHttpClient client, InventorySource sou
     }
 }
 
-/// <summary>An inventory's row as a read gives it, and how kinds with wildcards are matched.</summary>
+/// <summary>An inventory's row as a read gives it.</summary>
 internal static class InventoryRows
 {
     /// <summary>The row a search hit or a storage record gives, or null for one that names no id.</summary>
@@ -313,14 +316,6 @@ internal static class InventoryRows
             Time(record, "createTime"),
             Text(record, "modifyUser"),
             Time(record, "modifyTime"));
-    }
-
-    /// <summary>Whether the exact kind <paramref name="kind"/> is one <paramref name="pattern"/> names, segment by segment, <c>*</c> matching any.</summary>
-    public static bool Matches(string pattern, string kind)
-    {
-        var wanted = pattern.Split(':');
-        var given = kind.Split(':');
-        return wanted.Length == 4 && given.Length == 4 && wanted.Zip(given).All(p => p.First == "*" || string.Equals(p.First, p.Second, StringComparison.Ordinal));
     }
 
     private static string? Text(JsonElement record, string name)

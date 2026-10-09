@@ -101,6 +101,13 @@ public sealed class SubmissionIntake
     /// </summary>
     public Func<CancellationToken, Task<IDeliveryProtocol>>? Target { get; init; }
 
+    /// <summary>
+    /// The holds of the run the intake plans for (<see cref="SubmissionHolds"/>): the submission it registers is held before
+    /// the ledger has it, and one it reopens before it is planned again, so no later run takes over a submission this run
+    /// works on. Null holds nothing, which only an intake outside a runtime does.
+    /// </summary>
+    public SubmissionHolds? Holds { get; init; }
+
     public SubmissionIntake(ILedger ledger, Planner planner, FileStoreRegistry stores, TimeProvider time, IDeliveryListener listener, ILogger<SubmissionIntake> logger)
     {
         ArgumentNullException.ThrowIfNull(ledger);
@@ -136,25 +143,39 @@ public sealed class SubmissionIntake
         ArgumentNullException.ThrowIfNull(request);
 
         var prepared = await PrepareAsync(flow, resolved, parameters, request, force, ct).ConfigureAwait(false);
-        if (prepared.Done is { } done)
+        try
         {
-            return done;
-        }
+            if (prepared.Done is { } done)
+            {
+                return done;
+            }
 
-        var counts = await PlanSlicesAsync(flow, prepared, request.Slices, ct).ConfigureAwait(false);
-        if (request.Slices is { Count: > 0 } slices)
+            var counts = await PlanSlicesAsync(flow, prepared, request.Slices, ct).ConfigureAwait(false);
+            if (request.Slices is { Count: > 0 } slices)
+            {
+                _logger.LogInformation("Intake of slices {Slices}: {Counts}.", KeySlices.Describe(slices), counts);
+                return new IntakeResult(prepared.Submission, prepared.Header, counts, AlreadyProcessed: false);
+            }
+
+            var submission = await FinalizePlanningAsync(flow, prepared.Submission.SubmissionId, parameters, counts, ct).ConfigureAwait(false);
+            return new IntakeResult(submission, prepared.Header, counts, AlreadyProcessed: false);
+        }
+        finally
         {
-            _logger.LogInformation("Intake of slices {Slices}: {Counts}.", KeySlices.Describe(slices), counts);
-            return new IntakeResult(prepared.Submission, prepared.Header, counts, AlreadyProcessed: false);
+            // The intake is all this call does with the submission: whatever drains it later holds it for itself.
+            if (Holds is not null)
+            {
+                await Holds.ReleaseAsync(prepared.Submission.SubmissionId).ConfigureAwait(false);
+            }
         }
-
-        var submission = await FinalizePlanningAsync(flow, prepared.Submission.SubmissionId, parameters, counts, ct).ConfigureAwait(false);
-        return new IntakeResult(submission, prepared.Header, counts, AlreadyProcessed: false);
     }
 
     /// <summary>
     /// Opens the read and registers (or reopens) the submission it belongs to. A run that names a submission reopens the
-    /// window that submission recorded, so a member, a re-run and a drain all read the rows the coordinating run read.
+    /// window that submission recorded, so a member, a re-run and a drain all read the rows the coordinating run read. A run
+    /// the platform executes again after an interruption reopens the submission its interrupted attempt left unsettled for
+    /// the same read (<see cref="ResumableAsync"/>) rather than registering another. The submission is held for the run
+    /// (<see cref="Holds"/>) before it is registered or planned again; the caller lets go of it when it is done with it.
     /// Returns early with <see cref="PreparedIntake.Done"/> when there is nothing to plan.
     /// </summary>
     public async Task<PreparedIntake> PrepareAsync(
@@ -170,12 +191,83 @@ public sealed class SubmissionIntake
         var existing = request.SubmissionId is { } named
             ? await _ledger.GetSubmissionAsync(named, ct).ConfigureAwait(false)
                 ?? throw new DeliveryException($"Submission {named:D} is not in the ledger.")
-            : null;
+            : await ResumableAsync(flow, request, ct).ConfigureAwait(false);
         if (existing is not null && existing.FlowId != flow.Id)
         {
             throw new DeliveryException($"Submission {existing.SubmissionId:D} belongs to flow '{existing.FlowName}', not '{flow.Label}'.");
         }
 
+        // Held before anything is planned into it, and a new one before the ledger has it, so no moment passes in which a
+        // later run could take it for a submission nobody works on.
+        var submissionId = existing?.SubmissionId ?? Guid.CreateVersion7();
+        var held = Holds is not null && await Holds.HoldAsync(submissionId, ct).ConfigureAwait(false);
+        try
+        {
+            return await PrepareHeldAsync(flow, resolved, parameters, request, force, existing, submissionId, now, workRoot, ct).ConfigureAwait(false);
+        }
+        catch when (held)
+        {
+            await Holds!.ReleaseAsync(submissionId).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The submission of this run's attempt that an interrupted attempt of the same platform run left unsettled for the same
+    /// read, or null. The platform executes a run again when the node executing it stopped (its lease lapsed), and the
+    /// attempt that stopped may have registered a submission and planned, or sent, part of it; the new attempt resumes that
+    /// submission, as the platform hands it back the fan-out members it already has, so its window, its key slices and its
+    /// members stay one. A plan of the whole scope resumes the run's unsettled plan of the whole scope; a key-scoped plan
+    /// resumes only one made for exactly the same records. A member names its submission and never resumes one.
+    /// </summary>
+    private async Task<SubmissionState?> ResumableAsync(FlowDefinition flow, IntakeRequest request, CancellationToken ct)
+    {
+        if (RunId is not { } runId || request.Slices is not null)
+        {
+            return null;
+        }
+
+        foreach (var candidate in await _ledger.ListUnsettledSubmissionsOfRunAsync(flow.Id, runId, ct).ConfigureAwait(false))
+        {
+            var recorded = SourceWindowDescription.Parse(candidate.SourceWindowJson);
+            if (!SameRead(request.Selection, candidate, recorded))
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "Run {RunId} is executing again after an interruption: it resumes submission {SubmissionId} ({Status}), which its interrupted attempt left unsettled, rather than registering another.",
+                runId, candidate.SubmissionId, StatusText.Of(candidate.Status));
+            return candidate;
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether a submission recorded as <paramref name="recorded"/> was made for the read <paramref name="selection"/> asks for.</summary>
+    private static bool SameRead(SourceSelection selection, SubmissionState candidate, SourceWindowDescription? recorded)
+    {
+        var keys = recorded?.Selection == SubmissionKinds.Keys || (recorded is null && candidate.Kind == SubmissionKinds.Keys);
+        if (selection.Kind != SourceSelectionKind.Keys)
+        {
+            return !keys;
+        }
+
+        if (!keys || recorded is null)
+        {
+            return false;
+        }
+
+        var asked = selection.Keys.Select(k => JsonSerializer.Serialize(k.Values)).ToHashSet(StringComparer.Ordinal);
+        var covered = recorded.Keys.Select(k => JsonSerializer.Serialize(k)).ToHashSet(StringComparer.Ordinal);
+        return asked.SetEquals(covered);
+    }
+
+    /// <summary><see cref="PrepareAsync"/> once the submission is held.</summary>
+    private async Task<PreparedIntake> PrepareHeldAsync(
+        FlowDefinition flow, ResolvedMapping resolved, IReadOnlyDictionary<string, string> parameters, IntakeRequest request, bool force,
+        SubmissionState? existing, Guid submissionId, DateTime now, string workRoot, CancellationToken ct)
+    {
         var described = existing is null ? null : SourceWindowDescription.Parse(existing.SourceWindowJson);
         var selection = described is null ? request.Selection : described.ToSelection();
         var header = await _planner.OpenAsync(
@@ -191,7 +283,7 @@ public sealed class SubmissionIntake
         {
             (submission, created) = await _ledger.RegisterSubmissionAsync(new SubmissionState
             {
-                SubmissionId = Guid.CreateVersion7(),
+                SubmissionId = submissionId,
                 FlowId = flow.Id,
                 FlowName = flow.Label,
                 MappingReference = resolved.Mapping.Reference,
@@ -296,11 +388,14 @@ public sealed class SubmissionIntake
         var submission = await _ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Submission {submissionId} is not in the ledger.");
 
+        // A submission planned again (a re-run, or a run resuming what its interrupted attempt left) can still hold records
+        // an earlier pass queued, which this pass found already queued: it is complete only once none is left to send.
+        var complete = counts.Planned == 0 && !await _ledger.HasPendingAsync(flow.Id, submissionId, now, ct).ConfigureAwait(false);
         submission = submission with
         {
-            Status = counts.Planned == 0 ? SubmissionStatus.Completed : SubmissionStatus.Planned,
+            Status = complete ? SubmissionStatus.Completed : SubmissionStatus.Planned,
             StartedUtc = submission.StartedUtc ?? now,
-            CompletedUtc = counts.Planned == 0 ? now : null,
+            CompletedUtc = complete ? now : null,
             RecordCount = counts.Records,
             Planned = counts.Planned,
             SkippedUnchanged = counts.Skipped,
@@ -318,7 +413,7 @@ public sealed class SubmissionIntake
         await _ledger.UpdateSubmissionAsync(submission, ct).ConfigureAwait(false);
         await WriteWatermarkAsync(flow, submission, parameters, ct).ConfigureAwait(false);
         _logger.LogInformation("Submission {SubmissionId}: {Counts}.", submission.SubmissionId, counts);
-        await EmitAsync(flow, submission, counts.Planned == 0 ? "submission.completed" : "submission.planned", Summarize(submission), ct).ConfigureAwait(false);
+        await EmitAsync(flow, submission, complete ? "submission.completed" : "submission.planned", Summarize(submission), ct).ConfigureAwait(false);
         return submission;
     }
 
@@ -848,7 +943,29 @@ public sealed class SubmissionIntake
     };
 
     /// <summary>Closes the submission after the drains finished, with honest counts scoped to the records it touched.</summary>
-    public async Task<SubmissionState> CompleteAsync(Guid submissionId, Guid flowId, CancellationToken ct = default)
+    public Task<SubmissionState> CompleteAsync(Guid submissionId, Guid flowId, CancellationToken ct = default)
+        => CloseAsync(submissionId, flowId, stopped: null, ct);
+
+    /// <summary>
+    /// Closes a submission whose run stopped before its records were all sent (a failure guard tripped, the run was
+    /// cancelled, or the run ended and a later run took the submission over): its totals counted as
+    /// <see cref="CompleteAsync"/> counts them, and failed with <paramref name="reason"/> while records of it are still
+    /// pending, or when its planning never finished, since a plan cut short is no completed one whatever it had sent. A
+    /// closed submission's pending records are sent by the flow's next run, so what the stop left is not stranded behind a
+    /// submission nobody works on any more.
+    /// </summary>
+    public Task<SubmissionState> StopAsync(Guid submissionId, Guid flowId, string reason, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        return CloseAsync(submissionId, flowId, reason, ct);
+    }
+
+    /// <summary>
+    /// Counts a submission's totals from the ledger and closes it: running while records of it are still pending, else
+    /// failed when any of its records failed, else completed; with <paramref name="stopped"/>, failed with that reason
+    /// while records are still pending or its planning never finished. The listeners hear of a submission that closes.
+    /// </summary>
+    private async Task<SubmissionState> CloseAsync(Guid submissionId, Guid flowId, string? stopped, CancellationToken ct)
     {
         var submission = await _ledger.GetSubmissionAsync(submissionId, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Submission {submissionId} is not in the ledger.");
@@ -862,6 +979,7 @@ public sealed class SubmissionIntake
         var stillPending = await _ledger.HasPendingAsync(flowId, submissionId, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
         var now = _time.GetUtcNow().UtcDateTime;
         var wasClosed = submission.Status is SubmissionStatus.Completed or SubmissionStatus.Failed;
+        var stop = stopped is not null && (stillPending || submission.Status == SubmissionStatus.Received);
         submission = submission with
         {
             Delivered = delivered,
@@ -869,41 +987,20 @@ public sealed class SubmissionIntake
             Held = held,
             Failed = failed,
             Waiting = waiting,
-            Status = stillPending ? SubmissionStatus.Running : (failed > 0 ? SubmissionStatus.Failed : SubmissionStatus.Completed),
-            CompletedUtc = stillPending ? null : now,
+            Status = stop ? SubmissionStatus.Failed : stillPending ? SubmissionStatus.Running : (failed > 0 ? SubmissionStatus.Failed : SubmissionStatus.Completed),
+            CompletedUtc = stop || !stillPending ? now : null,
+            Error = stop ? stopped : submission.Error,
         };
         await _ledger.UpdateSubmissionAsync(submission, ct).ConfigureAwait(false);
-        if (!stillPending && !wasClosed)
+        if (stop)
+        {
+            await EmitAsync(null, submission, "submission.completed", $"{stopped}; {Summarize(submission)}", ct).ConfigureAwait(false);
+        }
+        else if (!stillPending && !wasClosed)
         {
             await EmitAsync(null, submission, "submission.completed", Summarize(submission), ct).ConfigureAwait(false);
         }
 
-        return submission;
-    }
-
-    /// <summary>
-    /// Closes a submission whose run stopped before its records were all sent (a failure guard tripped, the run was
-    /// cancelled): its totals counted as <see cref="CompleteAsync"/> counts them, and, while records of it are still
-    /// pending, failed with <paramref name="reason"/>. A closed submission's pending records are sent by the flow's next
-    /// run, so what the stop left is not stranded behind a submission nobody works on any more.
-    /// </summary>
-    public async Task<SubmissionState> StopAsync(Guid submissionId, Guid flowId, string reason, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        var submission = await CompleteAsync(submissionId, flowId, ct).ConfigureAwait(false);
-        if (submission.Status is SubmissionStatus.Completed or SubmissionStatus.Failed)
-        {
-            return submission;
-        }
-
-        submission = submission with
-        {
-            Status = SubmissionStatus.Failed,
-            Error = reason,
-            CompletedUtc = _time.GetUtcNow().UtcDateTime,
-        };
-        await _ledger.UpdateSubmissionAsync(submission, ct).ConfigureAwait(false);
-        await EmitAsync(null, submission, "submission.completed", $"{reason}; {Summarize(submission)}", ct).ConfigureAwait(false);
         return submission;
     }
 

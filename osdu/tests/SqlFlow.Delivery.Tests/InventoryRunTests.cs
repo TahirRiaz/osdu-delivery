@@ -411,14 +411,14 @@ public sealed class InventoryRunTests : IDisposable
     [Fact]
     public async Task A_query_is_sent_with_the_flows_parameters_and_the_partition_the_run_reads_filled_in()
     {
-        var yaml = Flow(extra: "parameters:\n  country: { default: NO }")
+        var yaml = Flow(extra: "parameters:\n  country: { default: US }")
             .Replace("    versions: latest", "    versions: latest\n    query: 'data.Country:\"{country}\" AND data.Partition:\"{partition}\"'", StringComparison.Ordinal);
-        var (runner, _, _) = await RunnerAsync(yaml, new Dictionary<string, string> { ["country"] = "NO" });
+        var (runner, _, _) = await RunnerAsync(yaml, new Dictionary<string, string> { ["country"] = "US" });
 
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
 
         var asked = JsonNode.Parse(_search.Calls.First(c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal)).Body!)!;
-        Assert.Equal("data.Country:\"NO\" AND data.Partition:\"dev\"", asked["query"]!.GetValue<string>());
+        Assert.Equal("data.Country:\"US\" AND data.Partition:\"dev\"", asked["query"]!.GetValue<string>());
         Assert.Equal(Partition, _search.Calls[0].Headers["data-partition-id"]);
     }
 

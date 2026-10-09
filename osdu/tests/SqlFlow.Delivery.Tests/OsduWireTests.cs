@@ -442,14 +442,14 @@ public class WellboreDdmsRootTests
     [Fact]
     public async Task An_explicit_path_option_is_used_as_written_even_with_a_root()
     {
-        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/petrodb/welllogs/" + RecordId, HttpStatusCode.OK, """{"id":"x","version":1}""");
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/facade-api/welllogs/" + RecordId, HttpStatusCode.OK, """{"id":"x","version":1}""");
         var (client, runtime) = Client(handler);
         using (runtime)
         {
-            var options = new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms", VerifyPath = "/petrodb/welllogs/{id}" };
+            var options = new ProtocolOptions { DdmsRoot = "/api/os-wellbore-ddms", VerifyPath = "/facade-api/welllogs/{id}" };
             await new OsduDdmsProtocol(client, options, Samples.Logger<OsduDdmsProtocol>()).VerifyAsync(RecordId, 1);
 
-            Assert.Equal("/petrodb/welllogs/" + RecordId, Assert.Single(handler.Calls).Uri.AbsolutePath);
+            Assert.Equal("/facade-api/welllogs/" + RecordId, Assert.Single(handler.Calls).Uri.AbsolutePath);
         }
     }
 

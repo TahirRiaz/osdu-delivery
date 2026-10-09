@@ -35,20 +35,20 @@ public sealed partial class RecordIdFromKeyTests
     private static string Unique(string id) => id[$"dev:{Units}:".Length..];
 
     [Theory]
-    [InlineData("RECALL", "RECALL")]
-    [InlineData("RECALL::GAPI", "RECALL::GAPI")]
+    [InlineData("WELLDB", "WELLDB")]
+    [InlineData("WELLDB::GAPI", "WELLDB::GAPI")]
     [InlineData("LIS-LAS::REV", "LIS-LAS::REV")]
-    [InlineData("RECALL::-UNITLES", "RECALL::-UNITLES")]
-    [InlineData("RECALL::G/CC", "RECALL::G%2FCC")]
-    [InlineData("RECALL::KPA.S/M", "RECALL::KPA.S%2FM")]
-    [InlineData("RECALL::%", "RECALL::%25")]
-    [InlineData("RECALL::A%2FB", "RECALL::A%252FB")]
-    [InlineData("RECALL::DEG C", "RECALL::DEG%20C")]
-    [InlineData("RECALL::a+b?c#d&e\\f", "RECALL::a%2Bb%3Fc%23d%26e%5Cf")]
-    [InlineData("RECALL::\u00B5S/FT", "RECALL::%C2%B5S%2FFT")]
-    [InlineData("RECALL::\u00B0F", "RECALL::%C2%B0F")]
-    [InlineData("RECALL::\U0001D510", "RECALL::%F0%9D%94%90")]
-    [InlineData("  RECALL::GAPI\t", "RECALL::GAPI")]
+    [InlineData("WELLDB::-UNITLES", "WELLDB::-UNITLES")]
+    [InlineData("WELLDB::G/CC", "WELLDB::G%2FCC")]
+    [InlineData("WELLDB::KPA.S/M", "WELLDB::KPA.S%2FM")]
+    [InlineData("WELLDB::%", "WELLDB::%25")]
+    [InlineData("WELLDB::A%2FB", "WELLDB::A%252FB")]
+    [InlineData("WELLDB::DEG C", "WELLDB::DEG%20C")]
+    [InlineData("WELLDB::a+b?c#d&e\\f", "WELLDB::a%2Bb%3Fc%23d%26e%5Cf")]
+    [InlineData("WELLDB::\u00B5S/FT", "WELLDB::%C2%B5S%2FFT")]
+    [InlineData("WELLDB::\u00B0F", "WELLDB::%C2%B0F")]
+    [InlineData("WELLDB::\U0001D510", "WELLDB::%F0%9D%94%90")]
+    [InlineData("  WELLDB::GAPI\t", "WELLDB::GAPI")]
     public void One_key_value_is_the_code_as_osdu_catalogs_write_it_with_every_other_character_percent_encoded(string value, string unique)
     {
         var id = Id(value);
@@ -60,9 +60,9 @@ public sealed partial class RecordIdFromKeyTests
     [Fact]
     public void Ids_keep_the_case_of_the_key_as_osdu_and_the_delivery_key_do()
     {
-        Assert.Equal("RECALL::fraction", Unique(Id("RECALL::fraction")!));
-        Assert.NotEqual(Id("RECALL::fraction"), Id("RECALL::FRACTION"));
-        Assert.NotEqual(DeliveryKey.Derive("recall-external-units", ["RECALL::fraction"]), DeliveryKey.Derive("recall-external-units", ["RECALL::FRACTION"]));
+        Assert.Equal("WELLDB::fraction", Unique(Id("WELLDB::fraction")!));
+        Assert.NotEqual(Id("WELLDB::fraction"), Id("WELLDB::FRACTION"));
+        Assert.NotEqual(DeliveryKey.Derive("welldb-external-units", ["WELLDB::fraction"]), DeliveryKey.Derive("welldb-external-units", ["WELLDB::FRACTION"]));
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public sealed partial class RecordIdFromKeyTests
     {
         Assert.Equal("a%3Ab:c", Unique(Id("a:b", "c")!));
         Assert.Equal("a:b%3Ac", Unique(Id("a", "b:c")!));
-        Assert.Equal("NORWAY_WELLDB:L%2F1001", Unique(Id("NORWAY_WELLDB", "L/1001")!));
+        Assert.Equal("PROJECT_A:L%2F1001", Unique(Id("PROJECT_A", "L/1001")!));
         Assert.NotEqual(Id("a:b", "c"), Id("a", "b:c"));
 
         // Keys of different lengths can give one id. They are two mappings' keys, since a mapping's key has a fixed number
@@ -115,7 +115,7 @@ public sealed partial class RecordIdFromKeyTests
             var id = TargetId.ComposeFromKey("dev", Units, values, out var none);
             Assert.Null(none);
             Assert.Matches(StorageId(), id!);
-            var key = DeliveryKey.Derive("recall-external-units", values);
+            var key = DeliveryKey.Derive("welldb-external-units", values);
             if (byId.TryGetValue(id!, out var seen))
             {
                 Assert.Equal(seen.Key, key);
@@ -137,7 +137,7 @@ public sealed partial class RecordIdFromKeyTests
         Assert.Equal("the key is empty, and the OSDU id is made from it", empty);
         Assert.Null(TargetId.ComposeFromKey("dev", Units, ["a", null], out var second));
         Assert.Equal("key value 2 of 2 is empty, and the OSDU id is made from every key value", second);
-        Assert.Null(TargetId.ComposeFromKey("dev", Units, ["RECALL::\uD800"], out var surrogate));
+        Assert.Null(TargetId.ComposeFromKey("dev", Units, ["WELLDB::\uD800"], out var surrogate));
         Assert.Equal("key value 1 holds text that is not valid Unicode, which no OSDU id can carry", surrogate);
         Assert.Null(TargetId.ComposeFromKey("dev", Units, [], out var none));
         Assert.NotNull(none);
@@ -160,8 +160,8 @@ public sealed partial class RecordIdFromKeyTests
     }
 
     [Theory]
-    [InlineData("test:reference-data--ExternalUnitOfMeasure:RECALL::GAPI")]
-    [InlineData("dev:reference-data--UnitOfMeasure:RECALL::GAPI")]
+    [InlineData("test:reference-data--ExternalUnitOfMeasure:WELLDB::GAPI")]
+    [InlineData("dev:reference-data--UnitOfMeasure:WELLDB::GAPI")]
     [InlineData("dev:reference-data--ExternalUnitOfMeasure:")]
     [InlineData("dev:reference-data--ExternalUnitOfMeasure:A%2")]
     [InlineData("dev:reference-data--ExternalUnitOfMeasure:A%ZZ")]
@@ -176,9 +176,9 @@ public sealed partial class RecordIdFromKeyTests
     [Fact]
     public void An_id_reads_back_as_as_many_values_as_the_key_has_columns_or_none()
     {
-        var id = Id("NORWAY_WELLDB", "L/1001")!;
-        Assert.Equal(["NORWAY_WELLDB", "L/1001"], TargetId.KeyValues(id, "dev", Units, 2));
-        Assert.Equal(["NORWAY_WELLDB:L/1001"], TargetId.KeyValues(id, "dev", Units, 1));
+        var id = Id("PROJECT_A", "L/1001")!;
+        Assert.Equal(["PROJECT_A", "L/1001"], TargetId.KeyValues(id, "dev", Units, 2));
+        Assert.Equal(["PROJECT_A:L/1001"], TargetId.KeyValues(id, "dev", Units, 1));
         Assert.Null(TargetId.KeyValues(id, "dev", Units, 3));
     }
 
@@ -227,9 +227,9 @@ public sealed partial class RecordIdFromKeyTests
     {
         foreach (var idFrom in new string?[] { null, "deliveryKey" })
         {
-            var rendered = Render(Mapping(idFrom), "RECALL::G/CC");
+            var rendered = Render(Mapping(idFrom), "WELLDB::G/CC");
 
-            var key = DeliveryKey.Derive("test", ["RECALL::G/CC"]);
+            var key = DeliveryKey.Derive("test", ["WELLDB::G/CC"]);
             Assert.False(rendered.IsHeld, string.Join("; ", rendered.Holds));
             Assert.Equal(key, rendered.Key);
             Assert.Equal(TargetId.Compose("dev", Things, key), rendered.TargetId);
@@ -240,11 +240,11 @@ public sealed partial class RecordIdFromKeyTests
     [Fact]
     public void A_mapping_that_makes_its_ids_from_the_key_renders_the_code_and_keeps_the_delivery_key_as_the_records_identity()
     {
-        var byKey = Render(Mapping("key"), "RECALL::G/CC");
-        var byDeliveryKey = Render(Mapping(null), "RECALL::G/CC");
+        var byKey = Render(Mapping("key"), "WELLDB::G/CC");
+        var byDeliveryKey = Render(Mapping(null), "WELLDB::G/CC");
 
         Assert.False(byKey.IsHeld, string.Join("; ", byKey.Holds));
-        Assert.Equal($"dev:{Things}:RECALL::G%2FCC", byKey.TargetId);
+        Assert.Equal($"dev:{Things}:WELLDB::G%2FCC", byKey.TargetId);
         Assert.Equal(byKey.TargetId, byKey.Document["id"]!.GetValue<string>());
 
         // The ledger keys the record by its delivery key whatever its id is made from, so a retry or an update of the row
@@ -258,7 +258,7 @@ public sealed partial class RecordIdFromKeyTests
         Assert.True(JsonNode.DeepEquals(withoutId, otherWithoutId));
 
         // Rendering the row again gives the same id and the same document: the id is a function of the key alone.
-        var again = Render(Mapping("key"), "RECALL::G/CC");
+        var again = Render(Mapping("key"), "WELLDB::G/CC");
         Assert.Equal((byKey.TargetId, byKey.MetadataHash), (again.TargetId, again.MetadataHash));
     }
 

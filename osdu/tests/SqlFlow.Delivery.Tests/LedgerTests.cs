@@ -317,12 +317,12 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
     {
         var submission = Guid.NewGuid();
         var key = DeliveryKey.Derive("test", ["L-1001"]);
-        var record = Pending("wells:NO_15_9/L-1001", submission) with
+        var record = Pending("wells:WB_A_1/L-1001", submission) with
         {
             DeliveryKey = key,
-            SourceKeyJson = """["NO_15_9","L-1001"]""",
-            Label = "OSDU-DEV-1-A / STAT_COMP / run 1 (L-1001)",
-            Identities = ["OSDU-DEV-1-A", "NO 15/9-19 SR"],
+            SourceKeyJson = """["WB_A_1","L-1001"]""",
+            Label = "OSDU-DEV-1-A / COMPOSITE / run 1 (L-1001)",
+            Identities = ["OSDU-DEV-1-A", "WB A/1-19 ST"],
             TargetId = "dev:work-product-component--WellLog:ea10870200ce",
             PendingSourceFileName = "welllog_20260901.csv",
         };
@@ -332,8 +332,8 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
         // id and its trailing part, a word of the label, the file it came from, and the delivery key itself.
         foreach (var term in new[]
         {
-            "OSDU-DEV-1-A", "osdu-dev-1", "NO 15/9-19", "L-1001", "NO_15_9",
-            "dev:work-product-component--WellLog:ea1087", "ea10870200ce", "STAT_COMP", "welllog_2026", key.Value.ToString("D"),
+            "OSDU-DEV-1-A", "osdu-dev-1", "WB A/1-19", "L-1001", "WB_A_1",
+            "dev:work-product-component--WellLog:ea1087", "ea10870200ce", "COMPOSITE", "welllog_2026", key.Value.ToString("D"),
         })
         {
             var found = await Ledger.LookupAsync(term, 10);
@@ -354,7 +354,7 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
         // no longer by what it was, because a staging rewrites the record's tokens as a set.
         await Ledger.UpsertPendingAsync(_flow, [record with
         {
-            Label = "OSDU-DEV-1-B / STAT_CPI / run 2 (L-1001)",
+            Label = "OSDU-DEV-1-B / CPI / run 2 (L-1001)",
             Identities = ["OSDU-DEV-1-B"],
             PendingSourceFileName = "welllog_20260902.csv",
         }]);
@@ -379,18 +379,18 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
         // id with its own part, the label's words and the file. Case is folded for comparison, kept for display.
         var tokens = RecordIdentities.Of(
             ["OSDU-DEV-1-A"],
-            "wells:NO_15_9/L-1001",
-            ["NO_15_9", "L-1001", null, "  "],
-            "OSDU-DEV-1-A / STAT_COMP / run 1 (L-1001)",
+            "wells:WB_A_1/L-1001",
+            ["WB_A_1", "L-1001", null, "  "],
+            "OSDU-DEV-1-A / COMPOSITE / run 1 (L-1001)",
             "dev:work-product-component--WellLog:ea1087",
             "welllog_20260901.csv");
         var by = tokens.ToLookup(t => t.Kind);
 
         Assert.Equal("OSDU-DEV-1-A", Assert.Single(by[RecordIdentityKind.Declared]).Display);
         // The key whole, then its parts: an operator pastes the key as the ledger prints it, or holds one column of it.
-        Assert.Equal(["wells:NO_15_9/L-1001", "NO_15_9", "L-1001"], by[RecordIdentityKind.Key].Select(t => t.Display));
+        Assert.Equal(["wells:WB_A_1/L-1001", "WB_A_1", "L-1001"], by[RecordIdentityKind.Key].Select(t => t.Display));
         Assert.Contains(by[RecordIdentityKind.Target], t => t.Display == "ea1087");
-        Assert.Contains(by[RecordIdentityKind.Label], t => t.Display == "STAT_COMP");
+        Assert.Contains(by[RecordIdentityKind.Label], t => t.Display == "COMPOSITE");
         Assert.Equal("welllog_20260901.csv", Assert.Single(by[RecordIdentityKind.File]).Display);
         // A value the record already carries is one token, whichever way it arrived: the wellbore id is declared, so
         // the label's first word does not repeat it.
@@ -399,7 +399,7 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
         Assert.All(tokens, t => Assert.Equal(t.Display.ToUpperInvariant(), t.Token));
 
         // A value too short to tell records apart is not worth an index row, and neither is an empty one.
-        Assert.Empty(RecordIdentities.Of(["NO", "1", "", "   "], null, null, null, null, null));
+        Assert.Empty(RecordIdentities.Of(["WB", "1", "", "   "], null, null, null, null, null));
 
         // A row with more identifying values than the index holds keeps the first, so one record costs a known number
         // of rows however wide its source row is, and a long value is stored by its start.
@@ -423,7 +423,7 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
         // this version holds them.
         var submission = Guid.NewGuid();
         var records = Enumerable.Range(0, 5)
-            .Select(i => Pending($"wells:NO_15_9/L-{i:D4}", submission) with { Label = $"WELL-{i:D4}" })
+            .Select(i => Pending($"wells:WB_A_1/L-{i:D4}", submission) with { Label = $"WELL-{i:D4}" })
             .ToList();
         await Ledger.UpsertPendingAsync(_flow, records);
         await using (var db = _db.CreateDbContext())

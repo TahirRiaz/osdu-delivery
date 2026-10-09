@@ -15,7 +15,7 @@ public class FileProtocolTests
 {
     private const string RecordId = "dev:work-product-component--WellLog:abc";
     private const string OtherId = "dev:work-product-component--WellLog:def";
-    private const string Document = """{"id":"dev:work-product-component--WellLog:abc","kind":"dev:wks:work-product-component--WellLog:1.4.0","acl":{"viewers":["data.default.viewers@dev.example.com"],"owners":["data.default.owners@dev.example.com"]},"legal":{"legaltags":["dev-public"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"n"}}""";
+    private const string Document = """{"id":"dev:work-product-component--WellLog:abc","kind":"dev:wks:work-product-component--WellLog:1.4.0","acl":{"viewers":["data.default.viewers@dev.example.com"],"owners":["data.default.owners@dev.example.com"]},"legal":{"legaltags":["dev-public"],"otherRelevantDataCountries":["US"]},"data":{"Name":"n"}}""";
 
     private static (OsduHttpClient Client, HttpRuntime Runtime, TestClock Clock) Client(FakeHttpHandler handler)
     {

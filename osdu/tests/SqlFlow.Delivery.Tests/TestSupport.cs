@@ -457,9 +457,9 @@ public static class Samples
     internal static void UseSampleEstateReferences()
     {
         Reference("OSDU_DATA_PARTITION", "dev");
-        Reference("OSDU_ACL_OWNER", "data.welllogsrecall.owners@dev.dataservices.energy");
-        Reference("OSDU_ACL_VIEWER", "data.sdd-well-logs.viewers@dev.dataservices.energy");
-        Reference("OSDU_LEGAL_TAG", "dev-equinor-osdu-reference-default");
+        Reference("OSDU_ACL_OWNER", "data.welldb.owners@dev.dataservices.energy");
+        Reference("OSDU_ACL_VIEWER", "data.welldb.viewers@dev.dataservices.energy");
+        Reference("OSDU_LEGAL_TAG", "dev-osdu-default-legal");
 
         static void Reference(string name, string value)
         {
@@ -487,11 +487,11 @@ public static class Samples
     public static string Root => Path.Combine(AppContext.BaseDirectory, "samples");
 
     /// <summary>
-    /// The recall source: real Recall well logs, with the flows that land, key and deliver them, the mapping they pin, the
-    /// cache they resolve against and the drop-off folder the pre-ingestion flows read. A repository is laid out per source,
-    /// so this is what a sync sees as one project.
+    /// The welldb source: synthetic well logs of a made-up well database, with the flows that land, key and deliver them,
+    /// the mapping they pin, the cache they resolve against and the drop-off folder the pre-ingestion flows read. A
+    /// repository is laid out per source, so this is what a sync sees as one project.
     /// </summary>
-    public static string Source => Path.Combine(Root, "recall");
+    public static string Source => Path.Combine(Root, "welldb");
 
     public static string Mappings => Path.Combine(Source, "mappings");
 
@@ -515,7 +515,7 @@ public static class Samples
     /// <summary>The schemas the fixture mappings pin, and the ones the schema-version suites compare against.</summary>
     public static string FixtureTemplateFiles => Path.Combine(AppContext.BaseDirectory, "Fixtures", "templates");
 
-    public static string Flow => Path.Combine(Source, "flows", "recall-welllog-03-header-delivery.yaml");
+    public static string Flow => Path.Combine(Source, "flows", "welldb-welllog-03-header-delivery.yaml");
 
     /// <summary>The wellbore master-data fixture flow: the storage route, with no payload.</summary>
     public static string WellboreFlowFile => Path.Combine(FixtureDocuments, "flows", "wells-wellbore-03-header-delivery.yaml");
@@ -527,10 +527,10 @@ public static class Samples
     public static string RetrievalFlowFile => Path.Combine(FixtureDocuments, "flows", "wells-osdu-04-metadata-retrieval.yaml");
 
     /// <summary>The sample lookups cache flow: the lookup tables the sample mapping translates source values through.</summary>
-    public static string LookupsCacheFlow => Path.Combine(Source, "cache", "recall-lookups-00-cache.yaml");
+    public static string LookupsCacheFlow => Path.Combine(Source, "cache", "welldb-lookups-00-cache.yaml");
 
     /// <summary>The sample reference cache flow: the OSDU reference data the ids the sample mapping builds are checked against.</summary>
-    public static string ReferenceCacheFlow => Path.Combine(Source, "cache", "recall-reference-00-cache.yaml");
+    public static string ReferenceCacheFlow => Path.Combine(Source, "cache", "osdu-reference-00-cache.yaml");
 
     /// <summary>
     /// The records of the types the sample reference cache flow captures, as a refresh of it would find them: the sample
@@ -562,10 +562,10 @@ public static class Samples
     public const string SamplePartition = "dev";
 
     /// <summary>The name of the sample lookups cache flow, which fills the cache of <see cref="SampleCacheScope"/> with the lookup tables the sample mapping reads.</summary>
-    public const string SampleLookupsFlowName = "recall-lookups-00-cache";
+    public const string SampleLookupsFlowName = "welldb-lookups-00-cache";
 
     /// <summary>The name of the sample reference cache flow, which fills the same cache with the reference data the sample mapping's ids name.</summary>
-    public const string SampleReferenceFlowName = "recall-reference-00-cache";
+    public const string SampleReferenceFlowName = "osdu-reference-00-cache";
 
     /// <summary>The name of the fixture cache flow, which adds the fixture mappings' reference data to the same cache.</summary>
     public const string FixtureCacheFlowName = "fixtures-osdu-00-reference-cache";
@@ -629,8 +629,8 @@ public static class Samples
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> LookupDataFolders = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["RecallUnits"] = "curve-units",
-        ["RecallDepthUnits"] = "depth-units",
+        ["UnitAlias"] = "unit-alias",
+        ["DepthUnitAlias"] = "depth-unit-alias",
         ["CurveDictionary"] = "curve-dictionary",
     };
 
@@ -871,7 +871,7 @@ public static class Samples
             },
             Target = flow.Target with
             {
-                Endpoint = "http://localhost:9/petrodb",
+                Endpoint = "http://localhost:9/facade-api",
                 Auth = new TargetAuth { Type = TargetAuthType.None },
                 // The partition stays: it is what names the cache the render reads.
                 Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = SampleCacheScope },
@@ -911,7 +911,7 @@ public static class TestSchema
           viewers: [viewers@x]
         legal:
           legaltags: [tag]
-          otherRelevantDataCountries: [NO]
+          otherRelevantDataCountries: [US]
         """;
 
     /// <summary>The data properties every test mapping starts from: the key's own property and the one property the schema requires.</summary>
@@ -978,7 +978,7 @@ public static class TestSchema
         ]),
         new ReferenceType("Wellbore", "master-data--Wellbore",
         [
-            ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["FacilityName"] = "NO 1/1-A" }),
+            ReferenceItem.FromText("dev:master-data--Wellbore:abc", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["FacilityName"] = "WB 1/1-A" }),
         ]),
     ]);
 
@@ -1121,7 +1121,7 @@ public sealed class FixedRecordSearchFactory(params (string Field, string Value,
         ("data.FacilityName", "OSDU-DEV-1-B", Partition + ":master-data--Wellbore:OSDU-DEV-1-B"),
     ]);
 
-    /// <summary>The id part the suites give a wellbore of that name: "NO 33/9-C-28 B" is NO-33-9-C-28-B.</summary>
+    /// <summary>The id part the suites give a wellbore of that name: "Wellbore B-2 B" is Wellbore-B-2-B, "A/1" is A-1.</summary>
     public static string WellboreId(string facilityName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(facilityName);

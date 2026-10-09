@@ -21,11 +21,11 @@ public class EtpObjectTests
     public void An_object_says_its_type_uuid_title_and_the_arrays_it_names()
     {
         var uuid = Guid.NewGuid();
-        var identity = Read(EtpSamples.Object(uuid, "Top Volve", arrayPath: "/RESQML/points"));
+        var identity = Read(EtpSamples.Object(uuid, "Top Field A", arrayPath: "/RESQML/points"));
 
         Assert.Equal("resqml20.obj_Grid2dRepresentation", identity.ObjectType);
         Assert.Equal(uuid, identity.Uuid);
-        Assert.Equal("Top Volve", identity.Title);
+        Assert.Equal("Top Field A", identity.Title);
         Assert.Equal(new DateTimeOffset(2026, 9, 17, 0, 0, 0, TimeSpan.Zero), identity.LastChanged);
         Assert.Equal(["RESQML/points"], identity.ArrayPaths);
     }

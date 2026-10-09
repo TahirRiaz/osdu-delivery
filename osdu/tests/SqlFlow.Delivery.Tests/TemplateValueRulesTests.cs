@@ -95,7 +95,7 @@ public sealed class TemplateValueRulesTests
     [InlineData("osdu.data.Either", "4.5")]
     [InlineData("osdu.data.Nullable", "\"abc\"")]
     [InlineData("osdu.data.Free", "{ \"any\": [1, 2] }")]
-    [InlineData("osdu.data.WellboreID", "\"dev:master-data--Wellbore:NO-1:\"")]
+    [InlineData("osdu.data.WellboreID", "\"dev:master-data--Wellbore:WB-1:\"")]
     [InlineData("osdu.data.ReferenceIDs", "[\"dev:reference-data--UnitOfMeasure:m:\"]")]
     [InlineData("osdu.data.Unknown", "\"a variable the template does not describe\"")]
     public void A_value_the_template_accepts_has_no_problem(string target, string json)
@@ -129,9 +129,9 @@ public sealed class TemplateValueRulesTests
     [InlineData("osdu.data.Tags", "[\"a\", \"a\"]", "uniqueItems")]
     [InlineData("osdu.data.Either", "\"n/b\"", "anyOf")]
     [InlineData("osdu.data.Nullable", "\"abcd\"", "maxLength")]
-    [InlineData("osdu.data.WellboreID", "\"NO 1/1-A\"", "relationship")]
-    [InlineData("osdu.data.WellboreID", "\"dev:master-data--Well:NO-1:\"", "relationship")]
-    [InlineData("osdu.data.ReferenceIDs", "[\"dev:master-data--Well:NO-1:\"]", "relationship")]
+    [InlineData("osdu.data.WellboreID", "\"WB 1/1-A\"", "relationship")]
+    [InlineData("osdu.data.WellboreID", "\"dev:master-data--Well:WB-1:\"", "relationship")]
+    [InlineData("osdu.data.ReferenceIDs", "[\"dev:master-data--Well:WB-1:\"]", "relationship")]
     public void A_value_breaking_a_rule_is_a_problem_naming_the_rule_and_the_value(string target, string json, string rule)
     {
         var problem = Assert.Single(Check(target, json));

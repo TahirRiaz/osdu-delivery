@@ -56,7 +56,7 @@ public sealed class PartitionCatalogTests : IDisposable
     }
 
     private const string Lookups = """
-          - table: OsduData.arc.CacheCurveDictionary
+          - table: OsduData.silver.CurveDictionary
             name: CurveDictionary
             key: mnemonic
             fields: [log_curve_type_id]
@@ -65,7 +65,7 @@ public sealed class PartitionCatalogTests : IDisposable
     /// <summary>The lookups cache flow, naming <paramref name="partitions"/> or, when null, the partition its header names.</summary>
     private static string LookupsFlow(string? partitions, string types = Lookups) => $$"""
         flowType: cache
-        name: recall-lookups-00-cache
+        name: welldb-lookups-00-cache
         {{(partitions is null ? string.Empty : $"partitions: {partitions}")}}
         source:
           connection: ${env:OSDU_DATA_DB}
@@ -77,11 +77,11 @@ public sealed class PartitionCatalogTests : IDisposable
     /// <summary>The lookups cache flow naming neither partitions nor a header: it builds a cache for every registered partition.</summary>
     private const string RegistryLookupsFlow = """
         flowType: cache
-        name: recall-lookups-00-cache
+        name: welldb-lookups-00-cache
         source:
           connection: ${env:OSDU_DATA_DB}
         types:
-          - table: OsduData.arc.CacheCurveDictionary
+          - table: OsduData.silver.CurveDictionary
             name: CurveDictionary
             key: mnemonic
             fields: [log_curve_type_id]
@@ -96,7 +96,7 @@ public sealed class PartitionCatalogTests : IDisposable
     {
         Write("cache/lookups.yaml", LookupsFlow("[dev, test]", Lookups + """
 
-              - table: OsduData.arc.CacheTestUnits
+              - table: OsduData.silver.TestUnits
                 name: TestUnits
                 key: source_unit
                 fields: [osdu_unit]
@@ -107,9 +107,9 @@ public sealed class PartitionCatalogTests : IDisposable
 
         Assert.Equal(
             [
-                "dev/recall-lookups-00-cache/CurveDictionary (named)",
-                "test/recall-lookups-00-cache/CurveDictionary (named)",
-                "test/recall-lookups-00-cache/TestUnits (named)",
+                "dev/welldb-lookups-00-cache/CurveDictionary (named)",
+                "test/welldb-lookups-00-cache/CurveDictionary (named)",
+                "test/welldb-lookups-00-cache/TestUnits (named)",
             ],
             await DefinitionsAsync());
     }
@@ -119,35 +119,35 @@ public sealed class PartitionCatalogTests : IDisposable
     {
         Write("cache/lookups.yaml", LookupsFlow(null));
         Assert.Empty(await SyncAsync());
-        Assert.Equal(["dev/recall-lookups-00-cache/CurveDictionary"], await DefinitionsAsync());
+        Assert.Equal(["dev/welldb-lookups-00-cache/CurveDictionary"], await DefinitionsAsync());
 
         await using (var db = _module.CreateDbContext())
         {
-            db.DeliveryCacheMembers.Add(new DeliveryCacheMember { Scope = "dev", TypeName = "CurveDictionary", RecordId = "GR", FlowName = "recall-lookups-00-cache" });
+            db.DeliveryCacheMembers.Add(new DeliveryCacheMember { Scope = "dev", TypeName = "CurveDictionary", RecordId = "GR", FlowName = "welldb-lookups-00-cache" });
             await db.SaveChangesAsync();
         }
 
         Write("cache/lookups.yaml", LookupsFlow("[dev, test]"));
         Assert.Empty(await SyncAsync());
         Assert.Equal(
-            ["dev/recall-lookups-00-cache/CurveDictionary (named)", "test/recall-lookups-00-cache/CurveDictionary (named)"],
+            ["dev/welldb-lookups-00-cache/CurveDictionary (named)", "test/welldb-lookups-00-cache/CurveDictionary (named)"],
             await DefinitionsAsync());
 
         await using (var db = _module.CreateDbContext())
         {
-            Assert.Equal(["GR"], await db.DeliveryCacheMembers.Where(m => m.Scope == "dev" && m.FlowName == "recall-lookups-00-cache").Select(m => m.RecordId).ToListAsync());
-            db.DeliveryCacheMembers.Add(new DeliveryCacheMember { Scope = "test", TypeName = "CurveDictionary", RecordId = "DT", FlowName = "recall-lookups-00-cache" });
+            Assert.Equal(["GR"], await db.DeliveryCacheMembers.Where(m => m.Scope == "dev" && m.FlowName == "welldb-lookups-00-cache").Select(m => m.RecordId).ToListAsync());
+            db.DeliveryCacheMembers.Add(new DeliveryCacheMember { Scope = "test", TypeName = "CurveDictionary", RecordId = "DT", FlowName = "welldb-lookups-00-cache" });
             await db.SaveChangesAsync();
         }
 
         // Dropping a partition lets go of what the flow held in it, and of nothing it holds in the partitions it keeps.
         Write("cache/lookups.yaml", LookupsFlow("[dev]"));
         Assert.Empty(await SyncAsync());
-        Assert.Equal(["dev/recall-lookups-00-cache/CurveDictionary (named)"], await DefinitionsAsync());
+        Assert.Equal(["dev/welldb-lookups-00-cache/CurveDictionary (named)"], await DefinitionsAsync());
         await using (var db = _module.CreateDbContext())
         {
-            Assert.False(await db.DeliveryCacheMembers.AnyAsync(m => m.Scope == "test" && m.FlowName == "recall-lookups-00-cache"));
-            Assert.True(await db.DeliveryCacheMembers.AnyAsync(m => m.Scope == "dev" && m.FlowName == "recall-lookups-00-cache"));
+            Assert.False(await db.DeliveryCacheMembers.AnyAsync(m => m.Scope == "test" && m.FlowName == "welldb-lookups-00-cache"));
+            Assert.True(await db.DeliveryCacheMembers.AnyAsync(m => m.Scope == "dev" && m.FlowName == "welldb-lookups-00-cache"));
         }
     }
 
@@ -210,7 +210,7 @@ public sealed class PartitionCatalogTests : IDisposable
         await Registry().AddAsync("test", null, makeDefault: false, "tester", Now);
         Assert.Empty(await SyncAsync());
         Assert.Equal(
-            ["dev/recall-lookups-00-cache/CurveDictionary (named)", "test/recall-lookups-00-cache/CurveDictionary (named)"],
+            ["dev/welldb-lookups-00-cache/CurveDictionary (named)", "test/welldb-lookups-00-cache/CurveDictionary (named)"],
             await DefinitionsAsync());
 
         // A partition registered later is described at the next sync, and one removed is let go of.
@@ -218,7 +218,7 @@ public sealed class PartitionCatalogTests : IDisposable
         Assert.True(await Registry().RemoveAsync("test"));
         Assert.Empty(await SyncAsync());
         Assert.Equal(
-            ["dev/recall-lookups-00-cache/CurveDictionary (named)", "prod/recall-lookups-00-cache/CurveDictionary (named)"],
+            ["dev/welldb-lookups-00-cache/CurveDictionary (named)", "prod/welldb-lookups-00-cache/CurveDictionary (named)"],
             await DefinitionsAsync());
     }
 
@@ -229,11 +229,11 @@ public sealed class PartitionCatalogTests : IDisposable
         await Registry().AddAsync("test", null, makeDefault: false, "tester", Now);
         Write("flows/welllog.yaml", """
             flowType: delivery
-            name: recall-welllog
+            name: welldb-welllog
             keepLedger: dev
             source:
               connection: ${env:OSDU_DATA_DB}
-              record: { object: OsduData.arc.WellLog, key: [log_id] }
+              record: { object: OsduData.silver.WellLog, key: [log_id] }
               lastModified: update_date
               work: work/welllog
             render:
@@ -249,7 +249,7 @@ public sealed class PartitionCatalogTests : IDisposable
         {
             var rows = await db.DeliveryInterfaces.AsNoTracking().Where(i => i.RepoId == _repo).ToListAsync();
             Assert.Equal(
-                [("dev", FlowId.Of("recall-welllog"), "recall-welllog", true), ("test", FlowId.Of("recall-welllog", "test"), "recall-welllog@test", true)],
+                [("dev", FlowId.Of("welldb-welllog"), "welldb-welllog", true), ("test", FlowId.Of("welldb-welllog", "test"), "welldb-welllog@test", true)],
                 rows.Select(r => (r.Partition, r.LedgerFlowId, r.LedgerName, r.Active)).OrderBy(r => r.Partition, StringComparer.Ordinal).ToList());
         }
 
@@ -260,8 +260,8 @@ public sealed class PartitionCatalogTests : IDisposable
         {
             var test = await db.DeliveryInterfaces.AsNoTracking().SingleAsync(i => i.RepoId == _repo && i.Partition == "test");
             Assert.False(test.Active);
-            var keeping = await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("recall-welllog", "test"), CancellationToken.None);
-            Assert.Equal("recall-welllog", Assert.Single(keeping).FlowName);
+            var keeping = await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("welldb-welllog", "test"), CancellationToken.None);
+            Assert.Equal("welldb-welllog", Assert.Single(keeping).FlowName);
         }
     }
 
@@ -270,11 +270,28 @@ public sealed class PartitionCatalogTests : IDisposable
     {
         var store = new DeliveryConfigStore(_module.CreateDbContext);
         var now = new DateTime(2026, 9, 27, 12, 0, 0, DateTimeKind.Utc);
-        await store.SetAsync(null, null, "OSDU_URL", "https://osdu.example.com", null, "tests", now);
-        await store.SetAsync(_repo, null, "OSDU_LEGAL_TAG", "estate-legal", null, "tests", now);
-        await store.SetAsync(null, "test", "OSDU_URL", "https://test.osdu.example.com", null, "tests", now);
-        await store.SetAsync(_repo, "test", "OSDU_LEGAL_TAG", "estate-test-legal", null, "tests", now);
-        await store.SetAsync(null, "prod", "OSDU_LEGAL_TAG", "platform-prod-legal", null, "tests", now);
+
+        // A property is set for a repository the catalog holds; the catalog's rows are this test's to remove.
+        await using var catalog = _module.CreateCatalogContext();
+        catalog.Repos.Add(new SqlFlow.Catalog.CatalogRepo { Id = _repo, Name = "partitions-" + _repo.ToString("N")[..10], FirstSeenUtc = now, LastSyncUtc = now });
+        await catalog.SaveChangesAsync();
+        try
+        {
+            await ReadConfigurationInLayersAsync(store, catalog, now);
+        }
+        finally
+        {
+            await catalog.Repos.Where(r => r.Id == _repo).ExecuteDeleteAsync();
+        }
+    }
+
+    private async Task ReadConfigurationInLayersAsync(DeliveryConfigStore store, SqlFlow.Catalog.CatalogDbContext catalog, DateTime now)
+    {
+        await store.SetAsync(null, null, "OSDU_URL", "https://osdu.example.com", null, "tests", now, catalog);
+        await store.SetAsync(_repo, null, "OSDU_LEGAL_TAG", "estate-legal", null, "tests", now, catalog);
+        await store.SetAsync(null, "test", "OSDU_URL", "https://test.osdu.example.com", null, "tests", now, catalog);
+        await store.SetAsync(_repo, "test", "OSDU_LEGAL_TAG", "estate-test-legal", null, "tests", now, catalog);
+        await store.SetAsync(null, "prod", "OSDU_LEGAL_TAG", "platform-prod-legal", null, "tests", now, catalog);
 
         var configuration = await store.ConfigurationAsync(_repo);
         Assert.Equal("estate-legal", configuration.Base["OSDU_LEGAL_TAG"]);
@@ -294,7 +311,7 @@ public sealed class PartitionCatalogTests : IDisposable
         Assert.Equal("https://test.osdu.example.com", (await store.EffectiveAsync(_repo, "test"))["OSDU_URL"]);
         Assert.Equal("estate-legal", (await store.EffectiveAsync(_repo, "test"))["OSDU_LEGAL_TAG"]);
 
-        var ex = await Assert.ThrowsAsync<FlowValidationException>(() => store.SetAsync(null, "${env:PART}", "OSDU_URL", "x", null, "tests", now));
+        var ex = await Assert.ThrowsAsync<FlowValidationException>(() => store.SetAsync(null, "${env:PART}", "OSDU_URL", "x", null, "tests", now, catalog));
         Assert.Contains("not a data-partition-id", ex.Message, StringComparison.Ordinal);
     }
 }

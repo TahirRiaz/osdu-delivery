@@ -478,7 +478,7 @@ public sealed class WorkflowRouteTests
 
         var document = FakeOsduPlatform.Record(anchor, "osdu:wks:work-product--WorkProduct:1.2.0", new JsonObject
         {
-            ["Name"] = "volve",
+            ["Name"] = "field-a",
             ["Components"] = new JsonArray("dev:work-product-component--WellLog:a:", "dev:work-product-component--WellLog:b:"),
         });
 
@@ -488,7 +488,7 @@ public sealed class WorkflowRouteTests
         Assert.True(outcome.Succeeded, outcome.Failure?.Message);
         Assert.Equal("dev:dataset--File.Generic:epc-out,dev:dataset--File.Generic:h5-out", outcome.Returned[OsduWorkflowProtocol.RecordIdsValue]);
         var sent = AssertContract(Assert.Single(platform.Runs), WorkflowCatalog.EnergymlDelivery);
-        Assert.Equal("volve.epc", sent["name"]!.GetValue<string>());
+        Assert.Equal("field-a.epc", sent["name"]!.GetValue<string>());
 
         // Created: a later change to the record is written, and the export is not run again.
         var later = await protocol.DeliverAsync(Work(document, existing: outcome.TargetVersion, forced: new HashSet<string>()));

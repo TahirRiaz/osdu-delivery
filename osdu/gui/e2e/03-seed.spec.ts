@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
 import { CACHE, CACHE_RECORDS, DELIVERY_FLOW, FixtureMeta, LOADING_FLOWS, LOOKUPS, REFERENCE, REFERENCE_RECORDS, REPO_NAME, SOURCE, TEMPLATES, folderOf } from "./global-setup";
+import { importCacheRecords } from "./delivery-cli";
 import { adminSession, expect, test } from "./helpers";
 
 // Seeds the estate THROUGH the product: saves the templates the estate's mappings pin, imports the fixture reference records
@@ -19,10 +20,10 @@ function fixtureMeta(): FixtureMeta {
 }
 
 /** The schema the ingestion flows key their tables into. */
-const INGESTION_SCHEMA = "arc";
+const INGESTION_SCHEMA = "silver";
 
 /** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
-const INGESTION_TABLES = ["WellLog", "WellLogCurve", "CacheCurveDictionary", "CacheRecallUnits", "CacheRecallDepthUnits"] as const;
+const INGESTION_TABLES = ["WellLog", "WellLogCurve", "CurveDictionary", "UnitAlias", "DepthUnitAlias"] as const;
 
 /**
  * Runs one batch against the database a connection string names, or against master beside it. sqlcmd is used because
@@ -142,25 +143,11 @@ test.describe.serial("seed the estate via repo source sync", () => {
   // the offline path an operator uses. Importing the same files again writes nothing, so a rerun keeps one version.
   test("import the reference records as the first versions of the cache", () => {
     test.setTimeout(420_000);
-    const meta = fixtureMeta();
     // The fixture mappings' reference data first, then the partition's reference data the sample's reference flow would
-    // capture, each as its own flow's capture, as two refreshes would write them.
+    // capture, each as its own flow's capture, as two refreshes would write them. The cache belongs to the partition the
+    // cache flow names, resolved as every other process of the estate resolves it.
     for (const [flow, records] of [[CACHE, CACHE_RECORDS], [REFERENCE, REFERENCE_RECORDS]] as const) {
-      const output = execFileSync(
-        "dotnet",
-        [
-          ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
-          "cache", "import", `${meta.sourceDir}/cache/${flow}.yaml`,
-          // The records are not repository content: a cache lives in the module's database, so the records that stand in
-          // for a capture sit beside the estate rather than inside the source that reads the cache.
-          "--from-dir", join(moduleRoot, records),
-          "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
-          "--json",
-        ],
-        // The cache belongs to the partition the cache flow names, resolved as every other process of the estate resolves it.
-        { encoding: "utf8", timeout: 400_000, env: { ...process.env, ...E2E.osdu, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
-      );
-      expect(output).toContain(flow);
+      expect(importCacheRecords(flow, records)).toContain(flow);
     }
   });
 
@@ -260,8 +247,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
     const caches = (await response.json()) as { scope: string; flows: string[]; types: { name: string; key: string | null }[] }[];
     const cache = caches.find((candidate) => candidate.flows.includes(LOOKUPS));
     expect(cache, `no cache is filled by ${LOOKUPS}`).toBeDefined();
-    expect(cache?.types.find((type) => type.name === "RecallUnits")?.key).toBe("source_unit");
-    expect(cache?.types.find((type) => type.name === "RecallDepthUnits")?.key).toBe("source_unit");
+    expect(cache?.types.find((type) => type.name === "UnitAlias")?.key).toBe("source_unit");
+    expect(cache?.types.find((type) => type.name === "DepthUnitAlias")?.key).toBe("source_unit");
     expect(cache?.types.find((type) => type.name === "CurveDictionary")?.key).toBe("mnemonic");
     // Beside them, the partition's reference data the reference flow captured, kept under record ids rather than keys.
     expect(cache?.flows).toContain(REFERENCE);

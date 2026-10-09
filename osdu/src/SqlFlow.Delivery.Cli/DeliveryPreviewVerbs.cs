@@ -7,6 +7,7 @@ using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Preview;
 using SqlFlow.Delivery.Json;
+using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Cli;
 
@@ -39,31 +40,57 @@ internal static class DeliveryPreviewVerbs
             return context.UsageError($"a key names a record of one interface; name it with --interface ({string.Join(", ", source.Names)}).");
         }
 
+        // A file that cannot be written is said before the record is rendered, not after.
+        if (output is not null)
+        {
+            OutputPath(output);
+        }
+
+        var previews = await PreviewsAsync(engine, flows, values, key, whole: output is not null, ct).ConfigureAwait(false);
+        string? written = null;
+        if (output is not null)
+        {
+            written = await WriteAsync(output, previews, ct).ConfigureAwait(false);
+        }
+
+        Show(context.Out, previews, context.Json, written, RecordPreviewLimits.Default.MaxDocumentChars);
+        return previews.All(p => p.Found) ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The preview of each flow, one interface at a time. <paramref name="whole"/> keeps each document whatever its size,
+    /// for a file (<see cref="RecordPreviewLimits.Whole"/>); otherwise a document over the preview's bound is left out.
+    /// </summary>
+    internal static async Task<IReadOnlyList<RecordPreview>> PreviewsAsync(
+        EngineContext engine, IReadOnlyList<FlowDefinition> flows, IReadOnlyDictionary<string, string> values, string? key, bool whole, CancellationToken ct)
+    {
         var previews = new List<RecordPreview>(flows.Count);
         foreach (var flow in flows)
         {
             using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow, values, ct).ConfigureAwait(false);
-            previews.Add(await new RecordPreviewer(runtime).PreviewAsync(key, ct).ConfigureAwait(false));
+            previews.Add(await new RecordPreviewer(runtime, whole ? RecordPreviewLimits.Whole : RecordPreviewLimits.Default).PreviewAsync(key, ct).ConfigureAwait(false));
         }
 
-        if (output is not null)
+        return previews;
+    }
+
+    /// <summary>
+    /// The previews on the console, as JSON or as text, each document bounded by <paramref name="maxDocumentChars"/> as the
+    /// GUI bounds it: a larger one is described by its size and hash, with the file it was written to whole, when it was.
+    /// </summary>
+    internal static void Show(TextWriter writer, IReadOnlyList<RecordPreview> previews, bool json, string? written, int maxDocumentChars)
+    {
+        var shown = previews.Select(p => RecordPreviewer.Bound(p, maxDocumentChars, written)).ToList();
+        if (json)
         {
-            await WriteAsync(output, previews, ct).ConfigureAwait(false);
+            writer.WriteLine(Json(shown));
+            return;
         }
 
-        if (context.Json)
+        foreach (var preview in shown)
         {
-            context.Out.WriteLine(Json(previews));
+            WriteText(writer, preview, written);
         }
-        else
-        {
-            foreach (var preview in previews)
-            {
-                WriteText(context.Out, preview, output);
-            }
-        }
-
-        return previews.All(p => p.Found) ? 0 : 1;
     }
 
     /// <summary>The previews as one JSON document: the one preview for one flow, an array for a source's interfaces.</summary>
@@ -72,16 +99,13 @@ internal static class DeliveryPreviewVerbs
             ? RecordPreviewJson.Write(previews[0], indented: true)
             : CanonicalJson.Pretty(new JsonArray(previews.Select(p => JsonNode.Parse(RecordPreviewJson.Write(p))).ToArray()));
 
-    /// <summary>The whole preview written to a file, documents and all, which a node's answer may have to leave out for its size.</summary>
-    private static async Task WriteAsync(string output, IReadOnlyList<RecordPreview> previews, CancellationToken ct)
+    /// <summary>
+    /// The whole preview written to a file, documents and all, however large: what the console and a node's answer to the
+    /// GUI leave out for its size. Returns the file's full path.
+    /// </summary>
+    internal static async Task<string> WriteAsync(string output, IReadOnlyList<RecordPreview> previews, CancellationToken ct)
     {
-        var path = Path.GetFullPath(output);
-        var folder = Path.GetDirectoryName(path);
-        if (folder is not null && !Directory.Exists(folder))
-        {
-            throw new SqlFlowException($"--out names {path}, in a folder that does not exist.");
-        }
-
+        var path = OutputPath(output);
         try
         {
             await File.WriteAllTextAsync(path, Json(previews) + Environment.NewLine, ct).ConfigureAwait(false);
@@ -90,11 +114,33 @@ internal static class DeliveryPreviewVerbs
         {
             throw new SqlFlowException($"The preview could not be written to {path}: {ex.Message}", ex);
         }
+
+        return path;
     }
 
-    private static void WriteText(TextWriter writer, RecordPreview preview, string? output)
+    /// <summary>The full path <c>--out</c> names, in a folder that exists.</summary>
+    private static string OutputPath(string output)
     {
-        var name = preview.Interface is null ? preview.Flow : $"{preview.Flow} / {preview.Interface}";
+        string path;
+        try
+        {
+            path = Path.GetFullPath(output);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new SqlFlowException($"--out names '{output}', which is not a file path: {ex.Message}", ex);
+        }
+
+        var folder = Path.GetDirectoryName(path);
+        return folder is not null && !Directory.Exists(folder)
+            ? throw new SqlFlowException($"--out names {path}, in a folder that does not exist.")
+            : path;
+    }
+
+    private static void WriteText(TextWriter writer, RecordPreview preview, string? written)
+    {
+        // The flow's label names its interface already (flow/interface), as a run names it.
+        var name = preview.Flow;
         if (!preview.Found)
         {
             writer.WriteLine($"--  {name}: nothing to preview");
@@ -198,9 +244,9 @@ internal static class DeliveryPreviewVerbs
 
         writer.WriteLine(document.Sent is null ? "    document as rendered and sent:" : "    document as the route sends it:");
         writer.WriteLine(CanonicalJson.Pretty(document.Sent ?? document.Rendered!));
-        if (output is not null)
+        if (written is not null)
         {
-            writer.WriteLine($"    written to {Path.GetFullPath(output)}");
+            writer.WriteLine($"    written to {written}");
         }
     }
 

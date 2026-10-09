@@ -31,46 +31,46 @@ public class DimensionSamplerTests
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
     private const string W1 = "dev:master-data--Wellbore:W1";
     private const string W2 = "dev:master-data--Wellbore:W2";
-    private const string Norway = "dev:master-data--GeoPoliticalEntity:Norway";
-    private const string Rogaland = "dev:master-data--GeoPoliticalEntity:Rogaland";
-    private const string Sverdrup = "dev:master-data--Field:JohanSverdrup";
+    private const string UnitedStates = "dev:master-data--GeoPoliticalEntity:US";
+    private const string CountyA = "dev:master-data--GeoPoliticalEntity:CountyA";
+    private const string FieldA = "dev:master-data--Field:FIELD-A";
     private const string CountryName = "data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName";
 
     private static readonly OsduField WellboreId = OsduField.Text("data.WellboreID");
     private static readonly OsduField Source = OsduField.Text("data.Source");
 
     /// <summary>
-    /// Wellbore W1, of field Johan Sverdrup, in the county of Rogaland and the country of Norway (the county named first, so
-    /// only a filter reads the country), with three logs, two from Recall and one from PetroDB; W2, nameless, with one log
-    /// holding no source; and a log naming no record at all.
+    /// Wellbore W1, of field FIELD A, in the county County A and the country United States (the county named first, so
+    /// only a filter reads the country), with three logs, two from WellDB and one from a facade service in front of the
+    /// DDMS; W2, nameless, with one log holding no source; and a log naming no record at all.
     /// </summary>
     private static FakeDimensionPlatform Estate()
     {
         var platform = new FakeDimensionPlatform();
-        platform.Add(Norway, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject
+        platform.Add(UnitedStates, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject
         {
-            ["GeoPoliticalEntityName"] = "Norway", ["GeoPoliticalEntityTypeID"] = "dev:reference-data--GeoPoliticalEntityType:Country:",
+            ["GeoPoliticalEntityName"] = "United States", ["GeoPoliticalEntityTypeID"] = "dev:reference-data--GeoPoliticalEntityType:Country:",
         });
-        platform.Add(Rogaland, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject
+        platform.Add(CountyA, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject
         {
-            ["GeoPoliticalEntityName"] = "Rogaland", ["GeoPoliticalEntityTypeID"] = "dev:reference-data--GeoPoliticalEntityType:County:",
+            ["GeoPoliticalEntityName"] = "County A", ["GeoPoliticalEntityTypeID"] = "dev:reference-data--GeoPoliticalEntityType:County:",
         });
-        platform.Add(Sverdrup, "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "JOHAN SVERDRUP" });
+        platform.Add(FieldA, "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "FIELD A" });
         platform.Add(W1, WellboreKind, new JsonObject
         {
-            ["FacilityName"] = "  NO 16/2-9 S ",
+            ["FacilityName"] = "  WELLBORE A/2-9 S ",
             ["FacilityID"] = "ad215042",
             ["GeoContexts"] = new JsonArray(
-                new JsonObject { ["FieldID"] = Sverdrup + ":" },
-                new JsonObject { ["GeoPoliticalEntityID"] = Rogaland + ":" },
-                new JsonObject { ["GeoPoliticalEntityID"] = Norway + ":" }),
+                new JsonObject { ["FieldID"] = FieldA + ":" },
+                new JsonObject { ["GeoPoliticalEntityID"] = CountyA + ":" },
+                new JsonObject { ["GeoPoliticalEntityID"] = UnitedStates + ":" }),
         });
         platform.Add(W2, WellboreKind, new JsonObject { ["FacilityID"] = "bc771003" });
-        platform.Add("dev:work-product-component--WellLog:L1", WellLog, new JsonObject { ["WellboreID"] = W1 + ":", ["Source"] = "Recall" });
-        platform.Add("dev:work-product-component--WellLog:L2", WellLog, new JsonObject { ["WellboreID"] = W1 + ":", ["Source"] = "Recall" });
-        platform.Add("dev:work-product-component--WellLog:L3", WellLog, new JsonObject { ["WellboreID"] = W1 + ":", ["Source"] = "dev:reference-data--Source:Petro%20DB:" });
+        platform.Add("dev:work-product-component--WellLog:L1", WellLog, new JsonObject { ["WellboreID"] = W1 + ":", ["Source"] = "WellDB" });
+        platform.Add("dev:work-product-component--WellLog:L2", WellLog, new JsonObject { ["WellboreID"] = W1 + ":", ["Source"] = "WellDB" });
+        platform.Add("dev:work-product-component--WellLog:L3", WellLog, new JsonObject { ["WellboreID"] = W1 + ":", ["Source"] = "dev:reference-data--Source:Facade%20API:" });
         platform.Add("dev:work-product-component--WellLog:L4", WellLog, new JsonObject { ["WellboreID"] = W2 + ":" });
-        platform.Add("dev:work-product-component--WellLog:L5", WellLog, new JsonObject { ["WellboreID"] = "unknown-well", ["Source"] = "Recall" });
+        platform.Add("dev:work-product-component--WellLog:L5", WellLog, new JsonObject { ["WellboreID"] = "unknown-well", ["Source"] = "WellDB" });
         return platform;
     }
 
@@ -133,7 +133,7 @@ public class DimensionSamplerTests
     [Fact]
     public async Task The_query_narrows_the_keys_to_those_its_records_hold()
     {
-        var keys = await Sampler(Estate()).KeysAsync(Request("data.Source.keyword:\"Recall\""), CancellationToken.None);
+        var keys = await Sampler(Estate()).KeysAsync(Request("data.Source.keyword:\"WellDB\""), CancellationToken.None);
 
         Assert.Equal([(W1 + ":", 2L), ("unknown-well", 1L)], keys.Keys.Select(k => (k.Key, k.Count)));
         Assert.Equal(3, keys.Total);
@@ -202,18 +202,18 @@ public class DimensionSamplerTests
             spec, W1 + ":", null, WellboreId, Collected(), DimensionCleaner.Build(spec.Clean, _ => throw new InvalidOperationException()), CancellationToken.None);
 
         // The label as read, trimmed as a build reads it, from the record the key names; the value, the label cleaned.
-        Assert.Equal(("NO 16/2-9 S", W1), (example.Label, example.LabelFrom));
-        Assert.Equal("NO 16/2-9 S", example.Value);
+        Assert.Equal(("WELLBORE A/2-9 S", W1), (example.Label, example.LabelFrom));
+        Assert.Equal("WELLBORE A/2-9 S", example.Value);
         Assert.Null(example.LeftOut);
 
         // Each attribute as a build reads it: the country through the entity whose type is Country, not the county named first.
         var attributes = example.Attributes.ToLookup(a => a.Name);
         Assert.Equal("ad215042", Assert.Single(attributes["UUID"]).Value);
-        Assert.Equal(("JOHAN SVERDRUP", Sverdrup), (Assert.Single(attributes["Field"]).Value, attributes["Field"].Single().From));
-        Assert.Equal(("Norway", Norway), (Assert.Single(attributes["Country"]).Value, attributes["Country"].Single().From));
+        Assert.Equal(("FIELD A", FieldA), (Assert.Single(attributes["Field"]).Value, attributes["Field"].Single().From));
+        Assert.Equal(("United States", UnitedStates), (Assert.Single(attributes["Country"]).Value, attributes["Country"].Single().From));
 
         // The values its logs collect, each shown as a build shows it (a reference by its decoded code), with their records.
-        Assert.Equal([("Recall", 2L), ("Petro DB", 1L)], attributes["Source"].Select(a => (a.Value, a.Records ?? 0)));
+        Assert.Equal([("WellDB", 2L), ("Facade API", 1L)], attributes["Source"].Select(a => (a.Value, a.Records ?? 0)));
 
         // The records holding the key, and the filter finding them, as a build writes it.
         Assert.Equal(3, example.Records);
@@ -243,7 +243,7 @@ public class DimensionSamplerTests
         var unnamed = await sampler.ExampleAsync(Spec(unlabelled: null), "unknown-well", null, WellboreId, Collected(), DimensionCleaner.Identity, CancellationToken.None);
         Assert.Equal("it names no OSDU record", unnamed.Problem);
         Assert.Equal("unknown-well", unnamed.Value);
-        Assert.Equal([("Recall", 1L)], unnamed.Attributes.Where(a => a.Name == "Source").Select(a => (a.Value, a.Records ?? 0)));
+        Assert.Equal([("WellDB", 1L)], unnamed.Attributes.Where(a => a.Name == "Source").Select(a => (a.Value, a.Records ?? 0)));
 
         var coded = await sampler.ExampleAsync(Spec(unlabelled: null, label: []), "dev:master-data--Wellbore:W%2F2:", null, WellboreId, Collected(), DimensionCleaner.Identity, CancellationToken.None);
         Assert.Null(coded.Label);
@@ -267,7 +267,7 @@ public class DimensionSamplerTests
         var platform = Estate();
         var example = await Sampler(platform).ExampleAsync(Spec(), W1 + ":", null, null, Collected(), DimensionCleaner.Identity, CancellationToken.None);
 
-        Assert.Equal("NO 16/2-9 S", example.Label);
+        Assert.Equal("WELLBORE A/2-9 S", example.Label);
         Assert.Null(example.Records);
         Assert.Null(example.Filter);
         Assert.DoesNotContain(example.Attributes, a => a.Name == "Source");
@@ -279,10 +279,10 @@ public class DimensionSamplerTests
     public async Task The_query_narrows_the_records_counted_and_collected()
     {
         var example = await Sampler(Estate()).ExampleAsync(
-            Spec(), W1 + ":", "data.Source.keyword:\"Recall\"", WellboreId, Collected(), DimensionCleaner.Identity, CancellationToken.None);
+            Spec(), W1 + ":", "data.Source.keyword:\"WellDB\"", WellboreId, Collected(), DimensionCleaner.Identity, CancellationToken.None);
 
         Assert.Equal(2, example.Records);
-        Assert.Equal([("Recall", 2L)], example.Attributes.Where(a => a.Name == "Source").Select(a => (a.Value, a.Records ?? 0)));
+        Assert.Equal([("WellDB", 2L)], example.Attributes.Where(a => a.Name == "Source").Select(a => (a.Value, a.Records ?? 0)));
     }
 
     // ---- Through the explorer's operation, as the control plane runs it ----
@@ -361,9 +361,9 @@ public class DimensionSamplerTests
         var answered = JsonNode.Parse(await operation.ExecuteAsync(Task(await FlowFileAsync(), ExploreOperation.DimensionExampleAction, arguments), CancellationToken.None))!;
         var example = answered["answer"]!.Deserialize<DimensionExample>(ExploreOperation.BuilderJson)!;
 
-        Assert.Equal(("NO 16/2-9 S", "no 16/2-9 s"), (example.Label, example.Value));
-        Assert.Equal("Norway", example.Attributes.Single(a => a.Name == "Country").Value);
-        Assert.Equal(["Recall", "Petro DB"], example.Attributes.Where(a => a.Name == "Source").Select(a => a.Value));
+        Assert.Equal(("WELLBORE A/2-9 S", "wellbore a/2-9 s"), (example.Label, example.Value));
+        Assert.Equal("United States", example.Attributes.Single(a => a.Name == "Country").Value);
+        Assert.Equal(["WellDB", "Facade API"], example.Attributes.Where(a => a.Name == "Source").Select(a => a.Value));
         Assert.Equal(3, example.Records);
     }
 
@@ -373,7 +373,7 @@ public class DimensionSamplerTests
         var operation = new ExploreOperation(Samples.Engine(ledger: null), Estate(), allowLoopback: true);
         var item = DimensionBuilder.ToYaml(new DimensionDraft { Name = "Source", Kind = WellLog, Path = "data.Source" })
             + "    clean:\n      - map: CurveAliases\n";
-        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { [ExploreOperation.KeyArgument] = "Recall" };
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { [ExploreOperation.KeyArgument] = "WellDB" };
         LongArgument.Put(arguments, ExploreOperation.ItemArgument, item);
 
         var payload = Task(await FlowFileAsync(), ExploreOperation.DimensionExampleAction, arguments);

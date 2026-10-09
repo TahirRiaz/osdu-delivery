@@ -25,11 +25,11 @@ namespace SqlFlow.Delivery.Tests;
 /// generated with the test database's name and with schemas of this fixture's own, plus the host composition that runs
 /// them (docs/stage4-design.md section 6). What executes is the shipped estate, rewritten only where it names a database,
 /// a schema, a connection reference or a network target, so a chain run here is the chain an operator would run.
-/// <para>Every fixture instance owns a unique pair of schemas (<c>pre_&lt;n&gt;</c> and <c>arc_&lt;n&gt;</c>), a unique flow
+/// <para>Every fixture instance owns a unique pair of schemas (<c>pre_&lt;n&gt;</c> and <c>silver_&lt;n&gt;</c>), a unique flow
 /// name prefix and therefore unique ledger rows, and a unique environment variable holding the connection. Suites and
 /// classes running beside each other never meet, and everything the fixture created is dropped when it is disposed.</para>
 /// <para>The tables themselves are created by SQLFlow's own flows rather than by the fixture: the pre flow creates
-/// <c>pre_&lt;n&gt;.WellLog</c> and its typed view, the ingestion flow creates the keyed <c>arc_&lt;n&gt;.WellLog</c> with
+/// <c>pre_&lt;n&gt;.WellLog</c> and its typed view, the ingestion flow creates the keyed <c>silver_&lt;n&gt;.WellLog</c> with
 /// the system columns the delivery reads. The fixture creates only what the engine does not, which is the schemas.</para>
 /// </summary>
 public sealed class SqlServerIngestionFixture : IAsyncDisposable
@@ -45,7 +45,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The flow documents of the well log chain, by the name they carry in the repository.</summary>
     private static readonly string[] ChainDocuments =
     [
-        "recall-welllog-01-header-pre", "recall-welllog-01-curves-pre", "recall-welllog-02-header-ing", "recall-welllog-02-curves-ing", "recall-welllog-03-header-delivery",
+        "welldb-welllog-01-header-pre", "welldb-welllog-01-curves-pre", "welldb-welllog-02-header-ing", "welldb-welllog-02-curves-ing", "welldb-welllog-03-header-delivery",
     ];
 
     /// <summary>The fixture flows that load the wellbore tables, generated for a fixture that asks for them.</summary>
@@ -73,7 +73,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
 
     /// <summary>What replaces it: tests never call OSDU, and the protocol is a fake one the host is composed with.</summary>
     private static readonly string LocalTarget = """
-          endpoint: http://localhost:9/petrodb
+          endpoint: http://localhost:9/facade-api
           auth:
             type: none
         """.ReplaceLineEndings("\n");
@@ -118,7 +118,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     public string PreSchema => "pre_" + Suffix;
 
     /// <summary>The schema the ingestion flows keep their keyed tables in, which the OSDU flow reads.</summary>
-    public string ArcSchema => "arc_" + Suffix;
+    public string SilverSchema => "silver_" + Suffix;
 
     /// <summary>The environment variable the generated flows reference; a flow document never holds a connection string.</summary>
     public string ConnectionVariable => "SQLFLOW_CHAIN_DB_" + Suffix;
@@ -133,7 +133,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     public Guid FlowId => Identity.FlowId.Of(DeliveryFlowName);
 
     /// <summary>The record table the OSDU flow reads, as its document names it.</summary>
-    public string RecordObject => $"[{DatabaseName}].[{ArcSchema}].[WellLog]";
+    public string RecordObject => $"[{DatabaseName}].[{SilverSchema}].[WellLog]";
 
     /// <summary>The target the fake protocol stands in for; every delivery the chain makes is recorded on it.</summary>
     public FakeProtocol Protocol { get; }
@@ -173,7 +173,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The name a shipped flow of either chain carries in an estate generated with <paramref name="suffix"/>.</summary>
     private static string Rename(string shippedName, string suffix)
         => shippedName
-            .Replace("recall-welllog-03-header-delivery", "rw" + suffix, StringComparison.Ordinal)
+            .Replace("welldb-welllog-03-header-delivery", "rw" + suffix, StringComparison.Ordinal)
             .Replace("wells-wellbore-03-header-delivery", "wb" + suffix, StringComparison.Ordinal);
 
     /// <summary>
@@ -202,7 +202,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         ServiceProvider? provider = null;
         try
         {
-            await CreateSchemasAsync(connectionString, "pre_" + suffix, "arc_" + suffix, ct).ConfigureAwait(false);
+            await CreateSchemasAsync(connectionString, "pre_" + suffix, "silver_" + suffix, ct).ConfigureAwait(false);
             GenerateEstate(root, databaseName, suffix, variable, fanOut, batchRecords, wellboreChain);
             provider = Compose(connectionString, protocol);
             await ImportRenderInputsAsync(connectionString, ct).ConfigureAwait(false);
@@ -216,7 +216,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             }
 
             Environment.SetEnvironmentVariable(variable, null);
-            await DropSchemasAsync(connectionString, "pre_" + suffix, "arc_" + suffix, CancellationToken.None).ConfigureAwait(false);
+            await DropSchemasAsync(connectionString, "pre_" + suffix, "silver_" + suffix, CancellationToken.None).ConfigureAwait(false);
             Delete(root);
             database.Dispose();
             throw;
@@ -250,10 +250,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     public async Task RunIngestionChainAsync(CancellationToken ct = default)
     {
-        await RunFlowAsync("recall-welllog-01-header-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("recall-welllog-01-curves-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("recall-welllog-02-header-ing", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("recall-welllog-02-curves-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("welldb-welllog-01-header-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("welldb-welllog-01-curves-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("welldb-welllog-02-header-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("welldb-welllog-02-curves-ing", ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -281,7 +281,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>Runs the OSDU flow's <c>deliver</c> operation through the document executor, with this run's values.</summary>
     public Task<DocumentRunOutcome> DeliverAsync(Guid? runId = null, CancellationToken ct = default)
         => RunFlowAsync(
-            "recall-welllog-03-header-delivery",
+            "welldb-welllog-03-header-delivery",
             new RunParameters { Operation = DeliveryOperations.Deliver, Values = SampleEstate.Values },
             runId ?? Guid.NewGuid(),
             ct);
@@ -292,7 +292,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     public FlowDefinition DeliveryFlow()
     {
-        var flow = _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("recall-welllog-03-header-delivery"));
+        var flow = _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("welldb-welllog-03-header-delivery"));
         return flow.DeclaresPartitions ? flow.ForPartition(Samples.SamplePartition) : flow;
     }
 
@@ -354,7 +354,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{ArcSchema}].[{table}] WHERE [source_project] = @project AND [log_id] = @log;";
+            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{SilverSchema}].[{table}] WHERE [source_project] = @project AND [log_id] = @log;";
         command.Parameters.AddWithValue("@project", sourceProject);
         command.Parameters.AddWithValue("@log", logId);
         var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
@@ -370,7 +370,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     {
         await _provider.DisposeAsync().ConfigureAwait(false);
         await ClearLedgerAsync().ConfigureAwait(false);
-        await DropSchemasAsync(ConnectionString, PreSchema, ArcSchema, CancellationToken.None).ConfigureAwait(false);
+        await DropSchemasAsync(ConnectionString, PreSchema, SilverSchema, CancellationToken.None).ConfigureAwait(false);
         Environment.SetEnvironmentVariable(ConnectionVariable, null);
         Delete(Root);
         _database.Dispose();
@@ -476,7 +476,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         await Samples.ImportSampleCacheAsync(new OsduCacheStore(Contexts)).ConfigureAwait(false);
     }
 
-    private static async Task CreateSchemasAsync(string connectionString, string preSchema, string arcSchema, CancellationToken ct)
+    private static async Task CreateSchemasAsync(string connectionString, string preSchema, string silverSchema, CancellationToken ct)
     {
         // SQLFlow's flows create a schema they find missing, but two first runs can both find it missing, and the second
         // CREATE then fails. [raw], where ingestion stages its rows, is shared by every fixture on the database, so the
@@ -492,7 +492,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             EXEC @granted = sys.sp_getapplock @Resource = N'SqlFlow.Delivery.Tests.schemas', @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 20000;
             IF @granted < 0 THROW 50000, N'The chain fixture waited 20 seconds for another fixture to finish creating its schemas.', 1;
             IF SCHEMA_ID('{preSchema}') IS NULL EXEC(N'CREATE SCHEMA [{preSchema}]');
-            IF SCHEMA_ID('{arcSchema}') IS NULL EXEC(N'CREATE SCHEMA [{arcSchema}]');
+            IF SCHEMA_ID('{silverSchema}') IS NULL EXEC(N'CREATE SCHEMA [{silverSchema}]');
             IF SCHEMA_ID('raw') IS NULL EXEC(N'CREATE SCHEMA [raw]');
             COMMIT TRANSACTION;
             """,
@@ -503,7 +503,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// Drops the views, then the tables, then the schemas themselves. The order matters: a typed view is bound to the table
     /// it projects, and a schema cannot be dropped while it holds anything.
     /// </summary>
-    private static async Task DropSchemasAsync(string connectionString, string preSchema, string arcSchema, CancellationToken ct)
+    private static async Task DropSchemasAsync(string connectionString, string preSchema, string silverSchema, CancellationToken ct)
     {
         try
         {
@@ -514,13 +514,13 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
                 DECLARE @sql nvarchar(max) = N'';
                 SELECT @sql = @sql + N'DROP VIEW [' + s.[name] + N'].[' + v.[name] + N'];'
                 FROM sys.views v INNER JOIN sys.schemas s ON s.[schema_id] = v.[schema_id]
-                WHERE s.[name] IN (N'{preSchema}', N'{arcSchema}');
+                WHERE s.[name] IN (N'{preSchema}', N'{silverSchema}');
                 SELECT @sql = @sql + N'DROP TABLE [' + s.[name] + N'].[' + t.[name] + N'];'
                 FROM sys.tables t INNER JOIN sys.schemas s ON s.[schema_id] = t.[schema_id]
-                WHERE s.[name] IN (N'{preSchema}', N'{arcSchema}');
+                WHERE s.[name] IN (N'{preSchema}', N'{silverSchema}');
                 IF @sql <> N'' EXEC sp_executesql @sql;
                 IF SCHEMA_ID('{preSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{preSchema}]');
-                IF SCHEMA_ID('{arcSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{arcSchema}]');
+                IF SCHEMA_ID('{silverSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{silverSchema}]');
                 """,
                 ct).ConfigureAwait(false);
         }
@@ -529,7 +529,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             // The database is a disposable one, and a schema left behind must not turn a passing chain into a failing
             // suite; it is reported so the leftover is visible rather than silent.
             throw new InvalidOperationException(
-                $"The chain fixture could not drop its schemas [{preSchema}] and [{arcSchema}] from the test database; drop them by hand. {ex.Message}", ex);
+                $"The chain fixture could not drop its schemas [{preSchema}] and [{silverSchema}] from the test database; drop them by hand. {ex.Message}", ex);
         }
     }
 
@@ -588,7 +588,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             text = Replace(text, "\n  schema: pre\n", $"\n  schema: pre_{suffix}\n", name);
         }
 
-        if (name == "recall-welllog-03-header-delivery")
+        if (name == "welldb-welllog-03-header-delivery")
         {
             text = Replace(text, ShippedTarget, LocalTarget, name);
             if (fanOut > 0)
@@ -654,9 +654,9 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             var schema = layer switch
             {
                 "pre" => "pre_" + suffix,
-                "arc" => "arc_" + suffix,
+                "silver" => "silver_" + suffix,
                 _ => throw new InvalidOperationException(
-                    $"The sample flow '{document}.yaml' names the schema '{layer}', which the chain fixture has no schema of its own for; it creates only a pre and an arc schema."),
+                    $"The sample flow '{document}.yaml' names the schema '{layer}', which the chain fixture has no schema of its own for; it creates only a pre and a silver schema."),
             };
 
             lines[i] = $"{line[..at]}{Key} \"[{databaseName}].[{schema}].[{qualified[(dot + 1)..]}]\"";

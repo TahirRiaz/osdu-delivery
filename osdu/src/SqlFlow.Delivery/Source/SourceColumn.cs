@@ -34,6 +34,12 @@ internal sealed record SourceColumn(string Name, string TypeName, short MaxLengt
     /// <summary>Whether the column holds a whole number.</summary>
     public bool IsInteger => TypeName.ToLowerInvariant() is "bigint" or "int" or "smallint" or "tinyint";
 
+    /// <summary>
+    /// Whether every value the column holds is a whole number that fits a <see cref="long"/>: an integer column, or a decimal
+    /// one without a scale and at most 18 digits.
+    /// </summary>
+    public bool IsWholeNumber => IsInteger || (TypeName.ToLowerInvariant() is "decimal" or "numeric" && Scale == 0 && Precision <= 18);
+
     /// <summary>Whether the column holds a date and time.</summary>
     public bool IsMoment => TypeName.ToLowerInvariant() is "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset" or "date";
 

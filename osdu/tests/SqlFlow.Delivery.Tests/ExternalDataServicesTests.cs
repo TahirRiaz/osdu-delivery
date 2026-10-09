@@ -81,7 +81,7 @@ public sealed class ExternalDataServicesTests
             ["OnIngestionDataPartitionID"] = Partition,
             ["ScheduleUTC"] = "0 1 * * *",
             ["LastSuccessfulRunDateUTC"] = "2026-01-01T00:00:00Z",
-            ["OnIngestionLegalTags"] = new JsonObject { ["legaltags"] = new JsonArray("dev-public"), ["otherRelevantDataCountries"] = new JsonArray("NO") },
+            ["OnIngestionLegalTags"] = new JsonObject { ["legaltags"] = new JsonArray("dev-public"), ["otherRelevantDataCountries"] = new JsonArray("US") },
             ["OnIngestionAcl"] = new JsonObject
             {
                 ["owners"] = new JsonArray("data.default.owners@dev.example.com"),
@@ -693,7 +693,7 @@ public sealed class ExternalDataServicesTests
                 viewers: [data.default.viewers@dev.example.com]
               legal:
                 legaltags: [dev-public]
-                otherRelevantDataCountries: [NO]
+                otherRelevantDataCountries: [US]
               data:
                 Name: { $from: name }
                 DatasetURL: { $from: url, $required: false }

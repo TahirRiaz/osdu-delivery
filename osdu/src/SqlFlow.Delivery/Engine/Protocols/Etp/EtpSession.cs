@@ -110,7 +110,9 @@ public sealed class EtpSession : IAsyncDisposable
     private readonly EtpSessionOptions _options;
     private readonly ILogger _log;
     private readonly TimeProvider _time;
-    private readonly Uri _endpoint;
+
+    /// <summary>The endpoint as every message and log line of the session names it: without its user info and query string.</summary>
+    private readonly string _endpoint;
 
     private Task _pump = Task.CompletedTask;
     private Task _keepAlive = Task.CompletedTask;
@@ -121,7 +123,7 @@ public sealed class EtpSession : IAsyncDisposable
     private EtpSession(WebSocket socket, Uri endpoint, EtpSessionOptions options, ILogger log, TimeProvider time)
     {
         _socket = socket;
-        _endpoint = endpoint;
+        _endpoint = HeaderRedaction.DescribeUrl(endpoint);
         _options = options;
         _log = log;
         _time = time;
@@ -189,13 +191,13 @@ public sealed class EtpSession : IAsyncDisposable
         {
             socket.Dispose();
             DeliveryMetrics.RequestEnded("WSS", endpoint.Host, Result(socket.HttpStatusCode), clock.GetElapsedTime(began));
-            throw Upgrade(endpoint, socket.HttpStatusCode, ex);
+            throw Upgrade(HeaderRedaction.DescribeUrl(endpoint), socket.HttpStatusCode, ex);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             socket.Dispose();
             DeliveryMetrics.RequestEnded("WSS", endpoint.Host, "transport", clock.GetElapsedTime(began));
-            throw new DeliveryException($"The Reservoir DDMS at {endpoint} could not be reached: {ex.Message}", ex);
+            throw new DeliveryException($"The Reservoir DDMS at {HeaderRedaction.DescribeUrl(endpoint)} could not be reached: {HeaderRedaction.RedactMessage(ex.Message)}", ex);
         }
 
         DeliveryMetrics.RequestEnded("WSS", endpoint.Host, "2xx", clock.GetElapsedTime(began));
@@ -203,7 +205,7 @@ public sealed class EtpSession : IAsyncDisposable
         {
             socket.Dispose();
             throw new DeliveryException(
-                $"The endpoint at {endpoint} accepted the connection under subprotocol '{socket.SubProtocol}' instead of '{EtpSessionOptions.SubProtocol}', so it is not an ETP 1.2 endpoint.");
+                $"The endpoint at {HeaderRedaction.DescribeUrl(endpoint)} accepted the connection under subprotocol '{socket.SubProtocol}' instead of '{EtpSessionOptions.SubProtocol}', so it is not an ETP 1.2 endpoint.");
         }
 
         var session = new EtpSession(socket, endpoint, options, log, clock);
@@ -333,8 +335,8 @@ public sealed class EtpSession : IAsyncDisposable
     private static string Result(System.Net.HttpStatusCode? status)
         => status is null ? "transport" : $"{(int)status / 100}xx";
 
-    /// <summary>What an upgrade that did not become a WebSocket means (section 8.5).</summary>
-    private static DeliveryException Upgrade(Uri endpoint, System.Net.HttpStatusCode? status, WebSocketException inner) => (int?)status switch
+    /// <summary>What an upgrade that did not become a WebSocket means (section 8.5), naming the endpoint as <paramref name="endpoint"/> describes it.</summary>
+    private static DeliveryException Upgrade(string endpoint, System.Net.HttpStatusCode? status, WebSocketException inner) => (int?)status switch
     {
         401 or 403 => new DeliveryException(
             $"The Reservoir DDMS at {endpoint} refused the connection with HTTP {(int)status!}: the token the flow presents is missing, expired, or lacks the entitlements this partition requires.", inner),
@@ -343,7 +345,7 @@ public sealed class EtpSession : IAsyncDisposable
         400 => new DeliveryException(
             $"The Reservoir DDMS at {endpoint} refused the connection with HTTP 400: the data partition header is missing or names a partition this deployment does not serve.", inner),
         404 => new DeliveryException($"The Reservoir DDMS at {endpoint} answered HTTP 404: the endpoint path is not the ETP one.", inner),
-        null => new DeliveryException($"The Reservoir DDMS at {endpoint} could not be reached: {inner.Message}", inner),
+        null => new DeliveryException($"The Reservoir DDMS at {endpoint} could not be reached: {HeaderRedaction.RedactMessage(inner.Message)}", inner),
         _ => new DeliveryException($"The Reservoir DDMS at {endpoint} refused the connection with HTTP {(int)status!}.", inner),
     };
 

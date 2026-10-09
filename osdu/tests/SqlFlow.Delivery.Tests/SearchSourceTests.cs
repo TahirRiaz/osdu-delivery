@@ -486,7 +486,7 @@ public class SearchSourceTests
             """
               WellboreID:
                 $search: Wellbore
-                $findBy: data.FacilityName = 'NO 15/9-F-1'
+                $findBy: data.FacilityName = 'Wellbore A/1-F-1'
                 $modifiers: [trim]
             """,
             "what a search finds is never modified"

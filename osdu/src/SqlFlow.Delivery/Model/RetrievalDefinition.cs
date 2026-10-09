@@ -80,7 +80,6 @@ public sealed record RetrievalSource
     public const string DefaultSearchPath = "/api/search/v2/query_with_cursor";
     public const string DefaultQueryPath = "/api/search/v2/query";
     public const string DefaultRecordQueryPath = "/api/storage/v2/query/records";
-    public const string DefaultProbePath = "/api/search/v2/info";
 
     /// <summary>The platform base URL; ${env:NAME} and ${keyvault:NAME} references allowed.</summary>
     public required string Endpoint { get; init; }
@@ -117,8 +116,6 @@ public sealed record RetrievalSource
 
     /// <summary>Concurrent storage read-back requests per page when <see cref="FetchRecords"/> is set.</summary>
     public int FetchParallelism { get; init; } = 4;
-
-    public string ProbePath { get; init; } = DefaultProbePath;
 }
 
 /// <summary>

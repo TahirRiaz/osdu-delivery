@@ -96,7 +96,7 @@ public abstract class BulkEvaluator : Evaluator
     /// </summary>
     internal static JsonNode? Cell(JsonElement row, int column)
     {
-        if (row.ValueKind != JsonValueKind.Array || column >= row.GetArrayLength())
+        if (row.ValueKind != JsonValueKind.Array || column < 0 || column >= row.GetArrayLength())
         {
             return null;
         }
@@ -146,6 +146,15 @@ public abstract class BulkEvaluator : Evaluator
 
         return -1;
     }
+
+    /// <summary>
+    /// The failure of a record one of whose pages the DDMS answered without a column the read asked for (its description
+    /// listed the column, and the page left it out): its values cannot be judged, so the record fails saying so rather than
+    /// being judged as holding no value there.
+    /// </summary>
+    internal static BulkVerdict Unanswered(string column, long offset)
+        => BulkVerdict.Fail(null, string.Create(CultureInfo.InvariantCulture,
+            $"the DDMS answered the page of its bulk data from row {offset + 1} without the column {column}, which the read asked for and its description lists"));
 }
 
 /// <summary>How many rows each record's bulk data holds.</summary>
@@ -215,13 +224,25 @@ internal sealed class ColumnValueEvaluator(int index, ValueAssertion assertion, 
     private sealed class Check(ValueAssertion assertion) : BulkCheck
     {
         private readonly Tally _tally = new(assertion.For, 1);
+        private BulkVerdict? _unanswered;
 
         public override bool ReadsRows => true;
 
         public override void Observe(BulkFrame frame)
         {
+            if (_unanswered is not null)
+            {
+                return;
+            }
+
             var column = IndexOf(frame, assertion.Target.Path);
             var filters = assertion.Where.Select(w => (w, IndexOf(frame, w.Target.Path))).ToList();
+            if (column < 0 || filters.Exists(f => f.Item2 < 0))
+            {
+                _unanswered = Unanswered(column < 0 ? assertion.Target.Path : filters.First(f => f.Item2 < 0).w.Target.Path, frame.Offset);
+                return;
+            }
+
             var position = frame.Offset;
             foreach (var row in frame.Data.EnumerateArray())
             {
@@ -283,6 +304,11 @@ internal sealed class ColumnValueEvaluator(int index, ValueAssertion assertion, 
 
         public override BulkVerdict Finish()
         {
+            if (_unanswered is not null)
+            {
+                return _unanswered;
+            }
+
             if (_tally.Passed)
             {
                 return BulkVerdict.Pass;
@@ -306,12 +332,24 @@ internal sealed class ColumnAggregateEvaluator(int index, AggregateAssertion ass
     {
         private readonly Aggregator _aggregator = new(assertion.Function == AggregateFunction.Distinct);
         private long _missing;
+        private BulkVerdict? _unanswered;
 
         public override bool ReadsRows => true;
 
         public override void Observe(BulkFrame frame)
         {
+            if (_unanswered is not null)
+            {
+                return;
+            }
+
             var column = IndexOf(frame, assertion.Target.Path);
+            if (column < 0)
+            {
+                _unanswered = Unanswered(assertion.Target.Path, frame.Offset);
+                return;
+            }
+
             foreach (var row in frame.Data.EnumerateArray())
             {
                 if (Cell(row, column) is { } value)
@@ -327,6 +365,11 @@ internal sealed class ColumnAggregateEvaluator(int index, AggregateAssertion ass
 
         public override BulkVerdict Finish()
         {
+            if (_unanswered is not null)
+            {
+                return _unanswered;
+            }
+
             var (measured, why) = _aggregator.Measure(assertion.Function, _missing, assertion.Comparison);
             if (measured is not { } value)
             {
@@ -366,6 +409,12 @@ internal sealed class MonotonicEvaluator(int index, MonotonicAssertion assertion
             }
 
             var column = IndexOf(frame, assertion.Column);
+            if (column < 0)
+            {
+                _failure = Unanswered(assertion.Column, frame.Offset);
+                return;
+            }
+
             var position = frame.Offset;
             foreach (var row in frame.Data.EnumerateArray())
             {
@@ -435,9 +484,13 @@ internal static class BulkReader
         var reading = checks.Where(c => c.Check.ReadsRows).ToList();
         if (shape is not null && reading.Count > 0)
         {
-            var columns = bulk.Columns.Count > 0
-                ? bulk.Columns.Where(c => shape.Columns.Contains(c, StringComparer.Ordinal)).ToList()
-                : reading.SelectMany(c => c.Evaluator.Columns).Distinct(StringComparer.Ordinal).Where(c => shape.Columns.Contains(c, StringComparer.Ordinal)).ToList();
+            // The columns the test lists and every column a reading assertion names: an assertion's own columns are always read,
+            // whatever the list says (the document is refused when its list leaves one out), so no check reads a column the
+            // read did not ask for. A column the record's description does not list fails its checks at Start, unread.
+            var columns = bulk.Columns.Concat(reading.SelectMany(c => c.Evaluator.Columns))
+                .Distinct(StringComparer.Ordinal)
+                .Where(c => shape.Columns.Contains(c, StringComparer.Ordinal))
+                .ToList();
             var rows = Math.Min(shape.Rows, bulk.MaxRows);
             await foreach (var frame in scope.Bulk.ReadAsync(bulk.Collection, id, columns, rows, Math.Max(1, columns.Count), ct).ConfigureAwait(false))
             {
