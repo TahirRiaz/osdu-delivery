@@ -9,9 +9,10 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Reads a mapping document (docs/mapping-templates.md) into a <see cref="MappingDefinition"/>. Everything that can be
-/// checked without the template is checked here, each error naming the file and where in it: the header, every node of
-/// the record tree with its value, findBy lines, modifiers and condition, the forEach arrays, and the envelope lists.
+/// Reads a mapping document (osdu/docs/reference/flow/mapping.md) into a <see cref="MappingDefinition"/>. Everything
+/// that can be checked without the template is checked here, each error naming the file and where in it: the header,
+/// every node of the record tree with its value, findBy lines, modifiers and condition, the forEach arrays, and the
+/// envelope lists.
 /// </summary>
 internal static partial class MappingMapper
 {
@@ -135,7 +136,7 @@ internal static partial class MappingMapper
         IdFromKey => MappingIdSource.Key,
         var other => throw new FlowValidationException(
             $"{source}: dataset.idFrom is '{other}'; write {IdFromDeliveryKey} for an OSDU id made from the delivery key (the default), "
-            + $"or {IdFromKey} for one made from the values of dataset.key, such as dev:reference-data--ExternalUnitOfMeasure:RECALL::GAPI."),
+            + $"or {IdFromKey} for one made from the values of dataset.key, such as dev:reference-data--ExternalUnitOfMeasure:WELLDB::GAPI."),
     };
 
     /// <summary>Every lookup the mapping declares is read by a node: one nothing reads says something no record uses.</summary>
@@ -743,7 +744,7 @@ internal static partial class MappingMapper
         if (parts.Length != 2 || parts[0] != CacheReference || !NamePattern().IsMatch(parts[1]))
         {
             throw new FlowValidationException(
-                $"{where}: replace names '{named}', and a table read from the cache is named {CacheReference}.<Type>, such as replace: {CacheReference}.RecallUnits; a table written here is a map, such as {Example("replace")}.");
+                $"{where}: replace names '{named}', and a table read from the cache is named {CacheReference}.<Type>, such as replace: {CacheReference}.UnitAlias; a table written here is a map, such as {Example("replace")}.");
         }
 
         return new CachedReplaceTable(parts[1], match, field);

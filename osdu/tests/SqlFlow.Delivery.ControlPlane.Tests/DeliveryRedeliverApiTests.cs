@@ -18,10 +18,11 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// Many records redelivered from the API (docs/operations.md, Redelivering records): brought up to date, which renders them again and
-/// sends only what renders differently, or sent again whatever their hashes say; named by keys, by a filter with the count
-/// the operator was shown, or as every delivered record; and the plan run that says beforehand what bringing them up to
-/// date would send. Every record asked names the request in its history.
+/// Many records redelivered from the API (osdu/docs/reference/concepts/removal-and-reversal.md, Redelivering records):
+/// brought up to date, which renders them again and sends only what renders differently, or sent again whatever their
+/// hashes say; named by keys, by a filter with the count the operator was shown, or as every delivered record; and the
+/// plan run that says beforehand what bringing them up to date would send. Every record asked names the request in its
+/// history.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

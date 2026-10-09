@@ -12,9 +12,9 @@ using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 namespace SqlFlow.Delivery.Rendering;
 
 /// <summary>
-/// Renders one record of the incoming dataset into an OSDU record (docs/delivery/mapping-templates.md). The engine writes
-/// <c>id</c> from the dataset key and <c>kind</c> from the template, then writes each entry's value at its template
-/// variable, taking the type from the template. The output is a pure function of the source record and the
+/// Renders one record of the incoming dataset into an OSDU record (osdu/docs/reference/flow/mapping.md). The engine
+/// writes <c>id</c> from the dataset key and <c>kind</c> from the template, then writes each entry's value at its
+/// template variable, taking the type from the template. The output is a pure function of the source record and the
 /// <see cref="RenderContext"/>.
 /// </summary>
 public sealed class MappingRenderer
@@ -126,8 +126,8 @@ public sealed class MappingRenderer
 
     /// <summary>
     /// A renderer that puts single values through the mapping's nodes, as a search does with a value a person typed
-    /// (osdu/docs/search-terms.md): no cache, no search, and only the parameters given, so a node reading a parameter it is
-    /// not given holds rather than writes.
+    /// (osdu/docs/reference/concepts/search-terms.md): no cache, no search, and only the parameters given, so a node
+    /// reading a parameter it is not given holds rather than writes.
     /// </summary>
     internal static MappingRenderer ForValues(MappingDefinition mapping, SchemaSnapshot schema, IReadOnlyDictionary<string, string> parameters)
     {
@@ -431,7 +431,8 @@ public sealed class MappingRenderer
 
     /// <summary>
     /// Whether <paramref name="entry"/> of the mapping fills a list of the template: a list the record carries empty when the
-    /// entry gives nothing for the row (docs: documents.md, What the record contains). Never for a DSPDM row.
+    /// entry gives nothing for the row (docs: osdu/docs/reference/flow/mapping.md, What the record contains). Never for
+    /// a DSPDM row.
     /// </summary>
     internal bool WritesList(MappingEntry entry)
     {

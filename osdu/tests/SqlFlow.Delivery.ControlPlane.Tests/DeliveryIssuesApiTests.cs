@@ -17,10 +17,10 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// A flow's issues as the API serves them (docs/ledger.md, Issues; docs/operations.md, The API): the blocked records
-/// grouped by the issue their errors share, one issue with the files its records came from, the records listing
-/// narrowed to an issue, the release of an issue's records with each record naming the release in its history, and one
-/// record released and tried at once.
+/// A flow's issues as the API serves them (osdu/docs/reference/concepts/record-lifecycle.md, Issues;
+/// osdu/docs/reference/concepts/api.md): the blocked records grouped by the issue their errors share, one issue with
+/// the files its records came from, the records listing narrowed to an issue, the release of an issue's records with
+/// each record naming the release in its history, and one record released and tried at once.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

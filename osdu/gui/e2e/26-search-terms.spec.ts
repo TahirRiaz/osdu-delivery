@@ -2,10 +2,10 @@ import { E2E } from "../playwright.config";
 import { adminSession, expect, test } from "./helpers";
 import type { APIRequestContext } from "@playwright/test";
 
-// The search terms (osdu/docs/search-terms.md): the columns of the source systems the mappings of active delivery flows
-// read, extracted by the seed's repository sync from the sample estate's WellLog mapping. The Search terms page lists
-// them with the property each fills, and refines one: renamed, noted, deleted from the explorer and offered again; and
-// deletes several at once, picked by their boxes, and restores them. The
+// The search terms (osdu/docs/reference/concepts/search-terms.md): the columns of the source systems the mappings of
+// active delivery flows read, extracted by the seed's repository sync from the sample estate's WellLog mapping. The
+// Search terms page lists them with the property each fills, and refines one: renamed, noted, deleted from the explorer
+// and offered again; and deletes several at once, picked by their boxes, and restores them. The
 // explorer offers the terms beside the record's own properties: a value typed as Recall holds it is carried through the
 // mapping, here through the wellbore search the mapping makes, and asked of OSDU's own search like any condition.
 //

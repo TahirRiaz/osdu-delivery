@@ -9,7 +9,8 @@
 // THE OSDU LEDGER ON A NODE. The delivery engine reads and writes the ledger in the `osdu` schema per record
 // while it plans and delivers, and a node opens no catalog connection, so the module database needs a connection
 // reference of its own on this tier. Supply it as a flowEnv entry naming the variable the worker host declares
-// for it (osdu/docs/environment-variables.md), pointing at a Key Vault secret holding the connection string.
+// for it (osdu/docs/reference/concepts/environment-variables.md), pointing at a Key Vault secret holding the
+// connection string. Without it the node refuses to start.
 //
 // This is the Container Apps mirror of osdu/deploy/k8s/worker-pool.yaml: deploy one copy per pool (set name and
 // pool together). Secrets come from an existing Key Vault, read by the app's user-assigned managed identity;

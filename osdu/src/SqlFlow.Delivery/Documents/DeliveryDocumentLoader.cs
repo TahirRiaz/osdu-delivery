@@ -1843,11 +1843,11 @@ internal static partial class FlowMapper
     }
 
     /// <summary>
-    /// The DDMSs a flow declares under <c>target.ddms</c> (docs/documents.md, "The DDMSs a flow delivers to"), in document
-    /// order. Each has a name, a root under the endpoint, a shape and the collections it serves (the shape's own when it
-    /// lists none). No entity type is served by two of them, since a record goes to one DDMS. A DDMS without a root makes
-    /// the endpoint that DDMS itself, so it is the only DDMS such a flow reaches; a source with interfaces reaches every
-    /// service under the platform endpoint, so each of its DDMSs names its root.
+    /// The DDMSs a flow declares under <c>target.ddms</c> (osdu/docs/reference/flow/ddms.md, "target.ddms"), in
+    /// document order. Each has a name, a root under the endpoint, a shape and the collections it serves (the shape's
+    /// own when it lists none). No entity type is served by two of them, since a record goes to one DDMS. A DDMS
+    /// without a root makes the endpoint that DDMS itself, so it is the only DDMS such a flow reaches; a source with
+    /// interfaces reaches every service under the platform endpoint, so each of its DDMSs names its root.
     /// </summary>
     private static IReadOnlyList<DdmsService> MapDdms(
         OrderedDictionary<string, DdmsYaml?>? declared, DeliveryProtocol protocol, bool interfaceForm, string? ddmsRoot, string source)

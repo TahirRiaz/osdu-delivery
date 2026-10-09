@@ -322,10 +322,12 @@ definitions (`sqlflow template capture --out` writes the bundled schema beside t
 it pins and can import it again without the network). No sample renders a reference data kind or a dataset collection:
 the rules that would route them are covered by tests, the sample data is not there, and that is what the matrix says.
 
-The documentation is the document reference (`osdu/docs/documents.md`, every route type including the etp route), the
-protocol reference (`osdu/docs/protocols.md`), operations (`osdu/docs/operations.md`, the CLI, the GUI, removals and the
-runbook) and the ledger (`osdu/docs/ledger.md`); the test matrix is `osdu/docs/test-matrix.md`, which names, for every
-route type, DDMS shape and engine area, the suite that proves it, what that proof rests on, and what no suite proves.
+The documentation is the reference corpus under `osdu/docs/reference/`: the documents (`flow/`, every route type in
+`flow/routes.md` including the etp route), what every route shares (`concepts/protocols.md`), operations (the CLI under
+`cli/`, the GUI in `concepts/gui.md`, removals in `concepts/removal-and-reversal.md` and the runbook in
+`guides/operations-runbook.md`) and the ledger (`concepts/ledger.md`); the test matrix is `osdu/docs/test-matrix.md`,
+which names, for every route type, DDMS shape and engine area, the suite that proves it, what that proof rests on, and
+what no suite proves.
 
 ## 4. How coverage is proven
 

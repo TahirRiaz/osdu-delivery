@@ -1,4 +1,4 @@
-# Mapping: Directional surveys into the WellboreTrajectory 1.3.0 template (osdu/docs/mapping-templates.md).
+# Mapping: Directional surveys into the WellboreTrajectory 1.3.0 template (osdu/docs/reference/flow/mapping.md).
 #
 # One record per survey. The dataset is the survey's metadata rows, and its child dataset "stations" holds one row per
 # station property the survey carries (measured depth, inclination, azimuth); the station values themselves are
@@ -40,8 +40,8 @@ parameters:
 # The wellbores a record belongs to are looked up on the platform as each record needs one, never captured into the
 # cache: they are business data, a partition holds hundreds of thousands of them and gains more every day, and a record
 # names one. Each lookup asks for the one wellbore whose name, or one of whose aliases, is exactly the incoming value,
-# written the way the pinned Wellbore schema has the platform index those properties (osdu/docs/mapping-templates.md,
-# Searches).
+# written the way the pinned Wellbore schema has the platform index those properties
+# (osdu/docs/reference/flow/mapping-lookups.md, How each line is asked).
 searches:
   Wellbore:
     kind: "osdu:wks:master-data--Wellbore:*"

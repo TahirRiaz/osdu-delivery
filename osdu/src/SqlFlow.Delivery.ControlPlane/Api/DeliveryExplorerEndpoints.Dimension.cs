@@ -54,11 +54,12 @@ public sealed record DeliveryDimensionComposeDto(
     IReadOnlyList<DimensionDraftIssue> Issues, bool Valid, DeliveryDimensionExampleDto? Example, string? ExampleProblem);
 
 /// <summary>
-/// The explorer's dimension builder (osdu/docs/explorer.md, Building a dimension): what a person picks from the records OSDU
-/// holds, written as the item a dimension flow lists and checked by the same loader and blueprint a flow's own dimension is.
-/// The explorer's own reads show the records a person picks from; here, the keys a kind's template suggests, the commonest
-/// keys of a path (through the connection the explorer reads the partition by), and a compose that writes the draft, checks
-/// it, and makes one key into its row as a build would. Nothing is saved: the YAML is the builder's output.
+/// The explorer's dimension builder (osdu/docs/reference/concepts/explorer.md, Building a dimension): what a person
+/// picks from the records OSDU holds, written as the item a dimension flow lists and checked by the same loader and
+/// blueprint a flow's own dimension is. The explorer's own reads show the records a person picks from; here, the keys a
+/// kind's template suggests, the commonest keys of a path (through the connection the explorer reads the partition by),
+/// and a compose that writes the draft, checks it, and makes one key into its row as a build would. Nothing is saved:
+/// the YAML is the builder's output.
 /// </summary>
 public static partial class DeliveryExplorerEndpoints
 {

@@ -19,13 +19,13 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The explorer's dimension builder as the API serves it (osdu/docs/explorer.md, Building a dimension): a draft written as the
-/// item a dimension flow lists and read back by the loader a flow is read by; checked against the saved templates as a flow's
-/// own dimension is, a missing template said with what to save; every mistake pointed at the part it is about; a name whose
-/// table another flow's dimension writes warned of; the keys a kind's saved template suggests; and an example key made into
-/// its row, and the commonest keys of a path, through the connection the explorer reads the partition by, given exactly what
-/// the operation reads back. Nothing here reaches an OSDU: the operations are stood in for (<see cref="RecordedOperations"/>),
-/// and what each was given is read back.
+/// The explorer's dimension builder as the API serves it (osdu/docs/reference/concepts/explorer.md, Building a
+/// dimension): a draft written as the item a dimension flow lists and read back by the loader a flow is read by;
+/// checked against the saved templates as a flow's own dimension is, a missing template said with what to save; every
+/// mistake pointed at the part it is about; a name whose table another flow's dimension writes warned of; the keys a
+/// kind's saved template suggests; and an example key made into its row, and the commonest keys of a path, through the
+/// connection the explorer reads the partition by, given exactly what the operation reads back. Nothing here reaches an
+/// OSDU: the operations are stood in for (<see cref="RecordedOperations"/>), and what each was given is read back.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

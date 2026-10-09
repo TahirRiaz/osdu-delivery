@@ -1,6 +1,7 @@
-// The explorer's calls (osdu/docs/explorer.md): how a partition of OSDU is reached, and the reads made of it there, the
-// kinds its records are of, a page of the records a search finds, the properties a kind's records hold, and one record.
-// Every read is answered by the control plane at once, through a connection it keeps open between reads.
+// The explorer's calls (osdu/docs/reference/concepts/explorer.md): how a partition of OSDU is reached, and the reads
+// made of it there, the kinds its records are of, a page of the records a search finds, the properties a kind's records
+// hold, and one record. Every read is answered by the control plane at once, through a connection it keeps open between
+// reads.
 
 import { get, post } from "@/api/client";
 import { flowPath, type DeliveryDimension, type DeliveryDimensionAttribute, type DeliveryDimensionYaml, type DeliveryFlowScope, type DeliveryOsduRead, type DimensionBlueprint } from "./delivery";
@@ -44,8 +45,9 @@ export interface ExplorerFilter {
   /** A range's upper bound, left out of it. */
   to?: string;
   /**
-   * A search term (osdu/docs/search-terms.md) the condition names in place of the property: its values are the source's
-   * own, and the control plane turns it into the condition on the property `path` names, the one the term's route fills.
+   * A search term (osdu/docs/reference/concepts/search-terms.md) the condition names in place of the property: its
+   * values are the source's own, and the control plane turns it into the condition on the property `path` names, the
+   * one the term's route fills.
    */
   term?: string;
 }
@@ -320,7 +322,7 @@ function listValidationOf(answer: ExplorerListValidation): ExplorerListValidatio
   };
 }
 
-// ---- Validation (osdu/docs/explorer.md, Validate) ----
+// ---- Validation (osdu/docs/reference/concepts/explorer.md, Validate) ----
 
 /** Which schema a record is checked against: what the partition's Schema service holds, or a saved template. */
 export type ExplorerSchemaChoice = "osdu" | "saved";
@@ -418,7 +420,7 @@ export const EXPLORER_MAX_CHECKED = 1000;
 /** A record read by the explorer: what a record page's read-back answers, read from the storage service. */
 export type ExplorerRead = DeliveryOsduRead;
 
-// ---- The query of an element (osdu/docs/explorer.md, The query of an element) ----
+// ---- The query of an element (osdu/docs/reference/concepts/explorer.md, A record) ----
 
 /** A query that finds records by an element of a record, and what it finds, in words. */
 export interface ExplorerElementQuery {
@@ -472,7 +474,7 @@ export function elementQueries(request: ExplorerElementRequest) {
   return post<ExplorerElementAnswer>("/api/v1/delivery/explorer/element-queries", request);
 }
 
-// ---- The dimension builder (osdu/docs/explorer.md, Building a dimension) ----
+// ---- The dimension builder (osdu/docs/reference/concepts/explorer.md, Building a dimension) ----
 
 /** An attribute of a drafted dimension: read through the record a key names (`steps`), or collected from its own records (`collect`). */
 export interface DimensionDraftAttribute {

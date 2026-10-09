@@ -12,8 +12,10 @@ namespace SqlFlow.Delivery.Ledger;
 /// (design.md section 16.2): the worker takes a work batch, or a group of records due for a retry, under a new token in
 /// one compare-and-swap, the records it holds carry the token, and a crashed worker's lease simply runs out and is
 /// recovered by the next claim of its flow. While it delivers, a worker renews its one row and appends what it learns;
-/// the lease applies that to the records a slice at a time. Reads run under snapshot isolation, so they never wait for
-/// a writer. Every query the GUI issues is index-backed (see <see cref="DeliveryModel"/>). Each operation opens its own
+/// the lease applies that to the records a slice at a time. A read takes no transaction of its own and does not rely on
+/// snapshot isolation: one that needs a record and its lease asks for both in one statement, and one chosen as a
+/// deadlock victim is read again (see ReadAsync). Every query the GUI issues is index-backed (see
+/// <see cref="DeliveryModel"/>). Each operation opens its own
 /// context from the factory, so the ledger is safe to share across the worker's bounded concurrency. The ledger runs on
 /// SQL Server alone, and the volume writes (staging pending records, appending and applying a lease's events) go through
 /// a bulk copy and set-based statements (<see cref="SqlServerLedgerBulk"/>).

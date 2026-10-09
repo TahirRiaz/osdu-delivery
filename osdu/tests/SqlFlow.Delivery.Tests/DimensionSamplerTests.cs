@@ -18,11 +18,12 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The reads the explorer's dimension builder makes of OSDU beyond the explorer's own (osdu/docs/explorer.md, Building a
-/// dimension), against a stand-in of the search service as a build reads it: the commonest keys of a path in one search,
-/// the query narrowing them, a query the service refuses answered with its words; and one key made into its row exactly as
-/// a build makes it, through the build's own labeler, collector display, cleaner and attribute assembly. Then the same
-/// through the explorer's operation, as the control plane runs it.
+/// The reads the explorer's dimension builder makes of OSDU beyond the explorer's own
+/// (osdu/docs/reference/concepts/explorer.md, Building a dimension), against a stand-in of the search service as a
+/// build reads it: the commonest keys of a path in one search, the query narrowing them, a query the service refuses
+/// answered with its words; and one key made into its row exactly as a build makes it, through the build's own labeler,
+/// collector display, cleaner and attribute assembly. Then the same through the explorer's operation, as the control
+/// plane runs it.
 /// </summary>
 public class DimensionSamplerTests
 {

@@ -40,10 +40,10 @@ public sealed record ExplorerReferringType(string EntityType, IReadOnlyList<Expl
 public sealed record ExplorerReferencesProgress(DateTimeOffset StartedUtc, bool Listing, int Listed, int ToRead, int Read, int Failed);
 
 /// <summary>
-/// The types whose records name records of a type (osdu/docs/explorer.md, Referenced by): every kind the partition's Schema
-/// service holds whose schema declares a place naming the type (<c>x-osdu-relationship</c>), with the versions that do and
-/// those that do not, and where. A reference names a type, never a version of it, so it holds for every version of the type
-/// asked about.
+/// The types whose records name records of a type (osdu/docs/reference/concepts/explorer.md, Referenced by): every kind
+/// the partition's Schema service holds whose schema declares a place naming the type (<c>x-osdu-relationship</c>),
+/// with the versions that do and those that do not, and where. A reference names a type, never a version of it, so it
+/// holds for every version of the type asked about.
 /// </summary>
 public sealed partial record ExplorerReferences
 {

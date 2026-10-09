@@ -79,7 +79,7 @@ types:
 ```
 
 A mapping reads cached tables through `replace` and `$findBy` (written here in the record tree the mapping format has
-since become, osdu/docs/mapping-templates.md):
+since become, osdu/docs/reference/flow/mapping.md):
 
 ```yaml
     Curves:
@@ -173,7 +173,7 @@ Inline tables first, because every later stage builds on the same modifier.
   fallback; `ModifierText` (815-824) writes `~` and `otherwise`; `ModifierIssue` (778-813).
 - GUI: `gui/src/api/delivery.ts` (draft types), `features/delivery/mappingDraft.ts` (`newModifier`, `modifierText`),
   `MappingEntryEditor.tsx` (the replace editor: a "no value" choice per row and an `otherwise` field).
-- Docs: `documents.md` and `mapping-templates.md` Modifiers.
+- Docs: `reference/flow/mapping-modifiers.md`.
 
 **Tests.**
 
@@ -279,8 +279,8 @@ is (`Documents/DeliveryLayout.cs`), named `<name>.yaml` or `<name>.yml`, and the
 - Lineage, `Documents/CacheLineage.cs`: a dictionary type adds a `DeclaredFileLocation` read.
 - Samples: `samples/wells/dictionaries/RecallUnits.yaml`, and a lookups cache flow `wells-lookups-00-cache.yaml` for
   partition `dev` declaring it.
-- Docs: a "Dictionary" section in `documents.md`, the dictionary origin in its Cache flow section, and the samples
-  README.
+- Docs: the dictionary document (`reference/flow/dictionary.md`), the dictionary origin of a cache flow
+  (`reference/flow/cache.md`, The four origins), and the samples README.
 
 **Tests.**
 
@@ -326,7 +326,7 @@ is (`IngestionConnection.CheckDeclared`).
   before the cache flow, and the cache flow before the delivery flows that read its types.
 - Samples: a curve dictionary CSV under `samples/wells/data/`, a pre-ingestion and an ingestion flow loading
   `OsduData.arc.CurveDictionary`, and the table type in the lookups cache flow.
-- Docs: the table origin in `documents.md`, and the lineage order in `architecture.md`.
+- Docs: the table origin in `reference/flow/cache.md`, and the lineage order in `reference/concepts/lineage.md`.
 
 **Tests.**
 
@@ -376,7 +376,7 @@ is (`IngestionConnection.CheckDeclared`).
 - Samples: the WellLog and WellboreTrajectory mappings replace their inline unit tables with `replace: $cache.RecallUnits`;
   WellLog fills `LogCurveFamilyID` through `CurveClasses`; the sample cache records gain the `LogCurveFamily` records the
   fixtures resolve; the fixtures are re-derived and reviewed.
-- Docs: `replace` in `documents.md` and `mapping-templates.md`; the "What is removed" line updated.
+- Docs: `replace` in `reference/flow/mapping-modifiers.md`; the "What is removed" line updated.
 
 **Tests.**
 
@@ -476,9 +476,10 @@ the same `sqlflow:` commit, the second refuses the key now.
 
 - A clean rebuild with zero warnings; the GUI build and lint; every suite, SQL Server included.
 - `tools/check-vendored-sqlflow.sh` passes; no commit touches `sqlflow/`.
-- The docs match the code: `documents.md`, `mapping-templates.md`, `design.md` section 6.2, `architecture.md`,
-  `reference/cli/delivery.md` and the samples README. The gate's checks carry one numbering everywhere (the code and
-  `mapping-templates.md` number them one higher than `documents.md` today).
+- The docs match the code: the flow and mapping pages under `reference/flow/`, `design.md` section 6.2,
+  `reference/concepts/lineage.md`, the CLI pages under `reference/cli/` and the samples README. The gate's checks carry
+  one numbering everywhere (when this plan was written, the code and the mapping reference numbered them one higher
+  than the document reference; the numbering is now `reference/concepts/preflight.md`, The preflight gate).
 - No live OSDU run is part of this plan. A live verification, if wanted, is listed and approved first under the
   project's live rules.
 

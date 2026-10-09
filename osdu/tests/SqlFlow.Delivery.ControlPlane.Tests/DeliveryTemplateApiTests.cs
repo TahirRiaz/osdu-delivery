@@ -25,10 +25,11 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// Templates and the mapping builder through the API (docs/delivery/mapping-templates.md): saving a template version, which
-/// takes a signed-in caller, reading it as variables and as its schema, the delete a pinned version refuses, and the builder's
-/// repository listing, draft, parse and check against a repository's cache as the catalog carries it, and browsing the OSDU
-/// data definitions, served here by a stand-in for the repository's API. Gated on a reachable catalog database.
+/// Templates and the mapping builder through the API (osdu/docs/reference/concepts/templates.md; the builder:
+/// osdu/docs/reference/concepts/gui.md, Mapping builder): saving a template version, which takes a signed-in caller,
+/// reading it as variables and as its schema, the delete a pinned version refuses, and the builder's repository
+/// listing, draft, parse and check against a repository's cache as the catalog carries it, and browsing the OSDU data
+/// definitions, served here by a stand-in for the repository's API. Gated on a reachable catalog database.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

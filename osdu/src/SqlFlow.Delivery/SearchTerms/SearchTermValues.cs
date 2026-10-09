@@ -19,10 +19,10 @@ public sealed record SearchValue(string? Value, string? Problem)
 
 /// <summary>
 /// Puts a value typed for a search term through the mapping node its route names, exactly as the render puts a value of the
-/// column through it (osdu/docs/search-terms.md): the same modifiers, the same rule for an empty value, and the same
-/// conversion to the type the template gives the variable, by the render's own code, so a value searched for is the value
-/// a delivered record holds. <c>DEPTH</c> through <c>replace(DEPTH: Depth)</c> and <c>ref</c> is
-/// <c>dev:reference-data--WellLogSamplingDomainType:Depth:</c>.
+/// column through it (osdu/docs/reference/concepts/search-terms.md): the same modifiers, the same rule for an empty
+/// value, and the same conversion to the type the template gives the variable, by the render's own code, so a value
+/// searched for is the value a delivered record holds. <c>DEPTH</c> through <c>replace(DEPTH: Depth)</c> and <c>ref</c>
+/// is <c>dev:reference-data--WellLogSamplingDomainType:Depth:</c>.
 /// </summary>
 /// <remarks>
 /// The node's <c>$when</c> is not asked: a search looks for the value wherever a record holds it. No cache is read, so a

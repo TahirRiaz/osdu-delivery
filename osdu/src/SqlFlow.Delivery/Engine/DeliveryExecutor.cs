@@ -967,8 +967,8 @@ public sealed record SyncRunOutcome(
 }
 
 /// <summary>
-/// The <c>result</c> of a run deleting the ledger (docs/ledger.md, Deleting the ledger): the partition it confirmed, what it
-/// removed from OSDU on the way, and what it deleted of the ledger.
+/// The <c>result</c> of a run deleting the ledger (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the
+/// ledger): the partition it confirmed, what it removed from OSDU on the way, and what it deleted of the ledger.
 /// </summary>
 public sealed record DeleteLedgerOutcome(
     string Operation, string Partition, int Removed, int AlreadyGone, int AlreadyRemoved, int NeverInOsdu,

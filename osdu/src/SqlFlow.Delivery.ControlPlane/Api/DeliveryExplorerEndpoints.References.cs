@@ -26,9 +26,9 @@ public static partial class DeliveryExplorerEndpoints
         => delivery.MapPost("/explorer/referenced-by", ReferencedByAsync).WithName("ExploreDeliveryOsduReferencedBy");
 
     /// <summary>
-    /// The types whose records name records of a type, as the partition's Schema service declares them (osdu/docs/explorer.md,
-    /// Referenced by), answered from the schemas read once and kept. The first ask of a partition starts the pass that reads
-    /// them, and answers with where it stands until it ends.
+    /// The types whose records name records of a type, as the partition's Schema service declares them
+    /// (osdu/docs/reference/concepts/explorer.md, Referenced by), answered from the schemas read once and kept. The
+    /// first ask of a partition starts the pass that reads them, and answers with where it stands until it ends.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReferencedByAsync(
         DeliveryExplorerReferencesRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,

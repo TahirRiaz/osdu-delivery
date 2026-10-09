@@ -18,11 +18,12 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>
-/// One issue keeping a flow's records blocked (docs/ledger.md, Issues): its id, the error its records share with every part
-/// that names a record replaced, how many records it keeps blocked (held and failed), when they last changed, its most
-/// recently changed record as an example, with that record's own error, and where it lies: <c>set</c> when its records
-/// carry the same error (no value of their own, or the same values in each), <c>rows</c> when they name values of their
-/// own rows. <c>Values</c> are the values the example names, which for a set error every record names.
+/// One issue keeping a flow's records blocked (osdu/docs/reference/concepts/record-lifecycle.md, Issues): its id, the
+/// error its records share with every part that names a record replaced, how many records it keeps blocked (held and
+/// failed), when they last changed, its most recently changed record as an example, with that record's own error, and
+/// where it lies: <c>set</c> when its records carry the same error (no value of their own, or the same values in each),
+/// <c>rows</c> when they name values of their own rows. <c>Values</c> are the values the example names, which for a set
+/// error every record names.
 /// </summary>
 public sealed record DeliveryIssueDto(
     string Issue, string Pattern, long Records, long Held, long Failed, DateTime OldestUtc, DateTime NewestUtc, DeliveryRecordDto? Example,

@@ -820,7 +820,7 @@ Each is its own commit with tests, touching only `sqlflow/`.
 9. **Inline submissions.** `InlineRecords` move, `SubmissionLanding`, `LandingFileWriter`, endpoints, `SubmissionChain`, `SubmissionLandingService`, the group-transaction extension, API tests, chain test 8. Depends on 2, 5, 6 and 7.
 10. **Remaining surface.** Endpoint DTO cleanup, redeliver and verify payloads, `ReadSourceRowOperation`, CLI `check`. Depends on 5.
 11. **Deletions and guards.** Delete the dead code, add `ArchitectureTests`, clean rebuild with zero warnings.
-12. **Follow-on outside `osdu/src` and `osdu/tests`.** `osdu/gui/src/api/delivery.ts`, `DeliverySubmissionPage.tsx`, `DeliveryRecordPage.tsx` (drop and replica fields). Stage 5 docs: `osdu/docs/submitting-records.md`, `ledger.md`, `design.md`.
+12. **Follow-on outside `osdu/src` and `osdu/tests`.** `osdu/gui/src/api/delivery.ts`, `DeliverySubmissionPage.tsx`, `DeliveryRecordPage.tsx` (drop and replica fields). Stage 5 docs: `osdu/docs/submitting-records.md`, `osdu/docs/reference/concepts/ledger.md`, `design.md`.
 
 ### Critical files
 

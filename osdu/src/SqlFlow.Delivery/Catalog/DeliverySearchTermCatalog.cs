@@ -10,14 +10,15 @@ using SqlFlow.Delivery.SearchTerms;
 namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
-/// The search terms of a repository (osdu/docs/search-terms.md), extracted from its pipelines: every active delivery flow
-/// (each interface of a source) reads its tables and renders them with a mapping, and every column of those tables the
-/// mapping reads is a term, with every route by which it reaches the records rendered (<see cref="SearchTermCompiler"/>)
-/// and the flows that read it. A term is the table's column: two flows reading one table, rendering it under two versions of
-/// a schema, give one term. The repository sync writes them after the mappings, the cache declarations and the interfaces,
-/// in the same transaction, from the flows it parsed; the control plane writes them again when it starts, from its copies
-/// of the flows, so a module upgraded since the last sync describes its terms as this version does. What a person made of a
-/// term is kept apart, by the term's identity, and never undone here.
+/// The search terms of a repository (osdu/docs/reference/concepts/search-terms.md), extracted from its pipelines: every
+/// active delivery flow (each interface of a source) reads its tables and renders them with a mapping, and every column
+/// of those tables the mapping reads is a term, with every route by which it reaches the records rendered
+/// (<see cref="SearchTermCompiler"/>) and the flows that read it. A term is the table's column: two flows reading one
+/// table, rendering it under two versions of a schema, give one term. The repository sync writes them after the
+/// mappings, the cache declarations and the interfaces, in the same transaction, from the flows it parsed; the control
+/// plane writes them again when it starts, from its copies of the flows, so a module upgraded since the last sync
+/// describes its terms as this version does. What a person made of a term is kept apart, by the term's identity, and
+/// never undone here.
 /// </summary>
 public static class DeliverySearchTermCatalog
 {

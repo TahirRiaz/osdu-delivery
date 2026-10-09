@@ -5,7 +5,8 @@ import { fieldLabel, kindParts, useExplorerRead } from "./explorerModel";
 import type { OfferedTerm } from "./explorerTerms";
 
 // The values the records hold at a property, the commonest first, each with how many records hold it: what the condition
-// editor and a search field searching one attribute offer to pick from (osdu/docs/explorer.md, Searching a property).
+// editor and a search field searching one attribute offer to pick from (osdu/docs/reference/concepts/explorer.md,
+// Conditions and properties).
 
 /** How long typing rests before the values held are asked for again. */
 const TYPING_DELAY_MS = 300;

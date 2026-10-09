@@ -4,11 +4,12 @@ using System.Text.RegularExpressions;
 namespace SqlFlow.Delivery.Rendering;
 
 /// <summary>
-/// How the date modifier reads a value and how a date is written into a record (docs/delivery/documents.md). OSDU schemas
-/// are JSON Schema draft-07, whose <c>date-time</c>, <c>date</c> and <c>time</c> formats are the RFC 3339 <c>date-time</c>,
-/// <c>full-date</c> and <c>full-time</c> forms. A value is read only from a form that states its year, month and day: an
-/// ISO 8601 date or date-time, or exactly the format a mapping gives. Nothing is guessed: <c>01/02/2026</c> could be
-/// either month, and a time alone would take the day the render ran, so the same row would render differently tomorrow.
+/// How the date modifier reads a value and how a date is written into a record
+/// (osdu/docs/reference/flow/mapping-modifiers.md, date). OSDU schemas are JSON Schema draft-07, whose
+/// <c>date-time</c>, <c>date</c> and <c>time</c> formats are the RFC 3339 <c>date-time</c>, <c>full-date</c> and
+/// <c>full-time</c> forms. A value is read only from a form that states its year, month and day: an ISO 8601 date or
+/// date-time, or exactly the format a mapping gives. Nothing is guessed: <c>01/02/2026</c> could be either month, and a
+/// time alone would take the day the render ran, so the same row would render differently tomorrow.
 /// </summary>
 internal static partial class DateValues
 {

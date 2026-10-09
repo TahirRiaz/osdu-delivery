@@ -26,8 +26,9 @@ const NO_FIELD: ExplorerFieldInfo = { path: "id", index: "keyword" };
 
 /**
  * Where a place's search field searches: every property (as it always does), or one attribute picked at its start, a source
- * column (osdu/docs/search-terms.md) or a property. Picked, what is typed is searched in that attribute alone, as a condition
- * of the list that replaces the one the attribute had, with the values the attribute holds listed under the field.
+ * column (osdu/docs/reference/concepts/search-terms.md) or a property. Picked, what is typed is searched in that
+ * attribute alone, as a condition of the list that replaces the one the attribute had, with the values the attribute
+ * holds listed under the field.
  */
 export interface SearchScope {
   /** The attribute searched in; null for every property. */
@@ -52,8 +53,8 @@ export interface SearchIn {
   /** The properties offered first, the likeliest first. */
   choices: ExplorerFieldInfo[];
   /**
-   * The source columns (search terms, osdu/docs/search-terms.md) offered after the properties: those searched in lately for
-   * the type. None where the place is of many types.
+   * The source columns (search terms, osdu/docs/reference/concepts/search-terms.md) offered after the properties: those
+   * searched in lately for the type. None where the place is of many types.
    */
   terms?: OfferedTerm[];
   /** Whether the type has source columns to search in, which the editor lists beside its properties. */

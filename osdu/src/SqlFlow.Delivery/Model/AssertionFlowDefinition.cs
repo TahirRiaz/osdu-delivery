@@ -346,8 +346,8 @@ public sealed record AssertionDefaults
     public AssertionRead Read { get; init; } = AssertionRead.Storage;
 
     /// <summary>
-    /// The settle window a test takes unless it says otherwise (docs: osdu/docs/documents.md, Records the index may not list
-    /// yet); 0 judges every test whatever changed.
+    /// The settle window a test takes unless it says otherwise (docs: osdu/docs/reference/flow/assertion.md, Records
+    /// the index may not list yet); 0 judges every test whatever changed.
     /// </summary>
     public int IndexSettleSeconds { get; init; } = DefaultIndexSettleSeconds;
 }
@@ -438,9 +438,9 @@ public sealed record AssertionTest
     /// <summary>
     /// How long, in seconds, the search index is given to list a change a delivery flow of this module made to records of the
     /// test's entity type before the test is judged: a run within that time of such a change skips the test, saying why,
-    /// rather than judging what the index lists so far (docs: osdu/docs/documents.md, Records the index may not list yet).
-    /// 0 judges it whatever changed. It says when the test is judged, not what it judges, so it stays out of
-    /// <see cref="DefinitionHash"/>.
+    /// rather than judging what the index lists so far (docs: osdu/docs/reference/flow/assertion.md, Records the index
+    /// may not list yet). 0 judges it whatever changed. It says when the test is judged, not what it judges, so it
+    /// stays out of <see cref="DefinitionHash"/>.
     /// </summary>
     [JsonIgnore]
     public int IndexSettleSeconds { get; init; } = AssertionDefaults.DefaultIndexSettleSeconds;

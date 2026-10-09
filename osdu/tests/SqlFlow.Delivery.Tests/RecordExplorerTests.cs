@@ -17,9 +17,10 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The explorer's reads of what OSDU holds (osdu/docs/explorer.md): what a reader typed read once into a query, a page of the
-/// records it finds with their names and the groups of a property, the kinds they are of, the properties a kind's records
-/// hold, a query the service refuses answered plainer or with its words, and a record read from the storage service.
+/// The explorer's reads of what OSDU holds (osdu/docs/reference/concepts/explorer.md): what a reader typed read once
+/// into a query, a page of the records it finds with their names and the groups of a property, the kinds they are of,
+/// the properties a kind's records hold, a query the service refuses answered plainer or with its words, and a record
+/// read from the storage service.
 /// </summary>
 public class RecordExplorerTests
 {

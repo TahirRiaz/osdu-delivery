@@ -6,10 +6,10 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Engine.Dimensions;
 
 /// <summary>
-/// A dimension as the explorer's dimension builder holds it while a person picks it (osdu/docs/explorer.md, Building a
-/// dimension): every part of a <c>dimensions</c> item, each as typed or picked and none of them checked yet. The builder
-/// writes it as YAML (<see cref="DimensionBuilder.ToYaml"/>) and the document loader reads that YAML back, so what the
-/// builder offers is exactly what a flow would declare.
+/// A dimension as the explorer's dimension builder holds it while a person picks it
+/// (osdu/docs/reference/concepts/explorer.md, Building a dimension): every part of a <c>dimensions</c> item, each as
+/// typed or picked and none of them checked yet. The builder writes it as YAML (<see cref="DimensionBuilder.ToYaml"/>)
+/// and the document loader reads that YAML back, so what the builder offers is exactly what a flow would declare.
 /// </summary>
 public sealed record DimensionDraft
 {

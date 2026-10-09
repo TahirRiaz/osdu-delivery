@@ -2,12 +2,12 @@ import type { DimensionDraft, DimensionDraftAttribute, DimensionDraftCleanStep, 
 import type { InspectorTrailRecord } from "../../OsduRecordInspector";
 import { isRecordReference, withoutVersion } from "../../osduDocument";
 
-// What the explorer's dimension builder holds while a person builds a dimension from the records OSDU holds (osdu/docs/
-// explorer.md, Building a dimension): the draft, kept in the explorer's address; what a pick in a record on the explorer's
-// trail makes of it (the trail's first record is one of the dimension's kind, the link it is left by is the key, and every
-// link after it a step of a value's path); the filters suggested where a step passes through one item of a list; and which
-// values of a record the draft reads, to mark them. Every check of what a dimension may hold is the control plane's, which
-// reads the draft back through the loader a flow is read by.
+// What the explorer's dimension builder holds while a person builds a dimension from the records OSDU holds
+// (osdu/docs/reference/concepts/explorer.md, Building a dimension): the draft, kept in the explorer's address; what a
+// pick in a record on the explorer's trail makes of it (the trail's first record is one of the dimension's kind, the
+// link it is left by is the key, and every link after it a step of a value's path); the filters suggested where a step
+// passes through one item of a list; and which values of a record the draft reads, to mark them. Every check of what a
+// dimension may hold is the control plane's, which reads the draft back through the loader a flow is read by.
 
 /** The most records a label or an attribute reads through, one path each: DimensionSpec.MaxLabelSteps. */
 export const MAX_STEPS = 3;

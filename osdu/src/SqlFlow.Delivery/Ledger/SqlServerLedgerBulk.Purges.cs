@@ -6,10 +6,10 @@ using SqlFlow.Delivery.Identity;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The statements behind deleting records from the ledger (docs/ledger.md, Deleting a removed record from the ledger, and
-/// Deleting the ledger): one slice of records in one transaction, each kept as one line of <c>osdu.PurgedRecord</c> and
-/// named under the intervention that deleted it, its attempts, search entries and row deleted; and, once a ledger has no
-/// record left, everything else it keeps of its runs.
+/// The statements behind deleting records from the ledger (osdu/docs/reference/concepts/removal-and-reversal.md,
+/// Deleting removed records from the ledger, and Deleting the ledger): one slice of records in one transaction, each
+/// kept as one line of <c>osdu.PurgedRecord</c> and named under the intervention that deleted it, its attempts, search
+/// entries and row deleted; and, once a ledger has no record left, everything else it keeps of its runs.
 /// </summary>
 internal static partial class SqlServerLedgerBulk
 {

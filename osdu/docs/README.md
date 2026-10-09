@@ -1,104 +1,26 @@
-# The delivery domain
+# OSDU Delivery documentation
 
-How OSDU Delivery turns rows in the ingestion tables into OSDU records and keeps every record traceable. The shape
-of the whole thing, and how the module meets the vendored SQLFlow, is in [architecture.md](architecture.md); the
-platform underneath is documented in the vendored tree
-([../../sqlflow/docs/architecture.md](../../sqlflow/docs/architecture.md)). These pages describe the flow kinds
-that run on it, `flowType: delivery`, `flowType: retrieval`, `flowType: cache`, `flowType: assertion`, `flowType: dimension` and
-`flowType: inventory`, and the ledger behind them.
+OSDU Delivery extends SQLFlow, and its documentation is the reference corpus in [reference/](reference/README.md), in
+SQLFlow's format: [cli/](reference/cli/) (the `sqlflow` verbs the extension adds and what it adds to SQLFlow's),
+[flow/](reference/flow/) (the flow kinds, routes, mappings and dictionaries, key by key),
+[concepts/](reference/concepts/) (the ledger, record states, change detection, partitions, the cache, the GUI and the
+API) and [guides/](reference/guides/) (tasks end to end).
+SQLFlow's own corpus ([../../sqlflow/docs/reference/](../../sqlflow/docs/reference/README.md)) documents the platform
+underneath. Beside the corpus are the decision records ([decisions/](decisions/README.md)) and the key census of every
+OSDU document ([census/](census/README.md)).
 
-Data arrives through SQLFlow's own flows: a pre-ingestion flow lands the source files, an ingestion flow loads the
-keyed ingestion tables, and the OSDU flow reads those tables. There is no drop manifest, no drop reader and no
-replica.
+## Kept as history
 
-| Page | What it covers |
-| --- | --- |
-| [design.md](design.md) | The design: the render inputs and the render context, identity, change detection and the cache, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval, assertion and dimension kinds (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
-| [documents.md](documents.md) | The delivery flow (a single OSDU type, or a source with interfaces), retrieval flow, assertion flow, dimension flow, inventory flow, cache flow and mapping documents key by key. |
-| [atomic-delivery-plan.md](atomic-delivery-plan.md) | Deliveries that complete or undo themselves: the unit of work, the artifacts every delivery records before or as it creates them, when the undo runs, the order within a record, and what each route declares and how it undoes. |
-| [inventory-plan.md](inventory-plan.md) | Inventory flows: every id an OSDU kind holds in a partition, read through search or storage, kept in the module's database and compared with every ledger of the partition, and the findings that make the orphan report. |
-| [dimension-plan.md](dimension-plan.md) | Dimension flows: the distinct values of any part of an OSDU document, read past the search's limit by value ranges, each key (exactly what the index holds) kept beside the value a person picks (its label read from the record it names, cleaned), the tables they live in, every key's and value's search filter, and the search composed across dimensions. A dimension's YAML is built in the explorer from picks ([explorer.md](explorer.md), Building a dimension). |
-| [../../docs/assertions-design.md](../../docs/assertions-design.md) | Assertion flows: tests of what a partition holds once the data has landed, how a test is checked against its template and evaluated, the reports and where they are kept. |
-| [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format as the record tree it lays out (the `$` words of the mapping language, `$findBy`, modifiers, `$when`, `$required`), the checks, and the mapping builder. |
-| [search-terms.md](search-terms.md) | Search terms: the columns of the source systems the mappings of active delivery flows read, extracted by every repository sync with each route to the record (a copy, steps, a lookup, a search, the key), refined on the Search terms page (renamed, a route picked, a note; deleted and restored, several at once), and searched in the explorer with the source's own values, carried through the mapping and asked of OSDU's search. |
-| [explorer.md](explorer.md) | The explorer: a browser of what an OSDU partition holds, read live from OSDU's search and storage services through a delivery flow's connection; browsing by type, searching by id, name, text or Lucene, grouping by a property's values, a record's versions compared, its links and the records that mention it; the kind and Lucene query every list is read by, as sent; the query that finds exactly any value, list, object or nested item of a record; and building a dimension from the records as they are browsed and drilled into. |
-| [ledger.md](ledger.md) | The ledger tables, the cache versions, the record lifecycle, leasing, the indexes behind every listing, retention. |
-| [protocols.md](protocols.md) | The named delivery protocols (`storage`, `ddms`, `file`, `dataset`, `manifest`, `fileAndDdms`, `manifestAndDdms`, `workflow`), their steps and returned values, payload parts, and how to add one. |
-| [operations.md](operations.md) | Running it: the API and the GUI surfaces, running a source, the CLI verbs, first deployment, the runbook. |
-| [osdu-testing.md](osdu-testing.md) | The state of testing against OSDU: how it is tested, what was proven live per protocol and feature, the defects the live runs found and their fixes, and what is still missing. |
-| [architecture.md](architecture.md) | The module on SQLFlow: the three-flow chain, the extension points it registers through, and the `osdu` schema. |
-| [environment-variables.md](environment-variables.md) | Every variable and secret reference, and which tier reads it. |
-| [reference/](reference/README.md) | The OSDU-specific reference pages: the CLI verbs, the control plane, authentication, deployment and notifications. |
-| [walkthrough/](walkthrough/1-welllog-schema.md) | A worked example: the WellLog schema, and how it is populated. |
-| [decisions/](decisions/README.md) | The decision records. |
+These are the design records and plans the system was built from. They are not maintained as reference: where one
+disagrees with the code or the reference pages, the code and the reference pages win.
 
-## Where the code lives
-
-| Path | Responsibility |
-| --- | --- |
-| `osdu/src/SqlFlow.Delivery` | The whole domain: model, identity, canonical JSON and hashing, the document loader and the four flow kinds, templates and the mapping builder, the cache store, rendering, planning, the preflight gate, the HTTP runtime, storage (work batch files, writers), the ledger, the engine (intake, worker, verifier, the protocols and the workflow contracts, fan-out, the retrieval runner, the assertion runner and its report, the cache refresh and its impact analysis), the run executors, the compute operations, and the sync of mappings and cache definitions. |
-| `osdu/src/SqlFlow.Delivery.Data` | `OsduDbContext`: the `osdu` schema model, its migrations and its schema version. |
-| `osdu/src/SqlFlow.Delivery.ControlPlane` | The delivery and template API under `/api/v1/delivery`, and the cache rollout and data definitions background services. |
-| `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache`, `sqlflow template`, `sqlflow assertions` and `sqlflow dimensions`. |
-| `osdu/hosts` | The control plane, node and CLI hosts that compose SQLFlow with the module and its branding, and `osdu-delivery-mcp`, the MCP server composed the same way ([reference/guides/mcp.md](reference/guides/mcp.md)). |
-| `osdu/gui` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow; tests, history and reports for an assertion flow), the Tests board and the test report page, the Dimensions page, the record page, the submission page with its batches, the audit trail, mappings, the OSDU cache page, templates, the mapping builder, and the explorer of what OSDU holds, with the query of any element and the dimension builder. |
-| `osdu/samples/recall` | A complete sample estate, laid out the way a repository is: one folder for the Recall source, holding the pre, ingestion and delivery flows of its well logs (`flows/`), the WellLog mapping (`mappings/`), everything static (`cache/`: the lookups cache flow `recall-lookups-00-cache.yaml`, the lookup tables' files in `cache/data/` and the pre and ingestion flows that load them, and the reference cache flow `recall-reference-00-cache.yaml`, which captures the partition's reference data), the schedules (`schedules.yaml`), and the drop-off folder the pre flows read (`data/`, five real Recall logs with their curve grids). The mapping builds its references with the `ref` and `id` modifiers, each checked against the reference data the reference cache flow captures from OSDU, and searches the platform for the wellbore. |
-| `osdu/samples/cache-records` | Sample records of OSDU reference data, one file per cached type, to import into a partition's cache for work without an OSDU platform. Beside the source folders, never inside one: a cache lives in the module's database, captured there by a run, so a repository holds the flow document and nothing else about it. |
-| `osdu/samples/templates` | The bundled OSDU schemas the suites and the e2e seed save as templates. They sit beside the source folders, not inside one: a template is a catalog object captured from OSDU's schema service through the Templates page, never a file a repository sync reads. |
-| `osdu/tests` | The module's suites: the domain suites, and the delivery submission and template API suites. |
-| `osdu/deploy` | The container images, and the compose, Kubernetes and Azure Container Apps assets. |
-
-## A flow's repository
-
-An OSDU flow lives in a git repository the control plane syncs, next to what it renders with and the flows that
-feed it. The repository is laid out one folder per source, and that folder is what the catalog and the GUI call a
-project:
-
-```text
-repo/
-  recall/                                        one source, and nothing the product writes
-    flows/recall-welllog-01-header-pre.yaml      lands the source files
-    flows/recall-welllog-02-header-ing.yaml      loads the keyed ingestion table
-    flows/recall-welllog-03-header-delivery.yaml flowType: delivery; reads those tables and delivers
-    mappings/WellLog@1.4.0.yaml                  documentType: mapping, pinned by name and version
-    cache/recall-lookups-00-cache.yaml           flowType: cache: the lookup tables it captures
-    cache/recall-reference-00-cache.yaml         flowType: cache: the partition's reference data, searched on OSDU
-    cache/recall-cacheunits-01-curve-pre.yaml    lands a lookup table's static file
-    cache/recall-cacheunits-02-curve-ing.yaml    keys it into the table the cache flow reads
-    cache/data/curve-units/                      the static file itself
-    data/welllog/                                the drop-off point the pre flow reads
-    schedules.yaml                               the schedules the flows join, each firing its flows in lineage order
-```
-
-The cache folder holds what is static: the cache flows, the files of the lookup tables the source keeps (unit maps, a
-curve dictionary) under `cache/data/`, and the pre and ingestion flows that load those files, beside the cache flow
-that captures the tables. `flows/` holds only the flows of the source's data.
-
-A flow's name is `<source>-<type>-<counter>-<area>-<kind>`, so sorting the folder is reading the chain in the
-order it runs: every `01` lands files, every `02` keys them into the ingestion tables, and `03` delivers what
-those tables hold. The area separates a record from the collections hanging off it, so a well log's header and
-its curves sit next to each other at each step.
-
-```text
-    recall-welllog-01-curves-pre
-    recall-welllog-01-header-pre
-    recall-welllog-02-curves-ing
-    recall-welllog-02-header-ing
-    recall-welllog-03-header-delivery
-```
-
-The repository is the developers', and the product only reads it. Templates and cache versions are not in it: both
-live in the module's database, saved through the Templates page or captured by a run of a cache flow. What a
-repository holds about either is the document that declares it.
-
-The delivery flow finds `mappings/` by walking up from its own file, or names it under `render.mappings`. A cache
-flow can sit anywhere in the tree; the sample keeps it under `cache/`. The sync projects every flow as a
-pipeline, and the mappings and the types each cache flow declares as read models the GUI lists. Lineage orders the
-flows in waves, so the OSDU flow runs after the ingestion table it reads has been loaded, and shows the OSDU type each
-delivery flow writes, the mapping it renders with, and the cache types that mapping reads
-([documents.md](documents.md#lineage)).
-
-Neither templates nor cache contents are in the repository: the template a mapping pins is saved in the catalog,
-captured from OSDU or imported from a bundled schema file ([mapping-templates.md](mapping-templates.md)), and every
-version of a partition's cache is written into the catalog by the runs of the cache flows that fill it
-([documents.md](documents.md#cache-flow)). OSDU Delivery only reads the repository.
+- [design.md](design.md): the design, whose section numbers the code still cites.
+- The plans: [atomic-delivery-plan.md](atomic-delivery-plan.md), [cache-lookups-plan.md](cache-lookups-plan.md),
+  [dimension-plan.md](dimension-plan.md), [inventory-plan.md](inventory-plan.md),
+  [reversal-plan.md](reversal-plan.md) and [validation-plan.md](validation-plan.md).
+- [osdu-testing.md](osdu-testing.md) (the live test waves) and [test-matrix.md](test-matrix.md) (which suite proves
+  what).
+- [walkthrough/](walkthrough/): the WellLog 1.4.0 schema laid out section by section, and how each section is filled.
+- The designs in the repository's [docs/](../../docs/): [assertions-design.md](../../docs/assertions-design.md),
+  [interfaces-design.md](../../docs/interfaces-design.md), [lineage-design.md](../../docs/lineage-design.md),
+  [partitions-design.md](../../docs/partitions-design.md) and [stage4-design.md](../../docs/stage4-design.md).

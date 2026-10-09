@@ -29,9 +29,9 @@ public enum ExplorerSchemaSource
 public sealed record ExplorerSchema(string Kind, string Version, string Source, IReadOnlyList<string> Read, IReadOnlyList<string> Unresolved, IReadOnlyList<string> Notes);
 
 /// <summary>
-/// A record OSDU holds checked against a schema (osdu/docs/explorer.md, Validate): the record's id, version and kind, the
-/// schema, the verdict (<see cref="ValidationVerdict.ToJson"/>), or why nothing could be checked, with the template versions
-/// saved for the kind a reader can check it against instead.
+/// A record OSDU holds checked against a schema (osdu/docs/reference/concepts/explorer.md, Validate): the record's id,
+/// version and kind, the schema, the verdict (<see cref="ValidationVerdict.ToJson"/>), or why nothing could be checked,
+/// with the template versions saved for the kind a reader can check it against instead.
 /// </summary>
 public sealed record ExplorerValidation
 {
@@ -123,12 +123,13 @@ public sealed record ExplorerListValidation
 }
 
 /// <summary>
-/// The explorer's checks of what OSDU holds against what OSDU expects (osdu/docs/explorer.md, Validate): one record, at its
-/// latest or at a version, or the records a search finds, up to <see cref="MaxRecords"/>. A record is checked by the module
-/// every validation shares (<see cref="RecordValidator"/>) against the schema the partition's Schema service holds for its
-/// kind (<see cref="SchemaServiceReader"/>), or a saved template the reader picks, and the records it refers to are looked up
-/// in OSDU's storage service, in one batch. Nothing the delivery system keeps of a record (its ledger, its mapping, its
-/// cache) is read; a saved template is the one exception, and only when the reader asks for it.
+/// The explorer's checks of what OSDU holds against what OSDU expects (osdu/docs/reference/concepts/explorer.md,
+/// Validate): one record, at its latest or at a version, or the records a search finds, up to <see cref="MaxRecords"/>.
+/// A record is checked by the module every validation shares (<see cref="RecordValidator"/>) against the schema the
+/// partition's Schema service holds for its kind (<see cref="SchemaServiceReader"/>), or a saved template the reader
+/// picks, and the records it refers to are looked up in OSDU's storage service, in one batch. Nothing the delivery
+/// system keeps of a record (its ledger, its mapping, its cache) is read; a saved template is the one exception, and
+/// only when the reader asks for it.
 /// </summary>
 public sealed class ExplorerChecks
 {

@@ -155,23 +155,27 @@ What an operator needs once real data flows.
 
 - [x] **OPS-1a** Metrics: none were emitted. The engine now publishes settled tries and their duration per flow,
   route and outcome, and every HTTP call's result, duration and retries, on the meter `SqlFlow.Delivery`
-  ([../osdu/docs/operations.md](../osdu/docs/operations.md#metrics)).
+  ([../osdu/docs/reference/concepts/run-trace-and-metrics.md](../osdu/docs/reference/concepts/run-trace-and-metrics.md#metrics)).
 - [ ] **OPS-1b** Export the metrics and set the alerts: the exporter needs DEC-6 and the dependency approval of
   `osdu/docs/design.md` section 14.
 - [x] **OPS-2** Health: `/health/live` and `/health/ready` exist; OSDU reachability was only the operator's probe.
   A scheduled probe now covers every active delivery flow, once per interface, through the same node operation the
   operator's button queues; every probe is an activity in the audit trail and a count on `osdu_delivery.probes`, and
-  [../osdu/docs/operations.md](../osdu/docs/operations.md#watching-the-targets) says what to alert on. Off unless a
+  [../osdu/docs/reference/concepts/run-trace-and-metrics.md](../osdu/docs/reference/concepts/run-trace-and-metrics.md#watching-the-targets)
+  says what to alert on. Off unless a
   deployment turns it on, since a pass costs a live request per interface. Setting the alerts is OPS-1b's exporter.
 - [x] **OPS-3** Availability: the control plane runs one replica (the dispatch lease). What that costs, what breaks
   while it is down, what a worker keeps doing, what the control plane heals by itself and what an operator then checks
-  are written down in [../osdu/docs/operations.md](../osdu/docs/operations.md#availability-and-recovery). Whether to
+  are written down in
+  [../osdu/docs/reference/concepts/availability-and-retention.md](../osdu/docs/reference/concepts/availability-and-retention.md#availability).
+  Whether to
   accept one replica or route the node protocol to the lease holder stays DEC-5.
-- [x] **OPS-4** Refresh the stale pages: the state in `osdu/README.md`, the deployables and size ceilings in
-  `osdu/docs/operations.md`, `osdu/docs/osdu-testing.md` from the drop era.
+- [x] **OPS-4** Refresh the stale pages: the state in `osdu/README.md`, the deployables (now
+  `osdu/docs/reference/guides/deployment.md`) and size ceilings (now
+  `osdu/docs/reference/concepts/availability-and-retention.md`), `osdu/docs/osdu-testing.md` from the drop era.
 - [x] **OPS-5** Set the ledger's retention and backup policy: what every table of the `osdu` schema holds, what grows,
   what may be pruned and what never may, what a backup must include and how to restore it
-  ([../osdu/docs/operations.md](../osdu/docs/operations.md#retention-and-backup),
+  ([../osdu/docs/reference/concepts/availability-and-retention.md](../osdu/docs/reference/concepts/availability-and-retention.md#retention),
   [decisions/0005-ledger-retention.md](../osdu/docs/decisions/0005-ledger-retention.md)). The retention pass now also
   clears the captured run log of settled activities, which was the schema's only column with no ceiling.
 

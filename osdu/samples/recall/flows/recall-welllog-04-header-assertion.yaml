@@ -1,7 +1,7 @@
 # Flow: recall-welllog-04-header-assertion
 #
 # What the Recall well logs look like in OSDU once recall-welllog-03-header-delivery has delivered them
-# (osdu/docs/documents.md, "Assertion flow"). It reads what the delivery wrote, never the ingestion tables: every test
+# (osdu/docs/reference/flow/assertion.md). It reads what the delivery wrote, never the ingestion tables: every test
 # reads the WellLog kind on the same platform and partition, so lineage runs it after the delivery flow, and the hourly
 # schedule both flows join fires it once the logs have landed. Each run keeps a report in the module's database: the
 # Tests tab of this pipeline shows where every test stands and how it has come out over the last runs, and the report

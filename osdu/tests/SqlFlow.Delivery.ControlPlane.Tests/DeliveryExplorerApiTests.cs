@@ -19,12 +19,13 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The explorer as the API serves it (osdu/docs/explorer.md): the connection each partition is read through, picked from the
-/// delivery flows that reach it (the storage route first, a flow whose partition is its header's by the partition it names),
-/// none for a partition no flow reaches; each read run by the control plane through that connection with what it reads, and
-/// nothing queued for a node; a record page's check of a record run the same way through the record's own flow, refused
-/// for a route that keeps no record in storage; and every search the operation would refuse answered as a 400 before it runs. Nothing here
-/// reaches an OSDU: the operations are stood in for (<see cref="RecordedOperations"/>), and what each was given is read back.
+/// The explorer as the API serves it (osdu/docs/reference/concepts/explorer.md): the connection each partition is read
+/// through, picked from the delivery flows that reach it (the storage route first, a flow whose partition is its
+/// header's by the partition it names), none for a partition no flow reaches; each read run by the control plane
+/// through that connection with what it reads, and nothing queued for a node; a record page's check of a record run the
+/// same way through the record's own flow, refused for a route that keeps no record in storage; and every search the
+/// operation would refuse answered as a 400 before it runs. Nothing here reaches an OSDU: the operations are stood in
+/// for (<see cref="RecordedOperations"/>), and what each was given is read back.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

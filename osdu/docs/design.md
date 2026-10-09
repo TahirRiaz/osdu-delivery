@@ -26,7 +26,8 @@ difference shows up entirely in where state lives and at what grain.
 - **Not an ETL engine.** It does not read source systems, join, aggregate, or reshape at
   volume. SQLFlow's own pre-ingestion and ingestion flows land the files and load the keyed
   ingestion tables; the OSDU flow reads those tables by key and by window, without joining
-  or reshaping them ([architecture.md](architecture.md)).
+  or reshaping them
+  ([reference/concepts/overview.md](reference/concepts/overview.md#the-chain-pre-ing-then-the-osdu-flow)).
 - **Not an ETL engine on the way back either.** The retrieval kind (section 15) pages
   OSDU's search index into files on the lake and stops there; projecting, joining and
   reshaping what it lands stays with the lake.
@@ -162,7 +163,7 @@ interpretable at request time: `TargetProperty` is a dotted JSON path, `Transfor
 a repeater, and a non-collection reference is a single nested block. Interpret it, and
 delete the generators. Interpreted here, a mapping is a list of entries, each naming a
 variable of the pinned template and where its value comes from
-([mapping-templates.md](mapping-templates.md)).
+([reference/flow/mapping.md](reference/flow/mapping.md)).
 
 The principle that separates the two cases: **generate from what you do not own,
 interpret what you do.** OSDU's schema is external and has one authoritative upstream, so
@@ -240,7 +241,7 @@ A mapping may make the unique segment from the key's own values instead
 (`dataset.idFrom: key`), so reference data reads as OSDU's own catalogs do
 (`RECALL::GAPI` beside `LIS-LAS::GAPI`). The id is still deterministic and client-supplied;
 the delivery key stays the ledger's identity for the record, and a record keeps the id it
-first claimed ([mapping-templates.md](mapping-templates.md#the-osdu-id)).
+first claimed ([reference/flow/mapping.md](reference/flow/mapping.md#the-osdu-id)).
 
 ### 5.4 One source, several flows
 
@@ -331,7 +332,7 @@ rather than only pointing at it. A type or field the cache does not hold fails t
 preflight gate rather than holding every record at run time.
 
 **Who fills it.** What is cached is defined by flows of their own, `flowType: cache`
-([documents.md](documents.md#cache-flow)): the OSDU platform to search, the types to cache
+([reference/flow/cache.md](reference/flow/cache.md)): the OSDU platform to search, the types to cache
 (each a kind, an optional query and the paths to keep), and what a changed value does.
 There is one cache per OSDU data partition, keyed by the partition the flows reach (`CacheScope`): a partition a flow
 names under `partitions`, or a declared `data-partition-id` with its references resolved. A cache flow fills the cache of
@@ -624,7 +625,7 @@ event log; the lease applies the log to the records when the worker checkpoints 
 renewal, when it closes it, or, once it has run out, when the next claim of the flow
 recovers it. The record table is the read model of the deliveries, and the ledger reads it
 under snapshot isolation, so readers and writers never wait on each other
-([ledger.md](ledger.md#leasing)).
+([reference/concepts/submissions.md](reference/concepts/submissions.md#leases-and-claims)).
 
 This deletes the `in_progress` write entirely, which is one of the two round trips per
 record in the current design, and it removes the best-effort duplicate guard that
@@ -681,7 +682,7 @@ From the specs already held in `osdu-csharp-client/openapi_specs/`:
 The last is asynchronous and batch-shaped, and it is OSDU's own preferred bulk path.
 
 All four are implemented as named protocols (`storage`, `ddms`, `file`,
-`manifest`; [protocols.md](protocols.md)). The record, file and manifest protocols
+`manifest`; [reference/flow/routes.md](reference/flow/routes.md)). The record, file and manifest protocols
 batch records per request, and every protocol reports each step it took and what the
 target returned (section 16.3).
 
@@ -849,7 +850,7 @@ Before any render, and with no OSDU call:
 4. Every target is a variable of the pinned template, with an agreeing shape, and every
    cached or static reference points at an entity type the schema allows.
 
-[mapping-templates.md](mapping-templates.md) lists every check.
+[reference/concepts/preflight.md](reference/concepts/preflight.md#the-preflight-gate) lists every check.
 
 If the combination does not validate, nothing renders. Not a warning.
 
@@ -914,7 +915,7 @@ The delivery domain runs on the platform's verbs and API; there is no separate d
 | `cache` | CLI: `sqlflow cache list`, `sqlflow cache import` | Lists the versions of a partition's cache; merges type files into the flow's partition as that flow's capture, for work without OSDU. |
 | `template` | CLI: `sqlflow template capture`, `import`, `list`, `show`, `delete`; the GUI's Templates page | Saves an OSDU schema as an immutable template version in the catalog, from the OSDU data definitions (the Open Group's public repository, or a local checkout of it) or from a bundled schema file. |
 | release, redeliver, delete, read back, probe | the GUI record and flow pages; `POST /api/v1/delivery/records/{flowId}/{key}/...` | Interventions, recorded in the ledger's activity trail under the user who asked. A delete runs on a node as a compute task; a read back and a probe, which a person waits on and which write nothing, run in the control plane as they are asked. |
-| explore | the Explorer page; `POST /api/v1/delivery/explorer/{types,search,fields,read}` | Reads what an OSDU partition holds, live, through the connection of a delivery flow that reaches it: the kinds a search finds with their counts, a page of its records, a property's values with their counts, the properties a kind's records hold, and one record from the storage service with its versions ([explorer.md](explorer.md)). Nothing the ledger keeps is read and nothing is written; the control plane answers each read as it is asked. |
+| explore | the Explorer page; `POST /api/v1/delivery/explorer/{types,search,fields,read}` | Reads what an OSDU partition holds, live, through the connection of a delivery flow that reaches it: the kinds a search finds with their counts, a page of its records, a property's values with their counts, the properties a kind's records hold, and one record from the storage service with its versions ([reference/concepts/explorer.md](reference/concepts/explorer.md)). Nothing the ledger keeps is read and nothing is written; the control plane answers each read as it is asked. |
 | read by id | a record page's OSDU tab, following a record the document refers to; `POST /api/v1/delivery/flows/{pipelineId}/osdu/read` | Reads any OSDU record by its id through the flow's route and credentials, at its latest version or at the version the request names (`version`), with the versions the target keeps of it (storage's `GET /records/versions/{id}`, newest first; null for a target that keeps no list, such as a DDMS). A read changes nothing, so the control plane answers it as it is asked rather than recording an activity. The tab's Validation checks a record it shows the way the explorer checks one, read through the same flow (`POST /api/v1/delivery/flows/{pipelineId}/osdu/validate`). |
 
 `plan` working without OSDU is a direct consequence of reading the reference data as a cache
@@ -1003,7 +1004,8 @@ a large wellbore parallelises instead of pinning one executor. The session aggre
 chunks by row label, so each window's chunk has to carry an index that continues from the
 previous window's (a window that restarts at zero replaces rows instead of adding them, and
 the commit still succeeds). The delivery side checks the labels before a session opens and
-the committed log after it ([protocols.md](protocols.md)), so such a window holds the record
+the committed log after it
+([reference/flow/ddms.md](reference/flow/ddms.md#the-wellbore-ddms-wellboreddmsv3)), so such a window holds the record
 instead of losing rows.
 
 ### 13.3 Budget it explicitly
@@ -1032,7 +1034,8 @@ The direct dependency set of the solution after the strip:
 - Telemetry, in `SqlFlow.Delivery.Telemetry` alone and loaded only by the hosts: `OpenTelemetry.Extensions.Hosting`,
   `OpenTelemetry.Exporter.OpenTelemetryProtocol` and `OpenTelemetry.Exporter.Console` (the OpenTelemetry project's own,
   Apache-2.0), and `Azure.Monitor.OpenTelemetry.Exporter` (Microsoft, MIT). They carry the module's metrics where a
-  deployment says and nowhere by default (`osdu/docs/operations.md`, "Metrics"); the delivery path itself references
+  deployment says and nowhere by default (`osdu/docs/reference/concepts/run-trace-and-metrics.md`, "Metrics"); the
+  delivery path itself references
   none of them, and the meters are the runtime's own either way.
 
 ### 14.2 What was kept out
@@ -1202,7 +1205,9 @@ decoded code where no label is read. The dimensions are kept in `osdu.Dimension`
 `osdu.DimensionMember` (the values), `osdu.DimensionValue` (the keys), `osdu.DimensionAttribute` and
 `osdu.DimensionChange`, each build written in one transaction with what it changed
 logged per key; the Dimensions page with its search builder, the API and the CLI read those rows, and a cache flow can
-hold a dimension's values as a lookup table ([documents.md](documents.md#cache-flow)). Lineage orders a dimension flow
+hold a dimension's values as a lookup table
+([reference/flow/cache.md](reference/flow/cache.md#dimension-values-dimension-dimensionflow)). Lineage orders a
+dimension flow
 after the flows that write the kinds it reads, and a cache flow holding a dimension after the dimension flow.
 
 ## 16. Scale: streaming intake, work batches, returned values and fan-out
@@ -1269,7 +1274,7 @@ counts the candidates per range of key values in one aggregate, so nothing ranks
 the candidates, and cuts at most 1024 slices of a work batch or more each, holding their
 shares give or take one counted range. The bounds and the column are recorded on the
 submission, so every member reads exactly its own range, paging by the primary key, and no
-two members plan the same record ([documents.md](documents.md#the-identity-primary-key)). When the members report, it finalises the planning, enqueues `drain` members that lease batches
+two members plan the same record ([reference/flow/delivery.md](reference/flow/delivery.md#the-identity-primary-key)). When the members report, it finalises the planning, enqueues `drain` members that lease batches
 concurrently with it, waits for them, settles what is left (expired leases, records in
 backoff), and completes the submission. Members ride the platform's run queue as one
 family under the parent: they pass the pipeline gate together, they are cancelled with
@@ -1283,7 +1288,7 @@ to a transaction when a lease applies its log; no statement writes more than a t
 records, so the database never locks the whole table; staging locks only the records that
 exist, never a range of keys; every read runs under snapshot isolation; and a statement
 the database ends as a deadlock victim runs again
-([ledger.md](ledger.md#many-nodes-one-table)).
+([reference/concepts/ledger.md](reference/concepts/ledger.md#writes-at-scale)).
 
 ### 16.5 The trace stays at operation grain
 

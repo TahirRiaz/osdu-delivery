@@ -54,10 +54,10 @@ function suggestionLabel(candidate: DimensionKeyCandidate): string {
 }
 
 /**
- * The dimension being built in the explorer (osdu/docs/explorer.md, Building a dimension), docked beside the records it is
- * built from: its name and kind, the keys the kind's template suggests, the example key every part is filled with (the
- * record in view's own first), the table with its columns and settings, and the YAML with what is wrong with it. Every
- * pick is made in the records themselves; the panel says what to pick next.
+ * The dimension being built in the explorer (osdu/docs/reference/concepts/explorer.md, Building a dimension), docked
+ * beside the records it is built from: its name and kind, the keys the kind's template suggests, the example key every
+ * part is filled with (the record in view's own first), the table with its columns and settings, and the YAML with what
+ * is wrong with it. Every pick is made in the records themselves; the panel says what to pick next.
  */
 export function DimensionBuildPanel({ build, startKind }: {
   build: DimensionBuild;

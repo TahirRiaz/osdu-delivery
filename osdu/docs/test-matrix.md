@@ -121,7 +121,8 @@ ledgers stay empty.
 
 - That a deployment's OSDU behaves as its contract says. Only a live run proves that.
 - The kinds no sample mapping renders. The route each would take is decided by the rules in
-  [documents.md](documents.md#routes), which are covered, but no sample renders a reference data kind or a dataset
+  [reference/flow/routes.md](reference/flow/routes.md#an-interfaces-route), which are covered, but no sample renders
+  a reference data kind or a dataset
   collection end to end.
 - Reading bulk data back out of a DDMS, and reading arrays back out of the Reservoir DDMS: both are written and
   verified, and only the ETP array metadata is read back.

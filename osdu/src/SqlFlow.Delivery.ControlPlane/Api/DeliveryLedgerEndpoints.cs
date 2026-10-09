@@ -25,9 +25,10 @@ public sealed record DeliveryLedgerDeleteRequest(string? Confirm = null, string?
 public sealed record DeliveryLedgerDeleteAccepted(Guid RunId, string Status, string Partition, IReadOnlyList<string> Interfaces);
 
 /// <summary>
-/// Deleting a flow's ledger (docs/ledger.md, Deleting the ledger) for every interface of the pipeline at once: a request
-/// queues the <c>delete-ledger</c> run, which removes every record from OSDU reversibly and then deletes everything the
-/// ledgers keep, on a node, as a run of the pipeline, so no delivery of the pipeline runs beside it.
+/// Deleting a flow's ledger (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger) for every
+/// interface of the pipeline at once: a request queues the <c>delete-ledger</c> run, which removes every record from
+/// OSDU reversibly and then deletes everything the ledgers keep, on a node, as a run of the pipeline, so no delivery of
+/// the pipeline runs beside it.
 /// </summary>
 public static class DeliveryLedgerEndpoints
 {

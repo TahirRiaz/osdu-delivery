@@ -8,10 +8,10 @@ using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Ledger;
 
-// The ledger's directory (docs/ledger.md, Partitions): the partitions the ledger keys by, each with its number, and every
-// ledger with the partition it belongs to. Every ledger table starts its key with the partition's number, so every read and
-// write of a ledger names it: the directory resolves it once per ledger, and this process keeps it, since a ledger's
-// partition never changes once it has one.
+// The ledger's directory (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions): the partitions the
+// ledger keys by, each with its number, and every ledger with the partition it belongs to. Every ledger table starts
+// its key with the partition's number, so every read and write of a ledger names it: the directory resolves it once per
+// ledger, and this process keeps it, since a ledger's partition never changes once it has one.
 public sealed partial class OsduLedger
 {
     private const short Unassigned = DeliveryModel.UnassignedPartition;
@@ -149,7 +149,7 @@ public sealed partial class OsduLedger
     private async ValueTask<short> WritePartitionAsync(Guid flowId, CancellationToken ct)
         => await PartitionOfAsync(flowId, ct).ConfigureAwait(false)
             ?? throw new DeliveryException(
-                $"Ledger {flowId:D} is not in the ledger's directory, so nothing of it can be written: a run registers the ledger of the partition it delivers to before it writes a row of it (docs/ledger.md, Partitions).");
+                $"Ledger {flowId:D} is not in the ledger's directory, so nothing of it can be written: a run registers the ledger of the partition it delivers to before it writes a row of it (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions).");
 
     /// <summary>The number of the partition named <paramref name="partition"/>, or null when no ledger has been kept under it.</summary>
     private async ValueTask<short?> PartitionIdOfAsync(string partition, CancellationToken ct)

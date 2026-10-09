@@ -10,17 +10,17 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Reads a mapping's <c>record</c> block (docs/mapping-templates.md): a tree laid out the way the rendered record is. Every
-/// word of the mapping language starts with <c>$</c> and every other key is a property of the record, so no template's
-/// property name is ever read as the language, and no column's name either. A property is one of four nodes. A literal is
-/// written as the value it is. An object is a map of property names. A value node reads one value with <c>$from</c> (a
-/// column), <c>$expr</c> (an expression over the row), <c>$value</c> (a literal with settings), <c>$cache</c> or
-/// <c>$search</c>, and takes its settings beside it. A <c>$forEach</c> node repeats the rows of a child dataset as the
-/// items of an array, each item laid out under <c>$item</c>, and keeps only the rows its <c>$where</c> holds for. A list
-/// holding nodes is a list of values, each item a literal or a value node, or a list of objects, each item an object laid
-/// out as the tree is. A bare column name reads the row the node is in (under a <c>$forEach</c>, the item's row), and
-/// <c>$dataset.&lt;column&gt;</c> the dataset's own row from anywhere. A property whose own name starts with <c>$</c> is
-/// written with one more: <c>$$name</c>.
+/// Reads a mapping's <c>record</c> block (osdu/docs/reference/flow/mapping.md): a tree laid out the way the rendered
+/// record is. Every word of the mapping language starts with <c>$</c> and every other key is a property of the record,
+/// so no template's property name is ever read as the language, and no column's name either. A property is one of four
+/// nodes. A literal is written as the value it is. An object is a map of property names. A value node reads one value
+/// with <c>$from</c> (a column), <c>$expr</c> (an expression over the row), <c>$value</c> (a literal with settings),
+/// <c>$cache</c> or <c>$search</c>, and takes its settings beside it. A <c>$forEach</c> node repeats the rows of a
+/// child dataset as the items of an array, each item laid out under <c>$item</c>, and keeps only the rows its
+/// <c>$where</c> holds for. A list holding nodes is a list of values, each item a literal or a value node, or a list of
+/// objects, each item an object laid out as the tree is. A bare column name reads the row the node is in (under a
+/// <c>$forEach</c>, the item's row), and <c>$dataset.&lt;column&gt;</c> the dataset's own row from anywhere. A property
+/// whose own name starts with <c>$</c> is written with one more: <c>$$name</c>.
 /// </summary>
 internal static partial class MappingMapper
 {

@@ -2,7 +2,7 @@
 
 What OSDU Delivery has been proven to do against a live OSDU platform, what the automated suites cover without one,
 which defects the live runs found and how they were fixed, and what is still missing. The runbook is in
-[operations.md](operations.md).
+[reference/guides/operations-runbook.md](reference/guides/operations-runbook.md).
 
 Two live waves are recorded here. **Section 0 is the wave of 2026-09-17 against the current build**, where data reaches
 OSDU through SQLFlow's pre-ingestion and ingestion flows. **Sections 1 to 6 are the wave of 2026-09-12**, against the
@@ -10,7 +10,8 @@ implementation as it stood then, when a flow read a prepared drop.
 
 > **Sections 1 to 6 are a record of runs made on 2026-09-12.** They are kept as the evidence of what those runs proved
 > about the protocols, change detection, verify, the interventions and the recovery paths. The input is not the same:
-> the drop, drop-off and known-state mechanics named below no longer exist ([architecture.md](architecture.md)), and
+> the drop, drop-off and known-state mechanics named below no longer exist
+> ([reference/concepts/overview.md](reference/concepts/overview.md#the-chain-pre-ing-then-the-osdu-flow)), and
 > neither does manual submission (records sent in the request, sections 2.8 to 2.10): records delivered by hand are
 > files placed where a pre flow reads them ([design.md](design.md) section 3.3). Where the current build stands, route
 > by route, is in [the go-live map](../../docs/go-live-map.md).
@@ -181,7 +182,7 @@ secret is the reference `${env:OSDU_CLIENT_SECRET}`.
 These live runs predate cache flows. At the time the cache was kept as reference snapshots in a store the delivery
 flows named, refreshed by the `e2e-cache-sync` retrieval flow, and this page records the runs as they happened. A
 cache is now defined by a cache flow (`flowType: cache`), captured by its `refresh` runs, and its versions live only in
-the catalog ([documents.md](documents.md#cache-flow)).
+the catalog ([reference/flow/cache.md](reference/flow/cache.md)).
 
 | Flow | Kind and protocol | What it delivers |
 | --- | --- | --- |
@@ -442,7 +443,7 @@ again. It carried the run marker, and every write and the cleanup itself are in 
   `test:work-product-component--Document:b57668a195ad5b129d8f4d51197e4ad8` (`e2e-file`), and the two that sections 2.9
   and 2.10 created and removed within their own test;
 - the ten `dataset--File.Generic` records their files were registered as. A payload change registers a new dataset and
-  leaves the earlier one in OSDU, as [protocols.md](protocols.md) describes.
+  leaves the earlier one in OSDU, as [reference/flow/routes.md](reference/flow/routes.md#file) describes.
 
 A soft delete does not remove everything. What stays is the bulk data of the three well logs, which the Wellbore DDMS
 keeps under its logical delete, and the files behind the ten `dataset--File.Generic` records, in the platform's file

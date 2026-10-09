@@ -57,16 +57,16 @@ function WindowFrame({ hidden = false, children, testId }: { hidden?: boolean; c
 }
 
 /**
- * The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU. It opens on a
- * welcome that reads nothing from OSDU: the search field, the records and types opened lately in this browser, and the
- * types of the partition one click away. Once asked, the types of the partition the title bar names stand beside its
- * records; a type, a group or a kind narrows them, and a property's values group and narrow them further. One search field
- * searches the place in view (the type picked, or every type) and keeps it: an id (which opens the record), the start of
- * one, a name, any text or a Lucene query, in every property or in the one property or source column picked at the field's
- * start. A record opens in the record inspector, under the place it sits in, with its versions, its links and the records
- * that mention it. Everything is in the address (the search, the place, the values, the order and the record open), so a
- * link, Back and a refresh land on the same view; the records already read are kept, so going back is immediate. Nothing
- * here reads what the delivery system keeps.
+ * The explorer (osdu/docs/reference/concepts/explorer.md): a browser of what an OSDU partition holds, read live from
+ * OSDU. It opens on a welcome that reads nothing from OSDU: the search field, the records and types opened lately in
+ * this browser, and the types of the partition one click away. Once asked, the types of the partition the title bar
+ * names stand beside its records; a type, a group or a kind narrows them, and a property's values group and narrow them
+ * further. One search field searches the place in view (the type picked, or every type) and keeps it: an id (which
+ * opens the record), the start of one, a name, any text or a Lucene query, in every property or in the one property or
+ * source column picked at the field's start. A record opens in the record inspector, under the place it sits in, with
+ * its versions, its links and the records that mention it. Everything is in the address (the search, the place, the
+ * values, the order and the record open), so a link, Back and a refresh land on the same view; the records already read
+ * are kept, so going back is immediate. Nothing here reads what the delivery system keeps.
  */
 export default function ExplorerPage() {
   const [params, setParams] = useSearchParams();
@@ -152,7 +152,7 @@ export default function ExplorerPage() {
   const reachable = canOperate && connection.data?.available === true;
 
   // A dimension built from what the explorer shows: the records are browsed and drilled into as ever, and each value picked
-  // from where it is (osdu/docs/explorer.md, Building a dimension).
+  // from where it is (osdu/docs/reference/concepts/explorer.md, Building a dimension).
   const build = useDimensionBuild({ partition: active, reachable, scopeKind: buildKind(scope), recordId, recordVersion });
   const openKind = () => {
     const read = recordId === null ? undefined : queryClient.getQueryData<DeliveryOsduRead>(["explorer", "read", active, recordId, recordVersion]);
@@ -174,9 +174,10 @@ export default function ExplorerPage() {
   // Each property a condition asks is a column of the grid, so the grid shows why each record is listed.
   const request = { text: text === "" ? undefined : text, lucene, kind: scopeKind(scope), filters, sort, columns: columnsOf(filters, NAME_FIELDS) };
 
-  // Text searched in one property (osdu/docs/explorer.md, Searching a property): the properties of the place are read once
-  // text is typed in the field or its choice of where to search is opened. A type's source columns
-  // (osdu/docs/search-terms.md) are read with them, and those searched in lately are offered after them.
+  // Text searched in one property (osdu/docs/reference/concepts/explorer.md, Conditions and properties): the properties
+  // of the place are read once text is typed in the field or its choice of where to search is opened. A type's source
+  // columns (osdu/docs/reference/concepts/search-terms.md) are read with them, and those searched in lately are offered
+  // after them.
   const [fieldsWanted, setFieldsWanted] = useState(false);
   const placeFields = useExplorerFields(active, scopeKind(scope), reachable && fieldsWanted);
   const placeTerms = useSearchTerms(scopeKind(scope), reachable && fieldsWanted);
@@ -206,8 +207,9 @@ export default function ExplorerPage() {
     },
   });
 
-  // Where the place's field searches (osdu/docs/explorer.md, Searching a property): every property, or one source column or
-  // property picked at its start, kept while the place is in view. A value searched in it replaces the condition it had.
+  // Where the place's field searches (osdu/docs/reference/concepts/explorer.md, Conditions and properties): every
+  // property, or one source column or property picked at its start, kept while the place is in view. A value searched
+  // in it replaces the condition it had.
   const [scopeChoice, setScopeChoice] = useState<{ place: string; choice: SearchScopeChoice } | null>(null);
   const scopeTarget = scopeChoice !== null && scopeChoice.place === placeKey ? scopeTargetOf(scopeChoice.choice, placeOffered) : null;
   const placeScope: SearchScope = {

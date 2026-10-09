@@ -43,12 +43,12 @@ public sealed record SearchCacheType(string Name, string Origin, string? Kind, I
 }
 
 /// <summary>
-/// Compiles the pipelines into search terms (osdu/docs/search-terms.md): for every column of a table a delivery flow reads,
-/// each place the column reaches in the records its mapping renders, and how a value of the column becomes the value
-/// written there. A term is the table's column, whichever flows read the table and whichever mappings render it: two flows
-/// rendering one table under two versions of a schema give one term, its routes read by both. Nothing is read but the flows'
-/// tables, their mappings and the cached types the lookups name: the routes say what a search would ask, and the explorer
-/// asks it of the platform.
+/// Compiles the pipelines into search terms (osdu/docs/reference/concepts/search-terms.md): for every column of a table
+/// a delivery flow reads, each place the column reaches in the records its mapping renders, and how a value of the
+/// column becomes the value written there. A term is the table's column, whichever flows read the table and whichever
+/// mappings render it: two flows rendering one table under two versions of a schema give one term, its routes read by
+/// both. Nothing is read but the flows' tables, their mappings and the cached types the lookups name: the routes say
+/// what a search would ask, and the explorer asks it of the platform.
 /// </summary>
 /// <remarks>
 /// <para>

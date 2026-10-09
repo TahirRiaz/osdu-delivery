@@ -476,7 +476,7 @@ public class YamlDocumentLoaderTests
             Refused("Unit: { $from: unit, $modifiers: [{ id: \"{param.dataPartition}:reference-data--UnitOfMeasure:{$value}:\" }] }"),
             StringComparison.Ordinal);
         Assert.Contains("a parameter is read as {$param.dataPartition}", Refused("Symbol: \"{param.dataPartition}-x\""), StringComparison.Ordinal);
-        Assert.Contains("replace: $cache.RecallUnits", Refused("Symbol: { $from: a, $modifiers: [{ replace: cache.RecallUnits }] }"), StringComparison.Ordinal);
+        Assert.Contains("replace: $cache.UnitAlias", Refused("Symbol: { $from: a, $modifiers: [{ replace: cache.UnitAlias }] }"), StringComparison.Ordinal);
     }
 
     [Fact]

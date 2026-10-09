@@ -10,9 +10,10 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Rendering;
 
 /// <summary>
-/// The value of one mapping entry for one row (docs/delivery/mapping-templates.md): the condition, the source or static
-/// value, the modifiers, the cache lookup, what an empty value does, and the conversion to the template variable's type.
-/// A value that cannot be produced either leaves the variable out or holds the record with a reason naming the target.
+/// The value of one mapping entry for one row (osdu/docs/reference/flow/mapping-values.md): the condition, the source
+/// or static value, the modifiers, the cache lookup, what an empty value does, and the conversion to the template
+/// variable's type. A value that cannot be produced either leaves the variable out or holds the record with a reason
+/// naming the target.
 /// </summary>
 internal static partial class EntryValues
 {

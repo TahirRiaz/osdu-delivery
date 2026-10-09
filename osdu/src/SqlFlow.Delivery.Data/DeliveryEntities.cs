@@ -5,10 +5,11 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace SqlFlow.Delivery.Data;
 
-// The delivery ledger (docs/delivery/ledger.md), in the osdu schema: submissions, records and append-only attempts, the
-// audit trail of interventions, the source watermarks, and the read model of the mapping and cache documents the sync found in the repositories. Statuses are stored as short strings
-// so the tables read without a decoder ring. Everything the GUI lists is index-backed. No foreign key or navigation
-// reaches SQLFlow's catalog: a run, a group or a repository is referenced by id only.
+// The delivery ledger (osdu/docs/reference/concepts/ledger.md), in the osdu schema: submissions, records and
+// append-only attempts, the audit trail of interventions, the source watermarks, and the read model of the mapping and
+// cache documents the sync found in the repositories. Statuses are stored as short strings so the tables read without a
+// decoder ring. Everything the GUI lists is index-backed. No foreign key or navigation reaches SQLFlow's catalog: a
+// run, a group or a repository is referenced by id only.
 
 /// <summary>
 /// One plan of a flow over its ingestion tables: an incremental window, a full read, or a set of record keys. Its id is
@@ -622,10 +623,11 @@ public sealed class DeliveryActivityRecord
 }
 
 /// <summary>
-/// A record deleted from the ledger after it was removed from OSDU (docs/ledger.md, Deleting a removed record from the
-/// ledger): its attempts, search entries and row went, and this line is what the ledger keeps of it, so who deleted which
-/// record, with which OSDU id and last version, is still answered from the ledger. Rows are only ever added; the
-/// intervention that deleted it names it under <see cref="DeliveryActivityRecord"/> as well.
+/// A record deleted from the ledger after it was removed from OSDU
+/// (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting removed records from the ledger): its attempts,
+/// search entries and row went, and this line is what the ledger keeps of it, so who deleted which record, with which
+/// OSDU id and last version, is still answered from the ledger. Rows are only ever added; the intervention that deleted
+/// it names it under <see cref="DeliveryActivityRecord"/> as well.
 /// </summary>
 public sealed class DeliveryPurgedRecord
 {
@@ -1132,12 +1134,12 @@ public sealed class DeliveryReversalItem
 }
 
 /// <summary>
-/// A search term a repository's pipelines give (osdu/docs/search-terms.md) for one entity type: a column of a source table
-/// the repository's active delivery flows read, with every route by which it reaches the records of that type they render.
-/// A term is the table's column, whichever flows read the table and whichever mappings render it; a row is the term in one
-/// repository and one entity type. The sync writes the rows again whenever it runs, from the flows and the mappings they
-/// pin; what a person makes of a term is kept apart, in <see cref="DeliverySearchTermRefinement"/>, by the term's identity,
-/// so a sync never undoes it.
+/// A search term a repository's pipelines give (osdu/docs/reference/concepts/search-terms.md) for one entity type: a
+/// column of a source table the repository's active delivery flows read, with every route by which it reaches the
+/// records of that type they render. A term is the table's column, whichever flows read the table and whichever
+/// mappings render it; a row is the term in one repository and one entity type. The sync writes the rows again whenever
+/// it runs, from the flows and the mappings they pin; what a person makes of a term is kept apart, in
+/// <see cref="DeliverySearchTermRefinement"/>, by the term's identity, so a sync never undoes it.
 /// </summary>
 public sealed class DeliverySearchTerm
 {
@@ -1180,11 +1182,11 @@ public sealed class DeliverySearchTerm
 }
 
 /// <summary>
-/// What a person made of a search term (osdu/docs/search-terms.md): the name it is searched by, whether it is left out of
-/// the search, which of its routes it is searched through, and a note on it, with who changed it last and when. Kept by the
-/// term's identity, apart from the terms a sync writes, so it holds across every sync and every mapping version that keeps
-/// the column; one whose term no mapping gives any longer stays until it is removed, and applies again if the term comes
-/// back.
+/// What a person made of a search term (osdu/docs/reference/concepts/search-terms.md): the name it is searched by,
+/// whether it is left out of the search, which of its routes it is searched through, and a note on it, with who changed
+/// it last and when. Kept by the term's identity, apart from the terms a sync writes, so it holds across every sync and
+/// every mapping version that keeps the column; one whose term no mapping gives any longer stays until it is removed,
+/// and applies again if the term comes back.
 /// </summary>
 public sealed class DeliverySearchTermRefinement
 {
@@ -1334,8 +1336,9 @@ public sealed class DeliveryInterface
 
 /// <summary>
 /// A template: the OSDU schema of one kind, captured from OSDU or imported from a file, which every mapping for that
-/// kind is checked and rendered against (docs/delivery/mapping-templates.md). Templates are owned by OSDU Delivery. A
-/// version is identified by the kind and the hash of its schema, and never changes; a mapping pins the version it fills.
+/// kind is checked and rendered against (osdu/docs/reference/concepts/templates.md). Templates are owned by OSDU
+/// Delivery. A version is identified by the kind and the hash of its schema, and never changes; a mapping pins the
+/// version it fills.
 /// </summary>
 public sealed class DeliveryTemplate
 {
@@ -2343,11 +2346,12 @@ public static partial class DeliveryConfigNames
 }
 
 /// <summary>
-/// A partition the ledger keeps rows under, and the number that stands for it in every ledger key (docs/ledger.md,
-/// Partitions). A partition's name is a data-partition-id of up to 200 characters; carried in every key of the record
-/// table it would push the source file index past SQL Server's 1700-byte limit and widen every index of the largest
-/// tables, so the ledger keys by this number and names the partition here. A row is added the first time a ledger of the
-/// partition is registered, and is never renumbered or removed: every ledger row names its partition by it.
+/// A partition the ledger keeps rows under, and the number that stands for it in every ledger key
+/// (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions). A partition's name is a data-partition-id
+/// of up to 200 characters; carried in every key of the record table it would push the source file index past SQL
+/// Server's 1700-byte limit and widen every index of the largest tables, so the ledger keys by this number and names
+/// the partition here. A row is added the first time a ledger of the partition is registered, and is never renumbered
+/// or removed: every ledger row names its partition by it.
 /// </summary>
 public sealed class DeliveryLedgerPartition
 {
@@ -2361,11 +2365,12 @@ public sealed class DeliveryLedgerPartition
 }
 
 /// <summary>
-/// One ledger: the rows of one flow (or interface of a source) in one partition, under one ledger identity (docs/ledger.md,
-/// Partitions). The engine registers a ledger when a run binds its flow, before it writes a row, with the partition the
-/// run delivers to: the one the flow names, the registry's, or the one its <c>data-partition-id</c> header resolves to.
-/// From then on the ledger belongs to that partition. Every ledger row carries the partition in its key, written from here,
-/// so which partition a record, a submission or an audit entry belongs to is known from the ledger alone.
+/// One ledger: the rows of one flow (or interface of a source) in one partition, under one ledger identity
+/// (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions). The engine registers a ledger when a run
+/// binds its flow, before it writes a row, with the partition the run delivers to: the one the flow names, the
+/// registry's, or the one its <c>data-partition-id</c> header resolves to. From then on the ledger belongs to that
+/// partition. Every ledger row carries the partition in its key, written from here, so which partition a record, a
+/// submission or an audit entry belongs to is known from the ledger alone.
 /// </summary>
 /// <remarks>
 /// A ledger the upgrade to partition keys could not place (no interface named its partition and its records carry no OSDU
@@ -2493,7 +2498,8 @@ public static class DeliveryModel
     /// <summary>The widest data-partition-id, as every table that names a partition keeps it.</summary>
     public const int MaxPartitionLength = 200;
 
-    /// <summary>The longest search term key: its table and its column (osdu/docs/search-terms.md).</summary>
+    /// <summary>The longest search term key: its table and its column
+    /// (osdu/docs/reference/concepts/search-terms.md).</summary>
     public const int SearchTermKeyLength = 600;
 
     /// <summary>

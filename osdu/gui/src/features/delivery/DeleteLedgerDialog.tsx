@@ -43,11 +43,12 @@ function Step({ title, effect, reversible, testId }: { title: string; effect: st
 }
 
 /**
- * Deleting a flow's whole ledger, every interface's, in the partition in view (docs/ledger.md, Deleting the ledger). It
- * says what the run does, in the two places it acts: every record OSDU holds is removed from it first, reversibly, and then
- * everything the ledger keeps goes for good, so the next run reads every row and delivers each as a new record. A source's
- * interfaces are listed in the order the run takes them. Nothing is queued until the partition is typed back, and the run
- * checks it again before it removes or deletes anything.
+ * Deleting a flow's whole ledger, every interface's, in the partition in view
+ * (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger). It says what the run does, in the two
+ * places it acts: every record OSDU holds is removed from it first, reversibly, and then everything the ledger keeps
+ * goes for good, so the next run reads every row and delivers each as a new record. A source's interfaces are listed in
+ * the order the run takes them. Nothing is queued until the partition is typed back, and the run checks it again before
+ * it removes or deletes anything.
  */
 export function DeleteLedgerDialog({
   open, onClose, pipelineId, flowName, partition, word, stats, interfaces, onQueued,

@@ -282,7 +282,7 @@ public class DimensionBlueprintTests
     public void A_kind_pattern_matches_segment_by_segment(string pattern, string kind, bool matches)
         => Assert.Equal(matches, KindPatterns.Matches(pattern, kind));
 
-    // ---- The keys a kind's template suggests (osdu/docs/explorer.md, Building a dimension) ----
+    // ---- The keys a kind's template suggests (osdu/docs/reference/concepts/explorer.md, Building a dimension) ----
 
     [Fact]
     public async Task A_logs_template_suggests_the_wellbore_it_belongs_to_first()

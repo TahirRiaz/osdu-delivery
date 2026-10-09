@@ -20,7 +20,7 @@ the committed tree (no build output, no local files).
 | `gui/e2e/` | The OSDU specs (seed, runs, pipelines, cache, templates and mapping builder) with the e2e setup and helpers |
 | `tests/SqlFlow.Delivery.Tests/` | The delivery domain suites |
 | `tests/SqlFlow.Delivery.ControlPlane.Tests/` | The module, plan run, record origin and template API suites, and the sample estate they use |
-| `docs/` | `docs/delivery/` and `docs/reference/cli/delivery.md` |
+| `docs/` | `docs/delivery/` and the CLI reference of the delivery verbs (both since replaced by the reference corpus in `docs/reference/`) |
 | `samples/recall/` | The sample estate, laid out the way a repository is: one folder for the Recall source, holding the well log chain's flows (pre, ingestion and delivery), the WellLog mapping, the lookups cache flow with the lookup tables' files and the flows that load them, the schedules, and the drop-off folder with five real Recall logs |
 | `samples/templates/` | The bundled OSDU schemas the suites and the e2e seed save as templates, beside the source folders rather than inside one: a template is a catalog object, not repository content |
 

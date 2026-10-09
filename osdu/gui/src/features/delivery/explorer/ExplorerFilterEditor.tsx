@@ -38,10 +38,11 @@ function inputType(index: ExplorerFieldInfo["index"], condition: ExplorerConditi
  * the value is typed. A value listed is picked with a click; for `is one of` each click adds or drops one. Enter in the
  * value applies the condition.
  *
- * For a type in view, a column of a source system its delivery flows read (a search term, osdu/docs/search-terms.md) is
- * picked the same way, listed before the properties: its values are typed as the source holds them, the conditions are
- * those its route allows, and the values listed are those of the property its route fills or, for a route through other
- * records, of the property those records are found by. The control plane carries the values through the mapping.
+ * For a type in view, a column of a source system its delivery flows read (a search term,
+ * osdu/docs/reference/concepts/search-terms.md) is picked the same way, listed before the properties: its values are
+ * typed as the source holds them, the conditions are those its route allows, and the values listed are those of the
+ * property its route fills or, for a route through other records, of the property those records are found by. The
+ * control plane carries the values through the mapping.
  */
 export function ExplorerFilterEditor({ partition, base, initial, applyLabel, onApply, onCancel }: {
   partition: string | null;

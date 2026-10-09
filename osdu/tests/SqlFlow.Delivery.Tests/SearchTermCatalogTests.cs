@@ -8,12 +8,13 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The search terms in the module's database (osdu/docs/search-terms.md): the repository sync extracts them from its
-/// pipelines, every active delivery flow's tables with the mapping it renders them with, after the mappings, cache
-/// declarations and interfaces; a term is a table's column, so two flows rendering one table give one term; what a person
-/// makes of a term (a name, leaving it out, the route it is searched through, a note) holds across every sync, moves with
-/// the term from the key it had before terms were keyed by their table, and stays, named by its key, when no pipeline gives
-/// the term any longer; and a condition on a term becomes the condition the explorer asks, through the term's route.
+/// The search terms in the module's database (osdu/docs/reference/concepts/search-terms.md): the repository sync
+/// extracts them from its pipelines, every active delivery flow's tables with the mapping it renders them with, after
+/// the mappings, cache declarations and interfaces; a term is a table's column, so two flows rendering one table give
+/// one term; what a person makes of a term (a name, leaving it out, the route it is searched through, a note) holds
+/// across every sync, moves with the term from the key it had before terms were keyed by their table, and stays, named
+/// by its key, when no pipeline gives the term any longer; and a condition on a term becomes the condition the explorer
+/// asks, through the term's route.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 public sealed class SearchTermCatalogTests : IDisposable

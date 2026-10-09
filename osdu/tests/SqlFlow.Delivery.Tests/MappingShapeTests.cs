@@ -8,7 +8,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The shape of the records a mapping renders (docs/delivery/mapping-templates.md, "The record shape"): drawn by the
+/// The shape of the records a mapping renders (osdu/docs/reference/flow/mapping.md, "The record shape"): drawn by the
 /// renderer's own assembly with placeholders in place of row and cache values, so its layout is the layout a render writes.
 /// </summary>
 public class MappingShapeTests

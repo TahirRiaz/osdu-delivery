@@ -376,7 +376,8 @@ of each segment of its path. Once built, an example key (of those with the most 
 read: the key, its label and the record it came from, each attribute's value and the record it was read from, the values
 it collects, and its row.
 
-The explorer's dimension builder ([explorer.md](explorer.md), Building a dimension) works the other way round: a person
+The explorer's dimension builder ([reference/concepts/explorer.md](reference/concepts/explorer.md#building-a-dimension),
+Building a dimension) works the other way round: a person
 browses the records OSDU holds and picks the key, the value and the attributes on the values themselves, following links
 as a label's steps do, and the builder writes the item, reads it back with this loader, describes it with this blueprint
 before any build, and makes an example key's row with a build's own labelling, cleaning and counting. The keys it
@@ -549,8 +550,10 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 
 ### Stage 7: documentation
 
-`documents.md`, `design.md` section 15, `ledger.md`, `operations.md`, the CLI reference, the decision record, the
-integration brief's aggregation facts, and the samples README.
+The dimension flow reference (`reference/flow/dimension.md`), `design.md` section 15, the ledger
+(`reference/concepts/ledger.md`), the GUI and the API (`reference/concepts/gui.md`, `reference/concepts/api.md`), the
+CLI reference (`reference/cli/dimensions.md`), the decision record, the integration brief's aggregation facts, and the
+samples README.
 
 ### Stage 8: keys, values, labels and the search
 

@@ -7,8 +7,8 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The DDMSs a flow document declares under <c>target.ddms</c> (docs/documents.md), the route type
-/// <c>target.protocol</c> names, and every declaration the loader refuses.
+/// The DDMSs a flow document declares under <c>target.ddms</c> (osdu/docs/reference/flow/ddms.md, target.ddms), the
+/// route type <c>target.protocol</c> names, and every declaration the loader refuses.
 /// </summary>
 public sealed class DdmsDocumentsTests
 {

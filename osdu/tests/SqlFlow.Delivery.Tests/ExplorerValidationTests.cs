@@ -14,10 +14,11 @@ using static SqlFlow.Delivery.Tests.ValidationFixtures;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The explorer's checks of what OSDU holds against what OSDU expects (osdu/docs/explorer.md, Validate): a kind's schema
-/// read from the partition's Schema service and bundled, whatever references it makes to other schemas; one record checked
-/// at its latest or a version, against that schema or a saved template, with the records it refers to looked up in
-/// storage; and the records a search finds checked up to a bound, counted by outcome and rule.
+/// The explorer's checks of what OSDU holds against what OSDU expects (osdu/docs/reference/concepts/explorer.md,
+/// Validate): a kind's schema read from the partition's Schema service and bundled, whatever references it makes to
+/// other schemas; one record checked at its latest or a version, against that schema or a saved template, with the
+/// records it refers to looked up in storage; and the records a search finds checked up to a bound, counted by outcome
+/// and rule.
 /// </summary>
 public sealed class ExplorerValidationTests : IDisposable
 {

@@ -4,10 +4,11 @@ using SqlFlow.Delivery.Rendering;
 namespace SqlFlow.Delivery.Expressions;
 
 /// <summary>
-/// The values an expression works with and the rules it compares and computes them by (osdu/docs/mapping-templates.md,
-/// "Expressions"). A value is no value (null), text, a number (a decimal, or a double where the row held one), true or
-/// false, or a date as the row held it. Missing and blank text are both no value. Text compares ignoring case and the
-/// spaces around it, as the rest of the mapping matches text; a number compares with a number, or with text that is one.
+/// The values an expression works with and the rules it compares and computes them by
+/// (osdu/docs/reference/flow/mapping-expressions.md, "How values behave"). A value is no value (null), text, a number
+/// (a decimal, or a double where the row held one), true or false, or a date as the row held it. Missing and blank text
+/// are both no value. Text compares ignoring case and the spaces around it, as the rest of the mapping matches text; a
+/// number compares with a number, or with text that is one.
 /// </summary>
 internal static class ExpressionValues
 {

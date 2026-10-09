@@ -1,6 +1,7 @@
-// The search terms (osdu/docs/search-terms.md): the columns of the source tables the active delivery flows read, extracted
-// from the pipelines by the repository sync, each the table's column whichever flows read it, with the routes by which it
-// reaches the records and what people made of it. The explorer searches by them; the Search terms page refines them.
+// The search terms (osdu/docs/reference/concepts/search-terms.md): the columns of the source tables the active delivery
+// flows read, extracted from the pipelines by the repository sync, each the table's column whichever flows read it,
+// with the routes by which it reaches the records and what people made of it. The explorer searches by them; the Search
+// terms page refines them.
 
 import { del, get, post, put } from "@/api/client";
 import type { ExplorerCondition, ExplorerIndex } from "./explorer";

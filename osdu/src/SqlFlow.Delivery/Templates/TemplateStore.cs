@@ -32,8 +32,8 @@ public enum TemplateSaveOutcome
 public sealed record TemplateSaved(TemplateInfo Template, TemplateSaveOutcome Outcome);
 
 /// <summary>
-/// Where templates live (docs/delivery/mapping-templates.md): OSDU schemas owned by OSDU Delivery, each saved version
-/// immutable and identified by its kind and content version.
+/// Where templates live (osdu/docs/reference/concepts/templates.md): OSDU schemas owned by OSDU Delivery, each saved
+/// version immutable and identified by its kind and content version.
 /// </summary>
 public interface ITemplateStore
 {

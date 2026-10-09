@@ -1801,9 +1801,10 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// Brings many of a flow's records up to date: renders them again under the rules of now and sends only a part that
-    /// renders differently, since their delivered hashes stay (docs/operations.md, Redelivering records). Named records
-    /// are asked here under the caller's name and a deliver run is queued that plans them; every delivered record is asked
-    /// of a deliver run, whose node asks and plans them in one recorded run. A record OSDU does not hold is left as it is.
+    /// renders differently, since their delivered hashes stay (osdu/docs/reference/concepts/removal-and-reversal.md,
+    /// Redelivering records). Named records are asked here under the caller's name and a deliver run is queued that
+    /// plans them; every delivered record is asked of a deliver run, whose node asks and plans them in one recorded
+    /// run. A record OSDU does not hold is left as it is.
     /// </summary>
     private static async Task<Results<Ok<DeliveryRerenderResult>, Accepted<DeliveryRerenderResult>, ProblemHttpResult>> RerenderFlowAsync(
         Guid pipelineId, DeliveryRerenderRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine,
@@ -1925,9 +1926,10 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// Deletes records already removed from OSDU from the ledger, in this process and asking nothing of OSDU
-    /// (docs/ledger.md, Deleting a removed record from the ledger): those <c>keys</c> names, every one <c>filter</c> matches
-    /// (refused when it no longer matches the <c>expected</c> count the operator was shown), or, with neither, every record the
-    /// ledger marks deleted. A record OSDU may still hold is never deleted; it is counted as left.
+    /// (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting removed records from the ledger): those
+    /// <c>keys</c> names, every one <c>filter</c> matches (refused when it no longer matches the <c>expected</c> count
+    /// the operator was shown), or, with neither, every record the ledger marks deleted. A record OSDU may still hold
+    /// is never deleted; it is counted as left.
     /// </summary>
     private static async Task<Results<Ok<DeliveryLedgerPurgeResult>, ProblemHttpResult>> PurgeRecordsAsync(
         Guid pipelineId, DeliveryLedgerPurgeRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db,
@@ -2156,7 +2158,8 @@ public static class DeliveryEndpoints
     /// <summary>
     /// The engine an intervention runs on in this process: its references resolve from the central configuration first, in
     /// the layer of the flow's partition, exactly as the flow's runs resolve them on a node. So the partition the flow's
-    /// ledger is registered in here is the one its runs deliver to (docs/ledger.md, Partitions).
+    /// ledger is registered in here is the one its runs deliver to (osdu/docs/reference/concepts/ledger.md, Ledgers,
+    /// flows and partitions).
     /// </summary>
     internal static async Task<EngineContext> ConfiguredAsync(EngineContext engine, DeliveryConfigStore config, FlowContext flow, CancellationToken ct)
     {

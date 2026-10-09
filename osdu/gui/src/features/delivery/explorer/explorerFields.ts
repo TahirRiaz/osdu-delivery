@@ -1,9 +1,9 @@
 import { explorerApi, type ExplorerFieldInfo, type ExplorerFields } from "../../../api/explorer";
 import { ALL_KINDS, NAME_FIELDS, searchedIn, useExplorerRead } from "./explorerModel";
 
-// The properties of the records in view (osdu/docs/explorer.md, Searching an attribute): the record's own, those the kind's
-// schema declares, and those its records hold beyond them. Group by, the conditions and the search box's "in" all offer
-// them, read once for a kind and kept, since a kind's properties move slowly.
+// The properties of the records in view (osdu/docs/reference/concepts/explorer.md, Conditions and properties): the
+// record's own, those the kind's schema declares, and those its records hold beyond them. Group by, the conditions and
+// the search box's "in" all offer them, read once for a kind and kept, since a kind's properties move slowly.
 
 /** How long the properties of a kind stand before a part that shows them reads them again. */
 const FIELDS_FRESH_MS = 10 * 60_000;

@@ -4,9 +4,10 @@ using SqlFlow.Delivery.Identity;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// What the ledger keeps of a record deleted from it after it was removed from OSDU (docs/ledger.md, Deleting a removed
-/// record from the ledger): its key, what it was, the last version an attempt of it named, how many attempts went with it,
-/// and who deleted it, when, under which intervention.
+/// What the ledger keeps of a record deleted from it after it was removed from OSDU
+/// (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting removed records from the ledger): its key, what it
+/// was, the last version an attempt of it named, how many attempts went with it, and who deleted it, when, under which
+/// intervention.
 /// </summary>
 public sealed record PurgedRecordState
 {
@@ -33,8 +34,9 @@ public sealed record PurgedRecordState
 }
 
 /// <summary>
-/// What deleting a whole ledger deleted (docs/ledger.md, Deleting the ledger): its records, each kept as one line of what it
-/// was, and what the ledger kept of its runs. Its activities stay, as the whole audit trail does.
+/// What deleting a whole ledger deleted (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger):
+/// its records, each kept as one line of what it was, and what the ledger kept of its runs. Its activities stay, as the
+/// whole audit trail does.
 /// </summary>
 public sealed record LedgerDeletion(int Records, int Submissions, int WorkBatches, int Leases, int Events, int Watermarks, int Reversals)
 {
@@ -45,10 +47,10 @@ public sealed record LedgerDeletion(int Records, int Submissions, int WorkBatche
 }
 
 /// <summary>
-/// What one delivery ledger changed in OSDU after a moment (docs: osdu/docs/documents.md, Records the index may not list
-/// yet): the records it wrote, the records it took out of OSDU or put back at an earlier version and still holds, and the
-/// records it deleted from itself that OSDU had held, with the latest of those changes and one OSDU id of the ledger, which
-/// names the entity type its records are of. What an assertion run reads before it judges the search index, which can take a
-/// while to list a change.
+/// What one delivery ledger changed in OSDU after a moment (docs: osdu/docs/reference/flow/assertion.md, Records the
+/// index may not list yet): the records it wrote, the records it took out of OSDU or put back at an earlier version and
+/// still holds, and the records it deleted from itself that OSDU had held, with the latest of those changes and one
+/// OSDU id of the ledger, which names the entity type its records are of. What an assertion run reads before it judges
+/// the search index, which can take a while to list a change.
 /// </summary>
 public sealed record RecentOsduChange(Guid FlowId, string LedgerName, long Written, long Removed, long Deleted, DateTime LatestUtc, string? SampleTargetId);

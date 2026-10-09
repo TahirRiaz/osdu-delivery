@@ -47,8 +47,9 @@ public sealed record DeliveryExplorerConnectionDto(string? Partition, bool Avail
 /// <param name="To">A range's upper bound, left out of it.</param>
 /// <param name="Nested">The nested array the property sits in, which the query reaches through.</param>
 /// <param name="Term">
-/// A search term (osdu/docs/search-terms.md) in place of the property: the condition names a column of a source system, its
-/// values the source's own, and the control plane turns it into the condition on the record the term's route fills.
+/// A search term (osdu/docs/reference/concepts/search-terms.md) in place of the property: the condition names a column
+/// of a source system, its values the source's own, and the control plane turns it into the condition on the record the
+/// term's route fills.
 /// </param>
 public sealed record DeliveryExplorerFilterDto(
     string? Path, string? Index, string? Value, string? Condition = null, IReadOnlyList<string>? Values = null, string? To = null, string? Nested = null,
@@ -91,11 +92,11 @@ public sealed record DeliveryExplorerSearchRequest(
 public sealed record DeliveryExplorerFieldsRequest(string? Kind);
 
 /// <summary>
-/// The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU's own search and
-/// storage services. It shows what OSDU holds and nothing the delivery system keeps; the delivery system lends it only the way
-/// in: each read (<see cref="ExploreOperation"/>) runs in this process, as the request's answer, through the OSDU connection
-/// of a delivery flow that reaches the partition, which the engine keeps open between reads. The partition is the one the request names, else the workbench's,
-/// else the registry's default.
+/// The explorer (osdu/docs/reference/concepts/explorer.md): a browser of what an OSDU partition holds, read live from
+/// OSDU's own search and storage services. It shows what OSDU holds and nothing the delivery system keeps; the delivery
+/// system lends it only the way in: each read (<see cref="ExploreOperation"/>) runs in this process, as the request's
+/// answer, through the OSDU connection of a delivery flow that reaches the partition, which the engine keeps open
+/// between reads. The partition is the one the request names, else the workbench's, else the registry's default.
 /// </summary>
 /// <remarks>
 /// The connection is picked, not chosen by the reader: of the delivery flows that reach the partition, one whose route

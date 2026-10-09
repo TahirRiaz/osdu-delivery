@@ -25,11 +25,11 @@ public sealed record SearchRouteFields(
 }
 
 /// <summary>
-/// Turns a condition on a search term into the condition the explorer asks of the records (osdu/docs/search-terms.md): on
-/// the property the term's route fills, its values put through the mapping as a render puts them
-/// (<see cref="SearchTermValues"/>), and for a route through other records, the way the node reads those first
-/// (<see cref="ExplorerVia"/>). Which conditions a route takes follows from how its property is indexed and what its steps
-/// keep of a value.
+/// Turns a condition on a search term into the condition the explorer asks of the records
+/// (osdu/docs/reference/concepts/search-terms.md): on the property the term's route fills, its values put through the
+/// mapping as a render puts them (<see cref="SearchTermValues"/>), and for a route through other records, the way the
+/// node reads those first (<see cref="ExplorerVia"/>). Which conditions a route takes follows from how its property is
+/// indexed and what its steps keep of a value.
 /// </summary>
 public static class SearchTermResolver
 {

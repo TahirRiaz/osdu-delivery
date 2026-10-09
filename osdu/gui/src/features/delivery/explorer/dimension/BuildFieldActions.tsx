@@ -33,11 +33,12 @@ function markText(mark: ValueMark): string {
 }
 
 /**
- * Beside each value of a record on the explorer's trail while a dimension is built (osdu/docs/explorer.md, Building a
- * dimension): what the draft reads there, a key's mark where the kind's template says the value names another record (what
- * a dimension's key most often is), and the picks a value at that depth can be made: the key or the collected attribute in
- * the dimension's own record, the value or an attribute in a record its key leads to. A pick that cannot be made says why,
- * and where a record is reached through another link than the key's, making that link the key is offered.
+ * Beside each value of a record on the explorer's trail while a dimension is built
+ * (osdu/docs/reference/concepts/explorer.md, Building a dimension): what the draft reads there, a key's mark where the
+ * kind's template says the value names another record (what a dimension's key most often is), and the picks a value at
+ * that depth can be made: the key or the collected attribute in the dimension's own record, the value or an attribute
+ * in a record its key leads to. A pick that cannot be made says why, and where a record is reached through another link
+ * than the key's, making that link the key is offered.
  */
 export function BuildFieldActions({ field, build }: { field: InspectorField; build: DimensionBuild }) {
   const draft = build.draft;

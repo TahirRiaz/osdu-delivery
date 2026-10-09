@@ -7,11 +7,12 @@ using SqlFlow.Delivery.Ledger;
 namespace SqlFlow.Delivery.ControlPlane.Background;
 
 /// <summary>
-/// Sorts into their problems the blocked records the ledger has none for (docs/ledger.md, Issues): the records held or
-/// failed before the ledger kept problems, and any a completion appended by an older build blocked. A record held or failed
-/// from now on is sorted by the write that blocks it; these are read from an index that holds them alone, a bounded page at
-/// a time with a pause between pages, so a ledger with millions of blocked records is sorted without competing with the
-/// deliveries running beside it.
+/// Sorts into their problems the blocked records the ledger has none for
+/// (osdu/docs/reference/concepts/record-lifecycle.md, Issues): the records held or failed before the ledger kept
+/// problems, and any a completion appended by an older build blocked. A record held or failed from now on is sorted by
+/// the write that blocks it; these are read from an index that holds them alone, a bounded page at a time with a pause
+/// between pages, so a ledger with millions of blocked records is sorted without competing with the deliveries running
+/// beside it.
 ///
 /// The pass is resumable and repeatable: a record sorted leaves the index it is read from, so a control plane that
 /// restarts mid-pass starts again where it stopped, and a pass over nothing costs one seek.

@@ -26,10 +26,10 @@ public static partial class DeliveryExplorerEndpoints
         => delivery.MapPost("/explorer/element-queries", ElementQueriesAsync).WithName("ExploreDeliveryOsduElementQueries");
 
     /// <summary>
-    /// The Lucene query that finds the records holding exactly an element of a record (osdu/docs/explorer.md, The query of an
-    /// element): a value, a list, an object or a nested list's item, written by how the saved template of the record's kind
-    /// has the platform index each value it holds, or from the values where the template cannot say. Read from the saved
-    /// templates alone; nothing is asked of OSDU.
+    /// The Lucene query that finds the records holding exactly an element of a record
+    /// (osdu/docs/reference/concepts/explorer.md, A record): a value, a list, an object or a nested list's item,
+    /// written by how the saved template of the record's kind has the platform index each value it holds, or from the
+    /// values where the template cannot say. Read from the saved templates alone; nothing is asked of OSDU.
     /// </summary>
     private static async Task<Results<Ok<ExplorerElementAnswer>, ProblemHttpResult>> ElementQueriesAsync(
         DeliveryExplorerElementRequest? body, ITemplateStore templates, CancellationToken ct)

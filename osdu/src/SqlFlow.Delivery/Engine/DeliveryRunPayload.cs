@@ -48,9 +48,10 @@ public static class DeliveryOperations
     public const string Reverse = "reverse";
 
     /// <summary>
-    /// Delete the ledger (docs/ledger.md, Deleting the ledger): remove from OSDU, reversibly, every record the ledger holds
-    /// there, then delete everything the ledger keeps, so the flow's next run reads every row and delivers each as a new
-    /// record. The payload names the partition the run acts in (<c>confirm</c>), as the operator typed it.
+    /// Delete the ledger (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger): remove from OSDU,
+    /// reversibly, every record the ledger holds there, then delete everything the ledger keeps, so the flow's next run
+    /// reads every row and delivers each as a new record. The payload names the partition the run acts in
+    /// (<c>confirm</c>), as the operator typed it.
     /// </summary>
     public const string DeleteLedger = "delete-ledger";
 

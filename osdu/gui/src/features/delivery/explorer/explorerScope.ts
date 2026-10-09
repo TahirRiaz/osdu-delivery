@@ -3,9 +3,10 @@ import { heldFor } from "./explorerHeld";
 import { fieldLabel, searchInCondition } from "./explorerModel";
 import { termCondition, termMemory, termSearchInCondition, termTitle, type OfferedTerm } from "./explorerTerms";
 
-// The attribute a place's search field searches in, picked at its start (osdu/docs/explorer.md, Searching a property):
-// every property, as the field always searches, or one source column or one property the reader picked. Text searched in
-// one attribute is a condition of the list, and searching the attribute again replaces it.
+// The attribute a place's search field searches in, picked at its start (osdu/docs/reference/concepts/explorer.md,
+// Conditions and properties): every property, as the field always searches, or one source column or one property the
+// reader picked. Text searched in one attribute is a condition of the list, and searching the attribute again replaces
+// it.
 
 /** One attribute the search field searches in: a source column (a search term), or a property of the records. */
 export type SearchScopeTarget = { kind: "term"; term: OfferedTerm } | { kind: "field"; field: ExplorerFieldInfo };

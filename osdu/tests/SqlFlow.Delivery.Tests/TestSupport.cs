@@ -447,10 +447,11 @@ public static class Samples
 {
     /// <summary>
     /// The sample estate declares where it delivers the way a real estate does, as ${env:...} references a node holds
-    /// (osdu/docs/environment-variables.md), so the suites supply them exactly as a node would. The values are the ones
-    /// the records the suites keep were rendered with (<see cref="RenderedRecord.Folder"/>), which is what keeps a rendered
-    /// document byte-identical to the kept record. Set for the whole assembly before any test reads a sample document, and never overwriting a value the
-    /// process was started with, so a run against a real estate keeps its own.
+    /// (osdu/docs/reference/concepts/environment-variables.md), so the suites supply them exactly as a node would. The
+    /// values are the ones the records the suites keep were rendered with (<see cref="RenderedRecord.Folder"/>), which
+    /// is what keeps a rendered document byte-identical to the kept record. Set for the whole assembly before any test
+    /// reads a sample document, and never overwriting a value the process was started with, so a run against a real
+    /// estate keeps its own.
     /// </summary>
     [ModuleInitializer]
     internal static void UseSampleEstateReferences()
@@ -1156,7 +1157,8 @@ public sealed class FixedPartitionRegistry(RegisteredPartitions partitions) : IP
 
 /// <summary>
 /// Registers ledgers in the ledger's directory for a test that writes to a ledger directly, as a run registers its own
-/// before it writes a row of it (docs/ledger.md, Partitions). A test that runs a flow needs none of this: the run does it.
+/// before it writes a row of it (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions). A test that
+/// runs a flow needs none of this: the run does it.
 /// </summary>
 public static class TestLedgers
 {

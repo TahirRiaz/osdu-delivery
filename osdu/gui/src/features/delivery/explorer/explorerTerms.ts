@@ -3,10 +3,11 @@ import type { ExplorerCondition, ExplorerFieldInfo, ExplorerFilter, ExplorerInde
 import { searchedRoute, searchTermsApi, type SearchRouteView, type SearchTermView } from "../../../api/searchTerms";
 import { fieldLabel, kindParts, searchedIn } from "./explorerModel";
 
-// The search terms of the records in view (osdu/docs/search-terms.md): the columns of the source systems the mappings of
-// active delivery flows read, offered beside the record's own properties. A condition on one names it by its id, its values
-// are the source's own, and the control plane turns it into the condition on the property its route fills. The terms are
-// read once for a type and kept; a change made on the Search terms page reads them again.
+// The search terms of the records in view (osdu/docs/reference/concepts/search-terms.md): the columns of the source
+// systems the mappings of active delivery flows read, offered beside the record's own properties. A condition on one
+// names it by its id, its values are the source's own, and the control plane turns it into the condition on the
+// property its route fills. The terms are read once for a type and kept; a change made on the Search terms page reads
+// them again.
 
 /** How long the terms of a type stand before a part that shows them reads them again. */
 const TERMS_FRESH_MS = 5 * 60_000;

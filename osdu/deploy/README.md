@@ -66,8 +66,9 @@ tiers above and do not provision it.
   isolation once, so a record and its child rows are read as one instant (Azure SQL Database allows it by
   default): `ALTER DATABASE [OsduDeliveryIng] SET ALLOW_SNAPSHOT_ISOLATION ON;`
 - **The OSDU ledger on a node.** The delivery engine reads and writes the `osdu` schema per record while it plans
-  and delivers, and a node opens no catalog connection, so a node without the module's connection validates and
-  plans but delivers nothing. See [../docs/environment-variables.md](../docs/environment-variables.md).
+  and delivers, and a node opens no catalog connection, so every node needs the module's connection in
+  `SQLFLOW_OSDU_DB`: a node without it refuses to start and takes no work. See
+  [../docs/reference/concepts/environment-variables.md](../docs/reference/concepts/environment-variables.md).
 - **The delivery chain** is three flows in lineage order: a SQLFlow pre-ingestion flow lands the source files, a
   SQLFlow ingestion flow loads the keyed ingestion tables, and the OSDU flow reads those tables and delivers. The
   two databases are wired under the fixed names `${env:SQLFLOW_CONN_PRE}` and `${env:SQLFLOW_CONN_DWH}`, so a flow

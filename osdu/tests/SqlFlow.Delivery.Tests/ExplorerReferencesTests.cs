@@ -15,12 +15,13 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The explorer's Referenced by (osdu/docs/explorer.md): the types whose records name records of a type, read from what the
-/// partition's Schema service holds. Every kind it lists is read once, bundled with the schemas it refers to, each of those
-/// read once in a pass, and walked for the places its records name another record, through references, branches, forms and
-/// items, a pattern alone marking a place where no relationship is declared. A pass after the first reads only what may
-/// have changed; a kind that cannot be read is listed with why; a pass that fails says why and is not retried by every
-/// ask; and while a pass reads, an ask sees where it stands and the reading before it.
+/// The explorer's Referenced by (osdu/docs/reference/concepts/explorer.md): the types whose records name records of a
+/// type, read from what the partition's Schema service holds. Every kind it lists is read once, bundled with the
+/// schemas it refers to, each of those read once in a pass, and walked for the places its records name another record,
+/// through references, branches, forms and items, a pattern alone marking a place where no relationship is declared. A
+/// pass after the first reads only what may have changed; a kind that cannot be read is listed with why; a pass that
+/// fails says why and is not retried by every ask; and while a pass reads, an ask sees where it stands and the reading
+/// before it.
 /// </summary>
 public sealed class ExplorerReferencesTests : IDisposable
 {

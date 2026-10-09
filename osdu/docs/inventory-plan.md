@@ -194,7 +194,7 @@ inventory failing while the others complete.
 `GET /inventories`, `GET /inventories/{id}`, `GET /inventories/{id}/records?finding=`, a CSV export, a lookup by OSDU id
 across inventories; `sqlflow inventory list|show|records|lookup`; the flow kind's panels and the inventory page with
 counts by finding and a grid that pages in place, whose ids open as OSDU holds them in the workbench's bottom panel, in
-the explorer's record view ([explorer.md](explorer.md#a-record)).
+the explorer's record view ([reference/concepts/explorer.md](reference/concepts/explorer.md#a-record)).
 
 ### 6. Removing what an inventory found
 

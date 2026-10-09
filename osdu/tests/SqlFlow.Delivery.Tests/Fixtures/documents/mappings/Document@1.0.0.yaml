@@ -1,4 +1,4 @@
-# Mapping: a source system's documents into the Document 1.0.0 template (osdu/docs/mapping-templates.md).
+# Mapping: a source system's documents into the Document 1.0.0 template (osdu/docs/reference/flow/mapping.md).
 #
 # A work product component whose content is a file: the record carries what the source system knows about the document,
 # and the file itself travels beside it. The route registers each file as a dataset and writes the record with its

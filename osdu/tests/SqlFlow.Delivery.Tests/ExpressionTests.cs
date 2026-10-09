@@ -10,8 +10,8 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The mapping's expression language (osdu/docs/mapping-templates.md, "Expressions"): what it reads, how it compares and
-/// computes, each of its functions, the errors it refuses a mapping with, and how <c>$expr</c>, <c>$when</c> and
+/// The mapping's expression language (osdu/docs/reference/flow/mapping-expressions.md): what it reads, how it compares
+/// and computes, each of its functions, the errors it refuses a mapping with, and how <c>$expr</c>, <c>$when</c> and
 /// <c>$where</c> render.
 /// </summary>
 public class ExpressionTests

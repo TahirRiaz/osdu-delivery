@@ -92,7 +92,8 @@ public sealed record TemplateVariable
 
 /// <summary>
 /// A template: the OSDU record of one kind with a variable for every property the schema declares
-/// (docs/delivery/mapping-templates.md). It is generated from the schema and never edited; mappings name its variables.
+/// (osdu/docs/reference/concepts/templates.md). It is generated from the schema and never edited; mappings name its
+/// variables.
 /// </summary>
 public sealed class OsduTemplate
 {

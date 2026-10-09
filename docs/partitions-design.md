@@ -185,7 +185,8 @@ Both are checked when a whole run starts (not a re-run of a submission, a record
 the whole run that started them already passed), and a check that passed is remembered by the host, so a flow that
 passes is read once per host rather than once per run.
 
-The ledger is keyed by partition ([ledger.md](../osdu/docs/ledger.md), Partitions). Every ledger table (records, their
+The ledger is keyed by partition ([ledger.md](../osdu/docs/reference/concepts/ledger.md#ledgers-flows-and-partitions),
+Ledgers, flows and partitions). Every ledger table (records, their
 identities, attempts, submissions, work batches, leases, events, watermarks, activities, retrievals) carries the
 partition's number first in its primary key and in every index that serves a listing, and a directory (`osdu.Ledger`)
 holds the partition each ledger identity belongs to. A run registers its ledger in the partition it delivers to before it

@@ -57,9 +57,10 @@ public enum MappingDraftInput
 
 /// <summary>
 /// A mapping as the builder edits it: the header, the parameters, and one entry per variable it fills
-/// (osdu/docs/mapping-templates.md). The entries are flat, each naming its variable by target path; the document the draft
-/// is written as lays them out as the record tree. Every text a person types is written in the mapping language as the
-/// document reads it: a literal's <c>{$param.name}</c>, an id template's tokens and the label's <c>{column}</c>.
+/// (osdu/docs/reference/flow/mapping.md). The entries are flat, each naming its variable by target path; the document
+/// the draft is written as lays them out as the record tree. Every text a person types is written in the mapping
+/// language as the document reads it: a literal's <c>{$param.name}</c>, an id template's tokens and the label's
+/// <c>{column}</c>.
 /// </summary>
 public sealed record MappingDraft
 {
@@ -257,7 +258,7 @@ public sealed record MappingDraftIssue(string Severity, string Message, string? 
 public sealed record CachedTypeInfo(string Name, string EntityType, IReadOnlyList<string> Fields, string? Key = null);
 
 /// <summary>
-/// The mapping builder's logic (docs/delivery/mapping-templates.md, The mapping builder): a draft prefilled from the
+/// The mapping builder's logic (osdu/docs/reference/concepts/gui.md, Mapping builder): a draft prefilled from the
 /// template and the cache, the checks that say what is still missing, the YAML the draft is written as, and the draft of
 /// an existing mapping. The YAML is the one written form; what it loads to is decided by the document loader alone.
 /// </summary>
@@ -2075,7 +2076,7 @@ public static partial class MappingBuilder
                 error($"{target}: a replace reads its table from the cache or lists its values, not both.", target);
                 break;
             case "replace" when !string.IsNullOrWhiteSpace(modifier.Table) && !ColumnName().IsMatch(modifier.Table.Trim()):
-                error($"{target}: replace reads cache type '{modifier.Table}', and a cached type is named by letters, digits, '_' and '-', such as RecallUnits.", target);
+                error($"{target}: replace reads cache type '{modifier.Table}', and a cached type is named by letters, digits, '_' and '-', such as UnitAlias.", target);
                 break;
             case "replace" when !string.IsNullOrWhiteSpace(modifier.Match) && !FieldPath().IsMatch(modifier.Match.Trim()):
                 error($"{target}: replace's match names the cached field a value is compared with, such as mnemonic, not '{modifier.Match}'.", target);

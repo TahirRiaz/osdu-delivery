@@ -6,8 +6,11 @@ its DDMS, and that the ledger and OSDU agree. Each run keeps a report of how eve
 partition after an upload is one page, one download, or one CI artifact away. The tests only read. Nothing a test does
 writes to OSDU.
 
-This document is the design. The document reference is [osdu/docs/documents.md](../osdu/docs/documents.md#assertion-flow),
-the operator's view (API, GUI, CLI, retention) is [osdu/docs/operations.md](../osdu/docs/operations.md), and the decision
+This document is the design. The document reference is
+[osdu/docs/reference/flow/assertion.md](../osdu/docs/reference/flow/assertion.md), the operator's view is
+[the API](../osdu/docs/reference/concepts/api.md#assertions-dimensions-and-inventories),
+[the GUI](../osdu/docs/reference/concepts/gui.md#in-osdu), [the CLI](../osdu/docs/reference/cli/assertions.md) and
+[retention](../osdu/docs/reference/concepts/availability-and-retention.md#retention), and the decision
 record is [decisions/0010](../osdu/docs/decisions/0010-assertion-flows-read-only.md).
 
 ## 1. Purpose
@@ -189,7 +192,7 @@ are refused. The same run starts from the GUI's trigger dialog, from a schedule,
 ## 7. The ledger
 
 Two tables in the `osdu` schema keep the reports, each keyed by the partition number first like every ledger table
-([osdu/docs/ledger.md](../osdu/docs/ledger.md)):
+([osdu/docs/reference/concepts/ledger.md](../osdu/docs/reference/concepts/ledger.md#ledgers-flows-and-partitions)):
 
 - `osdu.AssertionRun`: one row per run of a flow's tests in a partition: the flow's ledger identity and name, the
   platform run, the actor, the selection it was asked for, its status and counts, the hash of the definitions it ran,
@@ -218,7 +221,8 @@ The report of a run is rendered from its rows by one piece of code (`AssertionRe
 
 The control plane serves the boards and the reports under `/api/v1/delivery`: the board of every assertion flow in a
 partition, one flow's board, its runs, the matrix of its tests against its runs, one test's history with every result
-whole, a run with every result, and a run's report in each format ([osdu/docs/operations.md](../osdu/docs/operations.md#the-api)).
+whole, a run with every result, and a run's report in each format
+([osdu/docs/reference/concepts/api.md](../osdu/docs/reference/concepts/api.md#assertions-dimensions-and-inventories)).
 Every read is in a partition: the one the request names, else the workbench's (`X-Osdu-Partition`), else the one a run
 would test.
 

@@ -8,10 +8,11 @@ using SqlFlow.Delivery.Hosting;
 namespace SqlFlow.Delivery.Cli;
 
 /// <summary>
-/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval, cache, assertion and dimension flow kinds (so SQLFlow's
-/// own <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
-/// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>values</c>, <c>records</c>, <c>config</c>, <c>partition</c>,
-/// <c>cache</c>, <c>template</c>, <c>assertions</c>, <c>dimensions</c> and <c>inventory</c>.
+/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval, cache, assertion, dimension and
+/// inventory flow kinds (so SQLFlow's own <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them),
+/// the ledger, templates and caches over the module's database, and the module's own verbs: <c>check</c>,
+/// <c>preview</c>, <c>values</c>, <c>records</c>, <c>config</c>, <c>partition</c>, <c>cache</c>, <c>template</c>,
+/// <c>assertions</c>, <c>dimensions</c> and <c>inventory</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless

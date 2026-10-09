@@ -23,10 +23,10 @@ import { ExplorerProblem } from "./ExplorerProblem";
 import { GroupGlyph } from "./ExplorerGlyphs";
 import { counted, kindParts, useExplorerRead, type ExplorerScope } from "./explorerModel";
 
-// The explorer's Referenced by (osdu/docs/explorer.md): the types whose records name records of a type, as the partition's
-// schemas declare it, with the versions that do and those that do not, and where. The control plane reads every schema
-// of the partition once and keeps what each names; while it reads, the answer says where it stands, and this view asks
-// again until it is done.
+// The explorer's Referenced by (osdu/docs/reference/concepts/explorer.md): the types whose records name records of a
+// type, as the partition's schemas declare it, with the versions that do and those that do not, and where. The control
+// plane reads every schema of the partition once and keeps what each names; while it reads, the answer says where it
+// stands, and this view asks again until it is done.
 
 /** The search the type rail counts a whole partition's kinds by: the same question, so the same answer is reused. */
 const WHOLE_PARTITION: ExplorerSearchRequest = { text: undefined, lucene: false, filters: [] };

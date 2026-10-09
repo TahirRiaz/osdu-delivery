@@ -21,9 +21,10 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The search terms through the API (osdu/docs/search-terms.md): the terms the sync extracted from the sample estate's
-/// mapping listed for a kind, refined by an author and by no one else, reset; and a search naming a term, which reaches the
-/// explorer as the condition on the record the term's route fills, in the partition read. Gated on a reachable database.
+/// The search terms through the API (osdu/docs/reference/concepts/search-terms.md): the terms the sync extracted from
+/// the sample estate's mapping listed for a kind, refined by an author and by no one else, reset; and a search naming a
+/// term, which reaches the explorer as the condition on the record the term's route fills, in the partition read. Gated
+/// on a reachable database.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

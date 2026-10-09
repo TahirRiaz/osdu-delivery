@@ -14,10 +14,11 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// An object the schema leaves open (docs/mapping-templates.md, Open objects): <c>data.ExtensionProperties</c> declares no
-/// properties, names no type for its keys and refuses none, so a mapping lays out what it writes inside it as it lays out
-/// the record: values, literals, objects and a repeater's items, at any depth, written as they arrive. A flow that carries
-/// the same key over from the stored record into every update would undo it, and is refused.
+/// An object the schema leaves open (osdu/docs/reference/flow/mapping-values.md, Open objects):
+/// <c>data.ExtensionProperties</c> declares no properties, names no type for its keys and refuses none, so a mapping
+/// lays out what it writes inside it as it lays out the record: values, literals, objects and a repeater's items, at
+/// any depth, written as they arrive. A flow that carries the same key over from the stored record into every update
+/// would undo it, and is refused.
 /// </summary>
 public sealed class OpenObjectTests
 {

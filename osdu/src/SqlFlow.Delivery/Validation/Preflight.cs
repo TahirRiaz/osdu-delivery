@@ -11,9 +11,9 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Validation;
 
 /// <summary>
-/// The preflight gate (docs/delivery/mapping-templates.md, Checks). Before any render, and with no OSDU call, checks that
-/// the mapping, its pinned template, the cache and the flow's source tables agree. If the combination does not validate,
-/// nothing renders.
+/// The preflight gate (osdu/docs/reference/concepts/preflight.md, The preflight gate). Before any render, and with no
+/// OSDU call, checks that the mapping, its pinned template, the cache and the flow's source tables agree. If the
+/// combination does not validate, nothing renders.
 /// </summary>
 public static partial class Preflight
 {

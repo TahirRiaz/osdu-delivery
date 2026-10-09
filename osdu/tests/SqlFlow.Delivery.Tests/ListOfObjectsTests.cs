@@ -14,10 +14,11 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// A list of objects some of whose properties read values (docs/mapping-templates.md, Lists of objects): each item an
-/// object laid out as the record tree, its properties literals, value nodes, <c>$coalesce</c> nodes, objects or lists of
-/// values, filling the variables of the list's items and reading the row the list is in. The list is the objects its items
-/// give, in order, an object given twice written once, and an item none of whose properties gives a value adds nothing.
+/// A list of objects some of whose properties read values (osdu/docs/reference/flow/mapping-values.md, Lists of
+/// objects): each item an object laid out as the record tree, its properties literals, value nodes, <c>$coalesce</c>
+/// nodes, objects or lists of values, filling the variables of the list's items and reading the row the list is in. The
+/// list is the objects its items give, in order, an object given twice written once, and an item none of whose
+/// properties gives a value adds nothing.
 /// </summary>
 public sealed class ListOfObjectsTests
 {

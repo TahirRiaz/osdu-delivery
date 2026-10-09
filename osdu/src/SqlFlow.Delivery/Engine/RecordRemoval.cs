@@ -303,9 +303,10 @@ public sealed record LedgerPurgeSummary(int Selected, int Purged)
 }
 
 /// <summary>
-/// What deleting the ledger did (docs/ledger.md, Deleting the ledger): in the partition it confirmed, the records it removed
-/// from OSDU reversibly on the way, those OSDU had already lost, those the ledger already marked removed, and those that were
-/// never in OSDU (never delivered, or a document never queued); then what it deleted of the ledger.
+/// What deleting the ledger did (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger): in the
+/// partition it confirmed, the records it removed from OSDU reversibly on the way, those OSDU had already lost, those
+/// the ledger already marked removed, and those that were never in OSDU (never delivered, or a document never queued);
+/// then what it deleted of the ledger.
 /// </summary>
 public sealed record LedgerDeleteSummary(string Partition, int Removed, int AlreadyGone, int AlreadyRemoved, int NeverInOsdu, LedgerDeletion Deleted)
 {

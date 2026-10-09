@@ -26,10 +26,10 @@ public sealed record DeliverySearchTermRefinementDto(string? Name = null, bool E
 public sealed record DeliverySearchTermBatchDto(IReadOnlyList<Guid>? Terms = null, string? EntityType = null);
 
 /// <summary>
-/// The search terms (osdu/docs/search-terms.md): the columns of the source systems the mappings of active delivery flows
-/// read, extracted by the repository sync, with every route by which each reaches the records, and what people made of
-/// them. Listing them is any signed-in reader's; refining, deleting and restoring them changes what every reader searches
-/// by, so each is an author action, as saving a template is.
+/// The search terms (osdu/docs/reference/concepts/search-terms.md): the columns of the source systems the mappings of
+/// active delivery flows read, extracted by the repository sync, with every route by which each reaches the records,
+/// and what people made of them. Listing them is any signed-in reader's; refining, deleting and restoring them changes
+/// what every reader searches by, so each is an author action, as saving a template is.
 /// </summary>
 public static class DeliverySearchTermEndpoints
 {

@@ -6,8 +6,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace SqlFlow.Delivery.Data.Migrations
 {
     /// <summary>
-    /// Groups blocked records by the problem that keeps them so (docs/ledger.md, Issues), and names every record a release
-    /// reached.
+    /// Groups blocked records by the problem that keeps them so (osdu/docs/reference/concepts/record-lifecycle.md,
+    /// Issues), and names every record a release reached.
     /// <list type="bullet">
     /// <item><c>Record.ProblemHash</c>: the hash of a blocked, held or failed record's error with every part that names the
     /// record replaced, which records refused for the same reason share; null for every other record. A filtered index on

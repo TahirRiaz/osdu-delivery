@@ -101,13 +101,13 @@ public sealed record ExplorerElementAnswer(
     IReadOnlyList<ExplorerElementQuery> Queries, string? Guess, string? Problem, IReadOnlyList<string> Notes);
 
 /// <summary>
-/// The Lucene query that finds the records holding exactly an element of a record the explorer shows (osdu/docs/explorer.md,
-/// The query of an element): a value, a list of values, an object, a nested list's item or a whole list of them. How each
-/// value is indexed is read from the saved template of the record's kind, as every search the module writes reads it
-/// (<see cref="SearchFields"/>): text by its keyword sub-field, a keyword, a number, a boolean or a date, a value of a nested
-/// list inside <c>nested(...)</c> with the other values of its item. Where the template cannot say, the query is written
-/// from the value and said to be a guess, so there is always a query to see. Each is written by <see cref="OsduQuery"/>, as
-/// the module's own lookups and filters are. Nothing is read from OSDU.
+/// The Lucene query that finds the records holding exactly an element of a record the explorer shows
+/// (osdu/docs/reference/concepts/explorer.md, A record): a value, a list of values, an object, a nested list's item or
+/// a whole list of them. How each value is indexed is read from the saved template of the record's kind, as every
+/// search the module writes reads it (<see cref="SearchFields"/>): text by its keyword sub-field, a keyword, a number,
+/// a boolean or a date, a value of a nested list inside <c>nested(...)</c> with the other values of its item. Where the
+/// template cannot say, the query is written from the value and said to be a guess, so there is always a query to see.
+/// Each is written by <see cref="OsduQuery"/>, as the module's own lookups and filters are. Nothing is read from OSDU.
 /// </summary>
 public static partial class ExplorerElementQueries
 {

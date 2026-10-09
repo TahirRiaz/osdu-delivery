@@ -62,10 +62,11 @@ public sealed class SchemaIndexConnection : IDisposable
 }
 
 /// <summary>
-/// What a partition's Schema service holds, read once and kept (osdu/docs/explorer.md, Referenced by): every kind it lists,
-/// each with the places its records name another record (<see cref="SchemaRelationships"/>), so the kinds that refer to a
-/// type are answered from what was read rather than by reading every schema again. The service has no way to ask which
-/// schemas refer to a type: it lists schemas without their content, so the only answer is every schema read.
+/// What a partition's Schema service holds, read once and kept (osdu/docs/reference/concepts/explorer.md, Referenced
+/// by): every kind it lists, each with the places its records name another record (<see cref="SchemaRelationships"/>),
+/// so the kinds that refer to a type are answered from what was read rather than by reading every schema again. The
+/// service has no way to ask which schemas refer to a type: it lists schemas without their content, so the only answer
+/// is every schema read.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -3,10 +3,11 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./helpers";
 
-// Templates and the mapping builder (docs/delivery/mapping-templates.md). Runs after the seed (03), which saves the two
-// templates the sample mappings pin and syncs the fixture repository, so both templates are pinned by a synced mapping
-// and the repository's cache is in the catalog. Browsing OSDU reads the Open Group's public data definitions repository
-// through the control plane, which the suite cannot reach, so the browse test stands in for those three answers and lets
+// Templates and the mapping builder (osdu/docs/reference/concepts/templates.md; the builder:
+// osdu/docs/reference/concepts/gui.md, Mapping builder). Runs after the seed (03), which saves the two templates the
+// sample mappings pin and syncs the fixture repository, so both templates are pinned by a synced mapping and the
+// repository's cache is in the catalog. Browsing OSDU reads the Open Group's public data definitions repository through
+// the control plane, which the suite cannot reach, so the browse test stands in for those three answers and lets
 // everything after them (the preview, the save) run against the real control plane.
 
 const WELLBORE_KIND = "osdu:wks:master-data--Wellbore:1.3.0";

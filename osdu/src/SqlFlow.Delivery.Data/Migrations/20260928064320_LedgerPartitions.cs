@@ -8,10 +8,11 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace SqlFlow.Delivery.Data.Migrations
 {
     /// <summary>
-    /// Keys the ledger by partition (docs/ledger.md, Partitions). The ledger gains its directory: <c>osdu.LedgerPartition</c>
-    /// numbers every partition it keeps rows under, and <c>osdu.Ledger</c> names the partition of every ledger identity.
-    /// Every ledger table gains <c>PartitionId</c> as the first column of its primary key and of every index that reads a
-    /// flow or a partition, so one partition's rows are kept together and every read seeks a range of one partition.
+    /// Keys the ledger by partition (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions). The ledger
+    /// gains its directory: <c>osdu.LedgerPartition</c> numbers every partition it keeps rows under, and
+    /// <c>osdu.Ledger</c> names the partition of every ledger identity. Every ledger table gains <c>PartitionId</c> as
+    /// the first column of its primary key and of every index that reads a flow or a partition, so one partition's rows
+    /// are kept together and every read seeks a range of one partition.
     /// <para>The directory is filled from what the ledger already holds. A ledger takes the partition the interface catalog
     /// describes it in; else the one partition its records' OSDU ids name; else it is unassigned (partition 0) until its next
     /// run adopts it: a ledger with no ids yet, and one whose ids name more than one partition, which that run then refuses.</para>

@@ -4,10 +4,11 @@ using SqlFlow.Delivery.Data;
 
 namespace SqlFlow.Delivery.Ledger;
 
-// Leases, the events a worker appends under them, and the snapshot reads (design.md section 16.2, ledger.md "Leasing").
-// A claim is one lease row, and the records it holds carry its token. While a worker delivers it writes nothing to the
-// record table: it renews its one row and appends what it learns, and the lease applies that to the records when the
-// worker checkpoints or closes it, or when the lease runs out and the next claim of its flow recovers it.
+// Leases, the events a worker appends under them, and the snapshot reads (design.md section 16.2,
+// osdu/docs/reference/concepts/submissions.md, "Leases and claims"). A claim is one lease row, and the records it holds
+// carry its token. While a worker delivers it writes nothing to the record table: it renews its one row and appends
+// what it learns, and the lease applies that to the records when the worker checkpoints or closes it, or when the lease
+// runs out and the next claim of its flow recovers it.
 public sealed partial class OsduLedger
 {
     /// <summary>How long a recovery holds the lease it took over; a recovery that dies is itself recovered after that.</summary>

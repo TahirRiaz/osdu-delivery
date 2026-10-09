@@ -6,8 +6,9 @@ and interfaces, route resolution from what an interface declares with its refusa
 relationships and `after:` with its waves, the source runtime with its preflight, stop rules and outcome, and the API
 and CLI selection and explanation of interfaces (sections 3, 4, 6, 8 and 10, and the routes of section 5.2 that the
 four existing protocols deliver). The rest of this document is the design
-the later stages build. What shipped is documented in [../osdu/docs/documents.md](../osdu/docs/documents.md#a-source-with-interfaces)
-and [../osdu/docs/operations.md](../osdu/docs/operations.md#running-a-source).
+the later stages build. What shipped is documented in
+[../osdu/docs/reference/flow/interfaces.md](../osdu/docs/reference/flow/interfaces.md) (running a source:
+[When an interface stops](../osdu/docs/reference/flow/interfaces.md#when-an-interface-stops)).
 
 ## 1. Why
 
@@ -423,7 +424,7 @@ Order between interfaces is not enough: a wellbore can be held while its well lo
 - This needs a module migration (the two record columns, the two counts and the index), which ships with the model
   change.
 - What a record refers to is what its mapping fills: an id from the partition cache (a record OSDU already holds), an
-  id a column carries, or a static value ([mapping-templates.md](../osdu/docs/mapping-templates.md)). A mapping
+  id a column carries, or a static value ([mapping-values.md](../osdu/docs/reference/flow/mapping-values.md)). A mapping
   cannot yet name the record another interface of the same source delivers for the same key, so a child rendered
   before its parent ever landed is held at render time by the cache lookup rather than left waiting. Giving mappings
   that reference is a decision of its own (go-live map, DEC-11).

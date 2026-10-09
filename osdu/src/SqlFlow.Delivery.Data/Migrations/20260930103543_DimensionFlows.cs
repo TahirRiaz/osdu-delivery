@@ -6,11 +6,12 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace SqlFlow.Delivery.Data.Migrations
 {
     /// <summary>
-    /// The tables of dimension flows (docs/dimension-plan.md, docs/ledger.md): <c>Dimension</c>, one row per dimension of a
-    /// flow in a partition; <c>DimensionRun</c>, one per build; <c>DimensionMember</c>, a dimension's clean values with their
-    /// search filters; <c>DimensionValue</c>, its originals exactly as the index holds them, each under its member or with the
-    /// reason it has none; and <c>DimensionChange</c>, what each build changed of them. Every table is keyed by the ledger
-    /// partition first, and clean values and originals are compared in the binary collation, as OSDU ids are.
+    /// The tables of dimension flows (docs/dimension-plan.md, osdu/docs/reference/flow/dimension.md): <c>Dimension</c>,
+    /// one row per dimension of a flow in a partition; <c>DimensionRun</c>, one per build; <c>DimensionMember</c>, a
+    /// dimension's clean values with their search filters; <c>DimensionValue</c>, its originals exactly as the index
+    /// holds them, each under its member or with the reason it has none; and <c>DimensionChange</c>, what each build
+    /// changed of them. Every table is keyed by the ledger partition first, and clean values and originals are compared
+    /// in the binary collation, as OSDU ids are.
     /// </summary>
     public partial class DimensionFlows : Migration
     {

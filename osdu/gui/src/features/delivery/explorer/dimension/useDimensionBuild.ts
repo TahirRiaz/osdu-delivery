@@ -29,12 +29,13 @@ function useSettled<T>(value: T, ms: number): T {
 const isText = (value: unknown): value is string => typeof value === "string";
 
 /**
- * The dimension a person builds in the explorer (osdu/docs/explorer.md, Building a dimension): the draft, held here and
- * changed at once as any input is, with the explorer's address following it (its `dim` part, written over the address as
- * it stands, so the explorer's own navigation and the build never undo each other); the keys the kind's template suggests,
- * the likeliest made the key as a build starts; the commonest keys and the record in view, which the example steps
- * through, that record's own key first; the YAML and its check, once the draft has settled; and the picks made in the
- * records on the explorer's trail, each asked about where it passes through one item of a list.
+ * The dimension a person builds in the explorer (osdu/docs/reference/concepts/explorer.md, Building a dimension): the
+ * draft, held here and changed at once as any input is, with the explorer's address following it (its `dim` part,
+ * written over the address as it stands, so the explorer's own navigation and the build never undo each other); the
+ * keys the kind's template suggests, the likeliest made the key as a build starts; the commonest keys and the record in
+ * view, which the example steps through, that record's own key first; the YAML and its check, once the draft has
+ * settled; and the picks made in the records on the explorer's trail, each asked about where it passes through one item
+ * of a list.
  */
 export function useDimensionBuild({ partition, reachable, scopeKind, recordId, recordVersion }: {
   partition: string | null;

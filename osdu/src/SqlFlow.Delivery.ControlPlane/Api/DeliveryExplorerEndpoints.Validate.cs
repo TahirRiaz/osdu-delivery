@@ -46,9 +46,9 @@ public static partial class DeliveryExplorerEndpoints
     }
 
     /// <summary>
-    /// One record OSDU holds checked against the schema of its kind (osdu/docs/explorer.md, Validate): the Schema service's,
-    /// or a saved template's; the records it refers to are looked up in storage. Reads OSDU through the partition's connection,
-    /// as every explorer read does.
+    /// One record OSDU holds checked against the schema of its kind (osdu/docs/reference/concepts/explorer.md,
+    /// Validate): the Schema service's, or a saved template's; the records it refers to are looked up in storage. Reads
+    /// OSDU through the partition's connection, as every explorer read does.
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ValidateAsync(
         DeliveryExplorerValidateRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
@@ -136,7 +136,7 @@ public static partial class DeliveryExplorerEndpoints
 
     /// <summary>
     /// The records a search finds, up to 1,000, checked against their schemas and counted by the rules they break, with an
-    /// example of each (osdu/docs/explorer.md, Validate these records).
+    /// example of each (osdu/docs/reference/concepts/explorer.md, Validate).
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ValidateListAsync(
         DeliveryExplorerValidateListRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,

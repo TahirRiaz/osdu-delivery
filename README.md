@@ -37,6 +37,7 @@ tools/check-vendored-sqlflow.sh
 
 ## Status
 
-The repository holds the vendored SQLFlow, the rebuild plan, and the OSDU code copied from the previous implementation into
-`osdu/`. That code does not build yet: the stages in `docs/plan.md` add SQLFlow's extension points, wire the module onto
-them, and move its data input to ingestion tables.
+The OSDU module in `osdu/` builds on the vendored SQLFlow through the generic extension points recorded in
+`docs/sqlflow-changes.md`, and its OSDU flows read the ingestion tables SQLFlow's flows load. Its documentation is the
+reference corpus under `osdu/docs/reference/`. Where the module stands, what has been verified against a live OSDU, and
+what is left before production are in `osdu/README.md` and `docs/go-live-map.md`.

@@ -4,8 +4,9 @@ using SqlFlow.Delivery.Protocols;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// Record status vocabulary (design.md section 7.4). <c>Held</c>, <c>Failed</c>, <c>Deleted</c> and <c>Reverted</c> are terminal
-/// until an operator releases the record or the source changes.
+/// Record status vocabulary (design.md section 7.4). <c>Held</c>, <c>Failed</c> and <c>Reverted</c> are terminal
+/// until an operator releases the record or the source changes. <c>Deleted</c> is not blocked: the record follows its
+/// source again.
 /// </summary>
 public enum RecordStatus
 {
@@ -15,7 +16,11 @@ public enum RecordStatus
     Held,
     Failed,
 
-    /// <summary>Removed from OSDU by an operator; blocked from redelivery while the source is unchanged.</summary>
+    /// <summary>
+    /// Removed from OSDU by an operator, and not blocked: the record follows its source again, so the next run that
+    /// reads its row (a full read, or the row changed under an incremental one) sends it again, unless the ingestion
+    /// table marks the row deleted.
+    /// </summary>
     Deleted,
 
     /// <summary>
@@ -1519,7 +1524,12 @@ public sealed record ActivityRecord
     /// <summary>deliver, plan, intake, drain, verify, replan, submit, release, redeliver, delete, poll, notification.</summary>
     public required string Kind { get; init; }
 
-    /// <summary>cli:&lt;user&gt;, gui:&lt;user&gt;, service:notification, service:schedule.</summary>
+    /// <summary>
+    /// Who acted. For a run, its requester as SQLFlow records it: the token's subject for a run a person queued,
+    /// schedule:&lt;name&gt; for one a schedule fired, cli:&lt;user&gt;@&lt;machine&gt; for a direct CLI run, unknown
+    /// when none was recorded. For an intervention: user:&lt;subject&gt; through the control plane, cli:&lt;user&gt;
+    /// from the command line. service:schedule for the scheduled target probe.
+    /// </summary>
     public required string Actor { get; init; }
 
     public required DateTime StartedUtc { get; init; }
@@ -1566,8 +1576,9 @@ public static class LedgerKinds
 }
 
 /// <summary>
-/// One ledger as the ledger's directory holds it (docs/ledger.md, Partitions): the rows of one flow (or interface of a
-/// source) in one partition, under one ledger identity. The partition is part of the key of every row the ledger keeps.
+/// One ledger as the ledger's directory holds it (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and
+/// partitions): the rows of one flow (or interface of a source) in one partition, under one ledger identity. The
+/// partition is part of the key of every row the ledger keeps.
 /// </summary>
 public sealed record LedgerEntry
 {
@@ -1603,11 +1614,11 @@ public sealed record LedgerEntry
 public interface ILedger
 {
     /// <summary>
-    /// Registers the ledger a run is about to write, in the partition the run delivers to (docs/ledger.md, Partitions), and
-    /// returns it as the directory now holds it. Every write of a ledger's rows needs its registration; every row carries
-    /// the partition in its key. A ledger belongs to one partition: registering it in another is refused, naming both. A
-    /// ledger the upgrade could not place is adopted into the partition registered, unless its records were delivered to
-    /// another partition.
+    /// Registers the ledger a run is about to write, in the partition the run delivers to
+    /// (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions), and returns it as the directory now
+    /// holds it. Every write of a ledger's rows needs its registration; every row carries the partition in its key. A
+    /// ledger belongs to one partition: registering it in another is refused, naming both. A ledger the upgrade could
+    /// not place is adopted into the partition registered, unless its records were delivered to another partition.
     /// </summary>
     /// <exception cref="DeliveryException">The ledger belongs to another partition, or holds records delivered to one.</exception>
     Task<LedgerEntry> RegisterLedgerAsync(LedgerEntry ledger, CancellationToken ct = default);
@@ -2136,21 +2147,23 @@ public interface ILedger
     Task<IReadOnlyDictionary<DeliveryKey, PriorVersion>> PriorVersionsAsync(Guid flowId, IReadOnlyDictionary<DeliveryKey, long> current, CancellationToken ct = default);
 
     /// <summary>
-    /// Deletes records from the ledger that were removed from OSDU (docs/ledger.md, Deleting a removed record from the
-    /// ledger), a slice to a transaction. Only a record the ledger marks deleted goes, none a lease holds, and none with an
-    /// artifact an undo has still to settle (intent, pending, due or failed), whose undo reaches it through its record; any
-    /// other is left as it is. Each record deleted keeps one line (<see cref="PurgedRecordState"/>: what it was, its OSDU id and last
-    /// version, who deleted it and when) and is named under <paramref name="activityId"/>; its attempts, its search entries
-    /// and its row are deleted. The activities that name it stay, as the audit trail does. Nothing else of the ledger moves:
-    /// its watermarks stay, so a row whose record was deleted is read again when it changes, as any row is, and planned then
-    /// as a record the ledger never held. Returns the records it deleted.
+    /// Deletes records from the ledger that were removed from OSDU
+    /// (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting removed records from the ledger), a slice to a
+    /// transaction. Only a record the ledger marks deleted goes, none a lease holds, and none with an artifact an undo
+    /// has still to settle (intent, pending, due or failed), whose undo reaches it through its record; any other is
+    /// left as it is. Each record deleted keeps one line (<see cref="PurgedRecordState"/>: what it was, its OSDU id and
+    /// last version, who deleted it and when) and is named under <paramref name="activityId"/>; its attempts, its
+    /// search entries and its row are deleted. The activities that name it stay, as the audit trail does. Nothing else
+    /// of the ledger moves: its watermarks stay, so a row whose record was deleted is read again when it changes, as
+    /// any row is, and planned then as a record the ledger never held. Returns the records it deleted.
     /// </summary>
     Task<IReadOnlyList<DeliveryKey>> PurgeRecordsAsync(
         Guid flowId, IReadOnlyList<DeliveryKey> keys, string actor, long? activityId, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Deletes the whole ledger of <paramref name="flowId"/> (docs/ledger.md, Deleting the ledger), which the run deleting it
-    /// calls once it has removed from OSDU every record OSDU held: every record, whatever its state, a slice to a transaction,
+    /// Deletes the whole ledger of <paramref name="flowId"/> (osdu/docs/reference/concepts/removal-and-reversal.md,
+    /// Deleting the ledger), which the run deleting it calls once it has removed from OSDU every record OSDU held:
+    /// every record, whatever its state, a slice to a transaction,
     /// each kept as one line named under <paramref name="activityId"/> with its attempts, search entries and row deleted as
     /// <see cref="PurgeRecordsAsync"/> deletes one; then, in one transaction, what the ledger keeps of its runs (submissions,
     /// work batches, leases and their events, watermarks, reversals), so its next run reads every row and delivers each as a

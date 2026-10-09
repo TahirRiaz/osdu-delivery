@@ -3,12 +3,12 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Expressions;
 
 /// <summary>
-/// An expression of a mapping (osdu/docs/mapping-templates.md, "Expressions"): the value a <c>$expr</c> node computes,
-/// the condition a <c>$when</c> tests, or the row filter a <c>$forEach</c> node's <c>$where</c> applies. The language is
-/// small on purpose. It reads columns and parameters, compares, chooses and combines values, and calls a fixed set of
-/// functions named after their SQL counterparts (<see cref="ExpressionFunctions"/>); anything heavier is computed where
-/// the data is made ready, in the ingestion SQL. It is read once, when the mapping is, and everything it reads is known
-/// from then on: the columns (checked against the source like any other column) and the parameters.
+/// An expression of a mapping (osdu/docs/reference/flow/mapping-expressions.md): the value a <c>$expr</c> node
+/// computes, the condition a <c>$when</c> tests, or the row filter a <c>$forEach</c> node's <c>$where</c> applies. The
+/// language is small on purpose. It reads columns and parameters, compares, chooses and combines values, and calls a
+/// fixed set of functions named after their SQL counterparts (<see cref="ExpressionFunctions"/>); anything heavier is
+/// computed where the data is made ready, in the ingestion SQL. It is read once, when the mapping is, and everything it
+/// reads is known from then on: the columns (checked against the source like any other column) and the parameters.
 /// </summary>
 /// <remarks>
 /// An expression is a pure function of the row, the dataset's own row and the parameters: it reads no clock, no random

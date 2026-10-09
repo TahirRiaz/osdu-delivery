@@ -95,9 +95,10 @@ public sealed record ExplorerFilter
     public string? To { get; init; }
 
     /// <summary>
-    /// For a condition on a search term that reaches the record through other records (osdu/docs/search-terms.md): the
-    /// records its values find, or the record ids its key makes, which the node reads from the platform before it asks the
-    /// condition. The condition then compares <see cref="Path"/> with what was found. Null for a condition asked as it is.
+    /// For a condition on a search term that reaches the record through other records
+    /// (osdu/docs/reference/concepts/search-terms.md): the records its values find, or the record ids its key makes,
+    /// which the node reads from the platform before it asks the condition. The condition then compares
+    /// <see cref="Path"/> with what was found. Null for a condition asked as it is.
     /// </summary>
     public ExplorerVia? Via { get; init; }
 

@@ -18,9 +18,10 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// Deleting a flow's ledger from the API (docs/ledger.md, Deleting the ledger): nothing is queued without the partition the
-/// ledger is kept in named as confirmation, a flow that never kept a ledger has nothing to delete, and the run that deletes it
-/// is queued once, as a run of the pipeline carrying the confirmation the node checks again.
+/// Deleting a flow's ledger from the API (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger):
+/// nothing is queued without the partition the ledger is kept in named as confirmation, a flow that never kept a ledger
+/// has nothing to delete, and the run that deletes it is queued once, as a run of the pipeline carrying the
+/// confirmation the node checks again.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]

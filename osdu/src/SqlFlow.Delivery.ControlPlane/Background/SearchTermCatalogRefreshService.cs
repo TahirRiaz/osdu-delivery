@@ -14,12 +14,12 @@ namespace SqlFlow.Delivery.ControlPlane.Background;
 
 /// <summary>
 /// Writes the search terms of every repository with delivery flows again, once, when the control plane starts
-/// (osdu/docs/search-terms.md): from the catalog's copies of its delivery flows (the tables each reads and the mapping it
-/// renders with) and the mappings and cache declarations the module database holds, as the repository sync writes them. A
-/// module upgraded since a repository's last sync, or migrated before the terms existed, so describes its terms as this
-/// version does without waiting for the next sync; a repository with terms and no delivery flow any longer loses them.
-/// What people made of the terms is kept apart, by the terms' identity. A pass that fails (the module database not migrated
-/// yet, a lost connection) is tried again until one completes.
+/// (osdu/docs/reference/concepts/search-terms.md): from the catalog's copies of its delivery flows (the tables each
+/// reads and the mapping it renders with) and the mappings and cache declarations the module database holds, as the
+/// repository sync writes them. A module upgraded since a repository's last sync, or migrated before the terms existed,
+/// so describes its terms as this version does without waiting for the next sync; a repository with terms and no
+/// delivery flow any longer loses them. What people made of the terms is kept apart, by the terms' identity. A pass
+/// that fails (the module database not migrated yet, a lost connection) is tried again until one completes.
 /// </summary>
 public sealed partial class SearchTermCatalogRefreshService : BackgroundService
 {

@@ -96,7 +96,7 @@ public sealed class CachedReplaceTests : IDisposable
                 $modifiers:
             {modifier}
             """)).Message;
-        Assert.Contains("a table read from the cache is named $cache.<Type>, such as replace: $cache.RecallUnits", Refused("      - replace: RecallUnits"), StringComparison.Ordinal);
+        Assert.Contains("a table read from the cache is named $cache.<Type>, such as replace: $cache.UnitAlias", Refused("      - replace: RecallUnits"), StringComparison.Ordinal);
         Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: $cache.Recall.Units"), StringComparison.Ordinal);
         Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: search.Wellbore"), StringComparison.Ordinal);
         Assert.Contains("replace's match names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        match: [a, b]"), StringComparison.Ordinal);

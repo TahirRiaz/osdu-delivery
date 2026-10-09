@@ -8,11 +8,12 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The query the explorer shows for an element of a record (osdu/docs/explorer.md, The query of an element): the one that
-/// finds the records holding exactly that value, list, object or nested item, written as the module's own searches are, by
-/// how the saved template of the record's kind has the platform index each value (text by its keyword sub-field, a
-/// keyword, a number; in a nested list inside nested(...), an item's values together; in a flattened list); written from
-/// the value and said to be a guess where the template cannot say, so there is always a query to see.
+/// The query the explorer shows for an element of a record (osdu/docs/reference/concepts/explorer.md, A record): the
+/// one that finds the records holding exactly that value, list, object or nested item, written as the module's own
+/// searches are, by how the saved template of the record's kind has the platform index each value (text by its keyword
+/// sub-field, a keyword, a number; in a nested list inside nested(...), an item's values together; in a flattened
+/// list); written from the value and said to be a guess where the template cannot say, so there is always a query to
+/// see.
 /// </summary>
 public class ExplorerElementQueriesTests
 {

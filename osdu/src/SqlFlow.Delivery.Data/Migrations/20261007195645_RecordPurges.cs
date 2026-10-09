@@ -6,12 +6,13 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace SqlFlow.Delivery.Data.Migrations
 {
     /// <summary>
-    /// Keeps what the ledger holds of a record deleted from it after it was removed from OSDU (docs/ledger.md, Deleting a
-    /// removed record from the ledger): <c>osdu.PurgedRecord</c>, one row per record deleted, keyed by the partition first,
-    /// with the record's key, source key, label, OSDU id and last version, how many attempts went with it, the intervention
-    /// that deleted it, who and when. Indexed on <c>(PartitionId, FlowId, DeliveryKey)</c> for a record's page and on
-    /// <c>(PartitionId, TargetId)</c> for a lookup by OSDU id. No other table changes; the table is created empty, and going
-    /// back down drops it.
+    /// Keeps what the ledger holds of a record deleted from it after it was removed from OSDU
+    /// (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting removed records from the ledger):
+    /// <c>osdu.PurgedRecord</c>, one row per record deleted, keyed by the partition first, with the record's key,
+    /// source key, label, OSDU id and last version, how many attempts went with it, the intervention that deleted it,
+    /// who and when. Indexed on <c>(PartitionId, FlowId, DeliveryKey)</c> for a record's page and on
+    /// <c>(PartitionId, TargetId)</c> for a lookup by OSDU id. No other table changes; the table is created empty, and
+    /// going back down drops it.
     /// </summary>
     public partial class RecordPurges : Migration
     {

@@ -4,10 +4,11 @@ using SqlFlow.Delivery.Search;
 namespace SqlFlow.Delivery.Engine.Search;
 
 /// <summary>
-/// How a condition on a search term reaches the records of the page through other records (osdu/docs/search-terms.md):
-/// the records its values find (<see cref="Kind"/>, <see cref="Match"/>, <see cref="Read"/>), as a mapping's lookup or
-/// search finds the wellbore a log names, or the record ids its key makes (<see cref="Key"/>). The node reads them from
-/// the platform before it asks the page, and the condition then compares the property it names with what was read.
+/// How a condition on a search term reaches the records of the page through other records
+/// (osdu/docs/reference/concepts/search-terms.md): the records its values find (<see cref="Kind"/>,
+/// <see cref="Match"/>, <see cref="Read"/>), as a mapping's lookup or search finds the wellbore a log names, or the
+/// record ids its key makes (<see cref="Key"/>). The node reads them from the platform before it asks the page, and the
+/// condition then compares the property it names with what was read.
 /// </summary>
 public sealed partial record ExplorerVia
 {

@@ -115,7 +115,8 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
 
     /// <summary>
     /// Registers a retrieval flow's ledger in the partition its <c>data-partition-id</c> header resolves to on this node, so
-    /// every retrieval it records is kept under that partition (docs/ledger.md, Partitions).
+    /// every retrieval it records is kept under that partition (osdu/docs/reference/concepts/ledger.md, Ledgers, flows
+    /// and partitions).
     /// </summary>
     private static async Task RegisterLedgerAsync(EngineContext context, Ledger.ILedger ledger, RetrievalDefinition flow, CancellationToken ct)
     {

@@ -1,4 +1,4 @@
-# Mapping: Recall well logs into the WellLog 1.4.0 template (osdu/docs/mapping-templates.md).
+# Mapping: Recall well logs into the WellLog 1.4.0 template (osdu/docs/reference/flow/mapping.md).
 #
 # One record per Recall log, filled the way petrodb-api's RecallToWellLogMapper fills the record recall_to_osdu posts to
 # it (petrodb-api src/PetroDb/Api/Generated/RecallToWellLogMapper/RecallToWellLogMapper.g.cs): the same properties from

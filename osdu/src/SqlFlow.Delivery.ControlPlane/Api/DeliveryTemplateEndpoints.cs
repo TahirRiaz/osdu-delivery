@@ -188,9 +188,10 @@ public sealed record DeliveryMappingShapeResult(
     JsonObject? Record, IReadOnlyList<DeliveryMappingShapeParameterDto> Parameters, IReadOnlyList<string> Notes, IReadOnlyList<MappingDraftIssue> Issues);
 
 /// <summary>
-/// Templates and the mapping builder (docs/delivery/mapping-templates.md). Reading and laying out templates, browsing the
-/// OSDU data definitions (the public repository of OSDU schemas, which needs no credential), drafting and checking a
-/// mapping are reads; saving and deleting a template changes what mappings can pin, so it is an author action.
+/// Templates and the mapping builder (osdu/docs/reference/concepts/templates.md; the builder:
+/// osdu/docs/reference/concepts/gui.md, Mapping builder). Reading and laying out templates, browsing the OSDU data
+/// definitions (the public repository of OSDU schemas, which needs no credential), drafting and checking a mapping are
+/// reads; saving and deleting a template changes what mappings can pin, so it is an author action.
 /// </summary>
 public static class DeliveryTemplateEndpoints
 {

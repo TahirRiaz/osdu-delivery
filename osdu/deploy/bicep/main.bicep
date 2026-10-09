@@ -471,7 +471,7 @@ var builtInConnectionEnv = [
 ]
 
 // And on a node, the ledger, reachable wherever the module's database is. A node opens no catalog connection, so
-// without SQLFLOW_OSDU_DB it validates and plans but delivers nothing. Caller-supplied references follow, and must not
+// without SQLFLOW_OSDU_DB it refuses to start and takes no work. Caller-supplied references follow, and must not
 // reuse these three names.
 var builtInFlowEnv = concat([
   {

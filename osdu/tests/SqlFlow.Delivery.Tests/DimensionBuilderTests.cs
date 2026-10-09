@@ -7,10 +7,11 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The explorer's dimension builder as YAML (osdu/docs/explorer.md, Building a dimension): a draft written as the item a
-/// dimension flow lists, in the documented style, read back by the document loader into exactly the dimension it says; every
-/// value YAML would misread quoted so it reads back as typed; what is missing said before anything is read; and what the
-/// loader refuses said in its own words, without the check document's name, pointed at the part it is about.
+/// The explorer's dimension builder as YAML (osdu/docs/reference/concepts/explorer.md, Building a dimension): a draft
+/// written as the item a dimension flow lists, in the documented style, read back by the document loader into exactly
+/// the dimension it says; every value YAML would misread quoted so it reads back as typed; what is missing said before
+/// anything is read; and what the loader refuses said in its own words, without the check document's name, pointed at
+/// the part it is about.
 /// </summary>
 public class DimensionBuilderTests
 {

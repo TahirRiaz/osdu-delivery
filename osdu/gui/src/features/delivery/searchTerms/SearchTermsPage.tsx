@@ -143,11 +143,12 @@ const ROUTE_WORDS: Record<SearchRouteView["kind"], string | null> = {
 };
 
 /**
- * Search terms (osdu/docs/search-terms.md): the columns of the source systems that the mappings of active delivery flows
- * read, extracted by every repository sync, each with the routes by which it reaches the records. Here they are refined:
- * renamed to what the people searching call them, searched through another of their routes, or given a note, one at a
- * time; and picked, several at once, to be deleted from the search or restored. What is made of a term holds across syncs
- * and mapping versions. The explorer offers the terms searched, by their names, wherever it offers a property of the type.
+ * Search terms (osdu/docs/reference/concepts/search-terms.md): the columns of the source systems that the mappings of
+ * active delivery flows read, extracted by every repository sync, each with the routes by which it reaches the records.
+ * Here they are refined: renamed to what the people searching call them, searched through another of their routes, or
+ * given a note, one at a time; and picked, several at once, to be deleted from the search or restored. What is made of
+ * a term holds across syncs and mapping versions. The explorer offers the terms searched, by their names, wherever it
+ * offers a property of the type.
  */
 export default function SearchTermsPage() {
   const [params, setParams] = useSearchParams();

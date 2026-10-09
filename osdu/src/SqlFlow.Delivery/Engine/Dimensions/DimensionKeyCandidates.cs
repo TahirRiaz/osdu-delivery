@@ -24,13 +24,13 @@ public sealed record DimensionKeyCandidate(string Path, IReadOnlyList<string> Na
 public sealed record DimensionKeySuggestions(string Kind, BlueprintTemplate? Template, IReadOnlyList<DimensionKeyCandidate> Keys, string? Missing);
 
 /// <summary>
-/// The keys a kind's records suggest for a dimension (osdu/docs/explorer.md, Building a dimension), read from the saved
-/// template a dimension of that kind is described by: every property of <c>data</c> whose value names another record,
-/// since a dimension's key is most often the record its records belong to (a log's wellbore, a wellbore's well), whose
-/// name is the value. They are ordered the way a person picks one: a single value before a list of them, a property of
-/// <c>data</c> itself before one nested in an object of it, master data before work products and those before reference
-/// data, a property named after the type it names (<c>WellID</c> naming a Well) before another of the same group, and then
-/// as the schema declares them. Nothing is read from OSDU.
+/// The keys a kind's records suggest for a dimension (osdu/docs/reference/concepts/explorer.md, Building a dimension),
+/// read from the saved template a dimension of that kind is described by: every property of <c>data</c> whose value
+/// names another record, since a dimension's key is most often the record its records belong to (a log's wellbore, a
+/// wellbore's well), whose name is the value. They are ordered the way a person picks one: a single value before a list
+/// of them, a property of <c>data</c> itself before one nested in an object of it, master data before work products and
+/// those before reference data, a property named after the type it names (<c>WellID</c> naming a Well) before another
+/// of the same group, and then as the schema declares them. Nothing is read from OSDU.
 /// </summary>
 public static class DimensionKeyCandidates
 {

@@ -169,11 +169,12 @@ const issueColumns: Column<DeliveryIssue>[] = [
 ];
 
 /**
- * A flow's blocked records grouped by the issue that keeps them blocked (docs/ledger.md, Issues): a million held
- * records read as the handful of issues they share. A set error, the same mistake in every record of a prepared set, is
- * fixed once, checked on a few samples (rendered as they would be now, which sends nothing, or released and tried at once)
- * and then released whole, with a deliver run that plans every record of it. Row errors, each its own row's, are fixed in
- * the rows. One interface's ledger in the title bar's partition, as the Records tab is.
+ * A flow's blocked records grouped by the issue that keeps them blocked
+ * (osdu/docs/reference/concepts/record-lifecycle.md, Issues): a million held records read as the handful of issues they
+ * share. A set error, the same mistake in every record of a prepared set, is fixed once, checked on a few samples
+ * (rendered as they would be now, which sends nothing, or released and tried at once) and then released whole, with a
+ * deliver run that plans every record of it. Row errors, each its own row's, are fixed in the rows. One interface's
+ * ledger in the title bar's partition, as the Records tab is.
  */
 export function DeliveryIssuesPanel({ pipelineId, flowName }: { pipelineId: string; flowName: string }) {
   const navigate = useNavigate();

@@ -118,7 +118,8 @@ public sealed class OsduDbContext : DbContext
 
     public DbSet<DeliveryMapping> DeliveryMappings => Set<DeliveryMapping>();
 
-    /// <summary>The search terms the mappings of active delivery flows give, written by every sync (osdu/docs/search-terms.md).</summary>
+    /// <summary>The search terms the mappings of active delivery flows give, written by every sync
+    /// (osdu/docs/reference/concepts/search-terms.md).</summary>
     public DbSet<DeliverySearchTerm> DeliverySearchTerms => Set<DeliverySearchTerm>();
 
     /// <summary>What people made of search terms: their names, whether they are left out, the route each is searched through.</summary>

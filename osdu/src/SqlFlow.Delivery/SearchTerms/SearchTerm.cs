@@ -6,11 +6,12 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.SearchTerms;
 
 /// <summary>
-/// What identifies a search term (osdu/docs/search-terms.md): a column of a source table a delivery flow reads, as the flow
-/// names the table (its record table, or the table of a child dataset). <c>OsduData.arc.WellLog</c>'s <c>wellbore_uwi</c> is
-/// one term whichever pipeline reads the table, whichever mapping (and mapping version) renders it and into whichever entity
-/// type, so two flows rendering one table under two versions of a schema give one term, and what a person makes of it (a
-/// name, leaving it out) is kept by this identity across syncs, pipelines and versions.
+/// What identifies a search term (osdu/docs/reference/concepts/search-terms.md): a column of a source table a delivery
+/// flow reads, as the flow names the table (its record table, or the table of a child dataset).
+/// <c>OsduData.arc.WellLog</c>'s <c>wellbore_uwi</c> is one term whichever pipeline reads the table, whichever mapping
+/// (and mapping version) renders it and into whichever entity type, so two flows rendering one table under two versions
+/// of a schema give one term, and what a person makes of it (a name, leaving it out) is kept by this identity across
+/// syncs, pipelines and versions.
 /// </summary>
 /// <param name="Source">The table, its parts without brackets (<c>OsduData.arc.WellLog</c>).</param>
 /// <param name="Column">The column as the mapping names it.</param>

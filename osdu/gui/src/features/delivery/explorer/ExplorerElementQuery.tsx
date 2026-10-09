@@ -49,10 +49,10 @@ function leavesOf(node: RecordNode): ExplorerElementLeaf[] {
 }
 
 /**
- * Beside every value and section of a record in the explorer (osdu/docs/explorer.md, The query of an element): the Lucene
- * query that finds the records holding exactly it (a value, a list, an object, a nested list's item), written by the
- * control plane from how the saved template of the record's kind has the platform index each value, with its words and
- * whether a record holds one beside it. The query is what shows; how it was written is a tooltip away.
+ * Beside every value and section of a record in the explorer (osdu/docs/reference/concepts/explorer.md, A record): the
+ * Lucene query that finds the records holding exactly it (a value, a list, an object, a nested list's item), written by
+ * the control plane from how the saved template of the record's kind has the platform index each value, with its words
+ * and whether a record holds one beside it. The query is what shows; how it was written is a tooltip away.
  */
 export function ElementQueryButton({ field, onSearch }: { field: InspectorField; onSearch: (kind: string, query: string) => void }) {
   const [open, setOpen] = useState(false);

@@ -5,10 +5,11 @@
 namespace SqlFlow.Delivery.Data.Migrations
 {
     /// <summary>
-    /// Search terms keyed by the source table and column a delivery flow reads (osdu/docs/search-terms.md), one row per term,
-    /// repository and entity type, in place of a key of the mapping's source system and dataset. The rows are a read model
-    /// the control plane writes again from the pipelines when it starts, so they are emptied here rather than converted;
-    /// what people made of the terms (osdu.SearchTermRefinement) is kept, and moved to the terms' new keys as they are written.
+    /// Search terms keyed by the source table and column a delivery flow reads
+    /// (osdu/docs/reference/concepts/search-terms.md), one row per term, repository and entity type, in place of a key
+    /// of the mapping's source system and dataset. The rows are a read model the control plane writes again from the
+    /// pipelines when it starts, so they are emptied here rather than converted; what people made of the terms
+    /// (osdu.SearchTermRefinement) is kept, and moved to the terms' new keys as they are written.
     /// </summary>
     public partial class SearchTermSources : Migration
     {

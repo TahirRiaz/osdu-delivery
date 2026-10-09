@@ -8,10 +8,10 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The ledger keyed by partition (docs/ledger.md, Partitions): the directory that says which partition each ledger belongs
-/// to, the registration a run makes before it writes and the refusal of another partition, the adoption of a ledger the
-/// upgrade could not place, and the reads across ledgers that name their partition, each in the test database's emptied
-/// module schema.
+/// The ledger keyed by partition (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions): the directory
+/// that says which partition each ledger belongs to, the registration a run makes before it writes and the refusal of
+/// another partition, the adoption of a ledger the upgrade could not place, and the reads across ledgers that name
+/// their partition, each in the test database's emptied module schema.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 public sealed class LedgerPartitionKeyTests : IDisposable

@@ -1,19 +1,26 @@
-# An OSDU Delivery compute node as a container: the pull-based drain loop over the durable run queue, with the OSDU
-# Delivery module installed so it can execute delivery, retrieval and cache flows.
+# An OSDU Delivery compute node as a container: the pull-based drain loop that polls the control plane's dispatcher
+# for work, with the OSDU Delivery module installed so it can execute every OSDU flow kind (delivery, retrieval,
+# cache, assertion, dimension and inventory) as well as SQLFlow's own.
 #
-# The image publishes osdu/hosts/SqlFlow.Delivery.Worker.Host. It needs OUTBOUND SQL to the catalog and to the OSDU
-# module database, outbound git to the repository remotes (for SHA-pinned runs), and outbound HTTPS to the OSDU
-# endpoint; it exposes nothing, so it never sits behind an ingress. Scale it on queue depth (osdu/deploy/k8s for the
-# KEDA setup), not on traffic.
+# The image publishes osdu/hosts/SqlFlow.Delivery.Worker.Host. It opens no catalog connection: the run's definition,
+# its YAML and its trace travel over the node protocol. It needs OUTBOUND HTTPS to the control plane, OUTBOUND SQL to
+# the OSDU module database and to the ingestion database its flows read, outbound git to the repository remotes (for
+# SHA-pinned runs without a snapshot), and outbound HTTPS to the OSDU endpoint; it exposes nothing, so it never sits
+# behind an ingress. Scale it on the control plane's replica target (osdu/deploy/k8s for the KEDA setup), not on
+# traffic.
 #
 # Configuration is environment-only, matching the node's "credentials live on the node" model:
-#   SQLFLOW_CATALOG_DB            the catalog connection string (required)
+#   SQLFLOW_URL                   the control plane's URL (required)
+#   SQLFLOW_TOKEN                 the node credential: a token minted with the 'node' scope, or a ${env:...} /
+#                                 ${keyvault:...} reference to one (required)
+#   SQLFLOW_OSDU_DB               the OSDU module database connection the ledger is read and written through
+#                                 (required: without it the node refuses to start)
 #   SQLFLOW_WORKER_POOL           comma-separated pools this node serves (optional; empty = untargeted runs only)
 #   SQLFLOW_WORKER_POLL_SECONDS   queue poll cadence (optional)
 #   SQLFLOW_WORKER_DRAIN_SECONDS  how long a stopping node finishes what it holds (optional)
 #   SQLFLOW_GIT_TOKEN             token for private git remotes (optional)
 #   plus every ${env:...} reference the flows themselves use (the ingestion database connection, the OSDU
-#   credentials) and the OSDU module database connection the ledger is read and written through.
+#   credentials).
 #
 # Build from the REPOSITORY ROOT (the context must span osdu/ and sqlflow/):
 #

@@ -7,10 +7,11 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Engine;
 
 /// <summary>
-/// Places a delivery flow's ledger in the partition the flow delivers to, before a row of it is written (docs/ledger.md,
-/// Partitions). Every ledger table is keyed by its partition, so the ledger's directory has to know the partition first:
-/// a run registers it, and so does whatever writes to a ledger outside a run (an intervention, a scheduled probe). One
-/// place works out the partition, so each of them places a ledger the same way.
+/// Places a delivery flow's ledger in the partition the flow delivers to, before a row of it is written
+/// (osdu/docs/reference/concepts/ledger.md, Ledgers, flows and partitions). Every ledger table is keyed by its
+/// partition, so the ledger's directory has to know the partition first: a run registers it, and so does whatever
+/// writes to a ledger outside a run (an intervention, a scheduled probe). One place works out the partition, so each of
+/// them places a ledger the same way.
 /// </summary>
 public static class LedgerRegistration
 {

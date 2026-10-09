@@ -5,13 +5,13 @@ using System.Text.Json.Nodes;
 namespace SqlFlow.Delivery.Rendering;
 
 /// <summary>
-/// How a value becomes the number a record carries (docs/delivery/documents.md). JSON (RFC 8259) has no NaN or Infinity,
-/// and an IEEE 754 double is the precision every reader of a record agrees on, so what a value may become depends on the
-/// property it fills: a <c>number</c> property takes any finite value, a whole one exactly and anything else as the nearest
-/// double; an <c>integer</c> property takes a whole value inside the range its <c>int32</c> or <c>int64</c> format declares;
-/// a text property takes the shortest text that reads back as the same number. Text is read only in the form it states,
-/// never guessed at: <c>12,5</c> is twelve and a half or a hundred and twenty-five depending on the separators, so it is
-/// read only with the separators a number modifier gives.
+/// How a value becomes the number a record carries (osdu/docs/reference/flow/mapping-modifiers.md, number). JSON (RFC
+/// 8259) has no NaN or Infinity, and an IEEE 754 double is the precision every reader of a record agrees on, so what a
+/// value may become depends on the property it fills: a <c>number</c> property takes any finite value, a whole one
+/// exactly and anything else as the nearest double; an <c>integer</c> property takes a whole value inside the range its
+/// <c>int32</c> or <c>int64</c> format declares; a text property takes the shortest text that reads back as the same
+/// number. Text is read only in the form it states, never guessed at: <c>12,5</c> is twelve and a half or a hundred and
+/// twenty-five depending on the separators, so it is read only with the separators a number modifier gives.
 /// </summary>
 internal static class NumberValues
 {

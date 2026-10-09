@@ -346,10 +346,15 @@ What changes:
 - The flow's page shows the counts by outcome, from the ledger.
 - `sqlflow records` shows the verdict of each attempt, in text and JSON.
 - The record preview (`PreviewRecordOperation`) shows what the gate would decide for the rendered document.
-- Docs: [mapping-templates.md](mapping-templates.md) (Checks), [ledger.md](ledger.md) (the columns, the lifecycle),
-  [documents.md](documents.md) (the key), [protocols.md](protocols.md) (the gate's holds),
-  [operations.md](operations.md) (a troubleshooting row for validation holds and their release),
-  [explorer.md](explorer.md) (Validate and the API rows), the census and the CHANGELOG.
+- Docs: [reference/concepts/preflight.md](reference/concepts/preflight.md#the-preflight-gate) (The preflight gate),
+  [reference/concepts/ledger.md](reference/concepts/ledger.md) (the columns) and
+  [reference/concepts/record-lifecycle.md](reference/concepts/record-lifecycle.md) (the lifecycle),
+  [reference/flow/delivery.md](reference/flow/delivery.md#target) (the key),
+  [reference/concepts/record-lifecycle.md](reference/concepts/record-lifecycle.md#retry-hold-fail) (the gate's holds),
+  [reference/guides/operations-runbook.md](reference/guides/operations-runbook.md#records-are-held-by-the-check-before-sending)
+  (a troubleshooting row for validation holds and their release),
+  [reference/concepts/explorer.md](reference/concepts/explorer.md#validate) (Validate and the API rows), the census and
+  the CHANGELOG.
 
 The tests that close it:
 

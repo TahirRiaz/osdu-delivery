@@ -6,8 +6,9 @@ using SqlFlow.Delivery.Data;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The statement behind what a partition's delivery ledgers changed in OSDU lately (docs: osdu/docs/documents.md, Records the
-/// index may not list yet), which an assertion run reads before it judges what the search index lists.
+/// The statement behind what a partition's delivery ledgers changed in OSDU lately (docs:
+/// osdu/docs/reference/flow/assertion.md, Records the index may not list yet), which an assertion run reads before it
+/// judges what the search index lists.
 /// </summary>
 internal static partial class SqlServerLedgerBulk
 {

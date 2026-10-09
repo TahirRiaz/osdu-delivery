@@ -1,4 +1,4 @@
-# Mapping: a source system's wellbores into the Wellbore 1.3.0 template (osdu/docs/mapping-templates.md).
+# Mapping: a source system's wellbores into the Wellbore 1.3.0 template (osdu/docs/reference/flow/mapping.md).
 #
 # The master data the well logs hang off: what a source system holds about a wellbore, plus its alternative names as
 # the child dataset "aliases". Nothing here streams payload files.

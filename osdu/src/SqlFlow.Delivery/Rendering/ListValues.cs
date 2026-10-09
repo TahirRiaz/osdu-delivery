@@ -7,16 +7,17 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Rendering;
 
 /// <summary>
-/// What a record the engine writes holds in the lists its template declares (docs: documents.md, What the record contains).
-/// OSDU takes no null where a schema does not allow one, and the engine never writes one: a value with no value is left out
-/// of the record, and an item of a list that is null (a list read whole from the cache may hold one) is dropped where the
-/// template's items take no null. Every object the record holds that its template describes is looked into (the record
-/// itself, its data, an object inside them, an item of a list of objects). Which lists the record carries empty the mapping
-/// decides (<see cref="MappingRenderer.WritesList"/>): a list it defines and nothing fills for the row; one it does not
-/// define stays out, which Storage keeps as absent in a record's data. A list of the record's own outside its data (<c>meta</c> in OSDU's schemas) is a field of Storage's record, which
-/// Storage holds as null when it is left out and the record's schema refuses there, so nothing filling it writes it empty.
-/// A value that takes one of several forms (<c>oneOf</c>, <c>anyOf</c>) is not looked into, since which form it takes is
-/// the value's own.
+/// What a record the engine writes holds in the lists its template declares (docs: osdu/docs/reference/flow/mapping.md,
+/// What the record contains). OSDU takes no null where a schema does not allow one, and the engine never writes one: a
+/// value with no value is left out of the record, and an item of a list that is null (a list read whole from the cache
+/// may hold one) is dropped where the template's items take no null. Every object the record holds that its template
+/// describes is looked into (the record itself, its data, an object inside them, an item of a list of objects). Which
+/// lists the record carries empty the mapping decides (<see cref="MappingRenderer.WritesList"/>): a list it defines and
+/// nothing fills for the row; one it does not define stays out, which Storage keeps as absent in a record's data. A
+/// list of the record's own outside its data (<c>meta</c> in OSDU's schemas) is a field of Storage's record, which
+/// Storage holds as null when it is left out and the record's schema refuses there, so nothing filling it writes it
+/// empty. A value that takes one of several forms (<c>oneOf</c>, <c>anyOf</c>) is not looked into, since which form it
+/// takes is the value's own.
 /// </summary>
 /// <remarks>
 /// What each object of the template declares is worked out once per schema path and kept, so a render walks only the

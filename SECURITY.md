@@ -24,7 +24,8 @@ We aim to acknowledge reports within 3 business days and to provide a remediatio
 
 OSDU Delivery never stores secrets in flow, mapping or cache documents. Database connection strings, OSDU client
 secrets and storage credentials are supplied by reference and resolved at run time, on every platform .NET runs
-on. The canonical contract is [osdu/docs/environment-variables.md](osdu/docs/environment-variables.md):
+on. The canonical contract is
+[osdu/docs/reference/concepts/environment-variables.md](osdu/docs/reference/concepts/environment-variables.md):
 
 - Explicit references: `${env:NAME}` and `${keyvault:vault/secret}`.
 - Local development values belong in the git-ignored `.sqlflow/env` file; the process environment (CI,

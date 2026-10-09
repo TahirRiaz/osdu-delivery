@@ -6,11 +6,12 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Engine.Assertions;
 
 /// <summary>
-/// What the search index may not list yet (docs: osdu/docs/documents.md, Records the index may not list yet). OSDU indexes a
-/// change from a queue, so for a while after a delivery, a removal or a restore its index still lists the records as they
-/// were, and a test judged then fails on records that are fine. A run reads once, for each settle window its tests give the
-/// index, what this module's delivery ledgers changed in OSDU in the partition within it; a test that reads an entity type
-/// changed within its window is skipped, saying what changed, when, and from when a run judges it.
+/// What the search index may not list yet (docs: osdu/docs/reference/flow/assertion.md, Records the index may not list
+/// yet). OSDU indexes a change from a queue, so for a while after a delivery, a removal or a restore its index still
+/// lists the records as they were, and a test judged then fails on records that are fine. A run reads once, for each
+/// settle window its tests give the index, what this module's delivery ledgers changed in OSDU in the partition within
+/// it; a test that reads an entity type changed within its window is skipped, saying what changed, when, and from when
+/// a run judges it.
 /// </summary>
 public sealed class IndexSettling
 {

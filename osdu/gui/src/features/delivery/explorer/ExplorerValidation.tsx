@@ -68,11 +68,11 @@ export interface ValidationSource {
 }
 
 /**
- * A record OSDU holds checked against the schema of its kind (osdu/docs/explorer.md, Validate), in the explorer or on a
- * record page's OSDU tab: by default what the partition's Schema service holds, which is what OSDU expects of the record;
- * or a template saved in OSDU Delivery. The problems open their element in the record. What was read to make the schema,
- * and what could not be resolved, is in the tooltip beside the schema. The answer is handed up, so the record's fields can
- * carry its marks.
+ * A record OSDU holds checked against the schema of its kind (osdu/docs/reference/concepts/explorer.md, Validate), in
+ * the explorer or on a record page's OSDU tab: by default what the partition's Schema service holds, which is what OSDU
+ * expects of the record; or a template saved in OSDU Delivery. The problems open their element in the record. What was
+ * read to make the schema, and what could not be resolved, is in the tooltip beside the schema. The answer is handed
+ * up, so the record's fields can carry its marks.
  */
 export function ExplorerValidationView({ source, id, version, onOpenPath, onResult }: {
   source: ValidationSource;
@@ -179,10 +179,10 @@ export function ValidationFieldMark({ result, id, field }: { result: ExplorerVal
 }
 
 /**
- * The records a search finds checked against their schemas, up to 1,000 (osdu/docs/explorer.md, Validate these records):
- * how many came to each outcome, the rules broken most often with the records that break them and an example of each,
- * and each record with its first problem; a record opens in the explorer. A search matching more records than are read
- * says so: the counts are of the first ones, and a whole kind is an assertion flow's conforms test.
+ * The records a search finds checked against their schemas, up to 1,000 (osdu/docs/reference/concepts/explorer.md,
+ * Validate): how many came to each outcome, the rules broken most often with the records that break them and an example
+ * of each, and each record with its first problem; a record opens in the explorer. A search matching more records than
+ * are read says so: the counts are of the first ones, and a whole kind is an assertion flow's conforms test.
  */
 export function ExplorerValidateDialog({ partition, request, open, onOpenChange, onOpenRecord }: {
   partition: string | null;

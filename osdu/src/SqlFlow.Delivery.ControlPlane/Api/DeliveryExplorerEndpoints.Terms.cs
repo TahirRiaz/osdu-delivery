@@ -11,8 +11,9 @@ using SqlFlow.Delivery.SearchTerms;
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>
-/// The conditions on search terms a search asks (osdu/docs/search-terms.md): each turned into the condition on the record its
-/// term's route fills, in the partition the search reads, before the search is checked and run.
+/// The conditions on search terms a search asks (osdu/docs/reference/concepts/search-terms.md): each turned into the
+/// condition on the record its term's route fills, in the partition the search reads, before the search is checked and
+/// run.
 /// </summary>
 public static partial class DeliveryExplorerEndpoints
 {

@@ -18,11 +18,12 @@ using SqlFlow.Delivery.Validation;
 namespace SqlFlow.Delivery.ControlPlane;
 
 /// <summary>
-/// The OSDU module as a control plane composes it: the delivery, retrieval and cache flow kinds with their executors and
-/// compute operations, the ledger over the module's own database (schema <c>osdu</c>), the mapping and cache documents the
-/// repository sync reconciles beside the flows, the OSDU data definitions the Templates page browses, the background work
-/// that carries approved cache changes out and the scheduled target probe, the delivery search category, and every
-/// delivery endpoint on the control plane's own authenticated route groups.
+/// The OSDU module as a control plane composes it: the delivery, retrieval, cache, assertion, dimension and inventory
+/// flow kinds (with the mapping and dictionary documents they read), their executors and compute operations, the ledger
+/// over the module's own database (schema <c>osdu</c>), the mapping and cache documents the repository sync reconciles
+/// beside the flows, the OSDU data definitions the Templates page browses, the background work that carries approved
+/// cache changes out and the scheduled target probe, the delivery search category, and every delivery endpoint on the
+/// control plane's own authenticated route groups.
 /// </summary>
 /// <remarks>
 /// A host passes this to <c>ControlPlaneHost.RunAsync</c>; nothing else about the control plane changes. Every service
@@ -125,7 +126,8 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         }
 
         // Where the metrics go, when a deployment says anywhere. The meters publish either way, so this changes only
-        // whether the measurements leave the process (osdu/docs/operations.md, "Metrics").
+        // whether the measurements leave the process (osdu/docs/reference/concepts/run-trace-and-metrics.md,
+        // "Metrics").
         services.Services.AddDeliveryMetricsExport(telemetry);
     }
 

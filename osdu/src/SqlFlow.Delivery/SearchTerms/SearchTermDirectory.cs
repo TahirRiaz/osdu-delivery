@@ -13,9 +13,10 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.SearchTerms;
 
 /// <summary>
-/// A search term as people see it (osdu/docs/search-terms.md): the column it names, the name it is searched by, whether it
-/// is left out, the routes it reaches the record by and the one it is searched through, and why it cannot be searched
-/// where it cannot. A refinement whose term no mapping gives any longer is one with no routes (<see cref="Orphan"/>).
+/// A search term as people see it (osdu/docs/reference/concepts/search-terms.md): the column it names, the name it is
+/// searched by, whether it is left out, the routes it reaches the record by and the one it is searched through, and why
+/// it cannot be searched where it cannot. A refinement whose term no mapping gives any longer is one with no routes
+/// (<see cref="Orphan"/>).
 /// </summary>
 public sealed record SearchTermView
 {
@@ -148,10 +149,10 @@ public sealed record SearchTermDeletion(IReadOnlyList<Guid> Deleted, IReadOnlyLi
 public sealed record SearchTermRestoration(IReadOnlyList<Guid> Restored, IReadOnlyList<Guid> Missing);
 
 /// <summary>
-/// The search terms of the module (osdu/docs/search-terms.md): the terms the repository syncs extracted, merged across
-/// repositories, with what people made of them, each route classified against the saved templates; the refinements people
-/// make; and a condition on a term turned into the condition the explorer asks of the records. One directory serves one
-/// request: it keeps the mappings and templates it read for the rest of it.
+/// The search terms of the module (osdu/docs/reference/concepts/search-terms.md): the terms the repository syncs
+/// extracted, merged across repositories, with what people made of them, each route classified against the saved
+/// templates; the refinements people make; and a condition on a term turned into the condition the explorer asks of the
+/// records. One directory serves one request: it keeps the mappings and templates it read for the rest of it.
 /// </summary>
 public sealed class SearchTermDirectory
 {

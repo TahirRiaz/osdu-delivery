@@ -822,11 +822,13 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
 
     /// <summary>
-    /// Deletes records already removed from OSDU from the ledger (docs/ledger.md, Deleting a removed record from the ledger),
-    /// asking nothing of OSDU: the named records, or with null keys every record the ledger marks deleted, a page at a time.
-    /// Only a record the ledger marks deleted goes, none a lease holds, and none whose unfinished deliveries left something
-    /// the undo has not taken back yet; any other named record is left as it is and counted as such. Each record deleted keeps one line and is named under this intervention's activity, the same way the
-    /// removal's extra step deletes one (<see cref="ILedger.PurgeRecordsAsync"/>).
+    /// Deletes records already removed from OSDU from the ledger (osdu/docs/reference/concepts/removal-and-reversal.md,
+    /// Deleting removed records from the ledger), asking nothing of OSDU: the named records, or with null keys every
+    /// record the ledger marks deleted, a page at a time. Only a record the ledger marks deleted goes, none a lease
+    /// holds, and none whose unfinished deliveries left something the undo has not taken back yet; any other named
+    /// record is left as it is and counted as such. Each record deleted keeps one line and is named under this
+    /// intervention's activity, the same way the removal's extra step deletes one
+    /// (<see cref="ILedger.PurgeRecordsAsync"/>).
     /// </summary>
     public Task<LedgerPurgeSummary> PurgeFromLedgerAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
         => TrackAsync(
@@ -879,8 +881,8 @@ public sealed class FlowRuntime : IDisposable
             ct);
 
     /// <summary>
-    /// Releases every record one issue keeps blocked (docs/ledger.md, Issues), after its cause was fixed: every record
-    /// blocked by it, however many. The activity names the issue
+    /// Releases every record one issue keeps blocked (osdu/docs/reference/concepts/record-lifecycle.md, Issues), after
+    /// its cause was fixed: every record blocked by it, however many. The activity names the issue
     /// and its pattern, and every record it releases is named under the activity, so each record's history shows the
     /// release. <paramref name="pattern"/> is what the operator was shown, recorded as they saw it.
     /// </summary>
@@ -918,10 +920,10 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
-    /// Asks records OSDU holds to be brought up to date (docs/operations.md, Redelivering records): rendered again by the
-    /// next plan that meets them, whichever run that is, and sent only where they render differently, since their delivered
-    /// hashes stay. Null keys means every record the flow has delivered; a named record OSDU does not hold is left as it is.
-    /// Returns how many were marked.
+    /// Asks records OSDU holds to be brought up to date (osdu/docs/reference/concepts/removal-and-reversal.md,
+    /// Redelivering records): rendered again by the next plan that meets them, whichever run that is, and sent only
+    /// where they render differently, since their delivered hashes stay. Null keys means every record the flow has
+    /// delivered; a named record OSDU does not hold is left as it is. Returns how many were marked.
     /// </summary>
     public Task<int> BringUpToDateAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
         => TrackAsync("rerender", Named(keys, null), keys is { Count: 1 } ? keys[0] : null, async activity =>
@@ -1214,17 +1216,18 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
-    /// Deletes the ledger (docs/ledger.md, Deleting the ledger). Nothing happens unless <paramref name="confirm"/> names the
-    /// partition the ledger is kept in, and no worker holds a lease on its records. Then every record OSDU may hold is removed
-    /// from it first, reversibly (the record scope), through the removal a selection takes, a page of the ledger at a time
-    /// in key order; a record the ledger already marks removed is not asked about again. Only when OSDU answered for every
-    /// one is the ledger deleted whole (<see cref="ILedger.DeleteLedgerAsync"/>): its records, whatever their state, each
-    /// kept as one line, and what it keeps of its runs, so the next run reads every row and delivers each as a new record.
-    /// Before a page's records are removed, what their unfinished deliveries left is undone; once a record is out of OSDU, the
-    /// datasets, content and outputs its committed deliveries minted are removed reversibly too, since nothing would name them
-    /// afterwards. A removal OSDU refused, or an undo it could not take, leaves the ledger as it was, with the records it did
-    /// remove marked removed, and fails naming them: OSDU never holds a record or an id the ledger forgot. A route with no
-    /// reversible removal is refused outright.
+    /// Deletes the ledger (osdu/docs/reference/concepts/removal-and-reversal.md, Deleting the ledger). Nothing happens
+    /// unless <paramref name="confirm"/> names the partition the ledger is kept in, and no worker holds a lease on its
+    /// records. Then every record OSDU may hold is removed from it first, reversibly (the record scope), through the
+    /// removal a selection takes, a page of the ledger at a time in key order; a record the ledger already marks
+    /// removed is not asked about again. Only when OSDU answered for every one is the ledger deleted whole
+    /// (<see cref="ILedger.DeleteLedgerAsync"/>): its records, whatever their state, each kept as one line, and what it
+    /// keeps of its runs, so the next run reads every row and delivers each as a new record. Before a page's records
+    /// are removed, what their unfinished deliveries left is undone; once a record is out of OSDU, the datasets,
+    /// content and outputs its committed deliveries minted are removed reversibly too, since nothing would name them
+    /// afterwards. A removal OSDU refused, or an undo it could not take, leaves the ledger as it was, with the records
+    /// it did remove marked removed, and fails naming them: OSDU never holds a record or an id the ledger forgot. A
+    /// route with no reversible removal is refused outright.
     /// </summary>
     public Task<LedgerDeleteSummary> DeleteLedgerAsync(string confirm, CancellationToken ct = default)
     {

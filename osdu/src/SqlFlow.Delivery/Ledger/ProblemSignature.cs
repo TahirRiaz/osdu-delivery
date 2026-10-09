@@ -7,10 +7,11 @@ using System.Text.RegularExpressions;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// What kind of problem keeps a record held or failed, told apart from the record it happened to (docs/ledger.md, Issues).
-/// A record's error names the record: the value it read, an OSDU id, a moment, a count, a file, the correlation id of the
-/// request that was refused. The pattern is the error with those parts replaced by placeholders, so the errors of a million
-/// records refused for the same reason read alike, and its hash is what the ledger groups blocked records by.
+/// What kind of problem keeps a record held or failed, told apart from the record it happened to
+/// (osdu/docs/reference/concepts/record-lifecycle.md, Issues). A record's error names the record: the value it read, an
+/// OSDU id, a moment, a count, a file, the correlation id of the request that was refused. The pattern is the error
+/// with those parts replaced by placeholders, so the errors of a million records refused for the same reason read
+/// alike, and its hash is what the ledger groups blocked records by.
 /// </summary>
 /// <remarks>
 /// This is the one place a problem is decided: the intake's holds, the worker's failures, the backfill of records held

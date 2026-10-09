@@ -6,8 +6,9 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// A mapping (osdu/docs/mapping-templates.md) as it is loaded: which saved template version it fills, what identifies a record of
-/// the incoming dataset, and one entry per template variable its record tree fills, each saying where the value comes from.
+/// A mapping (osdu/docs/reference/flow/mapping.md) as it is loaded: which saved template version it fills, what
+/// identifies a record of the incoming dataset, and one entry per template variable its record tree fills, each saying
+/// where the value comes from.
 /// </summary>
 public sealed record MappingDefinition
 {

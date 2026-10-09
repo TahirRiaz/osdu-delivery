@@ -77,10 +77,10 @@ public sealed record DimensionExample(
     IReadOnlyList<DimensionAttributeState> Attributes, long? Records, string? Filter, IReadOnlyList<string> Notes);
 
 /// <summary>
-/// The reads the explorer's dimension builder makes of OSDU (osdu/docs/explorer.md, Building a dimension), beyond the
-/// explorer's own reads of the records a person browses: the commonest keys of a path, which the builder's example steps
-/// through, and one key made into its row exactly as a build makes it, through the build's own labeler, collector display,
-/// cleaner and attribute assembly. Nothing is written.
+/// The reads the explorer's dimension builder makes of OSDU (osdu/docs/reference/concepts/explorer.md, Building a
+/// dimension), beyond the explorer's own reads of the records a person browses: the commonest keys of a path, which the
+/// builder's example steps through, and one key made into its row exactly as a build makes it, through the build's own
+/// labeler, collector display, cleaner and attribute assembly. Nothing is written.
 /// </summary>
 public sealed class DimensionSampler
 {

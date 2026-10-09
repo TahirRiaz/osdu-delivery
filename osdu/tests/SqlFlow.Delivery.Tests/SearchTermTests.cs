@@ -10,10 +10,11 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The search terms a pipeline gives (osdu/docs/search-terms.md), read from the sample estate's Recall well log flow: the
-/// tables it reads and the mapping it renders them with. Every column of those tables the mapping reads is a term (the
-/// table's column, whichever pipelines read it), each route by which the column reaches the record, a value typed for a
-/// term put through the mapping as a render puts it, and a condition on a term turned into the condition the explorer asks.
+/// The search terms a pipeline gives (osdu/docs/reference/concepts/search-terms.md), read from the sample estate's
+/// Recall well log flow: the tables it reads and the mapping it renders them with. Every column of those tables the
+/// mapping reads is a term (the table's column, whichever pipelines read it), each route by which the column reaches
+/// the record, a value typed for a term put through the mapping as a render puts it, and a condition on a term turned
+/// into the condition the explorer asks.
 /// </summary>
 public sealed class SearchTermTests
 {

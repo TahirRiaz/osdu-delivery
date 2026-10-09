@@ -1,8 +1,8 @@
 import { expect, test } from "./helpers";
 
-// The OSDU group (osdu/docs/operations.md, The GUI): one group of the side bar, its entries under four labelled sections
-// in the order an operator reaches for them, and the mapping builder reached from Mappings rather than listed. Nothing
-// here needs the seeded estate: the navigation is the module's, whatever the catalog holds.
+// The OSDU group (osdu/docs/reference/concepts/gui.md, The OSDU menu): one group of the side bar, its entries under
+// four labelled sections in the order an operator reaches for them, and the mapping builder reached from Mappings
+// rather than listed. Nothing here needs the seeded estate: the navigation is the module's, whatever the catalog holds.
 
 const SECTIONS = [
   { id: "ledger", label: "Ledger", entries: ["nav-delivery", "nav-delivery-records", "nav-delivery-activity"] },
