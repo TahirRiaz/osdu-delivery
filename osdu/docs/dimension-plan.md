@@ -505,11 +505,16 @@ compared under `Latin1_General_100_BIN2`, since the database's own collation may
 a `Latin1_General_CI_AS` database, `...:Wellbore:A:` equals `...:Wellbore:a:`, and a join on the text alone would give
 a row both, or the wrong one (the local SQL Server, 2026-10-09).
 
-A join is declared, never inferred, so a view is its document's alone. The saved templates check it: where the template
-of the column's kind marks `on` with `x-osdu-relationship` (or an id pattern, `SchemaRelationships`), the blueprint shows
-the entity types it names and marks a join whose dimension reads another. A join of the wrong type finds nothing rather
-than a wrong row, since an id carries its entity type, and the check counts what each join found. The explorer's builder
-proposes a view's joins from the same relationships, and writes them into the item for a person to keep or change.
+A join is declared, never inferred, so a view is its document's alone. The saved templates check it
+(`DimensionViewTemplates`): the column joined on is read through the newest saved template of the records it is read
+from (`SchemaPathReader`, as the blueprint reads a label's path), and a join to a dimension of the entity type its
+`x-osdu-relationship` (or id pattern) names agrees, one to another type differs, and one no template describes is
+unchecked; a view's page shows each. A join of the wrong type finds nothing rather than a wrong row, since an id carries
+its entity type, and the check counts what each join found. The same reading offers the joins a view of a dimension could
+make (`GET /flows/{pipelineId}/dimensions/views/suggest`, `sqlflow dimensions views --suggest`, the flow's Views on
+the GUI): each column holding a key, joined to the dimension keyed by what it holds, one row a key, of the type the
+template names, and through each dimension so joined, as a `join:` block for a person to keep or change. A column no
+template describes is offered nothing, since a record's id can name a record of any type.
 
 ### Expressions
 
@@ -922,8 +927,8 @@ samples README.
   (module version 1.36.0).
 - `DimensionLineage`: the tables and the views written on `target.connection`; build and plan refusing a reference that
   reaches another database than the module's; `plan` giving each view's SQL and what stops it.
-- The blueprint: each view's joins, with what the templates say of each `on`; the explorer's builder proposing a view's
-  joins from the relationships.
+- `DimensionViewTemplates`: each view's joins with what the templates say of each `on` (`joinChecks` on a view's
+  page), and the joins a view could make (`.../views/suggest`, `--suggest`, the GUI's Suggest joins).
 - `GET /dimensions/views`, `GET /flows/{pipelineId}/dimensions/views`, `GET /dimensions/views/{name}`,
   `DELETE /dimensions/views/{name}` (admin); `sqlflow
   dimensions views` and `remove-view`; the GUI's views on a dimension flow's Dimensions tab and a view's page.

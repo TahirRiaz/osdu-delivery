@@ -286,7 +286,7 @@ public sealed class DeliveryCliModule : ICliModule
                 "                                   check; --view shows one with its columns, its checks and its SQL;",
                 "                                   --suggest offers the joins a view of that dimension could make, from",
                 "                                   the saved templates, as YAML to keep or change (needs --db)",
-                "sqlflow dimensions remove-view <flow.yaml> --view <name>",
+                "sqlflow dimensions remove-view <flow.yaml> --view <name> [--partition <id>]",
                 "                                   Removes a view of the flow it no longer declares, for good: the view",
                 "                                   from the database and its record with its checks; refused for one the",
                 "                                   flow declares; recorded as an activity of the flow (needs --db)",
