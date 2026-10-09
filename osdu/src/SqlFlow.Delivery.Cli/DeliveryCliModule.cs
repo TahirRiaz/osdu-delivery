@@ -280,10 +280,12 @@ public sealed class DeliveryCliModule : ICliModule
                 "                                   Removes a dimension the flow no longer declares, and everything kept of",
                 "                                   it in the partition, for good: refused for one the flow declares or a",
                 "                                   cache flow captures; recorded as an activity of the flow (needs --db)",
-                "sqlflow dimensions views <flow.yaml> [--view <name>] [--partition <id>]",
+                "sqlflow dimensions views <flow.yaml> [--view <name> | --suggest <dimension>] [--partition <id>]",
                 "                                   The flow's views, osdu.dimv_<view>: each with its from dimension, its",
                 "                                   joins, whether a build wrote it as the flow declares it, and its last",
-                "                                   check; --view shows one with its columns, its checks and its SQL (needs --db)",
+                "                                   check; --view shows one with its columns, its checks and its SQL;",
+                "                                   --suggest offers the joins a view of that dimension could make, from",
+                "                                   the saved templates, as YAML to keep or change (needs --db)",
                 "sqlflow dimensions remove-view <flow.yaml> --view <name>",
                 "                                   Removes a view of the flow it no longer declares, for good: the view",
                 "                                   from the database and its record with its checks; refused for one the",
@@ -298,7 +300,7 @@ public sealed class DeliveryCliModule : ICliModule
             DeliveryDimensionVerbs.DimensionsAsync)
         {
             Subcommands = ["list", "table", "values", "keys", "attributes", "filter", "search", "history", "changes", "export", "remove", "views", "remove-view"],
-            ValueOptions = ["--partition", "--dimension", "--view", "--search", "--order", "--value", "--pick", "--where", "--attr", "--attribute", "--kind", "--within", "--max", "--build", "--change", "--set", "--format", "--out"],
+            ValueOptions = ["--partition", "--dimension", "--view", "--suggest", "--search", "--order", "--value", "--pick", "--where", "--attr", "--attribute", "--kind", "--within", "--max", "--build", "--change", "--set", "--format", "--out"],
             Flags = ["--removed", "--left-out", "--desc"],
         },
         new CliVerb(

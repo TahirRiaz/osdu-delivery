@@ -9,6 +9,7 @@ using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Cli;
 
@@ -65,7 +66,9 @@ internal static class DeliveryDimensionVerbs
 
         if (verb == "views")
         {
-            return await ViewsAsync(context, ledger, flow, ct).ConfigureAwait(false);
+            return context.Arguments.GetOption("--suggest") is { } from && !string.IsNullOrWhiteSpace(from)
+                ? await SuggestAsync(context, flow, from.Trim(), engine.Templates, ct).ConfigureAwait(false)
+                : await ViewsAsync(context, ledger, flow, ct).ConfigureAwait(false);
         }
 
         if (verb == "remove-view")
@@ -220,6 +223,43 @@ internal static class DeliveryDimensionVerbs
                     context.Out.WriteLine("      " + note);
                 }
             }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// The joins a view whose rows are <paramref name="from"/>'s could make (<see cref="DimensionViewTemplates.SuggestAsync"/>),
+    /// from the flow file's dimensions and the saved templates, as the <c>join:</c> block of a view's YAML, each with why it
+    /// is offered: what a person keeps or changes in the file. Nothing is written.
+    /// </summary>
+    private static async Task<int> SuggestAsync(CliVerbContext context, DimensionFlowDefinition flow, string from, ITemplateStore? templates, CancellationToken ct)
+    {
+        var store = templates ?? throw new FlowValidationException("Joins are offered from the saved templates, which live in the module's database. Run with --db <conn-ref>, or set the catalog variable.");
+        var dimension = flow.Dimension(from)
+            ?? throw new FlowValidationException($"{flow.Name} has no dimension named '{from}'; its dimensions are {string.Join(", ", flow.Dimensions.Select(d => d.Name))}.");
+        var joins = await DimensionViewTemplates.SuggestAsync(flow, dimension.Name, store, ct).ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["from"] = dimension.Name,
+                ["joins"] = new JsonArray(joins.Select(j => (JsonNode)new JsonObject { ["on"] = j.On, ["to"] = j.To, ["as"] = j.As, ["note"] = j.Note }).ToArray()),
+            }));
+            return 0;
+        }
+
+        if (joins.Count == 0)
+        {
+            context.Out.WriteLine($"No join is offered from {dimension.Name}: none of its columns holds a key another dimension of the flow is keyed by, one row a key, of the type its template names.");
+            return 0;
+        }
+
+        context.Out.WriteLine($"    from: {dimension.Name}");
+        context.Out.WriteLine("    join:");
+        foreach (var join in joins)
+        {
+            context.Out.WriteLine($"      - {{ on: {join.On}, to: {join.To}, as: {join.As} }}    # {join.Note}");
         }
 
         return 0;

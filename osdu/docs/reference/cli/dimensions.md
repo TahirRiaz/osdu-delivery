@@ -75,7 +75,7 @@ sqlflow dimensions history    <flow.yaml> --dimension <name> [--max <n>]
 sqlflow dimensions changes    <flow.yaml> --dimension <name> [--build <n>] [--value <value>] [--change added|removed|moved|restored] [--max <n>]
 sqlflow dimensions export     <flow.yaml> --dimension <name> [--set values|keys|table] [--format csv|jsonl] [--out <file>]
 sqlflow dimensions remove     <flow.yaml> --dimension <name>
-sqlflow dimensions views      <flow.yaml> [--view <name>]
+sqlflow dimensions views      <flow.yaml> [--view <name> | --suggest <dimension>]
 sqlflow dimensions remove-view <flow.yaml> --view <name>
 ```
 
@@ -347,6 +347,19 @@ welldb-welllog-07-metadata-dimensions: 1 view(s)
 `--view <name>` shows one view: its columns with their types and expressions, its newest checks, and the statement a
 build last wrote it with (or, before any build, the one a build writes). With `--json`, the view, its joins, columns,
 checks, and both statements.
+
+`--suggest <dimension>` offers the joins a view whose rows are that dimension's could make: each column holding a key,
+joined to the dimension of the flow keyed by what it holds, one row a key, of the entity type the saved template of its
+records names (`x-osdu-relationship`), and through each dimension so joined. It prints the `join:` block of a view's
+YAML to keep or change, each join with why it is offered; nothing is written. A column no saved template describes is
+offered nothing, since a record's id can name a record of any type.
+
+```text
+    from: LogCurve
+    join:
+      - { on: WellLogID, to: WellLog, as: WellLog }    # WellLogID and WellLog both hold ids of work-product-component--WellLog.
+      - { on: CurveUnitID, to: RefUnitOfMeasure, as: RefUnitOfMeasure }    # The template says CurveUnitID names reference-data--UnitOfMeasure, which RefUnitOfMeasure reads.
+```
 
 ## remove-view
 

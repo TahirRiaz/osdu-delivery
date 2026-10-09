@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -52,10 +53,18 @@ public sealed record DeliveryDimensionViewDto(
 
 /// <summary>
 /// A view with its newest checks, newest first, the statement a build last wrote it with (<c>Sql</c>), the one its flow's
-/// document writes now (<c>DeclaredSql</c>), and its item of the flow's YAML with where each thing it declares is written.
+/// document writes now (<c>DeclaredSql</c>), its item of the flow's YAML with where each thing it declares is written, and
+/// what the saved templates say of each join it declares (<c>JoinChecks</c>: <c>agrees</c>, <c>differs</c>, <c>unchecked</c>).
 /// </summary>
 public sealed record DeliveryDimensionViewDetailDto(
-    DeliveryDimensionViewDto View, string? Sql, string? DeclaredSql, IReadOnlyList<DeliveryDimensionViewCheckDto> Checks, DeliveryDimensionYamlDto? Yaml);
+    DeliveryDimensionViewDto View, string? Sql, string? DeclaredSql, IReadOnlyList<DeliveryDimensionViewCheckDto> Checks, DeliveryDimensionYamlDto? Yaml,
+    IReadOnlyList<DimensionViewJoinVerdict> JoinChecks);
+
+/// <summary>
+/// The joins a view whose rows are <c>From</c>'s could make, as the flow's dimensions and the saved templates offer them, and
+/// the same as the <c>join:</c> block of a view's YAML, to keep or change.
+/// </summary>
+public sealed record DeliveryDimensionViewSuggestionDto(string From, IReadOnlyList<DimensionViewJoinSuggestion> Joins, string Yaml);
 
 /// <summary>What removing a view took: the view from the database when it was there, and its record with its checks.</summary>
 public sealed record DeliveryDimensionViewRemovedDto(string Name, string ViewName, string FlowName, bool Dropped, long Checks, string Summary);
@@ -76,6 +85,7 @@ public static class DeliveryDimensionViewEndpoints
         delivery.MapGet("/dimensions/views", ListAsync).WithName("ListDeliveryDimensionViews");
         delivery.MapGet("/flows/{pipelineId:guid}/dimensions/views", ListFlowAsync).WithName("ListDeliveryDimensionFlowViews");
         delivery.MapGet("/dimensions/views/{name}", GetAsync).WithName("GetDeliveryDimensionView");
+        delivery.MapGet("/flows/{pipelineId:guid}/dimensions/views/suggest", SuggestAsync).WithName("SuggestDeliveryDimensionViewJoins");
     }
 
     /// <summary>The routes that change what the module keeps of a view: removing one, an admin's alone.</summary>
@@ -111,15 +121,20 @@ public static class DeliveryDimensionViewEndpoints
             : Problem(StatusCodes.Status409Conflict, "Not a dimension flow", $"Pipeline '{pipeline.Name}' is a '{pipeline.Kind}' flow, not a dimension flow.");
     }
 
-    /// <summary>One view, with its newest checks, its SQL as written and as declared, and its YAML.</summary>
+    /// <summary>One view, with its newest checks, its SQL as written and as declared, its YAML, and what the templates say of its joins.</summary>
     private static async Task<Results<Ok<DeliveryDimensionViewDetailDto>, ProblemHttpResult>> GetAsync(
-        string name, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        string name, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, ITemplateStore templates, CancellationToken ct)
     {
         var detail = await ledger.GetDimensionViewAsync(name, ct).ConfigureAwait(false);
         var flowName = detail?.View.FlowName;
         var (pipeline, declared, _) = flowName is null
             ? await FindDeclaringAsync(db, documents, name, ct).ConfigureAwait(false)
             : await DeclaringAsync(db, documents, flowName, name, ct).ConfigureAwait(false);
+        IReadOnlyList<DimensionViewJoinVerdict> joinChecks = [];
+        if (pipeline is not null && declared is not null)
+        {
+            joinChecks = await DimensionViewTemplates.CheckAsync(documents.ParseDimension(pipeline.Yaml, pipeline.RelativePath), declared, templates, ct).ConfigureAwait(false);
+        }
         if (detail is null && declared is null)
         {
             return Problem(StatusCodes.Status404NotFound, "Not found", $"No dimension flow declares a view named '{name}', and no build wrote one.");
@@ -133,7 +148,52 @@ public static class DeliveryDimensionViewEndpoints
         }
 
         return TypedResults.Ok(new DeliveryDimensionViewDetailDto(
-            view, detail?.View.Sql, declared?.Definition.CreateSql, (detail?.Checks ?? []).Select(ToDto).ToList(), yaml));
+            view, detail?.View.Sql, declared?.Definition.CreateSql, (detail?.Checks ?? []).Select(ToDto).ToList(), yaml, joinChecks));
+    }
+
+    /// <summary>
+    /// The joins a view whose rows are <paramref name="from"/>'s could make (<see cref="DimensionViewTemplates.SuggestAsync"/>):
+    /// what a person keeps or changes in the flow's YAML; nothing is written.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryDimensionViewSuggestionDto>, ProblemHttpResult>> SuggestAsync(
+        Guid pipelineId, string? from, CatalogDbContext db, DeliveryDocumentLoader documents, ITemplateStore templates, CancellationToken ct)
+    {
+        var pipeline = await db.Pipelines.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pipelineId, ct).ConfigureAwait(false);
+        if (pipeline is null)
+        {
+            return Problem(StatusCodes.Status404NotFound, "Not found", $"No pipeline '{pipelineId}'.");
+        }
+
+        if (!string.Equals(pipeline.Kind, DimensionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            return Problem(StatusCodes.Status409Conflict, "Not a dimension flow", $"Pipeline '{pipeline.Name}' is a '{pipeline.Kind}' flow, not a dimension flow.");
+        }
+
+        if (string.IsNullOrWhiteSpace(from))
+        {
+            return Problem(StatusCodes.Status400BadRequest, "No dimension", "Name the dimension whose rows the view's rows are: from=<dimension>.");
+        }
+
+        DimensionFlowDefinition flow;
+        try
+        {
+            flow = documents.ParseDimension(pipeline.Yaml, pipeline.RelativePath);
+        }
+        catch (FlowValidationException ex)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Flow not readable", $"The catalog's copy of the flow does not parse: {ex.Message} Re-sync the repository.");
+        }
+
+        if (flow.Dimension(from.Trim()) is not { } dimension)
+        {
+            return Problem(StatusCodes.Status404NotFound, "Not found", $"Dimension flow '{flow.Name}' has no dimension named '{from.Trim()}'.");
+        }
+
+        var joins = await DimensionViewTemplates.SuggestAsync(flow, dimension.Name, templates, ct).ConfigureAwait(false);
+        var yaml = joins.Count == 0
+            ? "join: []"
+            : "join:\n" + string.Join("\n", joins.Select(j => $"  - {{ on: {j.On}, to: {j.To}, as: {j.As} }}"));
+        return TypedResults.Ok(new DeliveryDimensionViewSuggestionDto(dimension.Name, joins, yaml));
     }
 
     /// <summary>
