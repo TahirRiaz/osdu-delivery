@@ -3040,7 +3040,10 @@ impl ServerHandler for SqlFlowMcp {
 
     fn get_info(&self) -> ServerInfo {
         let online_setup = if self.http_mode { ONLINE_SETUP_HTTP } else { ONLINE_SETUP_STDIO };
-        let discovery = if self.http_mode { "" } else { DISCOVERY_STDIO };
+        // The paragraph about source discovery is about one tool; a host that leaves it out does not recommend it.
+        let discovery =
+            if self.http_mode || self.modules.withholds("discover_source") { "" } else { DISCOVERY_STDIO };
+        let introduction = self.modules.introduction().unwrap_or(INTRODUCTION);
         let modules = self.modules.instructions();
         let withheld = self.modules.withheld_note();
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -3049,7 +3052,7 @@ impl ServerHandler for SqlFlowMcp {
                 self.cp.identity().version().to_string(),
             ))
             .with_instructions(format!(
-                "{INSTRUCTIONS_OFFLINE}{discovery}\n{online_setup}{INSTRUCTIONS_ONLINE_TAIL}{modules}{withheld}"
+                "{introduction} {INSTRUCTIONS_OFFLINE}{discovery}\n{online_setup}{INSTRUCTIONS_ONLINE_TAIL}{modules}{withheld}"
             ))
     }
 }
@@ -3070,8 +3073,11 @@ impl SqlFlowMcp {
     }
 }
 
+/// How SQLFlow's own server introduces itself; a host may replace it (`McpHost::introduced_as`).
+const INTRODUCTION: &str = "SQLFlow MCP server.";
+
 const INSTRUCTIONS_OFFLINE: &str = "\
-SQLFlow MCP server. Two tiers of tools:
+Two tiers of tools:
 
 OFFLINE (always available):
 - Docs: search_docs, get_doc, get_doc_by_yaml_path, get_doc_by_cli_command, related_docs, list_docs.
