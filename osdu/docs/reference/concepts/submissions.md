@@ -18,6 +18,9 @@ keywords:
   - one source several flows
   - osdu id claim
   - reliability.leaseSeconds
+  - stopped submission
+  - recover a stopped run
+  - submission stuck planned
 related:
   - delivery-concept-ledger
   - delivery-concept-record-lifecycle
@@ -37,6 +40,10 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
   - osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionHolds.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/SubmissionHold.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Holds.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Holds.cs
   - osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/LeaseJournal.cs
@@ -60,7 +67,7 @@ A run of a delivery flow performs one operation, the one it names (`sqlflow run 
 
 | Operation | What it does |
 | --- | --- |
-| `deliver` | Plan the selection into a submission, then drain it; send what released records and settled submissions still hold; undo what unfinished deliveries left. |
+| `deliver` | Plan the selection into a submission, then drain it; send what submissions no run works on any more still hold (released records of settled submissions, and submissions a stopped run left open, which it then closes; see [Recovering a stopped submission](#recovering-a-stopped-submission)); undo what unfinished deliveries left. |
 | `plan` | Plan and report what would be sent, with a sample of the records it would send. Stages nothing in the ledger and sends nothing. |
 | `intake` | Plan into work batches without sending: a fan-out member's share, or a plan to drain later. |
 | `drain` | Send the work batches already planned, of the flow or of one submission. |
@@ -96,7 +103,11 @@ plan (its row gone, or outside the run's scope) keeps its request for a run that
 ## The submission
 
 `osdu.Submission` holds one row per plan. Its id is the idempotency key: a run that names a submission (`submissionId` in
-its payload) works on that submission, reading exactly the window or keys it recorded.
+its payload) works on that submission, reading exactly the window or keys it recorded. A run the platform executes again
+after an interruption (its node stopped and its lease lapsed) resumes the submission its interrupted attempt left
+unsettled for the same read (a whole-scope plan resumes the whole-scope plan, a key-scoped plan only one made for
+exactly the same keys) instead of registering another: it plans it again, keeps its key slices, and gets back its
+fan-out members.
 
 | Columns | What they hold |
 | --- | --- |
@@ -111,10 +122,13 @@ its payload) works on that submission, reading exactly the window or keys it rec
 | `RunId`, `ReceivedUtc`, `StartedUtc`, `CompletedUtc`, `Error` | The coordinating run and the timeline. |
 
 **Status.** A submission is `received` while it plans. It is `planned` when the planning finished with records to send,
-and `completed` at once when it planned none. When the drain ends it is closed from the ledger: `running` while records of
-it are still pending, else `failed` when any of its records failed, else `completed`. A run stopped part way (cancelled, or
-its interface stopped by `failWhen`) closes its submission as `failed` with the reason, `stopped: ...`, while records of it
-are still pending; the flow's next run sends them.
+and `completed` at once when it planned none. A plan that finds nothing new while records an earlier pass queued are
+still pending leaves the submission `planned`, not `completed`. When the drain ends it is closed from the ledger:
+`running` while records of it are still pending, else `failed` when any of its records failed, else `completed`. A run
+stopped part way (cancelled, or its interface stopped by `failWhen`) closes its submission as `failed` with the reason,
+`stopped: ...`, while records of it are still pending, or when its planning had not finished; the flow's next run sends
+them. A submission whose run ended without closing it is taken over by the flow's next deliver run
+([Recovering a stopped submission](#recovering-a-stopped-submission)).
 
 **Counts.** The closing counts are counted from the ledger each time the submission closes, never tallied while records
 are sent: `Delivered` and `UnchangedAtPush` count the records the submission's own attempts settled so, `Held`, `Failed`
@@ -157,10 +171,11 @@ flow, the submission, the batch, the owner, and an expiry.
   `the lease expired mid-attempt (the worker stopped) and the record was requeued`, and queues the batch again. A recovery
   holds the lease it took for five minutes, after which a recovery that itself stopped is recovered too.
 
-A run requeued after its node stopped finds its submission planned and records still leased by a worker that is gone. It
-waits out the lease, recovers it, and sends the records, resuming after the steps the stopped try had recorded. A lease
-running out further ahead than the flow's own `reliability.leaseSeconds` belongs to a live worker and is left alone with a
-warning.
+A run the platform executes again resumes its submission, waits out leases a gone worker still holds, recovers them and
+sends the records, resuming after the steps the stopped try had recorded. A submission whose run does not come back
+(attempts ran out, a command-line run killed) is taken over by the flow's next deliver run
+([Recovering a stopped submission](#recovering-a-stopped-submission)). A lease running out further ahead than the flow's
+own `reliability.leaseSeconds` belongs to a live worker and is left alone with a warning.
 
 ## Many nodes
 
@@ -168,7 +183,7 @@ warning.
 `reliability.fanOutMinRecords` candidates (1,000 by default), the coordinating run cuts the candidate keys into slices on the
 record table's identity primary key (`source.record.primaryKey`), hands slices to up to `fanOut` intake members, plans its
 own share, and finalises the submission with every member's totals. A member that fails stops the coordinating run with
-`Intake member <slot> (run <id>) <status>: <error>. The submission stays planned as far as it got; re-run it to finish the intake.`
+`Intake member <slot> (run <id>) <status>: <error>. The submission stays planned as far as it got: re-run it to finish the intake now, or the flow's next deliver run takes it over, sends what it planned and closes it, and plans the rest in its own window.`
 The drain fans out the same way, `fanOut` drain members beside the coordinating run; a drain member that fails leaves its
 records to the coordinating run, which keeps draining until the submission is settled. The members appear as a run family
 on the run's page.
@@ -176,6 +191,44 @@ on the run's page.
 Records of one flow written by many nodes never wait on each other for long: no statement writes more than 1,000 records,
 a worker writes only its lease row and the append-only tables while it sends, staging locks only records that exist, and a
 statement the database ends as a deadlock victim is run again, up to five runs in all.
+
+## Recovering a stopped submission
+
+A submission whose run stops before it settled (its node was lost, its process ended, it ran out of attempts, a
+command-line run was killed) is not left for a drain by hand: the flow's next deliver run takes it over.
+
+**Every run that works on a submission holds it.** The deliver run that plans it, each intake member of a fan-out, and a
+drain that names a submission take a shared, session-owned application lock on the module's database,
+`SqlFlow.Delivery.Submission:<id>` (`sp_getapplock`), on a connection of their own, from before the submission is
+registered or reopened until they are done with it. Any number of runs hold one submission at once, as a fan-out's
+coordinator and its members do. A process that stops frees its holds with its connections, whatever stopped it, which is
+how a later run tells a submission somebody still works on from one whose run has ended. A hold reads and writes nothing
+of the ledger, so there is no table to look at; the submission's status and leases say the rest.
+
+**Every deliver run looks for submissions no run works on any more**, after it has sent its own records: first the
+flow's submissions left `received`, `planned` or `running` that no lease which has not run out holds work of, oldest
+first, 10 a page; then settled submissions holding records that are due again (released back to pending with their
+rendered documents after their run was over). It takes each over only when no run holds it (an exclusive lock, asked
+without waiting, then held shared), so a run still planning or sending it, a fan-out member included, is never raced; a
+submission a run still holds is left to that run (`Submission <id> (<status>) is held by a run that still works on it, so
+it is left to that run.`). It passes over the submission with the claims a run of it makes, so each record is sent once,
+resuming after the steps a stopped try recorded, without waiting for records in backoff, and closes it. Before closing,
+it checks again: a submission a whole-flow drain took work of meanwhile is left open for the flow's next run to close.
+Each submission is visited once per run.
+
+A submission its run left open is closed `failed`, its reason saying what happened:
+
+```text
+stopped: run <id> ended before its records were all sent; run <id> took it over and sent what was due, and the flow's next run sends the rest
+stopped: run <id> ended before its planning finished; run <id> took it over and sent what it had planned, and the rows it had not reached are left to the flow's plans, which read them again: it moved no watermark and answered no request to plan them
+```
+
+The attempts the recovering run writes carry its own run id and the stopped submission's id, so the record's history
+says which run sent it for which plan. A submission an `intake` run planned is sent and closed the same way by the flow's
+next deliver run, unless a drain of it comes first.
+
+A run that wants a submission another run is taking over in that moment waits up to 30 seconds for it, then fails:
+`Submission <id> could not be held for this run within 30 seconds (sp_getapplock answered <n>): another run of the flow was taking it over, as a deliver run does with a submission no run works on any more, and that run sends what it holds. Run this one again once that run has ended.`
 
 ## One source, several flows
 
@@ -208,5 +261,6 @@ See [Partitions](partitions.md).
 - [Record lifecycle](record-lifecycle.md): what a try does to a record.
 - [Change detection](change-detection.md): what a plan sends and skips.
 - [Running an OSDU flow](../cli/run.md): operations, payload and exit codes.
-- [Operations runbook](../guides/operations-runbook.md): a submission that stays running, records stuck delivering.
+- [Operations runbook](../guides/operations-runbook.md): a submission that stays planned or running, records stuck
+  delivering.
 - SQLFlow's [`sqlflow worker`](../../../../sqlflow/docs/reference/cli/worker.md) for the nodes that run these drains.

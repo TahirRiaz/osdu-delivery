@@ -184,7 +184,7 @@ blocked record under fails with `<flow> has no record blocked by issue <id>; 're
 Releases blocked records (held, failed, deleted or reverted) back to pending, once their cause is fixed: every blocked
 record of the interface, the ones `--key` names (repeat it; delivery keys only), or every one `--issue` keeps blocked.
 A record that still holds a rendered document is queued at once; the others are planned again by the flow's next run.
-The release is recorded on the audit trail as `cli:<user>`'s, with every record it released named under it.
+The release is recorded on the audit trail as `cli:<user>@<machine>`'s, with every record it released named under it.
 
 ```text
 welldb-wellbore-03-delivery: <n> record(s) released of the <n> named. The ones that still hold a rendered document are queued now; the rest are planned again by the next run.
@@ -201,7 +201,7 @@ Puts OSDU back as it was before one run or one submission of the interface: what
 reversibly, and what it updated gets back the version OSDU held before, record by record, every step written to the
 ledger. Those records stay blocked until their source changes or they are released. It runs in this process, through
 the flow's own route and credentials, so the flow's OSDU references have to resolve on this machine; it is recorded as
-`cli:<user>`'s. Asking again resumes a reversal that stopped. What a reversal can and cannot put back is on
+`cli:<user>@<machine>`'s. Asking again resumes a reversal that stopped. What a reversal can and cannot put back is on
 [Removal and reversal](../concepts/removal-and-reversal.md).
 
 Name exactly one source: `--run <run id>` or `--submission <submission id>` (`name what to reverse: --run <run id> or

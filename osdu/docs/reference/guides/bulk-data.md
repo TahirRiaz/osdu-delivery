@@ -68,7 +68,25 @@ The header row names its log's folder and says what is in it: `curve_folder` (th
 `curves_hash` (a hash of the folder's files, which changes when the curve values change) and `chunk_count` (how many files
 there are). It also carries the log's own columns: `wellbore_id`, `log_name`, `log_source`, `top_depth`, `base_depth`,
 `index_curve` (the curve the others are indexed by, such as `DEPT`), `sampling_domain` and `update_date`. The curve rows carry `curve_id`,
-`curve_mnemonic`, `curve_unit` and `curve_ordinal`. The index curve is a curve of the log too, with a row of its own.
+`curve_mnemonic` and `curve_unit`, ordered by `curve_id`. The index curve is a curve of the log too, with a row of its own.
+
+The mapping writes `top_depth` and `base_depth` into number properties (`TopMeasuredDepth`, `BottomMeasuredDepth`), so
+the header pre flow declares their type rather than leaving them to inference. SQLFlow's type inference reads a column whose values are all 0 or 1 (or `true`, `false`, `yes`, `no`, `y`, `n`) as
+`bit`, which renders `false` where the template takes a number, and every record is then held with
+`value 'false' is not a valid number (a boolean is not a number)`. A log
+export whose depths are all 0 is enough. The header pre flow's `transform` block:
+
+```yaml
+transform:
+  inferTypes: true
+  columns:
+    - { name: log_id, type: varchar(50) }
+    - { name: top_depth, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+    - { name: base_depth, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+    - { name: update_date, type: datetime2 }
+```
+
+`NULLIF(@ColName, '')` turns an empty field into no value rather than a conversion error.
 
 The curve ingestion flow is an ordinary `ing` flow. Its target gets an identity column, which the delivery flow pages by:
 
@@ -196,9 +214,12 @@ partition's cache; see [Modifiers](../flow/mapping-modifiers.md) and
 
 ## 4. The delivery flow
 
+The well logs go by the `ddms` route, so this guide's flow is one of its own, `flows/welldb-welllog-03-ddms-delivery.yaml`
+(the estate's `welldb-welllog-03-delivery` writes the same records through the storage service alone):
+
 ```yaml
 flowType: delivery
-name: welldb-welllog-03-delivery
+name: welldb-welllog-03-ddms-delivery
 batch: welldb
 description: Well log headers as WellLog records, their curve values as bulk data in the Wellbore DDMS.
 
@@ -214,7 +235,7 @@ source:
     curves:
       object: OsduData.silver.WellLogCurve
       join: { log_id: log_id }
-      orderBy: [curve_ordinal]
+      orderBy: [curve_id]
   payloads:
     bulk:
       root: ../data/curves
@@ -257,7 +278,7 @@ The keys of the document are on [Delivery flow](../flow/delivery.md#source) and 
 checks it offline:
 
 ```text
-OK  'welldb-welllog-03-delivery' is valid (delivery: OsduData.silver.WellLog -> ${env:OSDU_URL}).
+OK  'welldb-welllog-03-ddms-delivery' is valid (delivery: OsduData.silver.WellLog -> ${env:OSDU_URL}).
 ```
 
 ## 5. Check, preview, deliver
@@ -267,9 +288,9 @@ and the cache from the module's database: the one `--db` names, else `SQLFLOW_CA
 module has a database of its own:
 
 ```bash
-sqlflow check flows/welldb-welllog-03-delivery.yaml --partition dev
-sqlflow preview flows/welldb-welllog-03-delivery.yaml --partition dev --key <log id>
-sqlflow run flows/welldb-welllog-03-delivery.yaml --set partition=dev
+sqlflow check flows/welldb-welllog-03-ddms-delivery.yaml --partition dev
+sqlflow preview flows/welldb-welllog-03-ddms-delivery.yaml --partition dev --key welldb:LOG-0042
+sqlflow run flows/welldb-welllog-03-ddms-delivery.yaml --set partition=dev
 ```
 
 `sqlflow check` says where the records go (`work-product-component--WellLog records go to the welllogs collection of the
@@ -335,7 +356,7 @@ interfaces:
   welllogs:
     record: { object: OsduData.silver.WellLog, key: [log_id], primaryKey: RecId }
     datasets:
-      curves: { object: OsduData.silver.WellLogCurve, join: { log_id: log_id }, orderBy: [curve_ordinal] }
+      curves: { object: OsduData.silver.WellLogCurve, join: { log_id: log_id }, orderBy: [curve_id] }
     bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "*.parquet", hashColumn: curves_hash, chunkCountColumn: chunk_count }
     mapping: WellLog@1.0.0
 ```

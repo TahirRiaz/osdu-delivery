@@ -330,7 +330,7 @@ record:
         $required: false
   legal:
     legaltags: ["{$param.legalTag}"]
-    otherRelevantDataCountries: [NO]
+    otherRelevantDataCountries: [US]
   data:
     WellboreID:
       $lookup: wellbore.id

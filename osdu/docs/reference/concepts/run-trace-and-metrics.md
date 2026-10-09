@@ -18,6 +18,8 @@ keywords:
   - osdu_delivery.records
   - target probe
   - alerting
+  - probe in the audit trail
+  - metrics export
 related:
   - concept-run-artifacts
   - concept-control-plane
@@ -64,7 +66,7 @@ Each line is filed under the step that said it, which is what the engine was doi
 
 | Step | What it says |
 | --- | --- |
-| `run` | The run and who asked (`delivery flow '<name>': <operation> (parameters: ...) requested by <actor>, run <id>`); the render context (`Rendering with mapping <name@version> (template <version>) and <cache>; ids are minted in partition <partition>.`); the route (`<operation> by the <route> route`); whether the legal service accepts the mapping's legal tags; each interface of a source starting; recovered leases, fan-out members, undos; how the run ended. |
+| `run` | The run and who asked (`delivery flow '<name>': <operation> (parameters: ...) requested by <actor>, run <id>`); the render context (`Rendering with mapping <name@version> (template <version>) and <cache>; ids are minted in partition <partition>.`); the route (`<operation> by the <route> route`); whether the legal service accepts the mapping's legal tags; where each `${env:NAME}` the run resolves takes its value, once per reference when it is first resolved (`Reference ${env:OSDU_URL} takes its value from the central configuration the control plane supplied with this run.`, or `... from this node's environment: <why>`), names and origins only, never a value; each interface of a source starting; recovered leases, fan-out members, undos; how the run ended. |
 | `source` | The ingestion table opened, the window fixed and the candidate records in it. |
 | `plan`, `intake` | The submission being planned, the preflight's warnings, records held with their reason, the submission's counts. |
 | `deliver` | Batches claimed and finished, and the progress line: `Delivering: <settled> of <planned> planned record(s) settled after <time> (<rate> a second): <n> delivered, <n> already in OSDU, <n> to try again, <n> held, <n> failed; working on <batch>.` |
@@ -89,6 +91,7 @@ run writes is bounded by these allowances:
 | 100 lines per step | Outside the described records, each step writes at most 100 lines of its own. |
 | 100 problems | The run names at most 100 warnings about records (held, failed, retried, drift). The run's own warnings (`run` step) take from that step's lines instead, so record problems never crowd them out. |
 | 50 retries | At most 50 retried calls are named. |
+| 100 references | Each `${env:NAME}` the run resolves is named once with where its value came from; past 100 the trace says so once (`This run resolves more than 100 references; the trace says where the ones named above take their values, and names no other.`). These lines do not take from the `run` step's 100. |
 | Paced progress | Progress lines come every 15 seconds for the first two minutes, every minute up to an hour, then every five minutes, from run-level totals rather than per batch. |
 
 Errors are always written. When an allowance runs out the trace says so once, so it shows where its lines of that sort
@@ -97,8 +100,8 @@ stop, for example:
 Nothing the trace leaves out is lost: every record's attempts, with each step and status, are in the
 [ledger](ledger.md) and on the record's page.
 
-A URL on the trace never carries its query string (a signed upload URL keeps its credential there), and messages are
-redacted before they are written.
+A URL on the trace never carries its user info or query string (a signed upload URL keeps its credential there), and
+messages are redacted before they are written.
 
 ## Metrics
 
@@ -111,7 +114,7 @@ The engine publishes its telemetry on the .NET metrics API under the meter `SqlF
 | `osdu_delivery.http.requests` | `{request}` | `method`, `host`, `result` | Call attempts to OSDU services and their storage. `result` is `2xx` to `5xx`, or `transport`, `timeout`, `refused` (the URL guard), `cancelled` or `error`. |
 | `osdu_delivery.http.request.duration` | s | `method`, `host`, `result` | How long an attempt took, redirects and response body included. |
 | `osdu_delivery.http.retries` | `{retry}` | `method`, `host`, `reason` | Calls repeated after a passing failure: a status code, `transport` or `timeout`. |
-| `osdu_delivery.probes` | `{probe}` | `flow`, `partition`, `interface`, `outcome` | Scheduled target probes settled: `reachable`, `unreachable`, `error`, `cancelled`. |
+| `osdu_delivery.probes` | `{probe}` | `flow`, `partition`, `interface`, `outcome` | Target probes settled, scheduled or asked for: `reachable`, `unreachable`, `error`, `cancelled`. |
 
 `partition` is the partition the record's ledger is kept in (empty when it is not known), so a flow delivering to several
 partitions reads per partition or as one. These are rates to watch and alert on; the delivered, pending, held and failed
@@ -121,7 +124,12 @@ counts the GUI and the CLI show come from the ledger, never from here. On any pr
 ### Where the metrics go
 
 Nothing leaves the process until a deployment names an exporter. The control plane reads the `Osdu:Telemetry` section; a
-node reads the same settings from its environment.
+node reads the same settings from its environment. Both hosts register the export the same way, as a hosted service that
+starts with the host (a node starts it before it takes work, and stops and flushes it after its drain), and the host
+logs where the metrics go:
+`Metrics on the meter SqlFlow.Delivery are exported to <Exporter> every <n>s as service <name>.`, or
+`Metrics are published on the meter SqlFlow.Delivery and exported nowhere (Osdu:Telemetry:Exporter is none); 'dotnet-counters monitor --counters SqlFlow.Delivery' reads them on this process.`
+A refused OTLP endpoint is named without its user info or query.
 
 | Setting (`Osdu:Telemetry:`) | Node variable | Default | Meaning |
 | --- | --- | --- | --- |
@@ -161,7 +169,12 @@ OSDU_TELEMETRY_SERVICE_NAME=osdu-delivery-node
 An OSDU can stop answering for reasons no run reveals until one is due: a rotated secret, a revoked entitlement, a moved
 gateway path, maintenance. The GUI's **Probe target** (`POST /api/v1/delivery/flows/{pipelineId}/probe`) asks one
 interface's target, under the flow's own credentials, whether it still answers; it calls the route's probe path (the
-service's info endpoint) and writes nothing to OSDU. The same probe can run on a schedule, so nobody has to press it.
+service's info endpoint) and writes nothing to OSDU. The API and the MCP tool ask the same route. The same probe can
+run on a schedule, so nobody has to press it, and every probe, scheduled or asked for, takes one path: it is recorded
+as a `probe` activity in the interface's ledger under who asked (`user:<subject>` for the button, the API and the MCP
+tool; `service:schedule` for the schedule) and counted on `osdu_delivery.probes`. A flow whose ledger cannot be placed
+is not probed, since nothing could record it (the API answers 422 `The probe could not be recorded`), and a probe its
+caller stopped waiting for is recorded and counted `cancelled`.
 
 The schedule is off unless a deployment turns it on, because each pass costs a token exchange and a live request for
 every interface it covers. It is configured under `Osdu:TargetProbe` on the control plane
@@ -170,17 +183,21 @@ every interface it covers. It is configured under `Osdu:TargetProbe` on the cont
 
 Each pass:
 
-1. **Closes what an earlier pass left open.** A probe activity still `running` (the host stopped while it ran) is found
-   again in the ledger and closed as an error, so nothing stays open across a restart.
+1. **Closes what was left open.** A probe activity still `running` 15 minutes after it started, scheduled or asked for
+   (the host stopped while it ran), is closed in every ledger; a younger one is left alone. Each probe also closes its
+   own interface's stale ones before it starts, so this happens with the schedule off too.
 2. **Probes each interface** of each covered flow, four at a time, through the same in-process path as the button, in the
    partition the interface delivers to. Each probe is recorded as an activity of kind `probe` by `service:schedule` and
    closed with what it found, and counted on `osdu_delivery.probes`.
 
-The last scheduled result per flow and interface is therefore in the audit trail (the **Audit trail** page, action
-`probe`, or `GET /api/v1/delivery/activities?kind=probe`). A probe
-from the button answers in the request and is not recorded or counted. An `error` outcome says the probe itself could not
-run (the flow file is not where its repository was synced, a credential will not resolve, the flow no longer parses),
-not that the OSDU is down.
+The last result per flow and interface, scheduled or asked for, is therefore in the audit trail (the **Audit trail**
+page, action `probe`, or `GET /api/v1/delivery/activities?kind=probe`). A probe from the button still answers in the
+request. An `error` outcome says the probe itself could not run (the flow file is not where its repository was synced,
+a credential will not resolve, the flow no longer parses), not that the OSDU is down.
+
+Each probe logs its outcome under the category `SqlFlow.Delivery.ControlPlane.TargetProbes`:
+`Probe of <flow> by <actor>: <summary>`, `Probe of <flow> by <actor> settled <outcome>: <summary>` when it did not
+reach the target, and `Probe of <flow> by <actor> was not run, because it could not be recorded: <reason>`.
 
 ## See also
 

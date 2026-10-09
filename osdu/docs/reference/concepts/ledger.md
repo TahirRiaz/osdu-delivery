@@ -167,19 +167,23 @@ into the OSDU services' own logs.
 
 `osdu.Submission`, `osdu.WorkBatch`, `osdu.Lease`, `osdu.RecordEvent` and `osdu.SourceWatermark` hold how a run planned and
 sent its records: one row per plan with its window and counts, one per work batch file, one per worker claim, and what a
-worker appended under its lease. [Submissions](submissions.md) describes them.
+worker appended under its lease. A run holds each submission it works on with an application lock on the module's
+database (`SqlFlow.Delivery.Submission:<id>`), not with a table, so a later run can tell a submission somebody works on
+from one whose run has ended. [Submissions](submissions.md) describes them
+([Recovering a stopped submission](submissions.md#recovering-a-stopped-submission)).
 
 ### `osdu.Activity` and `osdu.ActivityRecord`: the audit trail
 
 One `osdu.Activity` row per run and per operator intervention, never deleted:
 
 - runs: `deliver`, `intake`, `drain`, `verify`, `sync`, `undo`, `reverse`, `delete-ledger`, and `probe` (a target probe,
-  by button or schedule);
+  by button, the API, the MCP tool or the schedule);
 - interventions: `release`, `redeliver`, `rerender` (bring up to date), `delete` (a removal from OSDU),
   `restore-previous`, `purge` (deleting removed records from the ledger), `remove-dimension` and `inventory-remove`.
 
 Each row carries the actor (for a run, who asked for it or `schedule:<name>` for a run a schedule fired; `user:<name>` for
-an intervention from the GUI or the API, `cli:<user>` for one from a workstation, `service:schedule` for a scheduled probe;
+an intervention from the GUI or the API and for a probe asked for, `cli:<user>@<machine>` for one from a workstation,
+`service:schedule` for a scheduled probe;
 see [Authentication and identity](authentication-and-identity.md)),
 start and end, outcome (`running`, `completed`, `failed` or `cancelled`), parameters, the submission, record and platform
 run it concerned, a summary of the counts that are not zero, and for runs the captured run log (at most 200,000
@@ -189,7 +193,8 @@ audit trail leaves idle runs out unless **Show idle runs** is on, and says how m
 
 An intervention made for one record names it on its row. One that reaches many (a release of every blocked record, a
 redelivery of every delivered record, a reversal) names each record it changed in `osdu.ActivityRecord`, written by the
-statement that changed the record. A record's activities (`GET /records/{flowId}/{key}/activities`) are those that name it
+statement that changed the record; so does a verify run that reconciles drift, for each drifted or missing record it
+marked for redelivery. A record's activities (`GET /records/{flowId}/{key}/activities`) are those that name it
 on their row and those that name it there, so its history shows every request that reached it, however many records the
 request reached.
 
@@ -237,8 +242,8 @@ In the GUI a record's page has the tabs **Timeline** (attempts and activities), 
 **Artifacts**. On the command line:
 
 ```bash
-sqlflow records show flows/welldb-wellbore-03-delivery.yaml --key welldb:WB-000123 --partition dev --attempts 50
-sqlflow records artifacts flows/welldb-wellbore-03-delivery.yaml --key welldb:WB-000123 --partition dev
+sqlflow records show flows/welldb-wellbore-03-delivery.yaml --key welldb:WB-0123 --partition dev --attempts 50
+sqlflow records artifacts flows/welldb-wellbore-03-delivery.yaml --key welldb:WB-0123 --partition dev
 ```
 
 `--key` takes the delivery key or the source key. The API routes are `GET /api/v1/delivery/records/{flowId}/{key}` and its

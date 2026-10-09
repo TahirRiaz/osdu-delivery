@@ -273,14 +273,14 @@ out, it takes the kind's own reference, which also takes the place of a `default
 
 | Parameter | Fills | Taken from when the flow leaves it out |
 | --- | --- | --- |
-| `dataPartition` | the partition every id and reference is minted in | `${env:OSDU_DATA_PARTITION}` |
+| `dataPartition` | the partition every id and reference is minted in | the partition the run is bound to; the flow's `target.headers.data-partition-id`, as written, for a flow bound by its header; `${env:OSDU_DATA_PARTITION}` only for a flow bound to no partition |
 | `aclOwner` | the owners group | `${env:OSDU_ACL_OWNER}` |
 | `aclViewer` | the viewers group | `${env:OSDU_ACL_VIEWER}` |
 | `legalTag` | the legal tag | `${env:OSDU_LEGAL_TAG}` |
 
 The references resolve from the repository's central configuration and then the node's environment
 ([environment variables](../concepts/environment-variables.md)). A flow bound to partitions writes the partition it
-delivers to as `dataPartition` itself. A parameter's `default` is mapping content and is taken literally, never expanded
+delivers to as `dataPartition` itself, and a flow bound by its `data-partition-id` header writes its header's value. A parameter's `default` is mapping content and is taken literally, never expanded
 as a reference. The partition must be a valid id segment (letters, digits, `_`, `-` and `.`), or the run stops with
 `The mapping parameter 'dataPartition' is '<value>', which is not a valid OSDU id segment ...`. A flow value for a
 parameter the mapping does not declare, and a required parameter with no value, fail the preflight.
@@ -317,8 +317,9 @@ Under `idFrom: key`:
   An answer that is not an absence holds the record too, and a release or the next run asks again.
 
 Under either form the delivery key stays the record's identity in the ledger, and **a record keeps the id it claimed**
-when it first queued a document. A changed `idFrom` gives delivered records other ids; each such record is held, naming
-both ids, and nothing is sent. A changed `system` or `key` makes other delivery keys, so the rows become new records of
+when it first queued a document. A changed `idFrom`, a kind of another entity type or another `dataPartition` gives
+delivered records other ids; each such record is held, naming both ids and what moved them, and nothing is sent
+(`the mapping now gives this record the OSDU id <new id>, and the record claimed <old id> ...; or put back what moved the id: the mapping's dataset.idFrom, the entity type of the kind it renders, or the partition the flow mints ids in (dataPartition)`). A changed `system` or `key` makes other delivery keys, so the rows become new records of
 the ledger: under the default `idFrom` they are delivered under new ids, beside the records already delivered, and under
 `idFrom: key` a new record whose id an earlier record of the ledger claimed is held (`OSDU id <id> is already claimed by
 ...`). Either way OSDU never gains a record the ledger does not name. To move delivered records to new ids, remove them

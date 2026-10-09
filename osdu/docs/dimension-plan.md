@@ -20,10 +20,10 @@ value and key. A dimension's own table goes one step further: its two columns ar
 table).
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 14 are built; the recall estate
-(`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose one dimension,
-Wellbore, carries the filters of PetroDB's Log Explorer (country, field, UUID, and the sources its logs collect) as its
-attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 14 are built; the WellDB estate
+(a local estate repository) holds a demo flow, `welldb/flows/welldb-welllog-05-dimensions.yaml`, whose one dimension,
+Wellbore, carries the filters of the facade service's log explorer (country, field, UUID, and the sources its logs
+collect) as its attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
 
 ## Decisions
 
@@ -32,7 +32,7 @@ attributes, the table its cascading selects read. The live check listed under Cl
 | Where the data lives | A flow kind of its own with tables of its own, not a cache origin | The cache is loaded whole for every render (lookup tables stop at 100,000 rows) and one partition-wide version moves whenever anything in it does; a dimension carries counts and first and last seen that move with every build. Retrieval and assertion flows set the pattern: each reverse-direction job is its own kind reading through the shared search client. |
 | What is stored | Distinct values only: values and the keys under them, with counts, labels and filters | Records stay in OSDU; a dimension is its vocabulary. |
 | What a key is | The value exactly as the index holds it; for a reference, the id | A filter matches what the index holds, and an exact match on text reads the `keyword` sub-field, which holds the value as written. |
-| What a value is | The label read from the record the key names, cleaned; the key cleaned when there is no label | A person picks by name (`15/9-F-1`, `Norway`); the search compares ids. Keeping both, with the filter written from the keys, lets the name choose and the id find. |
+| What a value is | The label read from the record the key names, cleaned; the key cleaned when there is no label | A person picks by name (`Wellbore A-1`, `United States`); the search compares ids. Keeping both, with the filter written from the keys, lets the name choose and the id find. |
 | How a label is read | By id through the search service, 500 ids a search, in the kind of the entity type the id names; up to three records deep; a segment holding objects can filter them | A search cannot join; reading each named record once per build, and keeping what it said, answers every later filter and search from the ledger. |
 | Attributes | Read with the label, one row per key and attribute in `DimensionAttribute`, indexed by name and value | A filter panel narrows one dimension by another's facts (wellbores of a country); an indexed row answers that lookup in one seek at any size. |
 | A key with no label | Valued by its id's code, escapes decoded, when it names a record | A value is shown in a drop-down: `us%2Fft` is `us/ft`, and a GUID id is still better than the whole id. |
@@ -152,7 +152,7 @@ With a `label`, a build reads each key's label after it has read the keys:
    property equals the text, `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those
    whose property ends with it ignoring case; the search is asked to return the filter's property with the path. So
    `[data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']`
-   reads, of every political entity a wellbore names, the one whose own type is Country, as petrodb-api does, whether
+   reads, of every political entity a wellbore names, the one whose own type is Country, as facade-api does, whether
    or not the wellbore's context says its type.
 4. A key whose record the search does not hold, whose record holds no reference where a step reads one, or holds nothing
    at the last path, has no label; the build counts them (`Unlabelled`) and says why in its notes, with examples.
@@ -162,9 +162,9 @@ the clean steps turn into the key's value. A key whose label is not read takes t
 it names one (`Not specified`, the option an application lists for a missing name); otherwise a key naming a record
 with no label (none declared, or none read) starts cleaning from the code its id ends with, its escapes decoded
 (`dev:reference-data--UnitOfMeasure:us%2Fft:` is `us/ft`), and a label or attribute that is itself a record reference
-is kept the same way. Keys whose values are the same are one value (every wellbore of a country is
-one `Norway`). A key is left out of every value, with the reason kept on its row, when cleaning leaves nothing, when the
-value is longer than 256 characters, or when `map` leaves it out. A key a query cannot carry (a control character,
+is kept the same way. Keys whose values are the same are one value (every wellbore of a country is one
+`United States`). A key is left out of every value, with the reason kept on its row, when cleaning leaves nothing, when
+the value is longer than 256 characters, or when `map` leaves it out. A key a query cannot carry (a control character,
 `nested(`, or inside a nested array a value the service rewrites) stays under its value and is marked unfilterable; the
 value's filter covers the rest and says how many it cannot.
 
@@ -179,10 +179,11 @@ one row per key and attribute in `DimensionAttribute`; a build rewrites the attr
 with no value for one keeps none (the notes count them, by reason).
 
 The attributes are read, never searched in OSDU: they answer from the ledger. A page of values or keys is narrowed by
-them (`attr=Country:Norway`: any value of one attribute, every attribute named, held by one key), an attribute lists the
-values its keys hold with their keys and records (a drop-down's list), a search picks a dimension's keys by them (the
-part compares exactly those keys, at most 1,000), and a cached dimension carries those its `fields` name, so a mapping
-finds a key's attribute from the cache. With `unlabelled`, a key with no value of an attribute holds that value instead.
+them (`attr=Country:United%20States`: any value of one attribute, every attribute named, held by one key), an attribute
+lists the values its keys hold with their keys and records (a drop-down's list), a search picks a dimension's keys by
+them (the part compares exactly those keys, at most 1,000), and a cached dimension carries those its `fields` name, so a
+mapping finds a key's attribute from the cache. With `unlabelled`, a key with no value of an attribute holds that value
+instead.
 
 ## Collected attributes
 
@@ -402,7 +403,7 @@ any more, an admin removes it for good (`DELETE /dimensions/{dimensionId}`, the 
   stops part way leaves it listed and removing it again finishes the work. Its table is dropped when no partition is
   left writing it.
 - Recorded as a `remove-dimension` activity of its flow, before anything is deleted, with the actor (`user:<name>` from
-  the API, `cli:<user>` from a workstation) and, as it ends, what went or why it failed.
+  the API, `cli:<user>@<machine>` from a workstation) and, as it ends, what went or why it failed.
 
 ## The filter
 
@@ -493,7 +494,7 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | Values picked across dimensions holding more than 1,000 keys | The search is refused, saying how many keys they hold. |
 | A collected attribute with many values (a free-text source every producer writes its own way) | Read in one pass over the records; a pick of its `unlabelled` value is refused past 1,000 values, since one search cannot exclude more. |
 | A second collected attribute | Refused at load, naming the first. |
-| Two texts of a collected path shown alike (`RECALL` and `RECALL `) | One value, standing for both; a search picking it asks for both. |
+| Two texts of a collected path shown alike (`WELLDB` and `WELLDB `) | One value, standing for both; a search picking it asks for both. |
 | A collected value a pick names that the attribute does not hold | Named as missing; a pick holding no value it does hold is refused. |
 | Dimensions of different kinds picked in one search | Refused unless a kind is named that each dimension's kind covers. |
 | A value that disappears and comes back | Keeps its id; the change log says when. |
@@ -651,7 +652,7 @@ samples README.
 - The **Definition** tab drawn as the blueprint: the diagram, the YAML with every line linked to it, the panel explaining
   what is picked, and an example key; shown under the notice of a dimension no build has read yet, too.
 - Tests: the YAML's spans (a folded description, a list on one line, a map in braces, the next item kept out); a path
-  through a `oneOf` and a filter; the recall Wellbore dimension laid out through the logs, the wellbore, a field with no
+  through a `oneOf` and a filter; the WellDB Wellbore dimension laid out through the logs, the wellbore, a field with no
   template saved and a country with one; the kinds a build read; no template saved; a key no template calls a reference
   and a path the index cannot read; kind patterns; the API's blueprint with its YAML, columns and coverage, a dimension
   the flow no longer declares, and the refusals (SQL Server).

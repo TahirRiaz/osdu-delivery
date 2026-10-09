@@ -17,6 +17,7 @@ keywords:
   - streamable http
   - chat assistant
   - sqlflow_control_plane_url
+  - operator action
 related:
   - guide-chat-assistant
   - guide-slack-assistant
@@ -106,13 +107,15 @@ Every `delivery_*` tool calls a route under `/api/v1/delivery` and nothing else 
 | Are the data quality tests passing? What failed last night? | `delivery_assertions`, `delivery_assertion_runs` |
 | Which dimensions exist, and are they up to date? | `delivery_dimensions` |
 
-Six tools act. Each describes itself as "(operate scope)", which is the policy name of the route it calls; that policy
-admits any signed-in user, so in practice a token that can sign in can use them
-([authentication and identity](../concepts/authentication-and-identity.md)). Each is recorded under the caller's name.
+Six tools act. Each describes itself as an "(operator action)": the marker says the tool changes state, and the
+assistant is told to use one only when the person asked for that action. The control plane admits any signed-in user to
+these routes (only admin routes check a scope), so in practice a token that can sign in can use them
+([authentication and identity](../concepts/authentication-and-identity.md)). Each is recorded in the audit trail under the
+caller's name.
 
 | Action | Tool |
 | --- | --- |
-| Ask a flow's OSDU whether it still answers (answers in the request, writes nothing). | `delivery_probe_target` |
+| Ask a flow's OSDU whether it still answers (answers in the request, writes nothing to OSDU, and is recorded in the audit trail as a `probe` activity). | `delivery_probe_target` |
 | Queue a verify run that compares one record with what OSDU holds. | `delivery_verify_record` |
 | Queue a sync run that reconciles the ledger with the ingestion tables; sends nothing. | `delivery_sync_with_source` |
 | Release held records so the next run tries them again. | `delivery_release_records` |

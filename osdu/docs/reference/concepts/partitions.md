@@ -75,11 +75,10 @@ A flow that names its partitions, hard-coded or through the registry, is said to
 behaves as flows did before partitions existed: one partition, its ledger under the flow's own name.
 
 A hard-coded delivery flow, whose `dev` partition keeps the ledger the flow kept while it delivered through a header, with
-an hourly schedule that delivers to `test`:
+an hourly schedule that delivers to `dev` (the well log flow's keys, as they would read):
 
 ```yaml
-flowType: delivery
-name: welldb-welllog-03-delivery
+# flows/welldb-welllog-03-delivery.yaml, had it delivered through a header before it named its partitions
 partitions:
   - name: dev
     keepLedger: true      # the records this flow delivered before it named partitions went to dev
@@ -88,16 +87,16 @@ target:
   endpoint: ${env:OSDU_URL}          # no data-partition-id: every run sets it to the partition it targets
 schedule:
   cron: "0 * * * *"
+  timezone: UTC
   values:
-    partition: test
+    partition: dev
     logSource: WIRELINE
 ```
 
 A registry-driven delivery flow, serving every registered partition, with `dev` keeping its earlier ledger:
 
 ```yaml
-flowType: delivery
-name: welldb-wellbore-03-delivery
+# flows/welldb-wellbore-03-delivery.yaml made registry-driven: its partitions line taken out, and
 keepLedger: dev           # only for a registry-driven flow; a hard-coded one marks the entry instead
 target:
   endpoint: ${env:OSDU_URL}          # resolved with the run's partition's own configuration values first
@@ -106,8 +105,7 @@ target:
 A cache flow that builds the lookup cache of two partitions, one type only for `test`:
 
 ```yaml
-flowType: cache
-name: welldb-lookups-00-cache
+# flows/welldb-lookups-00-cache.yaml, made to name its partitions, with the curve lookup built for test only
 partitions: [dev, test]
 source:
   connection: ${env:OSDU_DATA_DB}
@@ -117,12 +115,16 @@ types:
     fields: [osdu_unit]
   - table: OsduData.silver.CurveDictionary
     key: mnemonic
-    fields: [log_curve_type_id, unit]
+    fields:
+      - log_curve_type_id
+      - { column: unit, as: curve_unit }
     partitions: [test]    # built for test only
+  - dictionary: sampling-domain
+    name: SamplingDomain
 ```
 
-The rest of each document (source, render, auth) is as in [Delivery flow](../flow/delivery.md) and
-[Cache flow](../flow/cache.md); all three examples come from documents that pass `sqlflow validate`.
+Each example is an excerpt: the rest of each file (source, render, auth) is as [Delivery flow](../flow/delivery.md) and
+[Cache flow](../flow/cache.md) show it, and each file, written so, passes `sqlflow validate`.
 
 ### Rules for a flow that works in partitions
 
@@ -204,7 +206,10 @@ Bound to its partition, a run is the flow as if it had been written for that par
 - **The header.** Every request carries `data-partition-id: <partition>`.
 - **The ids.** The mapping's `dataPartition` is the partition, written literally, so every id and reference it mints
   starts with it. The flow kind supplies it to a mapping that declares the parameter; a flow that works in partitions
-  never reads `${env:OSDU_DATA_PARTITION}` for it.
+  never reads `${env:OSDU_DATA_PARTITION}` for it. A flow bound by its `data-partition-id` header mints its ids in its
+  header's partition (the header as written), never in `OSDU_DATA_PARTITION`, which only a flow bound to no partition
+  reads. A header flow whose header and `OSDU_DATA_PARTITION` once disagreed has records whose ids were claimed in the
+  environment's partition; their next render meets the [changed id hold](change-detection.md#a-record-keeps-the-osdu-id-it-claimed).
 - **The cache.** The mapping reads that partition's cache ([The partition cache](partition-cache.md)).
 - **The ledger.** The run keeps its records in the partition's own ledger (below).
 - **The configuration.** Every `${env:NAME}` the flow names resolves from the partition's values of the central

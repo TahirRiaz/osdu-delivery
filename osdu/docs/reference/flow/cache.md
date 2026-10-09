@@ -68,7 +68,7 @@ the cache ([The partition cache](../concepts/partition-cache.md) explains versio
 
 ## Minimal working examples
 
-A cache flow of OSDU reference data, filling the caches of partitions `dev` and `test`:
+A cache flow of OSDU reference data, filling the caches of partitions `dev` and `test`, `osdu-reference-00-cache.yaml`:
 
 ```yaml
 flowType: cache
@@ -109,7 +109,7 @@ schedule:
 ```
 
 A cache flow of lookup tables: two ingestion tables an `ing` flow loads, and one dictionary document. It reaches no
-OSDU platform, so it declares no endpoint and no credentials, only the ingestion database:
+OSDU platform, so it declares no endpoint and no credentials, only the ingestion database, `welldb-lookups-00-cache.yaml`:
 
 ```yaml
 flowType: cache
@@ -172,8 +172,8 @@ must stay on an earlier version pins it with `render.cacheVersion`.
 | Key | Meaning |
 | --- | --- |
 | `source.endpoint` | The OSDU platform the `kind` types are searched on, usually `${env:OSDU_URL}`. Required when the flow declares a `kind` type (`source.endpoint is required: the flow declares a type searched on OSDU, by its kind.`). Refused, with `source.auth`, when every type is a lookup table (`source.endpoint and source.auth reach the OSDU platform, and the flow declares no type searched there; every type it declares is a lookup table. Remove them.`). |
-| `source.auth` | How the searches authenticate, with the same auth types and keys as a delivery flow's `target.auth`; every secret is a `${env:...}` or `${keyvault:...}` reference. |
-| `source.headers` | Headers every search carries. `data-partition-id` here hard-codes the one partition the flow fills; it is refused beside `partitions`. |
+| `source.auth` | How the searches authenticate, with the same auth types and keys as a delivery flow's `target.auth`; every secret is a `${env:...}` or `${keyvault:...}` reference, and a literal is refused when the flow is read. |
+| `source.headers` | Headers every search carries. `data-partition-id` here hard-codes the one partition the flow fills; it is refused beside `partitions`. A header that carries a credential holds a reference; a literal is refused when the flow is read. |
 | `source.connection` | The ingestion database the `table` types are read from: a whole `${env:NAME}` or `${keyvault:vault/secret}` reference, or a SQL Server connection string whose password is a reference (or none, with Azure AD). Required when the flow declares a `table` type, refused when it declares none. A literal password fails: `source.connection carries a literal password. A flow document holds references only: ...`. It is resolved on the node that runs the flow. |
 
 ### types[]
@@ -242,8 +242,11 @@ A dictionary type holds the entries of a [dictionary document](dictionary.md): a
 repository. It names only the dictionary (and optionally `name`); the document names its key and fields, so `kind`,
 `entityType`, `query`, `fields` and `key` are refused. The file is found in the nearest `dictionaries/` folder walking up
 from the flow's folder, so a flow holding a dictionary needs the repository's tree when it runs, and reads the file at
-the run's commit. `sqlflow validate` on the flow does not look for the file; the repository sync does, and leaves a type
-whose dictionary is missing or invalid out of the cache with a warning naming the file.
+the run's commit. `sqlflow validate` on the flow finds and reads the file the same way, and refuses a flow whose
+dictionary is missing or does not load
+(`<file>: type 'SamplingDomain': Dictionary 'sampling-domain' was not found under '../dictionaries'. Expected sampling-domain.yaml or sampling-domain.yml.`).
+The repository sync reads it too, and leaves a type whose dictionary is missing or invalid out of the cache with a
+warning naming the file.
 
 ### Dimension values (`dimension`, `dimensionFlow`)
 
@@ -302,9 +305,10 @@ describes the tags and the rollout.
 | `plan` | Counts what each type would hold (the records an OSDU search matches, the rows of a table, the entries of a dictionary, the values of a dimension) and writes nothing. |
 
 Any other operation is refused, for example `operation must be one of refresh, plan for 'cache' flows; 'deliver' is
-not.` A cache flow takes no payload beyond the configuration the control plane supplies, and none of SQLFlow's per-run
-overrides: `--full`, a backfill window and `--file-pattern` fail with `... do(es) not apply to 'cache' flows; a refresh
-sweeps every declared type in full.`
+not.` A cache flow takes no payload beyond the configuration the control plane supplies
+(`payload force does not apply to a cache flow: only delivery and retrieval runs force; a cache flow's payload carries only the central configuration the control plane supplies.`),
+and none of SQLFlow's per-run overrides: `--full`, a backfill window and `--file-pattern` fail with `... do(es) not
+apply to 'cache' flows; a refresh sweeps every declared type in full.`, with or without a payload.
 
 A refresh writes into the module's database, so it needs it: on a node or the control plane it is always there; on a
 workstation, `sqlflow` reads it through `SQLFLOW_OSDU_DB`, else in the catalog's database (`--db`, by default
@@ -345,6 +349,8 @@ serves the registry and a delivery flow that hard-codes `data-partition-id: dev`
 | `types[<n>].query uses '{<token>}', which is not declared under parameters.` | A query token without a parameter. |
 | `source.connection is required: the flow declares a type read from an ingestion table.` | A table type without `source.connection`. |
 | `source.headers names 'data-partition-id', and the flow names its partitions: ...` | A header beside `partitions`. |
+| `source.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: ...` | A literal secret. |
+| `type '<name>': Dictionary '<dictionary>' was not found under '<folder>'. Expected <dictionary>.yaml or <dictionary>.yml.` | A dictionary type whose file `sqlflow validate` does not find. |
 
 A refresh can also fail when another cache flow of the same partition declares the same type differently (another entity
 type, a field from another path, or a second declaration of a lookup table): `Cache flow '<flow>' disagrees with another

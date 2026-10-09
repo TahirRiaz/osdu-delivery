@@ -233,47 +233,19 @@ document of the repository in one pass ([validate](../cli/validate.md)).
 
 ## 5. Pin it from the delivery flow
 
-The checks that need the template, the cache and the rows run through the [delivery flow](../flow/delivery.md) that
-renders with the mapping, `welldb-welllog-03-delivery.yaml`:
+The checks that need the template, the cache and the rows run through the delivery flow that renders with the mapping:
+the well log flow, `welldb-welllog-03-delivery.yaml`, whole on [Delivery flow](../flow/delivery.md#a-fuller-example).
+Pin the new version in its `render` block:
 
 ```yaml
-flowType: delivery
-name: welldb-welllog-03-delivery
-batch: welldb
-description: Well logs from the well database's ingestion tables, delivered as WellLog records.
-
-partitions: [dev]
-
-source:
-  connection: ${env:OSDU_DATA_DB}
-  record:
-    object: OsduData.silver.WellLog
-    key: [log_id]
-  datasets:
-    curves:
-      object: OsduData.silver.WellLogCurve
-      join:
-        log_id: log_id
-  work: ../.work/welllog
-
+# flows/welldb-welllog-03-delivery.yaml: its render block, now pinning the new version
 render:
   mapping: WellLog@1.1.0
-
-target:
-  endpoint: ${env:OSDU_URL}
-  auth:
-    type: oauth2ClientCredentials
-    secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${env:OSDU_CLIENT_SECRET}
-    token:
-      url: ${env:OSDU_TOKEN_URL}
-      body:
-        scope: ${env:OSDU_SCOPE}
-  protocol: storage
 ```
 
 `render.mapping` names the file `mappings/WellLog@1.1.0.yaml` (or `mappings/WellLog/1.1.0.yaml`), found in the nearest
-`mappings` folder walking up from the flow. `sqlflow validate` on the flow does not open the mapping; `check` does.
+`mappings` folder walking up from the flow. `sqlflow validate` on the flow finds and reads the mapping, and refuses the
+flow when it is missing or does not load; `check` holds it against its template and the cache.
 
 ## 6. Check it: sqlflow check
 
@@ -329,7 +301,7 @@ values behind them and example records ([sqlflow values](../cli/values.md)). It 
     osdu.data.Curves[].CurveUnit: 42 held, 0 invalid, 0 empty, 9,958 valid, 0 not applicable
       held           42  the id {$param.dataPartition}:reference-data--UnitOfMeasure:{$value}: gives dev:reference-data--UnitOfMeasure:METRES:, and version <cache version> of the cache of partition 'dev' holds no such reference-data--UnitOfMeasure record in UnitOfMeasure, so the reference would point at nothing
                values  'METRES' x40, 'FEET.' x2
-               e.g.    welldb:L-000123, item 4
+               e.g.    welldb:LOG-0123, item 4
 ```
 
 Here two spellings of a unit are missing from the unit table, so their curves would reference a unit the partition
@@ -340,7 +312,7 @@ writes every failing row.
 ## 8. Look at one record: sqlflow preview
 
 ```bash
-sqlflow preview welldb-welllog-03-delivery.yaml --key L-000123
+sqlflow preview welldb-welllog-03-delivery.yaml --key LOG-0123
 ```
 
 `preview` renders one record as a delivery would and sends nothing: the scope's first record, or the one `--key` names.

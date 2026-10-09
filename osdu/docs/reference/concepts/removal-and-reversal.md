@@ -18,6 +18,9 @@ keywords:
   - bring up to date
   - sync timeline
   - rollback
+  - unit of work
+  - artifacts
+  - undo unfinished deliveries
 related:
   - delivery-concept-ledger
   - delivery-concept-record-lifecycle
@@ -82,7 +85,7 @@ fourth that removes nothing, the same way in the API, the run, the GUI and the l
 
 | Scope | Storage call | What goes | Reversible | The ledger afterwards |
 | --- | --- | --- | --- | --- |
-| `record` | `POST /records/{id}:delete`, or `POST /records/delete` for up to 500 ids | The record stops resolving; nothing is destroyed. | Yes | `deleted`, not blocked; hashes and version forgotten. Attempt `deleted`, phase `delete`. |
+| `record` | `POST /records/{id}:delete`, or `POST /records/delete` for several ids (500 a request: the route's chunk size, not a service limit) | The record stops resolving; nothing is destroyed. | Yes | `deleted`, not blocked; hashes and version forgotten. Attempt `deleted`, phase `delete`. |
 | `previous` | `GET /records/{id}/{version}`, then `PUT /records` | Nothing: the version before the latest is written back as a new version. | Yes | `reverted`, blocked. Attempt `restored`, phase `restore-previous`. |
 | `history` | `DELETE /records/{id}/versions` | Every version but the latest; the latest stays live. | No | Unchanged (OSDU still holds what the ledger says). Attempt `historypurged`, phase `purge-history`. |
 | `everything` | `DELETE /records/{id}` | The record and every version. | No | As `record`. |
@@ -250,29 +253,46 @@ sqlflow records reversals flows/welldb-wellbore-03-delivery.yaml --partition dev
 ## Unfinished deliveries and their undo
 
 A delivery of one record can take many calls that each change OSDU (files uploaded and registered, the record written, bulk
-data sent through a session, rows posted), and OSDU has no transaction across them. So a delivery is a **unit of work**
-that completes or is undone. Every object a unit creates, or sets out to create, is an artifact in `osdu.Artifact`, written
-with the step that made it; a call whose id the service chooses is preceded by an **intent** naming what finds the object
-if the answer is lost. A route that makes one atomic write (`storage`) creates no artifacts.
+data sent through a session, rows posted), and OSDU has no transaction across them. So a delivery of one record's pending
+work is a **unit of work**: it begins with the first call that can change OSDU, spans every try while the record stays
+pending, and ends committed or aborted. Every object a unit creates in OSDU, or sets out to create, is an artifact in
+`osdu.Artifact`, written in the same transaction as the step that made it. A call whose id the service mints, and whose
+answer can be lost, is preceded by an **intent**: the artifact is written before the call with what finds the object
+without its id (a file's landing-zone path, the record a session belongs to), and completed with the id when the answer
+comes. A route that makes one atomic write (`storage`) creates no artifacts.
+
+An aborted unit is undone:
 
 | When | What undoes the unit |
 | --- | --- |
 | A try ends held or failed | The worker, at once, under the record's lease. |
-| Newer work is staged while a unit is unfinished, or a plan holds the record | The claim that next takes the record, before the newer work is sent. |
-| Anything left: an undo that failed and is due again, a unit nothing claimed again | The sweep at the end of every deliver run and flow-wide drain (up to 10,000 records a run), and the `undo` operation. |
+| Newer work is planned or staged for a record while a unit is unfinished, or a plan holds the record | The claim that next takes the record, before the newer work is sent. |
+| Anything left: an undo that failed and is due again, a unit nothing claimed again | The sweep at the end of every deliver run and flow-wide drain (up to 10,000 records a run), and the `undo` operation (`sqlflow run <flow.yaml> --operation undo`). |
 | A removal, and deleting the ledger | The removal, before it takes the record out of OSDU. |
 
-An undo removes what the unit created at the route's reversible scope, writes back the version the unit replaced where the
-route can, and keeps, with why, what no call removes (historian points, Seismic Store objects on gc, files behind a
-soft-deleted dataset, bulk data under a logical delete). A record is removed only when storage's `createTime` says the unit
-created it, allowing five minutes for clocks. Each undo is an attempt (`undone`, phase `undo`) naming every artifact and
-what became of it. An undo that cannot reach OSDU, or that OSDU refuses, is tried again after 1, 2, 4 ... minutes (at most
-six hours apart), ten times, and then left for an operator: fix what stops it, then run `undo` with `force`. Meanwhile newer
-work of the record waits without being charged ([Record lifecycle](record-lifecycle.md#waiting-for-an-undo)).
+An undo removes what the unit created at the route's reversible scope (a soft delete, a logical DDMS delete, an abandoned
+session, a released lock), writes back the version the unit replaced where the route can, and keeps, with why, what no
+call removes. A record is removed only when storage's `createTime` says the unit created it (no earlier than the unit's
+start, less five minutes for clocks); an update is given back its earlier version, never deleted. What a DDMS made beside
+the record goes back before the record, and the record before the datasets it names; when one of them cannot be undone
+yet, the others wait with it, so OSDU never serves a record naming what the undo already removed. Each undo is an attempt
+(`undone`, phase `undo`) naming every artifact and what became of it.
+
+An undo is idempotent. One that cannot reach OSDU, or that OSDU refuses, is tried again after 1, 2, 4 ... minutes (at most
+six hours apart), up to ten times, and then left for an operator: `sqlflow records undos <flow.yaml>` lists what is left;
+fix what stops it, then run `undo` with `force`, which tries the exhausted ones again. Meanwhile newer work of the record
+waits without being charged, and the record is held once the undo has used its tries
+([Record lifecycle](record-lifecycle.md#waiting-for-an-undo)).
+
+Some things no call removes, and an undo keeps them, named: the series versions the production historian accepted, a
+Seismic Store dataset registered on gc (where one dataset's delete takes the files of every dataset in its subproject),
+RAFS content kept in its own blob store, what a Wellbore DDMS session aggregated, bulk data under a DDMS's logical delete,
+the files behind a soft-deleted dataset, and the files a registration left in a landing zone or staging area.
+`sqlflow records artifacts <flow.yaml> --key <key>` lists every artifact of a record with where it stands.
 
 ```bash
 sqlflow records undos flows/welldb-welllog-03-delivery.yaml --partition dev
-sqlflow records artifacts flows/welldb-welllog-03-delivery.yaml --partition dev --key welldb:LOG-000042
+sqlflow records artifacts flows/welldb-welllog-03-delivery.yaml --partition dev --key welldb:LOG-0042
 sqlflow run flows/welldb-welllog-03-delivery.yaml --operation undo --set partition=dev --payload '{"force":true}'
 ```
 

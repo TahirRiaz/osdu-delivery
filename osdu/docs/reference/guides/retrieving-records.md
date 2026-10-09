@@ -207,7 +207,8 @@ Lineage over 2 flow(s), 3 object(s), 4 edge(s) (declared)
 
 - Each nightly run covers the window from the last completed run's upper bound to five minutes before it starts. Runs
   never leave a gap; a run whose window would be empty (a `since` still in the future, or a lag raised since the last
-  run) has nothing to do and says so ([the incremental window](../flow/retrieval.md#the-incremental-window)).
+  run) has nothing to do and says so, and the next run starts where the window stood
+  ([the incremental window](../flow/retrieval.md#the-incremental-window)).
 - To start again from `since`, run with `--payload '{"force":true}'`.
 - The schedule's `values` reach every flow that joins it, and a retrieval refuses a `partition` value: keep the
   retrieval off schedules that set one. It reads the partition its header names.
@@ -223,7 +224,7 @@ Lineage over 2 flow(s), 3 object(s), 4 edge(s) (declared)
 | `The search of kind <kind> ... could not be read whole in 2 reads (...)` | The search service did not hand over every record twice in a row. Run again; the window has not moved. |
 | `missing` above 0 in the manifest | Storage did not return ids the index listed: records deleted since they were indexed, or not readable by the flow's identity. Their ids are under `missingIds`. |
 | `Retrieval flow '<name>' names no partitions: ... so a run cannot target '<p>'. Leave the partition out of its run.` | The run, or its schedule's `values`, named a partition. |
-| `A retrieval flow's payload carries only force; ...` | The payload named something a retrieval has no use for. |
+| `payload <property> does not apply to a retrieval flow: ...; a retrieval flow's payload names only force.` | The payload named something a retrieval has no use for. |
 | Every run starts from `since` | The run has no module database, so there is no watermark: give the CLI `--db`, or run on the control plane. |
 
 ## See also

@@ -52,15 +52,15 @@ as its `template.kind` names it. A kind with wildcards is refused, since a test 
 against no one schema and would link in lineage to no type a delivery writes. A test pins the schema the mapping pins with
 `template` (the mapping's `template.version`), so it is checked against exactly what the mapping renders to, and in lineage
 it reads the type node the delivery flow writes. The tests of the types two mappings deliver belong in two flows, one per
-mapping: the Recall estate keeps `recall-welllog-04-header-assertion` for `WellLog@1.4.0` and
-`recall-welllog-04-header-assertion-v150` for `WellLog@1.5.0`.
+mapping: the WellDB estate keeps `welldb-welllog-04-header-assertion` for `WellLog@1.4.0` and
+`welldb-welllog-04-header-assertion-v150` for `WellLog@1.5.0`.
 
 ```yaml
 flowType: assertion
-name: recall-welllog-04-header-assertion
+name: welldb-welllog-04-header-assertion
 partitions: [dev]
 parameters:
-  logSource: { default: STAT_COMP }
+  logSource: { default: COMPOSITE }
 source:
   endpoint: ${env:OSDU_URL}
   auth: { ... }                          # as a retrieval flow's source.auth

@@ -69,7 +69,7 @@ The examples use one estate throughout: a well database exported as files (`well
 | Source files must reach OSDU | A file flow lands them, an `ing` flow keys them, a delivery flow reads the keyed table; three flows, ordered by lineage | [getting started](getting-started.md), [OSDU documents](../flow/overview.md) |
 | The source is another database, not files | An `ing` flow straight from it into the keyed table; the delivery flow does not care how the table was filled | [SQLFlow: foreign databases](../../../../sqlflow/docs/reference/guides/foreign-db-ingestion.md) |
 | A delivery must only see rows that changed | Keep the `ing` flow's `systemColumns.updatedDate` on: `UpdatedDate_DW` is the delivery's incremental window | [SQLFlow: ing flow](../../../../sqlflow/docs/reference/flow/ing.md), [delivery flow](../flow/delivery.md), [change detection](../concepts/change-detection.md) |
-| Every delivered record must point back at its file and row | Nothing to add: the file flow's `FileName_DW` and `RowNumber_DW` ride through to the ledger (`source.systemColumns` renames them) | [delivery flow](../flow/delivery.md), [the ledger](../concepts/ledger.md) |
+| Every delivered record must point back at its file and row | Nothing to add: the file flow's `FileName_DW` and `RowNumber_DW` ride through to the ledger (`source.systemColumns` renames them; a renamed provenance column the table lacks is refused) | [delivery flow](../flow/delivery.md), [the ledger](../concepts/ledger.md) |
 | A record has child rows (a log's curves) | `source.datasets` with a `join` on the key, repeated in the mapping with `$forEach` | [delivery flow](../flow/delivery.md), [mapping values](../flow/mapping-values.md) |
 | A large table should page fast and spread over nodes | `source.record.primaryKey` (the `ing` flow's `identityColumn`), then `reliability.fanOut` | [delivery flow](../flow/delivery.md), [submissions](../concepts/submissions.md) |
 | One flow should serve several slices of one table (one log source each) | `parameters` plus `source.record.scope`, each run naming its value | [delivery flow](../flow/delivery.md) |
@@ -136,8 +136,8 @@ The route is `target.protocol` (or, in a source with interfaces, follows from wh
 | A record whose DDMS keeps bulk data (a well log and its curves) | `ddms`: the record through the DDMS serving its entity type, then its bulk data, in a session when large | [DDMS](../flow/ddms.md), [bulk data guide](bulk-data.md) |
 | Files and DDMS bulk data on one record | `fileAndDdms`; with a manifest, `manifestAndDdms` | [routes](../flow/routes.md) |
 | A named workflow does the loading | `workflow`, declared stage by stage | [routes](../flow/routes.md) |
-| Rows of the Production DDMS core service, not OSDU records | `dspdm` | [DDMS](../flow/ddms.md) |
-| Energistics objects into the Reservoir DDMS | `etp` | [DDMS](../flow/ddms.md) |
+| Rows of the Production DDMS core service, not OSDU records | `dspdm` | [DDMS shapes and services](../flow/ddms-services.md#production-ddms-core-service-dspdm) |
+| Energistics objects into the Reservoir DDMS | `etp` | [DDMS shapes and services](../flow/ddms-services.md#reservoir-ddms-etp) |
 
 ## Partitions and environments
 
@@ -147,7 +147,7 @@ The route is `target.protocol` (or, in a source with interfaces, follows from wh
 | Every partition the estate registers, without listing them | No `partitions` and no `data-partition-id` header; register partitions with `sqlflow partition add` | [partitions](../concepts/partitions.md), [partition](../cli/partition.md) |
 | A flow that delivered to one partition starts naming partitions | `partitions: [{ name: dev, keepLedger: true }, test]`: `dev` keeps the old ledger, so nothing is sent again | [partitions](../concepts/partitions.md) |
 | The legal tag or groups differ per partition | Leave them to the kind's defaults (`${env:OSDU_LEGAL_TAG}`, `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}`) and set the values per partition in the central configuration | [config](../cli/config.md), [environment variables](../concepts/environment-variables.md) |
-| Values must come from one place, not every node's environment | `sqlflow config set <NAME> --value ... [--partition ...]`: the control plane supplies them to every delivery, retrieval, cache, assertion and dimension run it queues | [config](../cli/config.md), [control plane](../concepts/control-plane.md) |
+| Values must come from one place, not every node's environment | `sqlflow config set <NAME> --value ... [--partition ...]`: the control plane supplies them to every delivery, retrieval, cache, assertion, dimension and inventory run it queues | [config](../cli/config.md), [control plane](../concepts/control-plane.md) |
 
 ## Change, redelivery and repair
 
@@ -161,7 +161,7 @@ The route is `target.protocol` (or, in a source with interfaces, follows from wh
 | A bad run must be undone | `sqlflow records reverse --run <id>` (or `--operation reverse`): what it created is removed, what it updated gets its earlier version back | [removal and reversal](../concepts/removal-and-reversal.md) |
 | A delivery stopped halfway and left datasets behind | `--operation undo`; deliver and drain runs also end with the same sweep | [removal and reversal](../concepts/removal-and-reversal.md) |
 | The ledger and the ingestion tables disagree | `--operation sync`: records what the ledger lacks, flags rows that changed unseen, reports rows that are gone; sends nothing | [removal and reversal](../concepts/removal-and-reversal.md) |
-| What OSDU holds may have drifted from what was sent | `--operation verify`; `verify.reconcile: true` queues drifted records again | [running an OSDU flow](../cli/run.md), [delivery flow](../flow/delivery.md#verify) |
+| What OSDU holds may have drifted from what was sent | `--operation verify`; `verify.reconcile: true` has the next deliver run send drifted or missing records again | [running an OSDU flow](../cli/run.md), [delivery flow](../flow/delivery.md#verify) |
 | A run's legal tag is no longer valid | The deliver run checks it first and stops; fix the tag or the configuration | [protocols](../concepts/protocols.md) |
 | The target answers a status that retrying will not fix | `reliability.skipStatusCodes`: hold instead of retrying (400, 403, 404, 405, 409, 413, 415 and 422 already hold) | [delivery flow](../flow/delivery.md), [record lifecycle](../concepts/record-lifecycle.md) |
 
@@ -192,7 +192,7 @@ The route is `target.protocol` (or, in a source with interfaces, follows from wh
 | Trap | Page |
 | --- | --- |
 | OSDU documents refuse unknown keys (SQLFlow's ignore them): a typo fails validation, which is the point | [OSDU documents](../flow/overview.md) |
-| `sqlflow validate` reads one document; a flow pinning a mapping that does not exist still validates. `sqlflow check` reads them together | [check](../cli/check.md) |
+| `sqlflow validate` on a flow reads the mapping it pins and the dictionaries it names, but not the template or the cache; `sqlflow check` holds the mapping against the template and the partition's cache | [check](../cli/check.md) |
 | A mapping's `template.version` is the saved template's hash, and another release of the same kind can give another one | [templates](../concepts/templates.md) |
 | The flow's `source.record.key` and the mapping's `dataset.key` must name the same columns in the same order | [delivery flow](../flow/delivery.md) |
 | Changing `dataset.system` or `dataset.key` derives new delivery keys: with the default `idFrom`, every row becomes a new record with a new OSDU id, beside the ones already delivered. A change that gives an existing record another id is held instead of sent | [mapping](../flow/mapping.md) |

@@ -17,6 +17,8 @@ keywords:
   - target.location
   - manifest.json
   - retrieve operation
+  - probepath refused
+  - reference in target.location
 yamlPath: "(root, flowType: retrieval)"
 related:
   - delivery-guide-retrieving-records
@@ -63,11 +65,13 @@ reference data either; that is a [cache flow](cache.md).
 
 ## Minimal example
 
+Every wellbore record of the partition, read whole on every run, `welldb-retrieval-00-wellbores.yaml`:
+
 ```yaml
 flowType: retrieval
-name: welldb-retrieval-01-wellbores
+name: welldb-retrieval-00-wellbores
 batch: welldb
-description: Every wellbore record of the dev partition, back as JSON Lines files on the lake.
+description: Every wellbore record of the dev partition, all of it on every run, back as JSON Lines files on the lake.
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -84,16 +88,18 @@ source:
   kind: osdu:wks:master-data--Wellbore:1.*.*
 
 target:
-  location: abfss://lake@welldbstorage.dfs.core.windows.net/osdu/wellbores
+  location: abfss://lake@welldbstorage.dfs.core.windows.net/osdu/wellbores-all
 ```
 
 ```bash
-sqlflow validate welldb-retrieval-01-wellbores.yaml
-sqlflow run welldb-retrieval-01-wellbores.yaml --operation plan   # count what would be retrieved
-sqlflow run welldb-retrieval-01-wellbores.yaml                    # retrieve
+sqlflow validate welldb-retrieval-00-wellbores.yaml
+sqlflow run welldb-retrieval-00-wellbores.yaml --operation plan   # count what would be retrieved
+sqlflow run welldb-retrieval-00-wellbores.yaml                    # retrieve
 ```
 
-`validate` prints `OK  'welldb-retrieval-01-wellbores' is valid (retrieval: ${env:OSDU_URL} -> abfss://lake@welldbstorage.dfs.core.windows.net/osdu/wellbores).`
+`validate` prints `OK  'welldb-retrieval-00-wellbores' is valid (retrieval: ${env:OSDU_URL} -> abfss://lake@welldbstorage.dfs.core.windows.net/osdu/wellbores-all).`
+The estate's nightly wellbore retrieval, `welldb-retrieval-01-wellbores`, reads a day's changes at a time
+([retrieving records](../guides/retrieving-records.md)).
 
 ## A fuller example
 
@@ -176,8 +182,8 @@ There is no `partitions` key: a retrieval reads the one partition its `source.he
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `endpoint` | string | required | The platform's base URL, usually `${env:OSDU_URL}`. |
-| `auth` | map | `type: none` | How requests authenticate, written exactly as `target.auth` on a delivery flow (`type: oauth2ClientCredentials` with `secretRef`, `secondarySecretRef` and `token`, or `bearer`, `apiKeyHeader`, `basic`). Secrets are references only: `${env:NAME}` or `${keyvault:NAME}`. |
-| `headers` | map | required | Headers sent with every request. `data-partition-id` is required and names the partition the flow reads and keeps its ledger in. A value may be a reference, resolved on the node. |
+| `auth` | map | `type: none` | How requests authenticate, written exactly as `target.auth` on a delivery flow (`type: oauth2ClientCredentials` with `secretRef`, `secondarySecretRef` and `token`, or `bearer`, `apiKeyHeader`, `basic`). Secrets are references only: `${env:NAME}` or `${keyvault:NAME}`; a literal is refused when the flow is read. |
+| `headers` | map | required | Headers sent with every request. `data-partition-id` is required and names the partition the flow reads and keeps its ledger in. A value may be a reference, resolved on the node; a header that carries a credential holds one, and a literal there is refused when the flow is read. |
 | `kind` | string | | One kind to retrieve. |
 | `kinds` | list | | Several kinds. Give `kind`, `kinds` or both (they are combined); at least one kind in all, none twice. |
 | `query` | string | none | A Lucene query narrowing every kind, with `{parameter}` tokens. Left out, every record of the kinds. |
@@ -192,7 +198,10 @@ There is no `partitions` key: a retrieval reads the one partition its `source.he
 | `searchPath` | string | `/api/search/v2/query_with_cursor` | The cursor search a retrieve pages through. |
 | `queryPath` | string | `/api/search/v2/query` | The search a `plan` counts with (and a read checks its total against). |
 | `recordQueryPath` | string | `/api/storage/v2/query/records` | Storage's read of records by id, used by `fetchRecords`. |
-| `probePath` | string | `/api/search/v2/info` | Accepted and checked; a retrieval run does not call it. |
+
+`source.probePath`, a delivery flow's setting, is refused on a retrieval flow: the target probe covers delivery flows
+only, and a retrieval run never calls it. A retrieval that cannot reach the search service fails on its first page and
+says why.
 
 Every path must start with `/`. A kind is `authority:source:entityType:version` with wildcards allowed in any segment
 (`osdu:wks:master-data--Wellbore:1.*.*`, `osdu:wks:*:*`), the shape the search service takes for `kind`.
@@ -201,7 +210,7 @@ Every path must start with `/`. A kind is `authority:source:entityType:version` 
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `location` | string | required | The root a run's directory is made under: a local path, `abfss://<container>@<account>.dfs.core.windows.net/...` or `https://<account>.blob.core.windows.net/<container>/...`. Takes `{parameter}`, `{run}` and `{date}` tokens; any other token is refused. |
+| `location` | string | required | The root a run's directory is made under: a local path, `abfss://<container>@<account>.dfs.core.windows.net/...` or `https://<account>.blob.core.windows.net/<container>/...`. Takes `{parameter}`, `{run}` and `{date}` tokens; any other token is refused, and so is a `${...}` reference. |
 | `format` | string | `jsonl` | The file format. `jsonl` is the only one: an OSDU record is free-form JSON. |
 | `compression` | string | `none` | `none` writes `part-00001.jsonl`, `gzip` writes `part-00001.jsonl.gz`. |
 | `rollRecords` | int | `100000` | A new file every this many records. At least 1. |
@@ -228,16 +237,16 @@ when it finishes), never one line per record.
 With `source.incremental`, a run covers `[from, to)` on `field`:
 
 - `to` is the run's start minus `lagMinutes`.
-- `from` is the upper bound of the latest run of the flow that completed (`done`), or `since` when there is none. Only
-  a completed run moves it: a failed or cancelled run leaves it where it was.
+- `from` is the upper bound of the latest completed run of the flow (`done`), or `since` when there is none or `since`
+  is later. Only a completed run moves it: a failed or cancelled run leaves it where it was.
 - The window is appended to the query as `(<query>) AND <field>:[<from> TO <to>}` (with `*` for an open `from`), times
   written as `yyyy-MM-ddTHH:mm:ss.fffZ` in UTC.
 - Consecutive runs cover adjacent windows: the next run starts where the last one ended, so windows never leave a gap
   and do not overlap.
 - A run whose window is empty (`from` is not before its start minus the lag: a `since` still in the future, or a lag
   raised since the last run) writes nothing, completes as `done` and says `the window is empty ... nothing to do`. Its
-  own upper bound, its start minus the lag, is then the latest, so the next window starts there: before the previous
-  window's end (a record can then be written by two runs), or before `since`.
+  upper bound is its start, so the next window starts where this one stood: a window never moves backwards, and never
+  starts before `since`.
 - `{"force": true}` in the run's payload restarts at `since` (or the beginning).
 
 The watermark lives in the ledger. A run without the module's database (a CLI run with no `--db` and no catalog
@@ -284,8 +293,9 @@ Files are streamed as they are written (a local file is written beside and moved
 Azure Storage is written with the node's Azure credential (see [sqlflow auth](../cli/auth.md)).
 
 A relative local path is resolved against the working directory of the process running the flow, not the flow file;
-lineage (and so the repository sync) warns about one. Use an absolute path or a storage URI. A `${env:NAME}` reference
-in `target.location` is not resolved: write the location itself.
+lineage (and so the repository sync) warns about one. Use an absolute path or a storage URI. A location is not resolved
+from a reference, so a `${...}` reference in `target.location` is refused when the flow loads:
+`<file>: target.location '${env:LAKE_ROOT}/osdu' holds a ${...} reference, and a location is not resolved from one: write the path or storage URI itself, and vary it per run or environment with a {parameter} token declared under parameters.`
 
 ## The manifest
 
@@ -313,8 +323,8 @@ sqlflow run welldb-retrieval-02-logs.yaml --set system=welldb
 sqlflow run welldb-retrieval-02-logs.yaml --payload '{"force":true}'   # start again at since
 ```
 
-The payload takes `force` and nothing else; anything more fails with
-`A retrieval flow's payload carries only force; a retrieval has no submission, records, slices, tests, dimensions or inventories to name.`
+The payload takes `force` and nothing else; anything more is refused before the run starts, for example
+`payload submissionId does not apply to a retrieval flow: only a delivery flow's runs name a submission; a retrieval flow's payload names only force.`
 SQLFlow's own backfill options are refused: `fullLoad do(es) not apply to 'retrieval' flows; force in the payload restarts an incremental retrieval at its declared start.`
 Any other operation fails with `A retrieval flow runs the retrieve and plan operations; '<name>' is not one of them.`
 
@@ -377,6 +387,9 @@ as after any flow that lands files. See [Lineage](../concepts/lineage.md).
 | `target.rollRecords must be at least 1.` | A roll below 1. |
 | `target.manifest is a file name inside the run's directory, not a path.` | A `/` or `\` in the manifest name. |
 | `target.location uses '{<token>}', which is neither a run token ({run}, {date}) nor declared under parameters.` | An undeclared token. |
+| `target.location '<location>' holds a ${...} reference, and a location is not resolved from one: write the path or storage URI itself, and vary it per run or environment with a {parameter} token declared under parameters.` | A `${...}` reference in the location. |
+| `source.probePath is not a key of a retrieval flow: the target probe covers delivery flows only, and a retrieval run never calls it. A retrieval that cannot reach the search service fails on its first page and says why; remove the key.` | A delivery flow's probe path. |
+| `source.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: ...` | A literal secret. |
 | `reliability.concurrency must be at least 1.` | Concurrency below 1. |
 | `reliability.parallelInterfaces says how many interfaces of a delivery flow run at once; this flow declares none.` | A delivery-only setting. |
 

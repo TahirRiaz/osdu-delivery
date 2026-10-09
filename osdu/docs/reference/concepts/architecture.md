@@ -139,10 +139,9 @@ It runs the module's background services: the cache update rollout
 (`Osdu:CacheRollout`, on by default), the scheduled target probe (`Osdu:TargetProbe`, off by default), the OSDU data
 definitions copy the Templates page browses (`Osdu:SchemaRepository`), and, at start, backfills of the interface and
 search term read models and of the ledger's record identity and problem indexes. It also
-answers the direct operations above while the request waits. Every delivery, retrieval, cache, assertion and dimension
-run it queues carries the central configuration (`sqlflow config`) when one is set, so a flow's `${env:NAME}` resolves
-from one place before it falls back to the node; an inventory run is queued without it and resolves on the node
-([control plane](control-plane.md)).
+answers the direct operations above while the request waits. Every delivery, retrieval, cache, assertion, dimension
+and inventory run it queues carries the central configuration (`sqlflow config`) when one is set, so a flow's
+`${env:NAME}` resolves from one place before it falls back to the node ([control plane](control-plane.md)).
 
 **A node** pulls runs and node tasks over SQLFlow's node protocol and opens no catalog connection. The delivery engine
 reads and writes the ledger per record while it plans and delivers, so a node always reaches the module's database

@@ -116,11 +116,12 @@ and never treat it as a file flow. An unknown one fails the same way:
 
 ```text
 ERROR  b.yaml: unknown documentType 'mappings'. Registered document types: 'dictionary' for a lookup table a cache flow
-holds in the partition's cache, 'mapping' for deliver records from ingestion tables into OSDU.
+holds in the partition's cache, 'mapping' for how a delivery flow renders the rows of an ingestion table into records of
+one OSDU kind.
 ```
 
-The mapping's description in that list is the delivery kind's, because one registration owns both the delivery flows
-and the mappings they pin.
+One registration owns both the delivery flows and the mappings they pin, and each says what it is in its own words: the
+mapping's description in that list is what a mapping is, not what a delivery flow does.
 
 ## What every OSDU document shares
 
@@ -203,8 +204,9 @@ but their own document.
 
 ## The shape of each kind
 
-A short, valid document of each kind, from the example estate used throughout this corpus (a well database exported as
-files, `welldb`). Each kind's page has the full key reference.
+One document of each kind, from the example estate used throughout this corpus (a well database exported as files,
+`welldb`): the whole file where it is short, else its top, with `# ...` where lines are left out and a first line that
+names the file. Each kind's page shows the whole file and has the full key reference.
 
 ### flowType: delivery
 
@@ -303,8 +305,7 @@ can refer to it ([the OSDU id](mapping.md#the-osdu-id)).
 flowType: cache
 name: welldb-lookups-00-cache
 batch: welldb
-
-partitions: [dev, test]
+description: The lookup tables the well database's mappings translate its values through.
 
 source:
   connection: ${env:OSDU_DATA_DB}
@@ -313,7 +314,15 @@ types:
   - table: OsduData.silver.UnitAlias
     key: source_unit
     fields: [osdu_unit]
+  - table: OsduData.silver.CurveDictionary
+    key: mnemonic
+    fields:
+      - log_curve_type_id
+      - { column: unit, as: curve_unit }
   - dictionary: sampling-domain
+    name: SamplingDomain
+
+schedule: welldb-lookups
 ```
 
 A type has one origin: `kind` (searched on OSDU, which needs `source.endpoint`), `table` (an ingestion table, which needs
@@ -324,10 +333,13 @@ A type has one origin: `kind` (searched on OSDU, which needs `source.endpoint`),
 ```yaml
 documentType: dictionary
 name: sampling-domain
-description: How the well database names a log's sampling domain, as the partition's code.
+description: How the well database writes a log's sampling domain, as the codes of the partition's WellLogSamplingDomainType records.
 entries:
+  MD: Depth
   DEPTH: Depth
+  TVD: Depth
   TIME: Time
+  UNKNOWN: ~
 ```
 
 The file is `dictionaries/sampling-domain.yaml`, and its `name` must match the file name.
@@ -336,8 +348,9 @@ The file is `dictionaries/sampling-domain.yaml`, and its `name` must match the f
 
 ```yaml
 flowType: retrieval
-name: welldb-retrieval-wellbore
+name: welldb-retrieval-01-wellbores
 batch: welldb
+description: Wellbore records of the dev partition, back on the lake as JSON Lines, a day's changes at a time.
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -351,89 +364,107 @@ source:
         scope: ${env:OSDU_SCOPE}
   headers:
     data-partition-id: dev
-  kinds:
-    - "osdu:wks:master-data--Wellbore:*"
+  kind: osdu:wks:master-data--Wellbore:1.*.*
+  incremental:
+    field: modifyTime
+    since: 2026-01-01T00:00:00Z
+  fetchRecords: true
 
 target:
-  location: abfss://lake@datalake.dfs.core.windows.net/osdu/wellbore
+  location: abfss://lake@welldbstorage.dfs.core.windows.net/osdu/wellbores
+
+schedule:
+  name: welldb-retrieval-nightly
+  cron: "0 3 * * *"
+  timezone: UTC
 ```
 
 ### flowType: assertion
 
 ```yaml
+# flows/welldb-welllog-04-assertion.yaml: its top and first test (the whole file is on the assertion flow page)
 flowType: assertion
 name: welldb-welllog-04-assertion
 batch: welldb
+description: What the well logs of the well database look like in OSDU once they are delivered.
 
 partitions: [dev, test]
 
+parameters:
+  system:
+    default: welldb
+    description: The data.Source value the delivered records carry.
+
 source:
   endpoint: ${env:OSDU_URL}
-  auth:
-    type: oauth2ClientCredentials
-    secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${env:OSDU_CLIENT_SECRET}
-    token:
-      url: ${env:OSDU_TOKEN_URL}
-      body:
-        scope: ${env:OSDU_SCOPE}
+  # ... auth as on the delivery flow, and ddmsRoot
+
+# ... defaults, failRunOn, reliability
 
 tests:
-  - name: welllogs-present
+  - name: logs-delivered
+    description: Every log the delivery flow holds as delivered is in the search index, indexed cleanly.
+    tags: [smoke]
     kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    read: index
     assert:
       - count: { atLeast: 1 }
+      - delivered: welldb-welllog-03-delivery
+      - indexed: true
+  # ... three more tests
 ```
 
 ### flowType: dimension
 
 ```yaml
+# flows/welldb-welllog-05-dimensions.yaml: its top and first dimension (the whole file is on the dimension flow page)
 flowType: dimension
 name: welldb-welllog-05-dimensions
+description: The wellbores, curve mnemonics and units of the well logs the welldb flows deliver, ready for a search panel.
 batch: welldb
-
 partitions: [dev, test]
+
+parameters:
+  deliveredBy: { default: welldb }
 
 source:
   endpoint: ${env:OSDU_URL}
-  auth:
-    type: oauth2ClientCredentials
-    secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${env:OSDU_CLIENT_SECRET}
-    token:
-      url: ${env:OSDU_TOKEN_URL}
-      body:
-        scope: ${env:OSDU_SCOPE}
+  # ... auth as on the delivery flow
 
 dimensions:
-  - name: LogSource
-    kind: "osdu:wks:work-product-component--WellLog:*"
-    path: data.LogSource
+  - name: Wellbore
+    description: Every wellbore the well logs name, by its name, with its country and operator.
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
+    path: data.WellboreID
+    label: data.FacilityName
+    # ... unlabelled and attributes
+  # ... three more dimensions
 ```
 
 ### flowType: inventory
 
 ```yaml
+# flows/welldb-06-inventory.yaml: its top and first inventory (the whole file is on the inventory flow page)
 flowType: inventory
 name: welldb-06-inventory
+description: Every wellbore and well log OSDU serves in the partition, set against the ledgers of the welldb flows.
 batch: welldb
-
 partitions: [dev, test]
 
 source:
   endpoint: ${env:OSDU_URL}
-  auth:
-    type: oauth2ClientCredentials
-    secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${env:OSDU_CLIENT_SECRET}
-    token:
-      url: ${env:OSDU_TOKEN_URL}
-      body:
-        scope: ${env:OSDU_SCOPE}
+  # ... auth as on the delivery flow
+  read: search
+
+# ... owners, maxMissingChecks, removal, reliability
 
 inventories:
-  - name: wellbores
-    kind: "osdu:wks:master-data--Wellbore:*"
+  - name: Wellbores
+    description: Every wellbore record, whatever its authority, source and schema version.
+    kind: "*:*:master-data--Wellbore:*"
+  # ... two more inventories
 ```
 
 ## Laying out a repository
@@ -458,10 +489,12 @@ repo/
     flows/welldb-welllog-04-assertion.yaml      flowType: assertion
     flows/welldb-welllog-05-dimensions.yaml     flowType: dimension
     flows/welldb-06-inventory.yaml              flowType: inventory
+    flows/welldb-retrieval-01-wellbores.yaml    flowType: retrieval
     mappings/Wellbore@1.0.0.yaml                documentType: mapping
     mappings/WellLog@1.0.0.yaml
     cache/welldb-lookups-00-cache.yaml          flowType: cache over the lookup tables and dictionaries
     cache/osdu-reference-00-cache.yaml          flowType: cache over the partition's reference data
+    dictionaries/curve-aliases.yaml             documentType: dictionary, which the dimension flow maps through
     dictionaries/sampling-domain.yaml           documentType: dictionary
 ```
 
@@ -494,31 +527,47 @@ on take `00`. SQLFlow orders runs by lineage, not by name; the numbers are for p
 
 ## Validating the documents
 
-`sqlflow validate` reads OSDU documents through the same loaders a run uses, offline: no catalog, no OSDU. Its OK line
-names the kind and what the document reads and writes:
+`sqlflow validate` reads OSDU documents through the same loaders a run uses, offline: no catalog, no OSDU. Over a
+folder it prints a line per document, naming its kind and name. For the folder above (its welllog pre flows aside):
 
 ```text
 $ sqlflow validate welldb
-OK      welldb\cache\welldb-lookups-00-cache.yaml  (cache 'welldb-lookups-00-cache')
-OK      welldb\dictionaries\sampling-domain.yaml  (dictionary 'sampling-domain (2 entries, key key)')
-OK      welldb\flows\welldb-06-inventory.yaml  (inventory 'welldb-06-inventory')
-OK      welldb\flows\welldb-retrieval-wellbore.yaml  (retrieval 'welldb-retrieval-wellbore')
-OK      welldb\flows\welldb-wellbore-03-delivery.yaml  (delivery 'welldb-wellbore-03-delivery')
-OK      welldb\flows\welldb-welllog-04-assertion.yaml  (assertion 'welldb-welllog-04-assertion')
-OK      welldb\flows\welldb-welllog-05-dimensions.yaml  (dimension 'welldb-welllog-05-dimensions')
-OK      welldb\mappings\Wellbore@1.0.0.yaml  (mapping 'Wellbore@1.0.0 -> osdu:wks:master-data--Wellbore:1.3.0')
+OK      cache\osdu-reference-00-cache.yaml  (cache 'osdu-reference-00-cache')
+OK      cache\welldb-lookups-00-cache.yaml  (cache 'welldb-lookups-00-cache')
+OK      dictionaries\curve-aliases.yaml  (dictionary 'curve-aliases (4 entries, key key)')
+OK      dictionaries\sampling-domain.yaml  (dictionary 'sampling-domain (5 entries, key key)')
+OK      flows\welldb-06-inventory.yaml  (inventory 'welldb-06-inventory')
+OK      flows\welldb-retrieval-01-wellbores.yaml  (retrieval 'welldb-retrieval-01-wellbores')
+OK      flows\welldb-wellbore-01-pre.yaml  (file 'welldb-wellbore-01-pre')
+OK      flows\welldb-wellbore-02-ing.yaml  (ing 'welldb-wellbore-02-ing')
+OK      flows\welldb-wellbore-03-delivery.yaml  (delivery 'welldb-wellbore-03-delivery')
+OK      flows\welldb-welllog-02-curves-ing.yaml  (ing 'welldb-welllog-02-curves-ing')
+OK      flows\welldb-welllog-02-header-ing.yaml  (ing 'welldb-welllog-02-header-ing')
+OK      flows\welldb-welllog-03-delivery.yaml  (delivery 'welldb-welllog-03-delivery')
+OK      flows\welldb-welllog-04-assertion.yaml  (assertion 'welldb-welllog-04-assertion')
+OK      flows\welldb-welllog-05-dimensions.yaml  (dimension 'welldb-welllog-05-dimensions')
+OK      mappings\Wellbore@1.0.0.yaml  (mapping 'Wellbore@1.0.0 -> osdu:wks:master-data--Wellbore:1.3.0')
+OK      mappings\WellLog@1.0.0.yaml  (mapping 'WellLog@1.0.0 -> osdu:wks:work-product-component--WellLog:1.4.0')
+16 valid, 0 broken of 16 document(s) under <folder>.
 ```
 
-One file prints one line in SQLFlow's single-file form:
+One file prints one line in SQLFlow's single-file form, which names what the document reads and writes:
 
 ```text
 OK  'welldb-wellbore-03-delivery' is valid (delivery: OsduData.silver.Wellbore -> ${env:OSDU_URL}).
 OK  'Wellbore@1.0.0 -> osdu:wks:master-data--Wellbore:1.3.0' is valid (mapping).
 ```
 
-Validation checks each document alone. It does not open the mapping a delivery flow pins, the template that mapping
-pins, or the cache it reads: a flow pinning `Wellbore@9.9.9` validates. `sqlflow check` is the preflight that reads all
-of them together ([check](../cli/check.md), [what validate checks](../cli/validate.md)).
+Validation also reads the files a flow names beside it, from disk and the way a run finds them: the mapping a delivery
+flow pins, and the dictionaries a cache or dimension flow names. A flow pinning a mapping that is not there is refused:
+
+```text
+ERROR  flows/welldb-wellbore-03-delivery.yaml: render.mapping: Mapping 'Wellbore@9.9.9' was not found under '../mappings'. Expected one of: Wellbore@9.9.9.yaml, Wellbore@9.9.9.yml, 9.9.9.yaml, 9.9.9.yml.
+```
+
+It does not read the template the mapping pins or the cache it reads, which live in the module's database:
+`sqlflow check` is the preflight that reads all of them together ([check](../cli/check.md),
+[what validate checks](../cli/validate.md)).
 
 ## See also
 

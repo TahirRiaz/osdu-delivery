@@ -18,6 +18,7 @@ keywords:
   - "${keyvault:"
   - central configuration
   - which tier
+  - osdu_data_partition default
 related:
   - concept-environment-variables
   - concept-connections-and-secrets
@@ -91,13 +92,15 @@ parameters it fills; when the flow does not set one under `render.parameters`, t
 
 | Parameter | Reference supplied | Fills |
 | --- | --- | --- |
-| `dataPartition` | `${env:OSDU_DATA_PARTITION}` | The partition every record id is minted in, and whose cache the render reads. |
+| `dataPartition` | the partition the flow is bound to: the run's partition for a flow that works in partitions, its `data-partition-id` header (as written, a literal or a reference) for one that names its partition there; `${env:OSDU_DATA_PARTITION}` only for a flow bound to no partition | The partition every record id is minted in, and whose cache the render reads. |
 | `aclOwner` | `${env:OSDU_ACL_OWNER}` | `acl.owners` |
 | `aclViewer` | `${env:OSDU_ACL_VIEWER}` | `acl.viewers` |
 | `legalTag` | `${env:OSDU_LEGAL_TAG}` | `legal.legaltags` |
 
 A value the flow sets wins. A flow that names its partitions (`partitions:`) is given `dataPartition` as the partition each
-run is bound to, written literally, never reads `OSDU_DATA_PARTITION`, and may not set `dataPartition` itself.
+run is bound to, written literally, never reads `OSDU_DATA_PARTITION`, and may not set `dataPartition` itself. A flow
+whose `target.headers.data-partition-id` names its partition mints its ids in that partition, never in
+`OSDU_DATA_PARTITION`.
 
 ## References a flow names
 
@@ -110,30 +113,33 @@ on every node of that pool and on the control plane. The examples in this docume
 | `${env:OSDU_URL}` | The OSDU endpoint (`target.endpoint`). |
 | `${env:OSDU_TOKEN_URL}`, `${env:OSDU_CLIENT_ID}`, `${env:OSDU_CLIENT_SECRET}`, `${env:OSDU_SCOPE}` | The OAuth2 client-credentials exchange (`target.auth`). |
 
+The wellbore flow, `flows/welldb-wellbore-03-delivery.yaml`, names them all:
+
 ```yaml
 flowType: delivery
 name: welldb-wellbore-03-delivery
 batch: welldb
-partitions: [dev, test]
+
+partitions: [dev]
 
 source:
   connection: ${env:OSDU_DATA_DB}
   record:
     object: OsduData.silver.Wellbore
     key: [wellbore_id]
+    primaryKey: RecId
+  lastModified: update_date
   work: ../.work/wellbore
 
 render:
   mapping: Wellbore@1.0.0
-  parameters:
-    legalTag: ${env:WELLDB_LEGAL_TAG}   # set by the flow; aclOwner and aclViewer come from the kind's references
 
 target:
   endpoint: ${env:OSDU_URL}
   auth:
     type: oauth2ClientCredentials
     secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${keyvault:delivery-vault/osdu-client-secret}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
     token:
       url: ${env:OSDU_TOKEN_URL}
       body:
@@ -141,11 +147,25 @@ target:
   protocol: storage
 ```
 
+A flow may also set a parameter of the kind itself, and name a secret in a key vault rather than the environment. Written
+so, the same file's `render` and `target.auth` read:
+
+```yaml
+render:
+  mapping: Wellbore@1.0.0
+  parameters:
+    legalTag: ${env:WELLDB_LEGAL_TAG}   # set by the flow; aclOwner and aclViewer come from the kind's references
+
+target:
+  auth:
+    secretRef: ${keyvault:welldb-vault/osdu-client-secret}
+```
+
 ## Where a reference resolves from
 
 A reference does not have to be a variable on every node. The control plane keeps a central configuration in the `osdu`
-schema and attaches it to every delivery, retrieval, cache, assertion and dimension run it queues (an inventory run gets
-none, so its references resolve on the node) ([the control plane](control-plane.md#the-central-configuration-on-every-run)).
+schema and attaches it to every delivery, retrieval, cache, assertion, dimension and inventory run it queues
+([the control plane](control-plane.md#the-central-configuration-on-every-run)).
 A run bound to a partition resolves `${env:NAME}` in this order:
 
 1. the repository's value for that partition;
@@ -153,6 +173,10 @@ A run bound to a partition resolves `${env:NAME}` in this order:
 3. the repository's value for no partition;
 4. the control plane's value for no partition;
 5. the environment of the process running it.
+
+A run's trace names, for each `${env:NAME}` it resolves, whether the central configuration or the node's environment gave
+the value, never the value itself ([the run trace](run-trace-and-metrics.md#the-steps-of-a-runs-trace)). A
+`${keyvault:...}` reference is always the node's and is not named.
 
 A property holds a value or a `${env:...}` / `${keyvault:...}` reference, which travels unresolved and is resolved where
 the run executes. A literal secret in a property is a defect: the row is ordinary catalog content, readable in the run

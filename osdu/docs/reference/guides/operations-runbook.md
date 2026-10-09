@@ -18,6 +18,11 @@ keywords:
   - waiting records
   - troubleshooting
   - issues tab
+  - stopped submission
+  - recover a stopped run
+  - osdu id moved
+  - boolean is not a number
+  - column inferred as bit
 related:
   - delivery-concept-record-lifecycle
   - delivery-concept-removal-and-reversal
@@ -75,7 +80,7 @@ give them `--db <conn-ref>` or set the catalog variable, `--partition` for a flo
 
 ```bash
 sqlflow records list   flows/welldb-wellbore-03-delivery.yaml --partition dev --status held --max 100
-sqlflow records show   flows/welldb-wellbore-03-delivery.yaml --partition dev --key welldb:WB-000123
+sqlflow records show   flows/welldb-wellbore-03-delivery.yaml --partition dev --key welldb:WB-0123
 sqlflow records issues flows/welldb-wellbore-03-delivery.yaml --partition dev
 ```
 
@@ -161,8 +166,12 @@ sent at each renewal of its lease, so the record table trails the trace by at mo
 
 **You see** a submission whose status stays `planned` or `running` after its run ended, with batches still `queued`.
 
-**Do:** its run stopped part way (a node went away, a drain member failed). Re-run the submission, or drain it, from the
-run dialog (**Re-run submission**, **Submission to drain**) or the command line:
+**Do:** nothing, usually. Its run stopped part way (a node went away, a drain member failed, a command-line run was
+killed): a run the platform executes again resumes it; otherwise the flow's next deliver run takes it over once no run
+holds it and its leases have run out, sends what it holds and closes it, its log naming the submission
+([Recovering a stopped submission](../concepts/submissions.md#recovering-a-stopped-submission)). A submission a run
+still works on is left to that run. To act now, re-run or drain it from the run dialog (**Re-run submission**,
+**Submission to drain**) or the command line:
 
 ```bash
 sqlflow run flows/welldb-wellbore-03-delivery.yaml --set partition=dev --payload '{"submissionId":"0193f2a4-7c1e-7b2d-9e4f-1a2b3c4d5e6f"}'
@@ -170,7 +179,8 @@ sqlflow run flows/welldb-wellbore-03-delivery.yaml --operation drain --set parti
 ```
 
 A record still leased by the stopped run is waited for until its lease runs out, then recovered and sent. Nothing is sent
-twice.
+twice. A run that asks for a submission another run is taking over in that moment fails after 30 seconds with
+`Submission <id> could not be held for this run within 30 seconds ...`; run it again once that run has ended.
 
 ## A run fails before it plans anything
 
@@ -192,6 +202,17 @@ service answers (**Probe target** on the Delivery tab checks it under the flow's
 `failWhen.failedPercent` holds or fails too many records at once: fix the data or mapping, release, and run again. Run
 only some interfaces with `--payload '{"interfaces":["wellbores"]}'`.
 
+## Every record is held: a number is 'false'
+
+**You see** every record of a flow held with `... value 'false' is not a valid number (a boolean is not a number)`.
+
+**Do:** the pre flow inferred a numeric column as `bit` from a file whose values were all 0 or 1 (SQLFlow's inference
+reads such a column as a boolean). Declare the column's type in the pre flow's `transform.columns`
+(`- { name: top_depth, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }`) and run the pre and ingestion
+flows; a column the ingestion table already holds as `bit` is a cross-family change SQLFlow does not make, so it needs
+a one-time `ALTER` ([schema evolution](../../../../sqlflow/docs/reference/concepts/schema-evolution.md)). Then
+release the records; the next run renders them again.
+
 ## A record-scoped run plans nothing
 
 **You see** the warning `The record table OsduData.silver.Wellbore holds no record with key <key>; it cannot be planned.`
@@ -208,6 +229,18 @@ have loaded the row, the run scoped to the record reads it by key.
 Deliver the flow to another partition, or give its mapping a `dataset.system` or key that yields other ids; for an id
 another system wrote, remove or rename that record in OSDU first. Nothing was sent.
 
+## A record is held because its OSDU id moved
+
+**You see** `the mapping now gives this record the OSDU id <new id>, and the record claimed <old id> when it first queued a
+document; a record keeps the OSDU id it claimed, so nothing is sent. ...`
+
+**Do:** something moved the id after the record claimed it: the mapping's `dataset.idFrom`, the entity type of the kind
+it renders, or the partition the flow mints ids in (`dataPartition`). Put it back, or move the records on purpose: remove
+them from OSDU at the `record` scope, then deliver them under a ledger of their own or delete them from the ledger with the
+removal ([change detection](../concepts/change-detection.md#a-record-keeps-the-osdu-id-it-claimed)). A flow bound by its
+`data-partition-id` header now mints its ids in its header's partition; one whose header and `OSDU_DATA_PARTITION` once
+disagreed has records whose ids were claimed in the environment's partition, and their next render meets this hold.
+
 ## OSDU holds something other than what was delivered
 
 **You see** drift: a `verify` run reported `drifted` or `missing` records, the Delivery tab counts them, and the Records tab
@@ -219,8 +252,10 @@ sqlflow run flows/welldb-wellbore-03-delivery.yaml --operation verify --set part
 
 **Do:** decide whether the change in OSDU was legitimate. A newer version that changed only data keys another system owns
 is not drift. To put the delivered version back, use **Redeliver**, **Send again** on the records. With
-`verify.reconcile: true` a verify forgets the hashes of each drifted or missing record (`redelivery queued on next submission`),
-so the next plan that reads its row sends it; Send again sends it at once.
+`verify.reconcile: true` a verify marks each drifted or missing record for redelivery as Redeliver does (its note reads
+`verify: drifted (observed version <v>, expected <v>); redelivery requested, the flow's next deliver run sends it again`)
+and names it under the verify's activity; the flow's next deliver run sends it whole although its row did not change.
+Send again sends it at once.
 
 ## Records need rendering again after a change
 
@@ -299,7 +334,7 @@ saying an earlier delivery left items its undo could not take back; or `Delete l
 
 ```bash
 sqlflow records undos     flows/welldb-welllog-03-delivery.yaml --partition dev
-sqlflow records artifacts flows/welldb-welllog-03-delivery.yaml --partition dev --key welldb:LOG-000042
+sqlflow records artifacts flows/welldb-welllog-03-delivery.yaml --partition dev --key welldb:LOG-0042
 ```
 
 **Do:** each artifact's note says what OSDU answered. Fix what stops the undo (the identity's entitlements, a service that

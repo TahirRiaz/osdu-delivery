@@ -31,12 +31,12 @@ cache, and outside lookups are not supported.
 
 ## What an author writes when this is done
 
-A dictionary file holds one table. The file `dictionaries/RecallUnits.yaml` holds pairs:
+A dictionary file holds one table. The file `dictionaries/UnitAlias.yaml` holds pairs:
 
 ```yaml
 documentType: dictionary
-name: RecallUnits
-description: Unit spellings in Recall, as the partition's UnitOfMeasure codes write them.
+name: UnitAlias
+description: Unit spellings in WellDB, as the partition's UnitOfMeasure codes write them.
 entries:
   M: m
   METRE: m
@@ -57,8 +57,8 @@ description: Curve mnemonics and what each measures.
 key: mnemonic
 fields: [type, family, mainFamily, unit]
 entries:
-  GR: { type: Equinor-GR, family: Gamma Ray, mainFamily: GammaRay, unit: gAPI }
-  LFP_AI: { type: Equinor-AI, family: EQ-Acoustic Impedance Compressional, mainFamily: Geophysics, unit: kPa.s/m }
+  GR: { type: Local-GR, family: Gamma Ray, mainFamily: GammaRay, unit: gAPI }
+  AI: { type: Local-AI, family: Local-Acoustic Impedance Compressional, mainFamily: Geophysics, unit: kPa.s/m }
 ```
 
 A cache flow declares where each type comes from, one origin per type:
@@ -71,9 +71,9 @@ source:
   headers:
     data-partition-id: dev                 # the partition whose cache the flow fills
 types:
-  - dictionary: RecallUnits                # dictionaries/RecallUnits.yaml
+  - dictionary: UnitAlias                  # dictionaries/UnitAlias.yaml
   - name: CurveClasses
-    table: OsduData.arc.CurveDictionary  # an ingestion table SQLFlow's flows load
+    table: OsduData.silver.CurveDictionary  # an ingestion table SQLFlow's flows load
     key: mnemonic
     fields: [curve_type, curve_family, curve_main_family, unit]
 ```
@@ -89,7 +89,7 @@ since become, osdu/docs/reference/flow/mapping.md):
           $cache: UnitOfMeasure.id
           $findBy: Code = curve_unit
           $modifiers:
-            - replace: $cache.RecallUnits        # the key matches, the value replaces
+            - replace: $cache.UnitAlias          # the key matches, the value replaces
         LogCurveFamilyID:
           $cache: LogCurveFamily.id
           $findBy: Name = curve_id
@@ -104,15 +104,15 @@ Where the partition holds OSDU's own translations, they are cached from OSDU lik
 field that holds an OSDU id is written directly:
 
 ```yaml
-  # cache flow: the type's query keeps the Recall namespace and only the mappings OSDU marks identical;
+  # cache flow: the type's query keeps the WellDB namespace and only the mappings OSDU marks identical;
   # the exact query is written against the partition's namespace and map state ids in stage 6
   - kind: "osdu:wks:reference-data--ExternalUnitOfMeasure:*"
-    name: RecallUnitAliases
+    name: ExternalUnitAlias
     fields: [data.Code, data.UnitOfMeasureID]
 
   # mapping, under the curves' $item
   CurveUnit:
-    $cache: RecallUnitAliases.UnitOfMeasureID
+    $cache: ExternalUnitAlias.UnitOfMeasureID
     $findBy: Code = curve_unit
 ```
 
@@ -200,7 +200,7 @@ The cache learns about types that hold no OSDU records. Nothing produces them ye
   only by case are two records, as `ft` and `fT` are.
 - No key or field of a lookup type is called `id` in any casing, because a cached `ID` field shadows the record id.
 - `cache.<Type>.id` on a lookup type holds the record at render and is refused by the gate: a key is not an OSDU id,
-  and writing one would produce `LFP_AI:` as a reference.
+  and writing one would produce `AI:` as a reference.
 - A lookup type is declared by exactly one cache flow of a partition. A second declaration, or a declaration of the same
   name with another origin, is a conflict: the sync leaves it out with a warning, and a refresh of either flow refuses
   to run.
@@ -234,7 +234,7 @@ The cache learns about types that hold no OSDU records. Nothing produces them ye
 
 - `ReferenceCacheTests.cs`: matching on a key and on fields; `.id` refused; the id-shadowing rule.
 - `CacheDeclarationTests`: the one-declarer and origin conflicts.
-- `StorageTests.cs` (`OsduCacheStoreTests`): a round trip with keys `METRES.`, `LFP_AI`, `ft` and `fT`.
+- `StorageTests.cs` (`OsduCacheStoreTests`): a round trip with keys `METRES.`, `AI`, `ft` and `fT`.
 - `SqlServerLedgerTests.cs` (SQL Server): the same keys on the real collation, and a key that differs only by
   trailing spaces is refused before it reaches the unique index.
 - `SqlServerLedgerMigrationTests.cs`: the migration applies to a database at the previous version and leaves existing
@@ -277,7 +277,7 @@ is (`Documents/DeliveryLayout.cs`), named `<name>.yaml` or `<name>.yml`, and the
   with a warning naming the file when it is missing or invalid. `LooksLikeMapping` (664-665) matches the `documentType`
   value exactly, so a dictionary that mentions the word "mapping" is not taken for one.
 - Lineage, `Documents/CacheLineage.cs`: a dictionary type adds a `DeclaredFileLocation` read.
-- Samples: `samples/wells/dictionaries/RecallUnits.yaml`, and a lookups cache flow `wells-lookups-00-cache.yaml` for
+- Samples: `samples/wells/dictionaries/UnitAlias.yaml`, and a lookups cache flow `wells-lookups-00-cache.yaml` for
   partition `dev` declaring it.
 - Docs: the dictionary document (`reference/flow/dictionary.md`), the dictionary origin of a cache flow
   (`reference/flow/cache.md`, The four origins), and the samples README.
@@ -325,7 +325,7 @@ is (`IngestionConnection.CheckDeclared`).
 - Lineage: `CacheLineage` adds `DeclaredDataObject.Reads(connection, table)`, so SQLFlow orders the ingestion flow
   before the cache flow, and the cache flow before the delivery flows that read its types.
 - Samples: a curve dictionary CSV under `samples/wells/data/`, a pre-ingestion and an ingestion flow loading
-  `OsduData.arc.CurveDictionary`, and the table type in the lookups cache flow.
+  `OsduData.silver.CurveDictionary`, and the table type in the lookups cache flow.
 - Docs: the table origin in `reference/flow/cache.md`, and the lineage order in `reference/concepts/lineage.md`.
 
 **Tests.**
@@ -373,7 +373,7 @@ is (`IngestionConnection.CheckDeclared`).
   `replace from $cache.CurveClasses (mnemonic to curve_family)`; the builder's replace editor offers the cached types of
   the chosen partition with pickers for `match` and `field`; `mappingDraft.ts`, `MappingEntryDetail.tsx` and
   `MappingPropertiesView.tsx` describe it.
-- Samples: the WellLog and WellboreTrajectory mappings replace their inline unit tables with `replace: $cache.RecallUnits`;
+- Samples: the WellLog and WellboreTrajectory mappings replace their inline unit tables with `replace: $cache.UnitAlias`;
   WellLog fills `LogCurveFamilyID` through `CurveClasses`; the sample cache records gain the `LogCurveFamily` records the
   fixtures resolve; the fixtures are re-derived and reviewed.
 - Docs: `replace` in `reference/flow/mapping-modifiers.md`; the "What is removed" line updated.

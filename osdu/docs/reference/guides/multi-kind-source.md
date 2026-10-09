@@ -239,7 +239,8 @@ run ([your own lookup tables](lookup-table-cache.md)).
 
 ## 4. One document, two interfaces
 
-The source document says once what both kinds share, and under `interfaces` what each delivers:
+The source document, `flows/welldb-03-delivery.yaml`, says once what both kinds share, and under `interfaces` what
+each delivers:
 
 ```yaml
 flowType: delivery

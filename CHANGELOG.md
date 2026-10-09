@@ -13,6 +13,29 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The documentation is a reference corpus in SQLFlow's format, covering only what OSDU Delivery adds.**
+  `osdu/docs/reference` holds 71 pages in four parts: `cli` (a page per OSDU verb of `sqlflow`, and what the module adds
+  to SQLFlow's `run`, `validate`, `db`, `worker`, `control-plane` and `auth`), `flow` (a page per document the module
+  adds, with the delivery flow's interfaces, routes, DDMSs and the other DDMS shapes and services), `concepts` (the
+  ledger, record lifecycle, submissions, change detection, templates, the partition cache, partitions, removal and
+  reversal, lineage, the GUI, the API and more) and `guides` (tasks end to end, and a pattern catalog that maps a
+  problem to the shape that solves it). Every page carries the frontmatter SQLFlow's pages carry (an id starting
+  `delivery-`, a title, keywords, a one-sentence summary, its related pages and the source files its facts were checked
+  against), links SQLFlow's pages rather than repeating them, and draws its examples from one generic estate (a well
+  database, `welldb`, and the partitions `dev` and `test`), each validated with `sqlflow validate`. The decision records
+  are indexed beside it, and `manifest.json`, written by SQLFlow's `build_manifest.py`, indexes every page
+  ([osdu/docs/reference/README.md](osdu/docs/reference/README.md)).
+- **The MCP server searches OSDU Delivery's documentation as it searches SQLFlow's.** `osdu-delivery-mcp` embeds every
+  page `osdu/docs/reference/manifest.json` lists, so `search_docs`, `get_doc` and SQLFlow's other documentation tools
+  answer from both corpora, the module's pages and decision records under ids starting `delivery-`. Its tests fail when
+  the manifest is older than a page's frontmatter or leaves a page out, when a related id or a relative link leads
+  nowhere, when a page carries an em dash or names the estate the patterns were first learned from, when a key census is
+  not registered, and when any of 34 questions asked in a user's own words ("why is my record held", "recover a stopped
+  submission", "literal secret in a flow") does not find a page that answers it among the first five. In the vendored
+  SQLFlow, an MCP host introduces its own product, and `build_manifest.py` builds the manifest of any corpus in the
+  reference format
+  ([osdu/docs/reference/guides/mcp.md](osdu/docs/reference/guides/mcp.md#documentation-and-flow-language)).
+
 - **Search terms are deleted and restored several at once.** Each row of the Search terms page has a box (a shift-click
   picks a range, Space the row the keys are on, the header's box every row listed); while any are picked, the states
   give way to **Delete** and **Restore**. A term a pipeline reads is taken out of the explorer and listed under the new
@@ -20,16 +43,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   longer found is removed for good. A deletion is confirmed first and acts only on the rows listed. **Left out** is
   called **Deleted** throughout, and the first state lists the terms not deleted. New routes
   `POST /api/v1/delivery/search-terms/delete` and `/restore`, each one save for every term named
-  ([osdu/docs/search-terms.md](osdu/docs/search-terms.md#deleting-terms)).
+  ([osdu/docs/reference/concepts/search-terms.md](osdu/docs/reference/concepts/search-terms.md#deleting-and-restoring-terms)).
 
 - **The explorer searches in one attribute picked at the field's start.** The search field begins with where it
   searches, **In every property** by default: a property or a source column picked there (the type's source columns
   first) makes what is typed a value of it, with the values it holds listed under the field as it is typed, the commonest
   first, any picked whole with a click; a value searched there replaces the condition the attribute had
-  ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching-a-property)).
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#conditions-and-properties)).
 
 - **The explorer searches by the columns of the source systems.** Every repository sync extracts the search terms of
-  its delivery flows: each column a mapping of an active flow reads (Recall's `wellbore_uwi`, `log_source`,
+  its delivery flows: each column a mapping of an active flow reads (WellDB's `wellbore_uwi`, `log_source`,
   `curves.curve_unit`), with every route by which a value of it reaches the record (a copy, the mapping's steps, a
   lookup, a search, the dataset's key) and why a route cannot be searched (an expression, a cached table). The new
   **Search terms** page refines them: renamed to what the people searching call them, left out of the explorer, searched
@@ -40,7 +63,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   condition, its chip naming the column. Nothing is searched in the ledger or the cache. Every property keeps every
   condition it had, and gains **is none of**. New tables `osdu.SearchTerm` and `osdu.SearchTermRefinement` (migration
   `SearchTerms`, module 1.32.0); new routes under `/api/v1/delivery/search-terms`, and `term` on an explorer condition
-  ([osdu/docs/search-terms.md](osdu/docs/search-terms.md)).
+  ([osdu/docs/reference/concepts/search-terms.md](osdu/docs/reference/concepts/search-terms.md)).
 
 - **The explorer searches one property as readily as every one.** Text typed in a search field is offered, under it, in
   one property instead of every one (the properties searched in lately for the type, then the record's name), or in
@@ -52,10 +75,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   of the grid (`columns` on `/explorer/search`, each hit's `values`). Conditions that only exclude start from every
   record, since the search service refuses a query that only excludes. The properties offered (`/explorer/fields`) are
   now the kind's schema, read from the Schema service (nested lists through them, a list of forms through its forms),
-  and what its first 20 records hold beyond it, such as the properties an index augmentation adds (`Equinor.*`), each
+  and what its first 20 records hold beyond it, such as the properties an index augmentation adds (`Augmented.*`), each
   with its origin, title and description; Group by groups a property of a nested list through it. Links made before
   conditions had names still open. Referenced by, Validate and the refresh are glyphs at the end of the place's line,
-  which now fits a 1024-pixel window ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching-a-property)).
+  which now fits a 1024-pixel window ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#conditions-and-properties)).
 
 - **A delivery that does not complete is undone, and the ledger names every id a delivery ever minted.** A delivery of one
   record is now a unit of work across its tries: every object it creates in OSDU, or sets out to create, is written to the
@@ -80,8 +103,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   deliveries it has to undo, lists the records holding them, and runs the undo (`GET /flows/{pipelineId}/undos`,
   `sqlflow records undos`); deliver, drain, undo, removal and delete-ledger results say what was undone. Deleting a record
   from the ledger leaves one whose undo is unfinished, since the undo reaches it through the record (docs:
-  `osdu/docs/atomic-delivery-plan.md`, `osdu/docs/protocols.md`, When a delivery does not complete,
-  `osdu/docs/operations.md`, Unfinished deliveries and their undo; decision 0012).
+  `osdu/docs/atomic-delivery-plan.md`, `osdu/docs/reference/concepts/protocols.md`, When a delivery does not complete,
+  `osdu/docs/reference/concepts/removal-and-reversal.md`, Unfinished deliveries and their undo; decision 0012).
 - **Inventory flows: every id an OSDU kind holds, compared with every ledger of the partition, for the orphan report.** A
   new flow kind, `flowType: inventory`, keeps inventories: each a kind (wildcards allowed), optionally narrowed by a search
   query, with the latest version of each record or every version. A build reads the kind whole through the search index
@@ -99,17 +122,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   artifact each rests on, its runs, a lookup by OSDU id across inventories and a CSV export; an inventory flow's pipeline
   has an Inventories tab (`GET /inventories`, `/inventories/{partition}/{id}` with `records`, `runs` and `export`,
   `/inventories/lookup`, `/flows/{pipelineId}/inventories`; `sqlflow inventory list|show|records|lookup|runs|export`)
-  (docs: `osdu/docs/inventory-plan.md`, `osdu/docs/documents.md`, Inventory flow, `osdu/docs/operations.md`, Finding
-  orphans; decision 0013).
+  (docs: `osdu/docs/inventory-plan.md`, `osdu/docs/reference/flow/inventory.md`,
+  `osdu/docs/reference/guides/finding-orphans.md`; decision 0013).
 - **An assertion test of records just changed is skipped until the search index has had time to list them.** OSDU indexes
   a change from a queue, so a test run right after a delivery judged an index that did not list the delivery yet and failed
-  on records that were fine (after a full redelivery of the Recall external units, 9 of 13 tests). Before it judges
+  on records that were fine (after a full redelivery of the WellDB external units, 9 of 13 tests). Before it judges
   anything, a run now reads from the ledger what this module's delivery flows wrote to, removed from or restored in OSDU in
   the partition within each test's `indexSettleSeconds` (300 by default, `defaults.indexSettleSeconds` and per test, 0 to
   3600, 0 judging at once), and a test of an entity type changed within it is skipped, not failed, saying which ledgers
   changed what, the latest change, and from when a run judges it. The run's summary names the skipped tests. Migration
-  `PurgedRecordRecency` (module 1.28.0) indexes `osdu.PurgedRecord` by time for it (docs: `osdu/docs/documents.md`,
-  Records the index may not list yet).
+  `PurgedRecordRecency` (module 1.28.0) indexes `osdu.PurgedRecord` by time for it (docs:
+  `osdu/docs/reference/flow/assertion.md`, Records the index may not list yet).
 - **Delete ledger: a flow's whole ledger, every interface's, in one action.** The flow overview's **Delete ledger** queues a
   run of the pipeline (operation `delete-ledger`, `POST /flows/{pipelineId}/ledger/delete`), so no delivery of the pipeline
   runs beside it. It removes every record OSDU holds from it first, reversibly, through the same removal a selection takes,
@@ -120,7 +143,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   complete keeps every interface it refers to as it was. Nothing happens unless the partition the ledger is kept in is
   named (`confirm`), and the run checks it again; a record OSDU refuses to remove keeps the whole ledger, so OSDU never
   holds a record the ledger forgot; a worker holding a lease, or a route with no reversible removal (dspdm, etp), refuses
-  it. The audit trail stays (docs: `osdu/docs/ledger.md`, Deleting the ledger).
+  it. The audit trail stays (docs: `osdu/docs/reference/concepts/removal-and-reversal.md`, Deleting the ledger).
 - **A removal can delete the records it takes out of OSDU from the ledger too, as an extra step.** The removal dialog's
   "Also delete from the ledger" (API `purgeLedger`, with the `record` and `everything` scopes only) deletes each record OSDU
   answered for (removed, or already gone): its attempts, search entries and row. Only a record the ledger marks deleted
@@ -128,7 +151,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   `osdu.PurgedRecord` (key, source key, label, OSDU id, last version, attempts deleted, who, when, which intervention;
   migration `RecordPurges`, module 1.27.0), and a deleted record's page answers "Deleted from the ledger" with who and when.
   Deleting records deletes only those records: a row still in the source is delivered again, as a new record, by the next
-  run that reads it, and nothing holds or blocks it (docs: `osdu/docs/ledger.md`, Deleting a removed record from the ledger).
+  run that reads it, and nothing holds or blocks it (docs: `osdu/docs/reference/concepts/removal-and-reversal.md`,
+  Deleting removed records from the ledger).
 - **Records removed from OSDU earlier are deleted from the ledger alone.** The removal dialog is the one **Remove** surface,
   in two parts: **In OSDU** (the four scopes, and "Leave as it is" for records removed already) and **In the ledger**
   ("Delete from the ledger"), every choice marked reversible or permanent. "Leave as it is" with the ledger step deletes the
@@ -150,7 +174,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   earlier version back does not offer it (docs: `osdu/docs/reversal-plan.md`, Restoring the previous version).
 
 - **A mapping can make its records' OSDU ids from the key's own values: `dataset.idFrom: key`.** The id reads as the code
-  it stands for, as OSDU's reference catalogs name theirs (`dev:reference-data--ExternalUnitOfMeasure:RECALL::GAPI` beside
+  it stands for, as OSDU's reference catalogs name theirs (`dev:reference-data--ExternalUnitOfMeasure:WELLDB::GAPI` beside
   `LIS-LAS::GAPI`), instead of the delivery key's 32 hexadecimal digits, which stay the default for every mapping that
   does not say so. Values are trimmed, keep their case and are percent-encoded as UTF-8 where an id cannot carry them
   (`G/CC` is `G%2FCC`, `%` is `%25`); one key column keeps its colons, several are joined with `:`; an empty value, text
@@ -159,16 +183,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   a record first claims such an id, the intake asks OSDU through the flow's read back whether a record is already there:
   one no record of the ledger claimed is another system's, and the record is held instead of writing a new version of
   it. The mapping builder sets the option, the shape and the catalog show it, and the record preview reads such an id
-  back into its key (docs: `osdu/docs/mapping-templates.md`, The OSDU id).
+  back into its key (docs: `osdu/docs/reference/flow/mapping.md`, The OSDU id).
 
 - **A mapping writes inside an object the schema leaves open, such as `data.ExtensionProperties`.** The template marks an
   object that declares no properties, names no type for its keys and refuses none as open, and any path inside it is a
   variable of no type: a mapping lays out objects, values, literals, lists and a `$forEach`'s items there, at any depth,
-  each value written as it arrives. The Recall well logs use it to keep Recall's own unit spellings beside the
-  partition's unit references (`ExtensionProperties.Recall.Curves[].OriginalUnit`). An object that refuses undeclared keys
+  each value written as it arrives. The WellDB well logs use it to keep WellDB's own unit spellings beside the
+  partition's unit references (`ExtensionProperties.WellDB.Curves[].OriginalUnit`). An object that refuses undeclared keys
   or offers a choice of forms is not open, and a property the schema does not declare there is refused as before. The plan
   refuses a mapping that writes under a data key its flow preserves (`target.protocolOptions.preserveDataKeys`), since
-  every update would put the stored copy in its place, naming both (docs: `osdu/docs/mapping-templates.md`, Open objects).
+  every update would put the stored copy in its place, naming both (docs:
+  `osdu/docs/reference/flow/mapping-values.md`, Open objects).
 - **A run or a submission that went wrong is reversed: OSDU is put back, record by record, as it was before it.** A record
   the source updated gets back the version OSDU held before (read from storage and written again as a new version, as it
   was, with its own `bulkURI` on a Wellbore DDMS record), and a record it created is removed again at the reversible
@@ -189,7 +214,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   request and the reverse run refuse anything else for the same reason (`GET /flows/{pipelineId}/reversible`). The API answers it at `POST /flows/{pipelineId}/reverse` and `.../reverse/preview`,
   `GET /flows/{pipelineId}/reversals`, `GET /reversals/{id}` and `GET /reversals/{id}/records`; the CLI at
   `sqlflow records reverse` and `sqlflow records reversals`
-  ([osdu/docs/operations.md](osdu/docs/operations.md#reversing-a-run), [osdu/docs/reversal-plan.md](osdu/docs/reversal-plan.md)).
+  ([osdu/docs/reference/concepts/removal-and-reversal.md](osdu/docs/reference/concepts/removal-and-reversal.md#reversing-a-run-or-a-submission),
+  [osdu/docs/reversal-plan.md](osdu/docs/reversal-plan.md)).
 - **A record page's OSDU tab checks the record it shows against the schema of its kind.** Its **Validation**, under the
   record's Checks, is the explorer's: by default against what the partition's Schema service holds, or a saved template,
   with the problems, what each value takes and how to fix it, the parts not checked, the references storage does not
@@ -198,7 +224,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   partition is checked where it lives; a record the tab opens after it is checked the same way. A flow whose route keeps
   no record in storage (dspdm, etp) has none to check, and the pane says so. The API answers it at
   `POST /flows/{pipelineId}/osdu/validate`, beside `osdu/read`, with the body and answer of `/explorer/validate`
-  ([osdu/docs/explorer.md](osdu/docs/explorer.md#validate)).
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#validate)).
 - **Records are redelivered from the Records tab, and brought up to date rather than sent blindly.** The selection bar
   offers **Redeliver** for the ticked records or every record the filter matches, the overview for every delivered record
   of the interface, and a record's own page for that record, through one dialog with two ways side by side. **Bring up to
@@ -219,7 +245,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   delivered record, and lists the route's parts under the stats' `redeliverParts`. A plan's outcome counts the records it
   would send with their document and with their payload, and names the first 20. An intervention naming more than 100
   records records how many rather than each key, and raises one event for the flow
-  ([osdu/docs/operations.md](osdu/docs/operations.md), Redelivering records).
+  ([osdu/docs/reference/concepts/removal-and-reversal.md](osdu/docs/reference/concepts/removal-and-reversal.md#redelivering-records), Redelivering records).
 - **Every document is validated before it is sent, and its verdict is recorded.** One module judges a record against its
   template (`osdu/src/SqlFlow.Delivery/Validation`): each template version is compiled once into the rules it states
   (types, formats, patterns, enumerations, constants, lengths, bounds, item counts, uniqueness, required properties at
@@ -236,7 +262,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   an issue naming the rules it breaks; a release accepts the document as it is (`Record.AcceptedMetadataHash`), and the
   gate sends it once whatever its verdict. A run's progress lines count the verdicts, and each drain ends with one line
   per template naming the rules broken most often. Check values and the `conforms` assertion run on the same module
-  ([osdu/docs/documents.md](osdu/docs/documents.md), Validation before a record is sent;
+  ([osdu/docs/reference/concepts/preflight.md](osdu/docs/reference/concepts/preflight.md#validation-before-a-record-is-sent),
+  Validation before a record is sent;
   [osdu/docs/validation-plan.md](osdu/docs/validation-plan.md)).
 - **The explorer checks what OSDU holds against what OSDU expects.** A record's **Validation**, under its Checks, checks
   the version in view against the schema the partition's Schema service holds for its kind (`GET
@@ -246,8 +273,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   holds nothing under, looked up in one batch. A kind with no schema says so and offers a saved template. The shield in
   the list's toolbar checks the first 1,000 records a search finds: their outcomes, the rules broken most often with
   how many records break each and an example, and each record with its first problem. `POST
-  /delivery/explorer/validate` and `.../validate-list` answer it ([osdu/docs/explorer.md](osdu/docs/explorer.md),
-  Validate).
+  /delivery/explorer/validate` and `.../validate-list` answer it
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#validate), Validate).
 - **Every problem a check finds says what was found, what the schema takes there and how to fix it.** One module turns a
   verdict into guidance (`osdu/src/SqlFlow.Delivery/Validation/ValidationGuide.cs`): the value found (or `absent`), one line
   saying what a value there is, the fix for each rule (leave an optional property out rather than null, the values an
@@ -260,7 +287,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   the release in the Templates page's local copy, a kind with none remembered too; a repository that cannot be reached
   is said, and the guidance quotes the schema alone. The explorer shows it under each problem, in each field mark's
   tooltip and on each rule Validate these records counts; its answers carry it as `guidance` and each rule's `expected`
-  and `advice` ([osdu/docs/explorer.md](osdu/docs/explorer.md), Guidance).
+  and `advice`
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#validate), Validate).
 
 - **Blocked records are grouped by the issue that keeps them blocked.** A flow's page has an **Issues** tab: a
   million held or failed records read as the handful of issues they share, each its error with the parts each record
@@ -276,7 +304,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   timeline shows the release that reached it, a whole flow's or an issue's included. `GET /delivery/flows/{id}/issues`,
   `GET .../issues/{issue}`, `POST .../issues/{issue}/release`, the records listing's `issue` filter, `run` on a
   record's release, and `sqlflow records issues` and `records release --issue` answer it
-  ([osdu/docs/ledger.md](osdu/docs/ledger.md), Issues).
+  ([osdu/docs/reference/concepts/record-lifecycle.md](osdu/docs/reference/concepts/record-lifecycle.md#issues), Issues).
 - **A set error is released whole.** Each issue says whether it is a **set error** (every record carries the same
   error, the mistake made once in the dataset, a cache entry, the mapping or a legal tag) or **row errors** (each record
   names its own row's value), read from the values its records' errors name; the Issues tab writes a set error's value
@@ -293,9 +321,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   together in one `nested(...)`, and a list or an object by every value it holds; a value's words and whether a record
   holds one beside it. How each value is indexed is read from the saved template of the record's kind; where it cannot
   say, the query is written from the value and marked guessed. How it was written is a tooltip away.
-  `POST /delivery/explorer/element-queries` answers it ([osdu/docs/explorer.md](osdu/docs/explorer.md), The query of an
-  element). Every list of records says what it is read by, exactly as sent: the kind and the Lucene query its search,
-  place and values make, copied or taken into the search box to be changed there.
+  `POST /delivery/explorer/element-queries` answers it
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#a-record), A record).
+  Every list of records says what it is read by, exactly as sent: the kind and the Lucene query its search, place and
+  values make, copied or taken into the search box to be changed there.
 - **The explorer builds a dimension while it browses.** **Build a dimension**, in the explorer's header, docks a builder
   beside the records, and the records are browsed, searched and drilled into as ever; the workbench's side bar folds
   while it is docked, and comes back as it was left when it closes. The kind's saved template says
@@ -312,7 +341,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   problem pointed at its line and column; the example is the record in view's own key, then the keys held by the most
   records, each made into its row by the build's own labelling, cleaning and counting. The draft is part of the
   explorer's address, and nothing is saved. `GET /delivery/explorer/dimension/candidates`, `POST .../keys` and
-  `.../compose` answer it ([osdu/docs/explorer.md](osdu/docs/explorer.md), Building a dimension).
+  `.../compose` answer it
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#building-a-dimension), Building a dimension).
 - **A dimension's Definition shows how its YAML builds it.** The Definition tab draws the dimension left to right: the
   records searched for every distinct key, each step of records found by id (a wellbore, then its field and its
   country), and the table, every path read in the template of the records it is read from (the forms of a `oneOf`
@@ -335,7 +365,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   value picked narrows the records to it. A record opens in the record inspector under the place it sits in, with its
   links, the records that mention it, and, for an id OSDU holds nothing under, the records whose ids are near it.
   Everything is in the page's address. The reads are the `delivery-explore` operation, answered by the control plane
-  as they are asked, and `/api/v1/delivery/explorer/*` ([osdu/docs/explorer.md](osdu/docs/explorer.md)); the MCP server offers none of them.
+  as they are asked, and `/api/v1/delivery/explorer/*`
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md)); the MCP server offers none of them.
 - **Any two versions of an OSDU record compare side by side.** The record inspector's Compare, on a record page's OSDU
   tab as in the explorer, puts any two versions OSDU keeps side by side with what was added, changed and removed, in
   place of the comparison with the latest alone; a version is read once and kept.
@@ -352,7 +383,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   record by what the caller holds and read everything the ledger kept of it (its state, every attempt, the file and
   row it came from, who acted on it), read a flow at a glance, its submissions and the audit trail, the partitions and
   the central configuration, a cache's health and history, mappings, templates and OSDU schemas, the assertion board
-  and dimension builds, check and scaffold a mapping, and, under the `operate` scope, probe a target, verify, sync,
+  and dimension builds, check and scaffold a mapping, and, under the `operate` policy every signed-in user holds, probe a target, verify, sync,
   release and redeliver records and decide cache changes, each recorded in the audit trail by the endpoint it calls.
   The server returns no data: not what OSDU holds for a record, not a source row or a rendered document, not a cached
   value or a dimension's values, and the records an assertion quotes are counted rather than shown; SQLFlow's tools
@@ -370,7 +401,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   and the types holding what its ids are checked against, since a render looks every id a `ref` or an `id` builds up
   among the cached records of the entity type it names. The second kind was missing, so cache types a mapping never
   names (LogType, LogCurveType, LogCurveFamily, TechnicalAssuranceType and the like) had a writer and no reader and
-  showed as leaf nodes; on the Recall estate that was 8 of the 14 types its reference flow fills. They now feed the
+  showed as leaf nodes; on the WellDB estate that was 8 of the 14 types its reference flow fills. They now feed the
   mapping, the delivery flow is ordered after the cache flow filling them, and the cache page lists the flow among
   their readers. The kinds a mapping searches are its reads as well. The entity type of a `ref` written without one is
   read off the template the mapping pins, from the module database; a host without it (the offline `sqlflow lineage`),
@@ -448,9 +479,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   this one. The render records it as an unverified reference (cache usage kind `unverified`), the preview lists the
   references a record carries unverified, and a later refresh that holds the record tags the change `found`, so the
   record is built again against it.
-- **The recall WellLog mapping combines the partition's reference data with the database's tables.** Its units are a
-  `$coalesce`: the Recall spelling through the unit table as a unit the partition holds, else the partition's own units
-  by ID, Code or Name as petrodb-api matches a unit, else the table's translation unverified; the curve dictionary's type
+- **The WellDB WellLog mapping combines the partition's reference data with the database's tables.** Its units are a
+  `$coalesce`: the WellDB spelling through the unit table as a unit the partition holds, else the partition's own units
+  by ID, Code or Name as the facade service in front of the DDMS matches a unit, else the table's translation unverified; the curve dictionary's type
   and family codes go out `$unverified`. The five sample logs render unchanged; on dev, a curve in psia or mD/mD, or a
   curve type the partition does not hold yet, now goes out with an unverified reference instead of holding its log or
   going without it.
@@ -460,16 +491,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   leaves the property out when it is optional, with the id and the types looked in as the reason, instead of reaching
   OSDU as a reference to nothing; a record found is a dependency of the render, so a later version that drops it reaches
   the record. A version holding no record of that entity type answers nothing, so a mapping whose cache holds no
-  reference data renders as before. This is petrodb-api's OSDU unit cache (units matched against the partition's
+  reference data renders as before. This is the facade service's OSDU unit cache (units matched against the partition's
   UnitOfMeasure records), widened to every reference a mapping builds. Looking the id up rather than a code finds a
-  record whatever its code says (dev holds `LogCurveType:Equinor-RW` with the code `Equionr:RW`, and
-  `LogCurveFamily:EQ-CPI%20Qual%20Flag` with `EQ-CPI Quality Flag`), and a stray record beside it decides nothing (dev
+  record whatever its code says (dev holds `LogCurveType:Local-RW` with the misspelt code `Lcoal:RW`, and
+  `LogCurveFamily:Local-CPI%20Qual%20Flag` with `Local-CPI Quality Flag`), and a stray record beside it decides nothing (dev
   holds `UnitOfMeasure:degC:` beside `UnitOfMeasure:degC`).
-- **The sample estate captures its partition's reference data from OSDU.** `recall/cache/recall-reference-00-cache.yaml`
-  searches the nine reference types a Recall well log points to (UnitOfMeasure, VerticalMeasurementType,
+- **The sample estate captures its partition's reference data from OSDU.** `welldb/cache/osdu-reference-00-cache.yaml`
+  searches the nine reference types a WellDB well log points to (UnitOfMeasure, VerticalMeasurementType,
   WellLogSamplingDomainType, LogType, LogCurveBusinessValue, TechnicalAssuranceType, LogCurveType, LogCurveMainFamily,
   LogCurveFamily) with the delivery flow's own endpoint, credentials and partition, beside the lookup tables
-  `recall-lookups-00-cache` reads from the database: the WellLog mapping translates a Recall value through a table and
+  `welldb-lookups-00-cache` reads from the database: the WellLog mapping translates a WellDB value through a table and
   the id it builds is checked against the captured records. On dev it captures 47,330 records (43,423 of them curve
   types) in about 20 seconds, and the five sample logs render unchanged against it. The suites import
   `osdu/samples/cache-records` as its capture, and the GUI end-to-end seed does too.
@@ -527,36 +558,38 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   the ingestion tables and the flow's parameters like any other, and lineage and coverage see them. Mistakes are refused
   with what to write instead, including a condition in the old `column is text` form, which is refused with the
   expression that replaces it. Heavy computation stays in the ingestion SQL: an expression is at most 2000 characters and
-  nests at most 48 levels ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md#expressions)).
+  nests at most 48 levels ([osdu/docs/reference/flow/mapping-expressions.md](osdu/docs/reference/flow/mapping-expressions.md)).
 - **The ref modifier builds a reference from the entity type the property points to.** `- ref` writes
   `{$param.dataPartition}:<group>--<Entity>:{$value}:` for a property whose template relationship names one entity type;
   `- ref: UnitOfMeasure` picks one of several, and `- ref: reference-data--UnitOfMeasure` names any. It is checked and
   rendered exactly as an `id` template is, and one the template does not settle fails the preflight with the types the
   property points to. The sample WellLog mapping's seven `{$value}` references use it
-  ([osdu/docs/documents.md](osdu/docs/documents.md#ref)).
+  ([osdu/docs/reference/flow/mapping-modifiers.md](osdu/docs/reference/flow/mapping-modifiers.md#ref)).
 - **Fixtures share their parameters, and `sqlflow fixtures update` writes their expected records.** `fixtureDefaults.parameters`
   gives every fixture the parameter values it renders with, and a fixture's own `parameters` replace them name by name.
   `sqlflow fixtures update <flow.yaml>` renders each fixture as the preflight does and writes what it renders into its
   `expected` block, touching nothing else in the file, leaving a fixture that already matches as written, and skipping,
   with the reason and a failing exit code, one whose record would be held or whose `expected` cannot be edited in place;
-  `--dry-run` says what would change ([osdu/docs/reference/cli/delivery.md](osdu/docs/reference/cli/delivery.md#fixtures)).
+  `--dry-run` says what would change (fixtures were removed later:
+  [osdu/docs/reference/flow/mapping.md](osdu/docs/reference/flow/mapping.md#header-keys)).
 - **The mapping builder edits expressions.** An entry can be an Expression input, its condition is an expression typed
   in one line, a repeat entry takes the condition its rows are kept by, and the modifier list offers `ref`; the builder
   checks each with the loader's own rules as the draft is composed, and writes them back as the tree reads them.
 
-- **The sample estate translates Recall values with petrodb-api's own tables.** Its unit maps and curve dictionary were
-  stand-ins written for the samples; they are now the tables petrodb-api applies, held as data rather than code. The
+- **The sample estate translates WellDB values with the facade service's own tables.** Its unit maps and curve dictionary
+  were stand-ins written for the samples; they are now the tables the facade service in front of the DDMS applies, held
+  as data rather than code. The
   curve unit map (78 entries), the depth and vertical unit map (8) and the curve dictionary (498 mnemonics) are CSV files
   in `samples/wells/cache/data/`, each loaded into an ingestion table by a pre and an ing flow of its own
   (`wells-units-01/02-curve`, `wells-units-01/02-depth`, `wells-curvedictionary-01/02`) and captured by the lookups
-  cache flow as `RecallUnits`, `RecallDepthUnits` and `CurveDictionary`. Being static data, the files and the flows that
-  load them sit in the source's cache folder beside the cache flows, and `flows/` holds only the flows of its data. petrodb-api matches a unit spelling ignoring
+  cache flow as `UnitAlias`, `DepthUnitAlias` and `CurveDictionary`. Being static data, the files and the flows that
+  load them sit in the source's cache folder beside the cache flows, and `flows/` holds only the flows of its data. The facade service matches a unit spelling ignoring
   case, so its spellings that differ only by case (`MPA` and `mpa`) are one row, as the tables' keys hold them. The well
-  log mapping renders what petrodb-api renders from them: curve units through the curve map, depth and vertical units
+  log mapping renders what the facade service renders from them: curve units through the curve map, depth and vertical units
   through the depth map, each resolved against the partition's units by `ID`, `Code`, then `Name`, and every curve's
   `LogCurveTypeID`, `LogCurveMainFamilyID` and `LogCurveFamilyID` from the dictionary by its mnemonic, which the reference
   cache flow now captures the two new types for. The sample cache records carry a record for every code the tables give.
-  The dictionary document `RecallUnits.yaml` is gone from the samples; the dictionary form itself is unchanged.
+  The dictionary document `UnitAlias.yaml` is gone from the samples; the dictionary form itself is unchanged.
 - **A `findBy` on a cached type's `id` finds the record by the code its id ends with.** A reference to OSDU reference
   data is the partition, the entity type and a code (`dev:reference-data--LogCurveFamily:Gamma%20Ray:`), so a lookup
   table that names reference data by its code (a curve dictionary giving each mnemonic its family) finds the record it
@@ -586,7 +619,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   render meeting one holds the record whatever `required` says. An id is written with the version colon added where
   the cached value leaves it out, and the record it names is recorded among the record's cache dependencies. The
   documents describe caching only the mappings OSDU marks identical
-  ([osdu/docs/documents.md](osdu/docs/documents.md#record-ids-held-in-cached-fields)).
+  ([osdu/docs/reference/flow/mapping-lookups.md](osdu/docs/reference/flow/mapping-lookups.md#record-ids-held-in-cached-fields)).
 - **A replace reads its table from the partition's cache.** `replace: cache.<Type>` matches the incoming value on
   `match` (by default the table's key) and replaces it by the matched row's `field` (by default the one field a lookup
   table holds beside its key, `value` for a dictionary of pairs); `otherwise` works as for a written table. Any cached
@@ -601,9 +634,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   where the replaced value is looked up in the cache, lists the values a replace (written or cached) can give that find
   nothing there. The mapping builder offers a replace as values listed in the mapping or a table in the cache, with the
   partition's lookup tables and their fields to pick from, and the builder's cache types carry a lookup table's key. The
-  sample WellLog and WellboreTrajectory mappings translate units through `cache.RecallUnits`, and WellLog fills
+  sample WellLog and WellboreTrajectory mappings translate units through `cache.UnitAlias`, and WellLog fills
   `LogCurveFamilyID` through `CurveClasses` and the reference cache's new `LogCurveFamily` type
-  ([osdu/docs/documents.md](osdu/docs/documents.md#a-table-read-from-the-cache)).
+  ([osdu/docs/reference/flow/mapping-modifiers.md](osdu/docs/reference/flow/mapping-modifiers.md#replace-from-the-cache)).
 - **A cache flow reads lookup tables out of ingestion tables.** A type with `table:` (a three-part name), `key:` (the
   column rows are keyed by) and `fields:` (columns, bare or `{ column, as }`) is read over the flow's
   `source.connection`, declared and checked as a delivery flow's is, so the same estate that loads a table through its
@@ -613,7 +646,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   more than 100,000 rows. A plan counts the rows. Lineage orders the cache flow after the ingestion flow that loads its
   table. The sample estate lands a curve dictionary (`data/curve-dictionary`, `wells-curvedictionary-01-pre`,
   `wells-curvedictionary-02-ing`) and holds it as `CurveClasses` in `wells-lookups-00-cache`
-  ([osdu/docs/documents.md](osdu/docs/documents.md#cache-flow)).
+  ([osdu/docs/reference/flow/cache.md](osdu/docs/reference/flow/cache.md#ingestion-tables-table)).
 - **Dictionary documents: lookup tables kept in the repository and held in the partition cache.** A dictionary
   (`documentType: dictionary`, one table per file, `dictionaries/<name>.yaml`) is a dictionary of pairs, or gives each
   key the named values its `fields` list; every key and value is text exactly as written, and `~` is no value. A cache
@@ -623,8 +656,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   records each dictionary type's key, fields and file, and leaves one whose file is missing or invalid out with a
   warning; lineage shows the file the cache flow reads; the proposal preflight checks a dictionary before it is pushed.
   The OSDU cache page shows where each type comes from, a lookup table's key, and how a mapping reads a lookup row. The
-  sample estate holds `dictionaries/RecallUnits.yaml` through `cache/wells-lookups-00-cache.yaml`
-  ([osdu/docs/documents.md](osdu/docs/documents.md#dictionary)).
+  sample estate holds `dictionaries/UnitAlias.yaml` through `cache/wells-lookups-00-cache.yaml`
+  ([osdu/docs/reference/flow/dictionary.md](osdu/docs/reference/flow/dictionary.md)).
 - **The partition cache holds lookup tables beside OSDU records.** A cached type now has an origin: `osdu` (searched on
   the platform, as before), `table` (an ingestion table) or `dictionary` (a dictionary document in the repository). A
   lookup table's rows are kept under their keys as `lookup--<Name>`, and are versioned, traced and rolled out like every
@@ -637,20 +670,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   ([osdu/docs/cache-lookups-plan.md](osdu/docs/cache-lookups-plan.md)).
 - **A replace can give no value, and say what a value its table does not list becomes.** `NONE: ~` replaces with no
   value, so `required` decides, and `otherwise`, written beside the table, makes an unlisted value no value (`~`) or a
-  fixed text instead of passing it on unchanged ([osdu/docs/documents.md](osdu/docs/documents.md#replace)). The mapping
-  builder writes and reopens both.
+  fixed text instead of passing it on unchanged
+  ([osdu/docs/reference/flow/mapping-modifiers.md](osdu/docs/reference/flow/mapping-modifiers.md#replace)). The mapping builder
+  writes and reopens both.
 
 - **Every capture of a partition's cache reads the partition's system properties, and a search asks regardless of case
   where the partition allows it.** A refresh, and a cache flow's plan, asks the indexer's and the search service's
   `GET /info` for the feature flags they report for the partition (`featureFlagStates`), and the refresh keeps them with
   the version (`[osdu].[CacheVersion].SystemPropertiesJson`, migration `CacheSystemProperties`, module version 1.11.0),
-  tagged as system properties apart from the cached records ([osdu/docs/documents.md](osdu/docs/documents.md#cache-flow)).
+  tagged as system properties apart from the cached records
+  ([osdu/docs/reference/concepts/partition-cache.md](osdu/docs/reference/concepts/partition-cache.md#system-properties)).
   A service that cannot be asked fails nothing and changes nothing the cache knew of it; a property the engine relies on
   that no service reports is recorded as unknown, with the reason; a changed state writes a version and a failed read
   never does; an import keeps the current properties. Where the indexer reports `featureFlag.keywordLower.enabled` on,
   a search that finds no record exactly asks the `keywordLower` sub-field once, and takes its answer only when it is one
   record: an exact answer always wins, and several that match once case is ignored hold the record
-  ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md#searches)). The render context of a mapping that
+  ([osdu/docs/reference/flow/mapping-lookups.md](osdu/docs/reference/flow/mapping-lookups.md#what-a-search-gives)).
+  The render context of a mapping that
   searches pins the state of the properties its lookups rely on (`systemProperties`); a mapping that only searches pins
   them in place of a cache version, read from the version's row without its records, so a capture that changes
   reference data renders none of its records again. The OSDU cache page lists them on a System properties tab,
@@ -660,7 +696,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 - **A mapping can search the platform for the record a reference names, instead of reading it out of the cache.** A
   `searches:` block declares the kind searched and pins the saved template whose schema says how that kind is indexed,
   and an entry reads `search.<name>.id` found by `findBy` lines tried in order
-  ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md#searches), decision
+  ([osdu/docs/reference/flow/mapping-lookups.md](osdu/docs/reference/flow/mapping-lookups.md#searches-and-search), decision
   [0009](osdu/docs/decisions/0009-searched-references.md)). Each lookup asks the search service, under the flow's own
   target, credentials and partition, for the one record whose property is exactly the value, with the query written the
   way the schema has the platform index the property. Exactly one record is the answer and none is a miss; several, a
@@ -773,7 +809,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 - OSDU flows in lineage, with the OSDU types, cache types and files on both sides, and each record's origin served
   from the ledger.
 - Delivery metrics on the meter `SqlFlow.Delivery`: settled tries per flow, route and outcome, and every HTTP call
-  attempt with its result, duration and retries (`osdu/docs/operations.md`).
+  attempt with its result, duration and retries (`osdu/docs/reference/concepts/run-trace-and-metrics.md`, Metrics).
 - The sample estate covers three route types, each decided by what an interface declares: the source document now
   delivers documents through the file service and directional surveys with their stations through the Wellbore DDMS,
   beside the wellbores and well logs it already carried. Their schemas are the real ones, captured from the OSDU data
@@ -781,7 +817,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   repository carries what it pins and can import it again without the network.
 - `osdu/docs/test-matrix.md`: for every route type, DDMS shape and engine area, the suite that proves it, what that
   proof rests on (a fake built from the service's own contract, or a real SQL Server), and what no suite proves.
-- Every view of a source is about one of its interfaces (`osdu/docs/operations.md`): the GUI carries an interface
+- Every view of a source is about one of its interfaces
+  (`osdu/docs/reference/concepts/gui.md`, A delivery flow's page): the GUI carries an interface
   picker whose choice travels in the URL, a source's Delivery tab lists its interfaces in the order a run takes them
   with each one's route, what it waits for and its counts, and the probe, the release and every removal act on the
   interface that is showing. A multi-interface source's Records and Submissions tabs could not be opened before this,
@@ -791,7 +828,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   try it took, its steps and its errors, from a terminal or a node with no control plane to reach. The source key finds
   a record as surely as the delivery key.
 - The `etp` route, which writes Energistics data objects into dataspaces of the Reservoir DDMS over ETP 1.2 on a
-  WebSocket instead of through an OSDU service (`osdu/docs/documents.md`, `osdu/docs/protocols.md`). The client is the
+  WebSocket instead of through an OSDU service (`osdu/docs/reference/flow/ddms-services.md`,
+  `osdu/docs/reference/flow/routes.md`). The client is the
   module's own: the messages and data types it uses are C# records written from the pinned protocol, and a test
   round-trips every one of them against a codec driven by that same file. An object's identity is read out of its own
   XML and checked before a session opens, a dataspace is created only when it is missing and with the record's own ACLs
@@ -814,8 +852,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   pending, the whole interface or the keys given, without a control plane to reach.
 - What one control plane replica costs and how an operator recovers from its absence, and the ledger's retention and
   backup policy: what every table of the `osdu` schema holds, what grows, what may be pruned and what never may
-  (`osdu/docs/operations.md`, `osdu/docs/decisions/0005-ledger-retention.md`). The retention pass now clears the
-  captured run log of settled activities as well as aging out attempts, and answers both counts.
+  (`osdu/docs/reference/concepts/availability-and-retention.md`, `osdu/docs/decisions/0005-ledger-retention.md`). The
+  retention pass now clears the captured run log of settled activities as well as aging out attempts, and answers both
+  counts.
 - Generic extension points in the vendored SQLFlow, each in a `sqlflow:` commit: a registered flow kind describes its
   files and datasets in lineage (anchored at the flow's folder, bounded to the catalog's widths, and swept once no
   declaration names them), a flow's file selection is read from its stored definition, a search contributor can
@@ -823,22 +862,64 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **OSDU Delivery is generic: no company's names or data remain.** The code, the GUI, the documentation, the samples
+  and the tests describe one generic estate, a well database called WellDB: flows, batches and schedules are named
+  `welldb-...`, a source's code prefix is `WELLDB::`, the lookup tables are `UnitAlias`, `DepthUnitAlias` and
+  `CurveDictionary`, partition-local reference codes are `Local-...`, an index augmentation is `Augmented.*`, and the
+  example legal tag is `dev-osdu-default-legal`. The sample estate is `osdu/samples/welldb`, landing into `pre` and
+  keying into `silver` tables, with synthetic logs and curves in place of real ones. `osdu/tools/SampleData` generates
+  them (`--out <data folder> [--logs <n>] [--seed <n>] [--date <yyyyMMdd>]`, `--lookups <cache data folder>`):
+  deterministic for a seed, with no network and no credential, where it used to export real logs from a warehouse. The
+  test projects find the repository from a path baked into their assembly, so the suites pass however they are built
+  ([osdu/docs/reference/flow/overview.md](osdu/docs/reference/flow/overview.md)).
+
+- **The MCP server's instructions say what OSDU Delivery is and send a question to the page that answers it.** A
+  client's `initialize` reads that OSDU Delivery extends SQLFlow and that its command line is SQLFlow's `sqlflow` with
+  the OSDU verbs added, so everything said of SQLFlow's tools and corpus applies to it. A "how do I" question goes to
+  the pattern catalog (`delivery-guide-pattern-catalog`) before a search; the instructions list each kind's operations
+  and payload for `trigger_run` and every record state, and no longer recommend a tool the server withholds. The
+  inventory flow's key census is registered, so `validate_flow`, `list_flow_keys` and `describe_flow_key` know
+  `flowType: inventory`, and the scaffold tool says what a scaffold holds
+  ([osdu/docs/reference/guides/mcp.md](osdu/docs/reference/guides/mcp.md#documentation-and-flow-language)).
+- **`sqlflow validate` reads the files a flow names beside it.** A delivery flow's pinned mapping (`render.mapping`, or
+  an interface's `mapping`) is found and read as a run finds it, and so is every dictionary a cache or dimension flow
+  names, so a missing or broken one fails offline (`<file>: render.mapping: Mapping 'Wellbore@1.0.0' was not found under
+  '../mappings'. Expected one of: ...`) rather than at the repository sync, `sqlflow check` or the first run. Parsing
+  alone (the estate scan, the sync, a node) still keeps the flow. An unknown `documentType` is answered with what a
+  mapping and a dictionary each are, and an unknown `flowType` with all six kinds, `inventory` included. The check is a
+  generic extension point of the vendored SQLFlow, `RegisteredFlowDocument.CheckOffline`, which `sqlflow validate` alone
+  runs ([osdu/docs/reference/cli/validate.md](osdu/docs/reference/cli/validate.md#delivery-flow)).
+- **`sqlflow check --connect` holds the mapping's columns against the tables, and says why a run reads what it reads.**
+  With the connection it opens the tables as a run does and refuses a mapping column, or a provenance column the flow
+  names, that the tables lack, naming it. Its output adds a `reads <why>` line and an `issue` line for each problem, and
+  `--json` adds `why` and `issues` under `read`, whose `selection` is what the next run reads, a full read included when
+  the rules moved ([osdu/docs/reference/cli/check.md](osdu/docs/reference/cli/check.md#with---connect)).
+- **A probe asked for is recorded and counted as a scheduled one is.** **Probe target** on a flow's page, `POST
+  /flows/{pipelineId}/probe` and the MCP tool take the scheduled probe's path: a `probe` activity in the audit trail
+  under the caller (`user:<subject>`; the schedule's under `service:schedule`), a count on the probe metric, and log
+  lines naming the flow and who asked. A flow whose ledger cannot be placed is not probed (422 "The probe could not be
+  recorded"), and a probe its caller stops is recorded `cancelled`. A probe left open, scheduled or asked for, is closed
+  15 minutes after it started by the next probe of that interface or the next scheduled pass. A probe asked for used to
+  answer in the request alone
+  ([osdu/docs/reference/concepts/run-trace-and-metrics.md](osdu/docs/reference/concepts/run-trace-and-metrics.md#watching-the-targets)).
+
 - **A search term is a source table's column, named by it, once however many pipelines read the table.** The terms are
   extracted from the pipelines: every active delivery flow's record table and dataset tables, with the mapping it renders
-  them with. Two flows reading one table (the Recall well logs rendered by WellLog 1.4.0 and 1.5.0, each under a source
+  them with. Two flows reading one table (the WellDB well logs rendered by WellLog 1.4.0 and 1.5.0, each under a source
   system of its own) give one term, `WellLog.wellbore_uwi`, where they gave one per system; its routes list the kinds,
   mappings and systems that write them, the explorer searches the route of the kind in view where versions write a column
   differently, and a key's ids are made as each system's delivery makes them. Names, notes, exclusions and routes made on
   the duplicates move to the term each now is, the newer of two; the other is listed as no longer found. Migration
   `SearchTermSources` (module 1.33.0) rewrites `osdu.SearchTerm` (`Source` in place of `System` and `Dataset`, a row per
-  entity type) and keeps every refinement ([osdu/docs/search-terms.md](osdu/docs/search-terms.md#where-the-terms-come-from)).
+  entity type) and keeps every refinement
+  ([osdu/docs/reference/concepts/search-terms.md](osdu/docs/reference/concepts/search-terms.md#where-the-terms-come-from)).
 
 - **A record's linked records read by type, and a long name no longer runs under its icons.** The inspector's Linked
   records (the explorer's and every record page's) groups the records a record names under a heading per type with how
   many there are, names each by its unique part with its copy on the row's hover, and lists the paths that name it in a
   column that never crowds the name: the first two, and the others behind **more**. A record's name everywhere gives way
   by its type first, so a long type clips instead of overlapping the copy and the actions beside it
-  ([osdu/docs/explorer.md](osdu/docs/explorer.md#a-record)).
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#a-record)).
 
 - **The explorer has one search field, and asks less of the eye.** The field in the header searches the place in view
   (the type picked, or every type) in place of a second field over a type's records; every type stays one click away.
@@ -847,7 +928,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   search finds nothing in it. A value picked from those held under **contains** or **starts with** is asked whole
   (**is**), and only the arrow keys choose the option Enter takes under a search field, so a pointer resting over the
   options no longer changes what Enter searches. The welcome's search syntax says how to search one attribute
-  ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching)). With a dimension's builder docked, the records keep the
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#searching)).
+  With a dimension's builder docked, the records keep the
   larger share of the width, a record's field names leave its values room in a narrow panel (on the record pages too),
   and the welcome stacks its panels without one covering another, so a record's links can be followed and every type
   browsed while a dimension is built.
@@ -868,7 +950,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   another id than the one it claimed, naming both, and sends nothing; and the worker sends nothing when a queued
   document's id is not its record's. A record that was only ever held names the id its latest render gives. Before, a
   same-flow collision failed the staging after five tries, and a render under a changed id would have been sent to the
-  new id while the ledger named the old one (docs: `osdu/docs/ledger.md`, One source, several flows).
+  new id while the ledger named the old one (docs: `osdu/docs/reference/concepts/submissions.md`,
+  One source, several flows).
 
 - **The explorer's welcome is a workbench view.** It fills the window as the browse view does, where it was a narrow
   column in a large card: **Recently opened** lists the records opened lately as the records grid (name, type and
@@ -876,7 +959,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   forgets them), and beside it **Types** offers **Browse every type** and the types browsed lately, over a **Search
   syntax** panel whose examples any partition answers. Each group of types has a glyph, the same in the welcome and in
   the list of types. `/` puts the cursor in the search that is the list's, and the header's controls are all 32px high
-  ([osdu/docs/explorer.md](osdu/docs/explorer.md#browsing)).
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#the-welcome)).
 - **The explorer searches inside the type picked from a field over its records.** Once a group, a type or a kind is
   picked, a search field stands over its records, in line with the filter over the types ("Search Wellbore by id, name
   or any text"), so a type found in the list is searched where its records are rather than from the field the page
@@ -888,7 +971,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   Enter on the field emptied (its hint says **clear**) lists every record of the type again, or of every type from the
   header, where the cross used to empty the field and leave the records narrowed, the search coming back the next time
   the field was drawn. **Edit** on the query sent puts it in the field that shows the search with the cursor at its end,
-  and a search sent leaves the cursor in the field ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching)).
+  and a search sent leaves the cursor in the field
+  ([osdu/docs/reference/concepts/explorer.md](osdu/docs/reference/concepts/explorer.md#searching)).
 - **A person's reads of a flow are answered at once, by the control plane.** A probe of a flow's target, a record read
   back from OSDU or read by id, its rows read from the ingestion tables, a preview, a scope's values and every explorer
   read used to be queued as a compute task for a node and polled; the control plane now runs the same operation in its
@@ -903,7 +987,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   credentials, the control plane is now given the flows' references in every shipped deployment (`flowEnv` and
   `privateNetworks` on `control-plane.bicep`, passed by `main.bicep` from `workerFlowEnv`; the same entries in
   `controlplane.yaml` and the compose control plane). The MCP server's `delivery_probe_target` returns the probe's
-  answer. ([osdu/docs/operations.md](osdu/docs/operations.md), the delivery API.)
+  answer. ([osdu/docs/reference/concepts/control-plane.md](osdu/docs/reference/concepts/control-plane.md#reads-a-person-waits-on-run-here),
+  Reads a person waits on run here.)
 - **The audit trail's detail reads at a glance.** The sheet an entry opens is wider, as wide as the window leaves beside
   the menu and never under 48rem, and leads with how the entry ended and what it was: an outcome pill, the action and
   the flow, the summary it recorded (the error, in red, when it failed), who started it, when and for how long, and the
@@ -1002,7 +1087,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   flags, and says they are set on the OSDU platform and never changed by OSDU Delivery. It gives one block per service
   with the endpoint read, each flag's state as an on or off chip, where the service says it was set, and the version
   whose refresh found it so, and marks the flag OSDU Delivery reads with what it changes. A `?tab=system` link still
-  opens it ([osdu/docs/operations.md](osdu/docs/operations.md)).
+  opens it ([osdu/docs/reference/concepts/gui.md](osdu/docs/reference/concepts/gui.md#cache)).
 - **A record's Document and Compare tabs are one tab, Render.** The Document tab showed the ledger's bookkeeping about
   a document it could not show: where a waiting document sat in its work batch (already on the situation line), three
   hashes (already on each dispatch in the timeline), the ids OSDU returned (already in the header and on the
@@ -1053,20 +1138,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   tree from its draft, placing each entry by its variable and leaving out, with a comment and a check that names it, an
   entry the tree has no place for; the GUI's hints, the cache page's copyable snippets and the editor census speak the
   new vocabulary. Every mapping in the samples and the test fixtures is converted
-  ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md), [osdu/docs/documents.md](osdu/docs/documents.md#mapping)).
-- **The GUI end-to-end suite runs the recall estate.** Its fixture repository is the sample `osdu/samples/recall` (the
+  ([osdu/docs/reference/flow/mapping.md](osdu/docs/reference/flow/mapping.md#the-record-tree),
+  [osdu/docs/reference/flow/mapping-values.md](osdu/docs/reference/flow/mapping-values.md#the-words-of-a-value-node)).
+- **The GUI end-to-end suite runs the WellDB estate.** Its fixture repository is the sample `osdu/samples/welldb` (the
   well log chain, the lookup tables and the delivery flow) with the suites' fixture wellbore flows, interfaces source,
   retrieval flow and mappings beside it, the estate the control plane suites compose; it copied `samples/wells` before,
   which no longer exists, so the suite had failed in its global setup. The seed saves the four templates, imports the
   fixture reference records (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/cache-records`) for
-  `fixtures-osdu-00-reference-cache`, runs the recall chain into its `arc` tables and refreshes `recall-lookups-00-cache`.
-  The OSDU stand-in holds the wellbores of the five Recall logs under the ids the delivery suites give them, and the
-  record trace finds a Recall log by its source key, its wellbore name and its log id. A local `OsduDeliveryE2E` seeded
+  `fixtures-osdu-00-reference-cache`, runs the WellDB chain into its `arc` tables and refreshes `welldb-lookups-00-cache`.
+  The OSDU stand-in holds the wellbores of the five WellDB logs under the ids the delivery suites give them, and the
+  record trace finds a WellDB log by its source key, its wellbore name and its log id. A local `OsduDeliveryE2E` seeded
   before this change still holds the old estate's ingestion rows and cache versions, which fail the cache and records
   specs: drop it once, and the next run creates it again.
-- **The docs describe the recall sample.** The READMEs, the operations guide, the CLI references and the notifications
-  guide name the recall flows and its lookups cache, the test matrix describes the recall estate with the fixtures
-  beside it, and the walkthrough of how a WellLog 1.4.0 record is filled is written against the recall mapping, its data
+- **The docs describe the WellDB sample.** The READMEs, the operations guide, the CLI references and the notifications
+  guide name the WellDB flows and its lookups cache, the test matrix describes the WellDB estate with the fixtures
+  beside it, and the walkthrough of how a WellLog 1.4.0 record is filled is written against the WellDB mapping, its data
   and its first fixture.
 - **A key written twice in one map is refused.** The document loader read the last of two identical keys and dropped the
   first without a word, which in a mapping's record tree would lose a property; every delivery, retrieval and cache
@@ -1163,11 +1249,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   cache agree by naming the partition the same way. Deployments wire the four new references (compose, k8s), and a
   node that has not gained them fails the run naming the one it is missing.
 
-- **The sample estate names its OSDU endpoint `${env:OSDU_URL}`.** The reference was `${env:PETRODB_URL}`, named
+- **The sample estate names its OSDU endpoint `${env:OSDU_URL}`.** The reference was `${env:FACADE_API_URL}`, named
   after the facade an earlier estate delivered through, which read as a dependency the module does not have: the
   variable holds the OSDU API base a flow's `target.endpoint` (or a cache or retrieval flow's `source.endpoint`)
   resolves, and it now sits with the `OSDU_*` references beside it. A deployment renames the variable on its nodes
-  when it takes this build; a flow document that still says `${env:PETRODB_URL}` resolves whatever a node holds
+  when it takes this build; a flow document that still says `${env:FACADE_API_URL}` resolves whatever a node holds
   under that name, so the two can be moved separately.
 
 - The current build has been run against a live OSDU: Azure Data Manager for Energy 0.29, partition `dev`, on
@@ -1196,6 +1282,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Removed
 
+- **The long documents the reference corpus replaced.** The nine long documents under `osdu/docs` (the documents,
+  operations, the ledger, mapping templates, protocols, the explorer, search terms, the architecture and the environment
+  variables) and the single page of the OSDU verbs under `osdu/docs/reference/cli` described what the reference pages
+  now describe, one topic to a page. Every citation of them in the code, the documents and this changelog points at the
+  page that replaced its section ([osdu/docs/reference/README.md](osdu/docs/reference/README.md)).
+- **The WellLog walkthrough.** `osdu/docs/walkthrough/` laid out the WellLog 1.4.0 schema as tables and how the sample
+  estate filled each of its sections, written around one company's well-log system and the facade service in front of
+  its DDMS; nothing in the reference corpus linked to it. Writing a mapping for a kind, a well log's curves and bulk
+  data included, is the subject of the guides
+  ([osdu/docs/reference/guides/writing-a-mapping.md](osdu/docs/reference/guides/writing-a-mapping.md),
+  [osdu/docs/reference/guides/bulk-data.md](osdu/docs/reference/guides/bulk-data.md)).
+- **Retrieval `source.probePath`.** A retrieval flow validated the key and never used it: the target probe covers
+  delivery flows only, and a retrieval run never calls it. The key is refused when the flow loads (`source.probePath is
+  not a key of a retrieval flow: the target probe covers delivery flows only, and a retrieval run never calls it. A
+  retrieval that cannot reach the search service fails on its first page and says why; remove the key.`)
+  ([osdu/docs/reference/flow/retrieval.md](osdu/docs/reference/flow/retrieval.md#source)).
+
 - The previous implementation's drop path: the drop manifest and its encodings, the drop reader, the scope file
   readers, the replica, the SQL source extraction, inline drops, known-state publishing and the drop-off area,
   together with their tests, documents and deployment settings. SQLFlow's pre-ingestion and ingestion flows
@@ -1215,6 +1318,179 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **`verify.reconcile` has the flow's next deliver run send a drifted record again.** A verify that found a record
+  drifted or missing cleared its hashes and noted "redelivery queued on next submission", but nothing put the record in
+  a plan, so an incremental run read it only once its row changed. Each drifted or missing record is now marked for
+  redelivery of all of it, as **Redeliver** marks one (note `verify: drifted (observed version <v>, expected <v>);
+  redelivery requested, the flow's next deliver run sends it again`), and named under the verify's activity; the flow's
+  next deliver run reads it by key and sends it, whatever its incremental window reads
+  ([osdu/docs/reference/flow/delivery.md](osdu/docs/reference/flow/delivery.md#verify)).
+- **A submission a stopped run left is finished, not stranded.** A delivery run that stopped (a node lost, a run
+  cancelled or killed) left its submission `planned` or `running`, and the records planned into it waited until someone
+  drained it by hand. Every run that works on a submission now holds it (an application lock on a connection of its own,
+  freed when its process stops). A run the platform executes again resumes the submission its interrupted attempt left
+  for the same read instead of registering another, and every deliver run takes over, oldest first, a submission left
+  open that no run holds and no unexpired lease works on: it sends what is due with the normal claims (each record once,
+  resuming after the steps recorded) and closes it, saying which run stopped and which took over. A submission an
+  `intake` run planned is sent and closed by the flow's next deliver run unless a drain of it comes first
+  ([osdu/docs/reference/concepts/submissions.md](osdu/docs/reference/concepts/submissions.md#recovering-a-stopped-submission)).
+- **A flow bound by its `data-partition-id` header mints its ids in that partition.** Such a flow sent its requests to,
+  and read its cache from, the header's partition, but took the mapping's `dataPartition` from
+  `${env:OSDU_DATA_PARTITION}`, so its ids and references could name a partition its records were not written to.
+  `dataPartition` now defaults to the partition the flow is bound to, whichever way it is bound, and a value the flow
+  supplies still wins. A record that claimed an id in the other partition meets the moved-id hold on its next render,
+  and the hold now names what moves an id: the mapping's `dataset.idFrom`, the entity type of the kind it renders, or
+  the partition the flow mints ids in (`dataPartition`), where it said to put back the system and the key, whose change
+  makes new records rather than moving an id
+  ([osdu/docs/reference/concepts/partitions.md](osdu/docs/reference/concepts/partitions.md#what-a-bound-run-is),
+  [osdu/docs/reference/concepts/change-detection.md](osdu/docs/reference/concepts/change-detection.md#a-record-keeps-the-osdu-id-it-claimed)).
+- **A provenance column the flow names must exist, and a row number must be a whole number.**
+  `source.systemColumns.fileName` or `rowNumber` named explicitly but missing from the record table was ignored, so a
+  typo lost every record's origin file and row in the ledger. Named, each must now exist, or the run (and `sqlflow check
+  --connect`) is refused naming the key, the column and the table; left at its default, it is used when present. The row
+  number column is a whole number (an integer type, or `decimal`/`numeric` with scale 0 and at most 18 digits); `~`
+  still opts out ([osdu/docs/reference/flow/delivery.md](osdu/docs/reference/flow/delivery.md#source)).
+- **Every flow kind refuses a payload property it does not take, in one shape.** Some kinds let a property only another
+  kind reads through, and the run went ahead as if it were not there: a retrieval flow `interface`, `interfaces`,
+  `runId` and `confirm`, an assertion or a dimension flow `runId` and `confirm`, an inventory flow `runId`. Every kind
+  now refuses every property it does not take, in the delivery kind's shape, saying which runs take it and what its own
+  payload names: `payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it
+  reverses; an inventory flow's payload names only inventories, removal and confirm.` A cache flow's payload carries
+  only the central configuration the control plane supplies
+  ([osdu/docs/reference/cli/run.md](osdu/docs/reference/cli/run.md#other-kinds-payloads)).
+- **An OSDU flow refuses SQLFlow's backfill flags whatever else the run carries.** `sqlflow run <flow> --full` (or
+  `--from`, `--to`, `--file-pattern`, `--source-filter`) on a flow of a kind a module registers was refused only beside
+  `--operation`, `--set` or `--payload`; alone, the run went ahead without it. The kind's check now runs for every run,
+  so such a run fails with the kind's message and runs nothing, and an API or GUI trigger answers 400, a node-scoped
+  trigger with a window anchored on an OSDU flow included. A fix in the vendored SQLFlow
+  ([osdu/docs/reference/cli/run.md](osdu/docs/reference/cli/run.md#the-kind-arguments)).
+- **Inventory runs receive the central configuration.** The control plane attached the central configuration to
+  delivery, cache, retrieval, assertion and dimension runs and left inventory runs out, a removal run included, so an
+  inventory flow's references resolved from the node's environment alone. Every flow kind of the module now gets it
+  ([osdu/docs/reference/cli/config.md](osdu/docs/reference/cli/config.md#which-runs-read-it)).
+- **Bounded inventory builds take turns through every expected id.** When a ledger expected more ids missing than
+  `maxMissingChecks` lets one build read from storage, every build asked for the same first ones, and an id never asked
+  was reported `gone` as though no ledger expected it. The ids are now asked least recently asked first (never asked
+  first), so builds that each reach the bound take turns through all of them; an id a build did not ask keeps what
+  storage last answered, and one never asked is `gone` with a reason saying a ledger expects it and a later build asks.
+  Migration `InventoryCheckedUtc` (module 1.34.0) adds `osdu.InventoryRecord.CheckedUtc`
+  ([osdu/docs/reference/flow/inventory.md](osdu/docs/reference/flow/inventory.md#what-a-build-does)).
+- **An inventory kind with a wildcard inside a segment matches on a storage read.** Validation accepted a kind such as
+  `osdu:wks:work-product-component--WellLog:1.*.*`, but the storage read compared wildcards only as a whole segment, so
+  the kind matched nothing there. `*` now stands for any text within its segment, matched ignoring case as the search
+  service matches a kind ([osdu/docs/reference/flow/inventory.md](osdu/docs/reference/flow/inventory.md#reading-osdu)).
+- **An assertion's `bulk.columns` covers every column its assertions read.** With `bulk.columns` listed, only those
+  columns were read, and an assertion naming another column passed validation and then failed on a column the page did
+  not hold. A listed set must now include every column the assertions name (a `column`'s own and its `where` columns, an
+  `aggregate`'s, a `monotonic`'s), or the flow is refused when it loads, naming the test, the column and the assertion;
+  left out, the read takes exactly the columns the assertions name. A page the DDMS answers without a column the read
+  asked for fails the record, naming the row and the column
+  ([osdu/docs/reference/flow/assertion.md](osdu/docs/reference/flow/assertion.md#bulk-data)).
+- **An assertion run that did not pass says why.** A run whose tests failed closed with no reason, so `sqlflow
+  assertions list` and the GUI showed none. A completed run now keeps how many tests failed (on an assertion of severity
+  error) or errored, and which (`4 of 4 test(s) evaluated, 3 passed; 1 failed on an assertion of severity error
+  (log-headers)`), and `--json` carries it as `error`; a run that stopped keeps why it stopped. A report page says "The
+  run stopped" only for a run that stopped (cancelled, or errored with fewer results than tests). A run with no test to
+  judge in its partition asks OSDU nothing and completes `passed`, its tests skipped
+  ([osdu/docs/reference/cli/assertions.md](osdu/docs/reference/cli/assertions.md#list)).
+- **A retrieval window never moves backwards.** A run whose window was empty closed with an upper bound earlier than its
+  start, so the next run read again what had been read, or read before `since`. An empty window's upper bound is now its
+  start, so the next window starts where this one stood, and never before `since`
+  ([osdu/docs/reference/flow/retrieval.md](osdu/docs/reference/flow/retrieval.md#the-incremental-window)).
+- **A `${...}` reference in a file location is refused when the flow loads.** A retrieval flow's `target.location`, a
+  delivery flow's `source.work` and a payload's `root` are not resolved from references, so a location such as
+  `${env:LAKE_ROOT}/osdu` was taken as written (while lineage read it as a reference). Each is now refused with the way
+  to write it: the path or storage URI itself, varied per run or environment by a `{parameter}` token declared under
+  `parameters` ([osdu/docs/reference/flow/retrieval.md](osdu/docs/reference/flow/retrieval.md#where-the-files-go),
+  [osdu/docs/reference/flow/delivery.md](osdu/docs/reference/flow/delivery.md#source)).
+- **Every change the command line records names the user and the machine.** `sqlflow config` and `sqlflow partition`
+  recorded the literal actor `cli`; they now record `cli:<user>@<machine>`, as the other verbs do, in the audit trail
+  and as who last set a property or a partition
+  ([osdu/docs/reference/concepts/authentication-and-identity.md](osdu/docs/reference/concepts/authentication-and-identity.md#how-the-ledger-names-who-acted)).
+- **`sqlflow config` and the API check a property on one path.** `config list --partition` without `--repo` ignored the
+  partition, `config set --repo` took any id while the API checked it, and a description over the 400-character column
+  failed on save with the database's truncation error. The store now checks for both: `list` prints every scope ordered
+  by name, repository and partition, narrowed by `--repo`, `--partition` or both; a value and a description are trimmed,
+  and a blank value or a description over 400 characters is refused before anything is saved; `set --repo` refuses a
+  repository the catalog has not registered, while `list` and `remove` do not look it up, so a deleted repository's
+  properties can be removed. The API answers 400 "Configuration property refused" or 404 "Repository not found", and
+  `GET /config` takes `repoId` and `partition` filters
+  ([osdu/docs/reference/cli/config.md](osdu/docs/reference/cli/config.md)).
+- **`sqlflow preview --out` writes the whole document.** A document over the console's bound was left out of the `--out`
+  file too, while the note said `--out` writes it whole. The console (text and `--json`) still leaves it out, as the GUI
+  does, and its note names the file `--out` writes it to; a refused `--out` folder is said before anything renders
+  ([osdu/docs/reference/cli/preview.md](osdu/docs/reference/cli/preview.md#bounds)).
+- **`sqlflow preview` and `sqlflow values` name an interface once.** An interface of a source read `<flow>/<interface> /
+  <interface>`, in the text answer and in the `--rows` file's `flow` column; it reads `<flow>/<interface>`, as a run
+  names it ([osdu/docs/reference/cli/preview.md](osdu/docs/reference/cli/preview.md#output),
+  [osdu/docs/reference/cli/values.md](osdu/docs/reference/cli/values.md#output)).
+- **Every usage line matches the options its verb reads.** `dimensions keys` lists `[--removed]`, `records release` says
+  it releases reverted records as well as held, failed and deleted ones, and `records show`, `release`, `reverse`,
+  `reversals` and `artifacts` list `--partition`, which every records verb honours
+  ([osdu/docs/reference/cli/records.md](osdu/docs/reference/cli/records.md#synopsis)).
+- **A condition given where a value goes is refused with what to write.** `upper(a = 1)` was refused saying a condition
+  decides "with and, or, not or '?'", though `?` is no operator; it now says `a value given to upper is 'a = 1', a
+  condition; conditions are joined with and, or and not, and choose between values with iif(condition, value, other),
+  but are not compared or combined as values`
+  ([osdu/docs/reference/flow/mapping-expressions.md](osdu/docs/reference/flow/mapping-expressions.md#errors-when-the-mapping-is-read)).
+- **A node exports its metrics, and the control plane starts with OTLP export configured.** A node registered its
+  `OSDU_TELEMETRY_*` export where nothing started it, so its metrics went nowhere, and the control plane failed at start
+  when OTLP export was configured. Both hosts now register the export the same way: it starts with the host, logs where
+  the meter goes (`Metrics on the meter SqlFlow.Delivery are exported to <Exporter> every <n>s as service <name>.`),
+  names a refused OTLP endpoint without its user info or query, and on a node stops and flushes after the drain. In the
+  vendored SQLFlow, `sqlflow worker` starts the hosted services a module registers before it takes work, a generic
+  extension point, and refuses to start, with the reason, when one fails
+  ([osdu/docs/reference/concepts/run-trace-and-metrics.md](osdu/docs/reference/concepts/run-trace-and-metrics.md#where-the-metrics-go)).
+- **The worker host takes `--pool worker`.** The worker image's host refused any argument reading `worker`, a pool of
+  that name included, and handed any other word to the `worker` verb unchecked. It now refuses a positional argument,
+  whatever it is (`'<arg>' is not one of them`), and an option's value is always the option's
+  ([osdu/docs/reference/cli/worker.md](osdu/docs/reference/cli/worker.md#the-worker-host)).
+- **The sample pre flows declare the type of their numeric columns.** SQLFlow's inference reads a column whose values
+  are all 0 or 1 as `bit`; a sample log's depth column whose values were all 0 became `bit`, rendered `false` into a
+  number property, and every record was held with `value 'false' is not a valid number (a boolean is not a number)`,
+  which is why three fan-out chain tests had failed since 2026-09-25. The sample pre flows and the guides' examples
+  declare such columns (`decimal(38,18)` with `NULLIF(@ColName, '')`), and the runbook says what to do when every record
+  is held this way
+  ([osdu/docs/reference/guides/operations-runbook.md](osdu/docs/reference/guides/operations-runbook.md#every-record-is-held-a-number-is-false)).
+- **No text says a scope is needed that every signed-in user holds.** The six MCP action tools described themselves as
+  "(operate scope)", a policy every signed-in user passes, and GUI titles said a preview, a render, a read of OSDU or a
+  sync "takes the operate scope"; SQLFlow's datasource pages gated actions behind an "Operate scope required" check that
+  never applied. The tools now say "(operator action)", marking a tool that changes state, the GUI titles say what the
+  action does, and the dead gating is gone; only the admin pages check a scope
+  ([osdu/docs/reference/concepts/authentication-and-identity.md](osdu/docs/reference/concepts/authentication-and-identity.md#any-signed-in-user-can-deliver-and-remove),
+  [osdu/docs/reference/guides/mcp.md](osdu/docs/reference/guides/mcp.md#the-delivery-tools)).
+- **An ingestion table stamps `UpdatedDate_DW` on every row it inserts.** A reload and a keyless append inserted rows
+  with `UpdatedDate_DW` and `RowStatus_DW` left NULL for good, while the keyed insert stamped them; every insert path
+  now stamps the merge time and `'I'`, so every row carries the column the delivery flows' incremental reads go by. A
+  fix in the vendored SQLFlow
+  ([osdu/docs/reference/concepts/change-detection.md](osdu/docs/reference/concepts/change-detection.md)).
+- **A flow document that stops loading is held by the repository sync, not retired.** A flow still in the repository
+  that no longer loads was taken for one that had left it, its pipeline retired and its schedules dropped. It is now
+  reported (`<file>: is a flow document that does not load ...`), and its pipeline, the schedules its inline block
+  declares and its memberships of other schedules stay as the last sync recorded them until the file loads again. A fix
+  in the vendored SQLFlow
+  ([sqlflow/docs/reference/flow/schedule.md](sqlflow/docs/reference/flow/schedule.md#from-yaml-to-the-catalog-sync-semantics)).
+- **A repository holds one schedule per name however it is created, and a clash no longer fails the sync.** A git
+  schedule whose name an API schedule held failed the whole repository sync on the unique index, and an API create
+  racing a sync could land between the other's check and write. A sync and an API create now take one application lock
+  per repository before they read who holds a name, so the check and the write are one step: the API refuses a name git
+  or a sync under way holds (409, or 503 while the names stay busy), and a git schedule whose name an API schedule holds
+  is left out of the sync with a warning naming both, while everything else syncs. A fix in the vendored SQLFlow
+  ([sqlflow/docs/reference/flow/schedule.md](sqlflow/docs/reference/flow/schedule.md#from-yaml-to-the-catalog-sync-semantics)).
+- **Resuming a chained or parked schedule arms no clock fire.** Resume set a schedule with no computable next fire (one
+  chained `after` others, or one whose cron is invalid or exhausted) to fire now, so the clock scan claimed an
+  occurrence that ran nothing and set off every schedule chained behind it. Such a schedule now keeps no next fire. A
+  fix in the vendored SQLFlow
+  ([sqlflow/docs/reference/flow/schedule.md](sqlflow/docs/reference/flow/schedule.md#the-schedule-api)).
+- **SQLFlow's reference pages, editor and lineage demo say what the code does.** In the vendored SQLFlow: the pre view
+  is named `v_<Table>` in its pages, schema and comments; `UpdatedDate_DW` is documented as stamped on insert too;
+  lineage is documented as scanning every `*.yaml`, skipping what is not a flow and warning on what cannot be read; the
+  schedule reference describes a flow's `schedule` as the code reads it (a name, a list of names, or an inline cron or
+  interval, with no scope) and a `schedules.yaml` entry's `operation` and `values`; the YAML editor accepts the envelope
+  keys `schedule` and `mode` on every built-in kind and analyses `schedules.yaml` as a schedule library; and the lineage
+  demo's two ingestion flows read `demo.v_Orders_Pre` and `demo.v_Customers_Pre`. Each change is a row of
+  `docs/sqlflow-changes.md` ([sqlflow/docs/reference/flow/schedule.md](sqlflow/docs/reference/flow/schedule.md)).
+
 - A record the explorer checks, as storage holds it, no longer breaks its schema for holding `meta`, `ancestry` or `tags`
   null or empty, which is how a record with none can read: the block is read as absent, and the verdict notes it. The
   `conforms` assertion reads a stored record the same way; a document the gate checks before sending is still held to the
@@ -1224,7 +1500,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 - **A list a record holds carries no null item its template does not allow.** A null item is dropped from a list whose
   items take no null (a list read whole from the cache may hold one), in every object the record holds (the record, its
   `data`, an object inside them, each item of a list of objects); a value of a choice of forms (`oneOf`, `anyOf`) is not
-  looked into ([osdu/docs/documents.md](osdu/docs/documents.md), What the record contains).
+  looked into
+  ([osdu/docs/reference/flow/mapping.md](osdu/docs/reference/flow/mapping.md#what-the-record-contains), What the record contains).
 - **The mapping decides which lists a record carries empty, and `meta` is never left for Storage to hold as null.** A
   list the mapping defines (a `$forEach`, a list of values, a list of objects, or a node whose variable is a list) that
   gives nothing for the row is written empty, at any depth: in the record, in an object the record writes, and in each
@@ -1233,7 +1510,7 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   hold an empty list. The record's own `meta`, a field of Storage's record that Storage reads back as null when it is
   left out and the schema refuses, is written `[]` whenever nothing fills it. For a while every list the template
   declares was written empty, mapping or not, and then none was, which left `meta` null in OSDU again; a WellLog of the
-  recall estate now renders with `"meta": []` and no other empty list, and is sent once more the next time it is
+  WellDB estate now renders with `"meta": []` and no other empty list, and is sent once more the next time it is
   rendered. A fixture compares an empty list and one left out alike, so fixtures stand as written, and `fixtures update`
   writes a record without the empty lists. A DSPDM row is given no empty list.
 
@@ -1281,15 +1558,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   touching `UpdatedDate_DW`, and the incremental read windowed on the update column alone, so a deleted row was held
   only by a full or keyed run and otherwise stayed delivered with nothing on its history. The record table's delete
   column now joins the window, as a child dataset's already did.
-- **The control plane suites expect the recall estate.** The module database tests expect the two mappings a copy of
-  the sample estate holds (the recall well log mapping and the wellbore fixture beside it), and the mapping builder test
-  expects the recall mapping as it is: a unit translated through `$cache.RecallUnits` and then made a reference, a curve
+- **The control plane suites expect the WellDB estate.** The module database tests expect the two mappings a copy of
+  the sample estate holds (the WellDB well log mapping and the wellbore fixture beside it), and the mapping builder test
+  expects the WellDB mapping as it is: a unit translated through `$cache.UnitAlias` and then made a reference, a curve
   family built by an `id` template from the curve dictionary, the three vertical measurement types the sample records
-  hold, `recall` as the system in the record's shape, and a check without a partition that names the unit table the
+  hold, `welldb` as the system in the record's shape, and a check without a partition that names the unit table the
   empty cache does not hold. Its hand-made wrong draft drops the fixtures' shared parameters with the fixtures.
 - **Coverage counts what a literal writes.** A literal object or list fills the properties it holds, so the sample's
   `TechnicalAssurances` list no longer shows its `TechnicalAssuranceTypeID` as a required property nothing fills, and
-  Show missing answers that the recall mapping satisfies the WellLog schema. A property only some items of a literal
+  Show missing answers that the WellDB mapping satisfies the WellLog schema. A property only some items of a literal
   list carry is filled on some rows.
 
 - **The Records flow picker no longer crashes the control plane when an estate holds many flows.** It asked which
@@ -1350,6 +1627,35 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   before reading the versions, so it lists the cache a capture of that partition writes rather than none.
 
 ### Security
+
+- **Errors never carry a URL's user info, query or fragment, and the redactor knows the cloud stores' signatures.**
+  Every error the HTTP layer raises (a refused status, a transport failure, a timeout, a redirect loop, a refused URL, a
+  response over `reliability.maxResponseBytes`) names the request URL without its user info, query or fragment, and the
+  transport's own message is redacted; the response-size error had quoted the URL whole, a signed URL's signature
+  included. The redactor removes bearer and other Authorization values, a URL's password, and parameters and JSON fields
+  named as a secret or a signer: Azure's `sig`, `sv`, `se`, `sp` and `sr`, S3's `X-Amz-Signature`, `X-Amz-Credential`,
+  `X-Amz-Security-Token`, `AWSAccessKeyId` and `Signature`, and Google Cloud Storage's `X-Goog-Signature`,
+  `X-Goog-Credential` and `GoogleAccessId`
+  ([osdu/docs/reference/concepts/protocols.md](osdu/docs/reference/concepts/protocols.md#requests-every-route-makes)).
+- **A literal secret is refused when any OSDU document is read.** `sqlflow validate` passed a literal
+  `target.auth.secretRef`, since only a connection string's password was checked. Every document kind now refuses a
+  literal where a credential goes, naming the key and the fix (write `${keyvault:vault/secret}` or `${env:NAME}`):
+  `secretRef` in `target.auth`, `target.airflow.auth` and every kind's `source.auth`; a token request field named as a
+  secret (`client_secret`, `password`, `refresh_token`, `client_assertion` and the like); a credential header in
+  `target.headers`, `target.airflow.headers` and `source.headers` (a scheme may precede the reference, as in `Bearer
+  ${env:X}`); and an endpoint, `token.url` or `token.discoveryUrl` whose user info or query carries a credential. A
+  credential header in `protocolOptions.uploadHeaders` and a `workflowPayload` entry named as a secret, both sent as
+  written and never resolved, are refused outright. A user name or client id (`secondarySecretRef`, `client_id`), a
+  `scope` and an `audience` stay literal
+  ([osdu/docs/reference/cli/validate.md](osdu/docs/reference/cli/validate.md#what-every-document-checks)).
+- **A workflow context never carries a secret as a value.** Whatever the workflow, with a contract or without, a value
+  under a key the contract marks a credential, or under any key named as a secret (a password, secret, token, assertion,
+  signature, authorization, an API or account key), must be a single `{secret:name}` placeholder naming a reference
+  under `secrets`. A literal there reached the Workflow service and the record's step history; it is now refused when
+  the document loads (`<file>: target.workflow.stages[0].context: 'Payload.client_secret' is named as a secret; give it
+  as {secret:name} with the reference under secrets, never as a value in the document.`). A contract key whose value
+  does not read as a template is refused with its reason rather than failing the load
+  ([osdu/docs/reference/flow/routes.md](osdu/docs/reference/flow/routes.md#workflow)).
 
 - The delivery nodes check every address a host name resolves to, and every redirect hop, before connecting: cloud
   metadata and link-local addresses are never reached, loopback only when the deployment allows it, and private

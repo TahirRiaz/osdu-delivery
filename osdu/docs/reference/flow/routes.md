@@ -24,6 +24,7 @@ yamlPath: "target.protocol"
 related:
   - delivery-flow-delivery
   - delivery-flow-ddms
+  - delivery-flow-ddms-services
   - delivery-concept-protocols
   - delivery-flow-interfaces
   - delivery-concept-removal-and-reversal
@@ -74,7 +75,8 @@ an interface of a source with interfaces gets one from what it declares ([below]
 
 What every route does the same way (resumable steps, payload parts, the legal tag check, the undo of an unfinished
 delivery) is on [How a delivery runs on any route](../concepts/protocols.md). The DDMSs the `ddms`, `fileAndDdms` and
-`manifestAndDdms` routes reach, and the `dspdm` and `etp` routes' own blocks, are on [DDMSs](ddms.md). The rest of
+`manifestAndDdms` routes reach are on [DDMSs](ddms.md), and the other DDMS shapes and the `dspdm` and `etp` routes' own
+blocks on [DDMS shapes and services](ddms-services.md). The rest of
 `target` (endpoint, auth, headers) is on [Delivery flow](delivery.md#target).
 
 ## The routes at a glance
@@ -171,7 +173,7 @@ under `target.endpoint`.
 | `verifyPath` | `/api/storage/v2/records/{id}` | Reads one record back, for a verify and for the read before an update. |
 | `verifyBatchPath` | `/api/storage/v2/query/records` | The batched read a verify pass uses, 100 ids per request. |
 | `deletePath` | `/api/storage/v2/records/{id}:delete` | The reversible removal. |
-| `bulkDeletePath` | `/api/storage/v2/records/delete` | The storage service's bulk soft delete, which the route sends up to 500 ids a request, for the reversible scope only. |
+| `bulkDeletePath` | `/api/storage/v2/records/delete` | The storage service's bulk soft delete, which the route sends 500 ids a request (its own chunk size, not a limit of the service), for the reversible scope only. |
 | `purgeVersionsPath` | `/api/storage/v2/records/{id}/versions` | The purge of a record's earlier versions; the latest stays live. |
 | `purgePath` | `/api/storage/v2/records/{id}` | The purge of the record and every version. |
 | `probePath` | the route's own | The path the probe asks; by default the info endpoint of the route's main service (`/api/storage/v2/info`, `/api/file/v2/info`, `/api/dataset/v1/info`, `/api/workflow/v1/info`) or each DDMS's description. |
@@ -194,7 +196,7 @@ only itself.
 
 An update of a record that carries preserved keys reads the stored record first and copies those keys in. A connected
 source data job of External Data Services always carries the run state EDS writes on it (`LastSuccessfulRunDateUTC`,
-`FailedRecords`, `CreateTimeMax`; see [DDMSs](ddms.md#external-data-services)). A write that carried any such key records
+`FailedRecords`, `CreateTimeMax`; see [DDMS shapes and services](ddms-services.md#external-data-services)). A write that carried any such key records
 the hash of the content the flow owns (`ownedContent.hash`), so a verify that finds a newer version whose only change is
 in those keys reports a match, not drift.
 
@@ -234,7 +236,7 @@ before anything is sent.
 | --- | --- | --- |
 | `uploadUrlPath` | `/api/file/v2/files/uploadURL` | Hands out the signed landing-zone location. |
 | `uploadUrlExpiry` | the service's one hour | How long the signed URL stays valid: a whole number of minutes, hours or days (`30M`, `12H`, `2D`). |
-| `uploadHeaders` | none | Extra headers on the signed-URL upload. |
+| `uploadHeaders` | none | Extra headers on the signed-URL upload, sent as written and never resolved. A header that carries a credential is refused outright, reference or not (`<file>: target.protocolOptions.uploadHeaders.<header> carries a credential, and the upload headers go to the signed URL as written, never resolved. The signed URL carries its own credential: remove the header.`). |
 | `fileMetadataPath` | `/api/file/v2/files/metadata` | Registers a file's dataset record. |
 | `fileDeletePath` | `/api/file/v2/files/{id}/metadata` | Deletes a dataset record and its file, when everything is removed. |
 | `datasetKind` | `osdu:wks:dataset--File.Generic:1.0.0` | The kind each file is registered as. |
@@ -302,7 +304,7 @@ target.protocolOptions.manifestByReference says how manifests reach the ingestio
 | `workflowName` | `Osdu_ingest` | The ingestion workflow. |
 | `workflowRunPath`, `workflowStatusPath`, `workflowPath` | the Workflow service's v1 paths | Trigger a run, read its status, describe a workflow. |
 | `workflowPollSeconds`, `workflowTimeoutMinutes` | 10, 60 | How often a run is polled, and how long it may take; each at least 1. |
-| `workflowAppKey`, `workflowPayload` | `osdu-delivery`, none | `executionContext.Payload.AppKey`, and extra `Payload` entries. |
+| `workflowAppKey`, `workflowPayload` | `osdu-delivery`, none | `executionContext.Payload.AppKey`, and extra `Payload` entries, sent as written. An entry named as a secret is refused outright (`<file>: target.protocolOptions.workflowPayload.<entry> is named as a secret, and the workflow payload goes as written into a run the Workflow service keeps. The service authenticates the run with the flow's own auth: remove the entry.`). |
 | `manifestKind`, `manifestSection` | `osdu:wks:Manifest:1.0.0`, from each kind | The manifest's kind, and the section every record goes into. |
 | `recordQueryPath` | `/api/storage/v2/query/records` | Where the records are read back. |
 | `manifestByReference`, `manifestInlineLimitKb`, `byReferenceWorkflowName` | `never`, 12000, `Osdu_ingest_by_reference` | Manifests by reference, above. |
@@ -397,7 +399,7 @@ target:
 | `anchorTag` | none | A tag key (a letter, then letters, digits and `_`, at most 64 characters) written on the record; `{anchorTag}` in a template is its value. |
 | `runWhen` | `changed` | `changed` (the delivery writes the record or an input), `created` (a new record only) or `requested` (only a redelivery naming `workflow`). |
 | `inputs.<name>` | none | Up to 8 payload sets (`root`, `locationColumn`, `pattern`, `hashColumn`, `chunkCountColumn`) registered as one dataset per file or one collection, with `datasetKind` (default `osdu:wks:dataset--File.Generic:1.0.0`) and `optional`. A name is a letter, then letters, digits, `_` and `-`, at most 32 characters, and not `files` or `bulk`. |
-| `secrets.<name>` | none | A whole `${env:NAME}` or `${keyvault:NAME}` reference a context names as `{secret:name}`. Resolved only for the trigger request; every step and message shows `***`. |
+| `secrets.<name>` | none | A whole `${env:NAME}` or `${keyvault:NAME}` reference a context names as `{secret:name}`. Resolved only for the trigger request; every step and message shows `***`. A context entry named as a secret must name one of these. |
 | `stages[]` | required, 1 to 4 | Run in order. Each has `workflow` (as the partition registers it), `contract` (when `workflow` is not one of the contract's names), `context` (any YAML, with placeholders), `timeoutMinutes` (0 to 10080; 0 takes the longer of `workflowTimeoutMinutes` and the contract's), `pollSeconds` (0 to 3600; 0 takes `workflowPollSeconds`) and `outputs`. |
 | `stages[].outputs.<name>` | none | A `value` template, or an `xcom` entry (`task`, `key`, `match`), read by later stages and the results as `{stage:n.name}`. |
 | `results` | none | One of `anchor: true`, `ids` (a template), `artefact` (`role`, `kind`), `search` (`kind`, `query`), `manifest` (a template naming a manifest dataset) or `xcom`, with `minimum` (default 1, or 0 with no way named or with `anchor`), `waitSeconds` (0 to 86400, default `datasetIndexWaitSeconds`), `keep` (ids kept on the record, 0 to 1000, default 100) and `remove` (default true: a removal takes the records the runs created). |
@@ -405,7 +407,12 @@ target:
 **Contracts.** The workflows OSDU Delivery knows each have a payload contract: `osduIngest`, `osduIngestByReference`,
 `csvParser`, `energymlConverter`, `energymlDelivery`, `enyparserTranslation`, `segyToVds`, `segyToZgy`, `segyToMdio`,
 `edsIngest`, `edsScheduler` and `edsNaturalization`. A context is checked against its contract when the document loads
-and again, filled, before every trigger; a context the workflow would fail on is never sent. A workflow that only
+and again, filled, before every trigger; a context the workflow would fail on is never sent. A contract key whose value
+does not read as a template is refused with its reason. Whatever the workflow, with a contract or without, a value
+under a key the contract marks a credential, or under any key named as a secret (a password, secret, token, assertion,
+signature, authorization, an API or account key), is a single `{secret:name}` placeholder; a literal is refused when
+the document loads, because it would be sent to the Workflow service and kept in the record's step history:
+`<file>: target.workflow.stages[0].context: 'Payload.client_secret' is named as a secret; give it as {secret:name} with the reference under secrets, never as a value in the document.` A workflow that only
 translates (`Energyml_Converter`, `Enyparser_Translation`) is followed by a stage that ingests its manifest. The Workflow
 service's test DAG (`manifest_ingestion`) is refused.
 
@@ -430,11 +437,11 @@ partition does not know stops the run in its preflight.
 template whose kind has the source `dspdm` (`<authority>:dspdm:<entity>:<version>`), with the business object's
 attributes under `data` and no access or legal block. Each row is found again by a unique key of its business object
 before it is saved, because DSPDM's save inserts a row sent without its primary key again. `target.dspdm` and the
-checks are on [DDMSs](ddms.md#production-ddms-core-service-dspdm).
+checks are on [DDMS shapes and services](ddms-services.md#production-ddms-core-service-dspdm).
 
 **etp** writes Energistics data objects into a dataspace of the Reservoir DDMS over ETP 1.2. The mapping fills a template
 whose kind has the source `etp`; the object is its XML (the `files` part, or `data.Xml`) with the arrays it names (the
-`bulk` part, or values in the document). `target.etp` is on [DDMSs](ddms.md#reservoir-ddms-etp).
+`bulk` part, or values in the document). `target.etp` is on [DDMS shapes and services](ddms-services.md#reservoir-ddms-etp).
 
 Neither route has an OSDU version or a soft delete: their records are not storage records.
 
@@ -446,7 +453,7 @@ calls depends on the route:
 
 | Route | `record` | `history` | `everything` |
 | --- | --- | --- | --- |
-| `storage` | `POST /api/storage/v2/records/{id}:delete`; several records at once through `POST /records/delete`, up to 500 ids | `DELETE /api/storage/v2/records/{id}/versions` | `DELETE /api/storage/v2/records/{id}` |
+| `storage` | `POST /api/storage/v2/records/{id}:delete`; several records at once through `POST /records/delete`, 500 ids a request (the route's chunk size) | `DELETE /api/storage/v2/records/{id}/versions` | `DELETE /api/storage/v2/records/{id}` |
 | `file`, `manifest` | as `storage`; the datasets stay, so OSDU can restore the record whole | as `storage` | as `storage`, then each dataset the files became, with its file (`fileDeletePath`) |
 | `dataset` | a dataset record: `POST /api/dataset/v1/metadataRecord/{id}/softDelete`, which the Dataset service's undelete restores; any other record: as `storage`, its dataset left | as `storage` | as `storage`, and for a record of another kind its `-files` dataset too; the files a registration copied stay in the platform's storage |
 | `ddms` | the DDMS's own removal: on the Wellbore DDMS a logical `DELETE {collection}/{id}` | the storage service's version purge (the DDMSs have none) | a Wellbore DDMS bulk collection: `DELETE {collection}/{id}?purge=true`, which removes the bulk data too; a records-only collection: the storage purge |
@@ -455,7 +462,7 @@ calls depends on the route:
 | `dspdm` | refused: DSPDM keeps no deleted rows | refused: DSPDM keeps no versions | `DELETE {root}/delete/{businessObject}/{row id}` |
 | `etp` | refused: the store keeps no deleted objects | refused: the store keeps no earlier versions | `DeleteDataObjects` for the object's URI; a dataspace is never deleted |
 
-The other DDMS shapes remove as [DDMSs](ddms.md) describes for each. A `ddms` flow whose endpoint is the DDMS itself does
+The other DDMS shapes remove as [DDMS shapes and services](ddms-services.md) describes for each. A `ddms` flow whose endpoint is the DDMS itself does
 not reach the storage service by a path, so its `history` scope (and the `everything` scope of a records-only
 collection) needs `purgeVersionsPath` and `purgePath` written as whole URLs; without them those scopes are refused rather
 than sent somewhere nobody chose.

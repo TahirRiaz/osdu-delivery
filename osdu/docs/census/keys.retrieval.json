@@ -276,7 +276,7 @@
       "path": "source.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). A literal is refused when the flow is read.",
       "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
     },
     {
@@ -306,21 +306,21 @@
       "path": "source.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here. A field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) holds a reference only; a literal there is refused when the flow is read. `client_id`, `scope` and `audience` may be literals.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent. A field named as a secret must be a reference.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
     },
     {
@@ -335,7 +335,7 @@
       "path": "source.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
     },
     {
@@ -364,7 +364,7 @@
       "path": "source.endpoint",
       "type": "string",
       "required": true,
-      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`."
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "source.fetchParallelism",
@@ -391,13 +391,13 @@
       "path": "source.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret}). A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "source.incremental",
       "type": "object",
       "required": false,
-      "description": "The watermark: a run covers `[last completed run's upper bound, now minus lagMinutes)` on `field`, appended to the query. Only a completed run advances it, and `--force` restarts at `since`. Without this block every run takes everything the query matches."
+      "description": "The watermark: a run covers `[from, now minus lagMinutes)` on `field`, appended to the query, where `from` is the upper bound of the latest completed run, or `since` when there is none or `since` is later. Only a completed run advances it, a window never moves backwards (an empty one records its start as its upper bound), and `--force` restarts at `since`. Without this block every run takes everything the query matches."
     },
     {
       "path": "source.incremental.field",
@@ -453,8 +453,7 @@
       "path": "source.probePath",
       "type": "string",
       "required": false,
-      "description": "The search service's info path under the endpoint. It must start with `/`.",
-      "default": "/api/search/v2/info"
+      "description": "A delivery flow's setting: the info path the target probe asks. The target probe covers delivery flows only and a retrieval run never calls an info path, so the loader refuses it here."
     },
     {
       "path": "source.query",
@@ -528,7 +527,7 @@
       "path": "target.location",
       "type": "string",
       "required": true,
-      "description": "The run's directory root: a local path or a storage URI, with `{parameter}`, `{run}` and `{date}` tokens; any other token is refused. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. A relative local path is resolved against the working directory of the process running the flow, so the repository sync warns about one: use an absolute path or a storage URI."
+      "description": "The run's directory root: a local path or a storage URI, with `{parameter}`, `{run}` and `{date}` tokens; any other token is refused. Without a `{run}` token every run gets a timestamped directory beneath it, so runs never overwrite each other. A relative local path is resolved against the working directory of the process running the flow, so the repository sync warns about one: use an absolute path or a storage URI. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "target.manifest",

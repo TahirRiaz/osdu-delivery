@@ -59,6 +59,8 @@ often, or managed by other people, can stay in a document of its own and still r
 
 ## Example
 
+The estate's wellbores and well logs in one document, `flows/welldb-03-delivery.yaml`:
+
 ```yaml
 flowType: delivery
 name: welldb-03-delivery
@@ -132,7 +134,8 @@ Everything outside `interfaces` is the source's, shared by every interface: `nam
 `keepLedger`, `schedule`, `source.connection`, `source.work`, `render.mappings`, `target` (the endpoint, auth, headers and
 the services under it), and the defaults an interface may override: `source.lastModified`, `source.systemColumns`,
 `source.incremental`, `render.cacheVersion`, `render.parameters`, `change`, `reliability`, `verify`, `failWhen`,
-`target.protocolOptions` and `target.validation`. The keys are the single form's ([delivery flow](delivery.md)).
+`target.protocolOptions` and `target.validation`. The keys are the single form's ([delivery flow](delivery.md)); as
+there, `source.work` and every payload `root` hold no `${...}` reference, since a location is read as written.
 
 What belongs to one interface is refused at the source level, each by name:
 
@@ -150,7 +153,7 @@ The same message names `source.datasets`, `source.payloads`, `render.mapping`, `
 | `record` | The interface's record table, as `source.record` in the single form: `object`, `key`, `primaryKey`, `scope`. Required. |
 | `datasets` | Its child tables, as `source.datasets`. |
 | `mapping` | The pinned mapping, `Name@version`, as `render.mapping`. Required. |
-| `files` | The files each record carries (a payload set: `root`, `locationColumn`, `pattern`, `hashColumn`, `chunkCountColumn`), uploaded and registered before the record, or on the dataset route stored as the record. |
+| `files` | The files each record carries (a payload set: `root`, `locationColumn`, `pattern`, `hashColumn`, `chunkCountColumn`), uploaded and registered before the record, or on the dataset route stored as the record. A `${...}` reference in `root` is refused, as in `source.work`: vary a location with a `{parameter}` token. |
 | `bulk` | The bulk data a DDMS keeps for each record, a payload set of the same shape, written after the record. |
 | `workflow` | The workflow each record starts ([routes](routes.md)). |
 | `route` | Names the route instead of letting what the interface declares decide it ([routes](routes.md)). |

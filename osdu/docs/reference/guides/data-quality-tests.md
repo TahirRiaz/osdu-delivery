@@ -75,9 +75,12 @@ record:
 ## 1. Write a smoke test
 
 Start with what proves the delivery reached users: the records are there, every record the delivery flow's ledger says
-it delivered is found by search, and the index took each one whole.
+it delivered is found by search, and the index took each one whole. This is the start of the estate's
+`flows/welldb-welllog-04-assertion.yaml`; steps 5 and 6 add two more tests, and the whole file, with a fourth
+(`log-names`), is the [assertion flow's example](../flow/assertion.md#example).
 
 ```yaml
+# flows/welldb-welllog-04-assertion.yaml, its top and first test: steps 5 and 6 add two more
 flowType: assertion
 name: welldb-welllog-04-assertion
 batch: welldb
@@ -88,7 +91,7 @@ partitions: [dev, test]
 parameters:
   system:
     default: welldb
-    description: The data.Source value the well database's records carry.
+    description: The data.Source value the delivered records carry.
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -100,6 +103,17 @@ source:
       url: ${env:OSDU_TOKEN_URL}
       body:
         scope: ${env:OSDU_SCOPE}
+  ddmsRoot: /api/os-wellbore-ddms
+
+defaults:
+  maxRecords: 10000
+  examples: 20
+
+failRunOn: error
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
 
 tests:
   - name: logs-delivered
@@ -160,7 +174,7 @@ test: `test logs-delivered: passed in 840 ms (1250 matched, 1250 read)`.
 
 The run fails when a test failed or errored (`failRunOn: error`, the default), so `sqlflow run` exits 1, and a run on
 the control plane fires the failure notifications. Its error names the tests:
-`assertion flow 'welldb-welllog-04-assertion' in partition 'dev': 1 of 1 test(s) evaluated, 0 passed; 1 failed (logs-delivered).`
+`assertion flow 'welldb-welllog-04-assertion' in partition 'dev': 1 of 1 test(s) evaluated, 0 passed; 1 failed on an assertion of severity error (logs-delivered).`
 Set `failRunOn: warning` to fail on warnings too, or `never` to only report.
 
 To run some tests, name them or their tags in the payload:
@@ -200,23 +214,34 @@ Add a test that reads each record as storage holds it (`read: storage`, the defa
       - conforms: true
       - field: data.WellboreID
         resolves: master-data--Wellbore
-      - field: data.Curves
+      - field: data.Curves.CurveUnit
+        resolves: reference-data--UnitOfMeasure
+        severity: warning
+      - name: a depth curve is among the curves
+        field: data.Curves.Mnemonic
+        in: [MD, DEPT]
+        values: any
+      - field: acl.viewers
         length: { atLeast: 1 }
-      - field: data.Name
-        notIn: [UNKNOWN, TEST]
       - legal: valid
       - unique: [data.WellboreID, data.Name]
         severity: warning
+      - aggregate: missing
+        field: data.SamplingInterval
+        equals: 0
+        severity: info
 ```
 
 | Assertion | Checks |
 | --- | --- |
 | `conforms: true` | Each record meets the schema of its kind, as the saved template states it. |
 | `resolves: master-data--Wellbore` | Each `WellboreID` names a wellbore storage holds. |
-| `length` | Each log lists at least one curve (`data.Curves` is the list itself, so its length is its count of curves). |
-| `notIn` | No log carries a placeholder name. |
+| `resolves: reference-data--UnitOfMeasure` | Each curve's unit names a unit of measure storage holds; only a warning. |
+| `in` with `values: any` | Each log has a depth curve (`MD` or `DEPT`) among its curves; the assertion's `name` is what reports call it. |
+| `length` | Each record names at least one viewer group (`acl.viewers` is the list itself, so its length is its count of groups). |
 | `legal: valid` | Each record carries a legal tag, and every tag is valid now. |
 | `unique` | No two logs share a wellbore and a name; only a warning, since the test is then `warned`, not `failed`. |
+| `aggregate: missing` | How many logs carry no `SamplingInterval`; `info`, so it is reported and changes nothing. |
 
 Every condition and subject is listed in [the assertion flow reference](../flow/assertion.md#assertions). A field
 assertion holds for every record unless `for` says otherwise (`for: 95%`, `for: any`, `for: none`), and `where`
@@ -239,16 +264,22 @@ A test with a `bulk` block reads each record's bulk data from the Wellbore DDMS 
     query: 'data.Source:"{system}"'
     maxRecords: 200
     sample: true
-    bulk: { columns: [MD] }
+    bulk: { columns: [MD], maxRows: 2000000 }
     assert:
       - rowCount: { atLeast: 1 }
+      - columns: { includes: [MD] }
       - column: MD
         monotonic: strictlyIncreasing
+      - column: MD
+        exists: true
+        for: 99%
 ```
 
 Each record's curve data is held to each assertion on its own; a record with no bulk data fails. `sample: true` with a
-small `maxRecords` keeps the test to a sample of the logs, since a partition's curves run to millions of rows. List in
-`bulk.columns` every column the assertions name, or leave `columns` out to read exactly those.
+small `maxRecords` keeps the test to a sample of the logs, since a partition's curves run to millions of rows, and
+`maxRows` bounds the rows read of one log. List in
+`bulk.columns` every column the assertions name, or leave `columns` out to read exactly those; a list that leaves one out
+is refused when the flow loads.
 
 ## 7. Run the tests after every delivery
 
@@ -266,15 +297,16 @@ schedules:
       logSource: WIRELINE
 ```
 
-Both flows write `schedule: welldb-welllog-hourly`. The schedule's `values` reach every flow that joins it, so the
-assertion flow declares the delivery's `logSource` parameter too; a run given a value for a parameter it does not declare
-fails with `<file>: parameter 'logSource' is not declared under parameters.`
+Both flows then join it: the delivery flow's inline `schedule:` block becomes `schedule: welldb-welllog-hourly`, and the
+assertion flow gains the same line. The schedule's `values` reach every flow that joins it, so the assertion flow
+declares the delivery's `logSource` parameter too; a run given a value for a parameter it does not declare fails with
+`<file>: parameter 'logSource' is not declared under parameters.` Its `parameters` then read:
 
 ```yaml
 parameters:
   system:
     default: welldb
-    description: The data.Source value the well database's records carry.
+    description: The data.Source value the delivered records carry.
   logSource:
     description: Set by the schedule this flow shares with the delivery flow; the tests do not use it.
 ```

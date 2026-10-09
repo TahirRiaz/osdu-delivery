@@ -16,6 +16,7 @@ keywords:
   - waits for
   - dry run
   - before delivering
+  - what the next run reads
 cliCommand: check
 related:
   - delivery-concept-preflight
@@ -120,9 +121,9 @@ names), in this order:
    fail the check, naming them ([Interfaces](../flow/interfaces.md)).
 
 What `check` does not do: it sends no request to OSDU (no probe of the services or the credentials, no legal tag
-check), it reads no row, and even with `--connect` it does not hold the mapping's columns against the tables. A run, a
-`sqlflow preview` and a `sqlflow values` open the tables through the planner, which does. A DDMS a flow names by its
-registration is read from the Register service when the flow runs, not by `check`.
+check) and it reads no row. Without `--connect` it does not open the tables either; with it, it opens them as a run
+does, through the planner, and refuses a mapping column the tables lack, naming it, as a run would. A DDMS a flow
+names by its registration is read from the Register service when the flow runs, not by `check`.
 
 ## What it needs
 
@@ -169,19 +170,28 @@ OK  welldb-wellbore-03-delivery (<flow id>)
 
 ### With --connect
 
-The `tables` line is replaced by what a run would read now, against the watermark the ledger holds for the flow's
-scope:
+The tables are opened as a run opens them, and the mapping is held against them as a run holds it (every dataset
+column, label column and child dataset it reads), so a mapping that reads a column the table lacks fails the check,
+naming the column; so does a provenance column the flow names that the table lacks. The `tables` line is replaced by
+what the next run would read now, against the watermark the ledger holds for the flow's scope, and why:
 
 ```text
     scope       <parameter values, name=value;...> (<full | incremental since <time> | ...>)
+    reads       <why: no watermark yet, the rules moved, or the rows changed after <time> (an overlap of <n>s)>
     window      <everything | after <time>> through <time>
     candidates  <n> record(s) in the window; changes: <True | False>
     key         <key column> <sql type>, ...
     table       record: <n> column(s)
     table       <child dataset>: <n> column(s)
+    issue       <what the preflight says of the mapping against the tables without stopping a run>
 ```
 
-Nothing is planned, rendered or delivered.
+The `reads` line says why the next run reads what it reads: `no ledger keeps a watermark here, so a run reads every row
+in scope`, `no whole-scope plan of scope <scope> has completed yet, so
+the next run reads every row in scope`, `scope <scope> was last planned with other rules than <mapping> renders with
+now (its mapping, template or parameters changed), so the next run reads every row in scope`, or `scope <scope> was
+planned through <time>; the next run reads the rows changed after <time> (an overlap of <n>s)`. Each `issue` line is a
+warning the preflight raises against the tables, as a run logs it. Nothing is planned, rendered or delivered.
 
 ### A source with interfaces
 
@@ -224,7 +234,7 @@ stdout carries one JSON document; keys are sorted and properties without a value
 | `mappings` | The mappings directory. |
 | `cache` | `partition`, `version` and `types` of the cache version read; absent when the mapping reads no cache. |
 | `ddms` | Where a DDMS route's records go; absent on other routes. |
-| `read` | With `--connect`: `scope`, `selection`, `watermark`, `window` (`from`, `to`), `candidates`, `hasChanges`, `keyColumns` (each `name`, `type`), `systemColumns` and `columns` per dataset. |
+| `read` | With `--connect`: `scope`, `selection` (what the next run reads, a full read when the rules moved included), `why`, `watermark`, `window` (`from`, `to`), `candidates`, `hasChanges`, `keyColumns` (each `name`, `type`), `systemColumns`, `columns` per dataset and `issues` (the preflight's warnings against the tables). |
 | `interface`, `ledger`, `route`, `after` | For an interface: its name, its ledger name, `route` (`name`, `reason`) and the names its `after:` lists. |
 
 For a source with interfaces the document is `{ "flow", "order", "interfaces": [...] }`, one object per interface

@@ -89,8 +89,8 @@ What each operation does and what a delivery payload carries is in [Running an O
 its partition is in [Partitions](../concepts/partitions.md). The partition is taken off the run's values before the
 flow's parameters are read, so it never moves a watermark or a submission's scope.
 
-The control plane attaches the central configuration to every delivery, cache, retrieval, assertion and dimension run it
-queues, from a trigger, a schedule or a run group alike, so the node resolves `${env:NAME}` from it first
+The control plane attaches the central configuration to every delivery, cache, retrieval, assertion, dimension and
+inventory run it queues, from a trigger, a schedule or a run group alike, so the node resolves `${env:NAME}` from it first
 ([sqlflow config](config.md)). A local `sqlflow run` gets none of it.
 
 ## Schedules

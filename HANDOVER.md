@@ -5,10 +5,10 @@
 The mapping document is laid out the way the rendered OSDU record is, the mapping language is marked with `$`, and a
 mapping can compute values and decide conditions with a small expression language of its own. The loader, the
 renderer, the preflight, the builder, the census, the GUI, the docs, the samples, the test fixtures and the tests are
-all on the new form, and the recall repository (`B:\osdu-recall-metadata\recall`) matches `osdu/samples/recall` file for
-file. That work is committed: `f438e4c` here, pushed, and `82b08c3` in the recall repository, which has no remote.
+all on the new form, and the estate repository (a local repository beside this one) matches `osdu/samples/welldb` file
+for file. That work is committed: `f438e4c` here, pushed, and `82b08c3` in the estate repository, which has no remote.
 Everything downstream of the sample has since been brought to it (third part, below), committed as `04fa03f` (the
-SQLFlow fix), `d882363` and `e17460b`, pushed; the recall repository's matching comment fix is `a33c177`.
+SQLFlow fix), `d882363` and `e17460b`, pushed; the estate repository's matching comment fix is `a33c177`.
 
 ```yaml
 record:
@@ -36,7 +36,7 @@ record:
         CurveUnit:
           $from: curve_unit
           $modifiers:
-            - replace: $cache.RecallUnits
+            - replace: $cache.UnitAlias
             - ref
 
 fixtureDefaults:
@@ -74,22 +74,22 @@ ingestion SQL, and the docs say so first.
 Verification done: the solution rebuilds with 0 warnings and 0 errors; the delivery suite against SQL Server passes
 everything but the three `SqlServerChainTests` fan-out tests that fail on 584c1b1 too (below); the search suite passes;
 the control-plane suite, run in a worktree without `.sqlflow/env`, fails exactly the four tests it fails on the
-pre-rebuild commit; the GUI builds and lints clean; `sqlflow validate` passes all 14 recall documents;
+pre-rebuild commit; the GUI builds and lints clean; `sqlflow validate` passes all 14 WellDB documents;
 `tools/check-vendored-sqlflow.sh` passes (nothing under `sqlflow/` changed); no changed file holds an em dash.
 
 ### Everything downstream of the sample (third part)
 
 `samples/wells` was deleted in a7cb146, and what copied or described it was left pointing at it. All of it now uses the
-recall sample, in the new mapping format:
+WellDB sample, in the new mapping format:
 
 | Area | Change |
 | --- | --- |
-| GUI e2e suite (`osdu/gui/e2e`) | The global setup builds the fixture repository from `samples/recall` plus the fixture wellbore flows, interfaces source, retrieval flow, mappings and reference cache, the estate `SampleEstate.cs` composes for the control plane suites. The seed imports `Fixtures/cache-records` as the fixture reference cache's capture and `samples/cache-records` as `recall-reference-00-cache`'s, runs the recall chain into `arc` tables and refreshes `recall-lookups-00-cache`; the OSDU stand-in holds the five Recall wellbores (spaces and slashes as hyphens in the id); every spec names the recall flows through the constants in `global-setup.ts`, and the cache and builder specs read the new `$cache:` vocabulary. |
+| GUI e2e suite (`osdu/gui/e2e`) | The global setup builds the fixture repository from `samples/welldb` plus the fixture wellbore flows, interfaces source, retrieval flow, mappings and reference cache, the estate `SampleEstate.cs` composes for the control plane suites. The seed imports `Fixtures/cache-records` as the fixture reference cache's capture and `samples/cache-records` as `osdu-reference-00-cache`'s, runs the WellDB chain into `arc` tables and refreshes `welldb-lookups-00-cache`; the OSDU stand-in holds the five WellDB wellbores (spaces and slashes as hyphens in the id); every spec names the WellDB flows through the constants in `global-setup.ts`, and the cache and builder specs read the new `$cache:` vocabulary. |
 | Coverage (`Validation/MappingCoverage.cs`) | A literal object or list fills the properties it holds, so the sample's `TechnicalAssurances` literal no longer shows `TechnicalAssuranceTypeID` as required and unfilled. |
-| Control plane tests | `DeliveryModuleDatabaseTests` expect the two mappings a copy of the sample holds; the builder test expects the recall mapping as it is. |
+| Control plane tests | `DeliveryModuleDatabaseTests` expect the two mappings a copy of the sample holds; the builder test expects the WellDB mapping as it is. |
 | SQLFlow (`sqlflow/src/SqlFlow.Node/GitMaterializer.cs`) | The history clone behind a repo's tree and git history moves HEAD to what a fetch brings. It never did, so the repo page listed the tree the clone was first made from. Its own `sqlflow:` commit, recorded in `docs/sqlflow-changes.md`. |
-| Docs | READMEs, operations, CLI references, the notifications guide and the test matrix name the recall estate; the WellLog walkthrough is rewritten against the recall mapping and its fixture; `samples/cache-records/README.md` says who reads those records now. |
-| Outside the repository | `.sqlflow/live-e2e/repo/mappings` (git-ignored) converted to the record tree and proven to render byte-identical records to the old form; the recall repository's lookups flow comment matches the sample's. |
+| Docs | READMEs, operations, CLI references, the notifications guide and the test matrix name the WellDB estate; the WellLog walkthrough is rewritten against the WellDB mapping and its fixture; `samples/cache-records/README.md` says who reads those records now. |
+| Outside the repository | `.sqlflow/live-e2e/repo/mappings` (git-ignored) converted to the record tree and proven to render byte-identical records to the old form; the estate repository's lookups flow comment matches the sample's. |
 
 A local `OsduDeliveryE2E` seeded before this work holds the old estate's ingestion rows and cache versions, which fail
 the cache and records specs; it was dropped once here and recreated by the next run.
@@ -123,6 +123,6 @@ The tree has the syntax for these and the loader refuses them by name:
 - The dev catalog's one repo source is `e2e-repo`, the fixture repository `osdu/gui/e2e/.fixtures/SQLFlow-repo`, synced
   every 300 seconds while the dev control plane runs. The e2e global setup writes it, and running only
   `e2e/03-seed.spec.ts` against the dev pair seeds it (`SQLFLOW_E2E_CATALOG_DB` naming `SQLFlow`, `SQLFLOW_E2E_OSDU_DB`
-  and `SQLFLOW_E2E_DATA_DB` naming `OsduDelivery`, `SQLFLOW_E2E_GUI_PORT=5174`). No repo points at the recall repository
-  (`B:\osdu-recall-metadata`, which has no remote); register it to sync it on its own.
+  and `SQLFLOW_E2E_DATA_DB` naming `OsduDelivery`, `SQLFLOW_E2E_GUI_PORT=5174`). No repo points at the estate repository
+  (a local repository with no remote); register it to sync it on its own.
 - A running control plane locks the Debug bins; stop it before building the solution.

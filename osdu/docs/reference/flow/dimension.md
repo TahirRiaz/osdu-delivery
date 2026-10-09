@@ -72,7 +72,7 @@ walks through one end to end.
 A dimension keeps three things apart:
 
 - A **key** is a value exactly as the search index holds it: the text a query compares. For a reference such as
-  `data.WellboreID`, the key is the record id (`dev:master-data--Wellbore:wb-0001:`), never a name.
+  `data.WellboreID`, the key is the record id (`dev:master-data--Wellbore:WB-0001:`), never a name.
 - A **value** is what a person picks. With a `label`, it is read from the record the key names (the wellbore's
   `data.FacilityName`) and cleaned; without one, it is the key itself, cleaned. A key that names an OSDU record and has
   no label is valued by the code its id ends with, its escapes decoded (`dev:reference-data--UnitOfMeasure:us%2Fft:` is
@@ -86,7 +86,8 @@ any of its keys. Values picked across several dimensions compose one search.
 
 ## Example
 
-A dimension flow over the well logs the welldb flows deliver, built in the `dev` and `test` partitions:
+A dimension flow over the well logs the welldb flows deliver, built in the `dev` and `test` partitions,
+`flows/welldb-welllog-05-dimensions.yaml`:
 
 ```yaml
 flowType: dimension
@@ -178,8 +179,8 @@ type ...`).
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `endpoint` | text | required | The platform's base URL, usually `${env:OSDU_URL}`. |
-| `auth` | map | `type: none` | How requests authenticate, written as a delivery flow's `target.auth` is. Secrets are `${env:NAME}` or `${keyvault:NAME}` references only. |
-| `headers` | map | none | Headers sent with every request. `data-partition-id` here hard-codes the one partition the flow builds in; a flow that names `partitions` may not set it. |
+| `auth` | map | `type: none` | How requests authenticate, written as a delivery flow's `target.auth` is. Secrets are `${env:NAME}` or `${keyvault:NAME}` references only; a literal is refused when the flow is read. |
+| `headers` | map | none | Headers sent with every request. `data-partition-id` here hard-codes the one partition the flow builds in; a flow that names `partitions` may not set it. A header that carries a credential holds a reference; a literal is refused when the flow is read. |
 | `queryPath` | text | `/api/search/v2/query` | The search service's offset search: aggregations, counts, and the searches that read labels by id. |
 | `searchPath` | text | `/api/search/v2/query_with_cursor` | The cursor search a build scans records through where an aggregation cannot answer. |
 | `aggregationSize` | integer | 1000 | How many groups the platform's aggregation returns (its `AGGREGATION_SIZE`), 10 to 10,000. A range answered with fewer groups is taken as complete, so this must not be more than the platform's setting; less only costs requests. |
@@ -290,8 +291,11 @@ its name, or as a one-key map with its settings:
 | `map: <dictionary>` or `map: { dictionary, field, otherwise }` | Looks the value up in a [dictionary document](dictionary.md) (`dictionaries/<name>.yaml` above the flow), exactly or ignoring case when that finds one entry, and replaces it with the entry's value (`field` names which, for a dictionary of several fields). `otherwise` says what an unlisted value comes to: left out, it is kept; `~`, the key is left out of every value; a text, that text. |
 
 A key is left out of every value, with the reason kept on it, when cleaning leaves nothing, when the value is longer
-than 256 characters, when `map` leaves it out, or when a step fails on it. `sqlflow validate` does not check that a
-dictionary exists; a build of a dimension whose dictionary cannot be read fails, and the other dimensions build.
+than 256 characters, when `map` leaves it out, or when a step fails on it. `sqlflow validate` finds and reads the
+dictionary each `map` step names, in the nearest `dictionaries/` folder walking up from the flow file, and refuses a flow
+whose dictionary is missing or does not load
+(`<file>: dimension '<name>': Dictionary '<dictionary>' was not found under '../dictionaries'. Expected <dictionary>.yaml or <dictionary>.yml.`).
+A build of a dimension whose dictionary cannot be read fails, and the other dimensions build.
 
 ## The dimension's table
 
@@ -344,9 +348,9 @@ value's column, `id`).
 
 The run payload takes one field, `dimensions`, the names of the dimensions to build; a run naming none builds every
 one. A name the flow does not declare fails the run, listing the flow's dimensions. Anything else in the payload is
-refused: `A dimension flow's payload names the dimensions a run builds (dimensions) and nothing else; a dimension has no
-submission, record, slice, interface, test or inventory to name.` SQLFlow's backfill flags (`--full`, `--from`, ...) are
-refused too.
+refused before the run starts, for example
+`payload tests does not apply to a dimension flow: only an assertion flow's runs select tests; a dimension flow's payload names only dimensions.`
+SQLFlow's backfill flags (`--full`, `--from`, ...) are refused too, with or without a payload.
 
 ```bash
 sqlflow run flows/welldb-welllog-05-dimensions.yaml --set partition=dev --payload '{"dimensions":["Wellbore"]}'

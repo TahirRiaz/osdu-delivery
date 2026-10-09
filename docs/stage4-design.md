@@ -87,7 +87,7 @@ batch: wells
 parameters:
   logSource:
     required: true
-    description: The log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
+    description: The log source (COMPOSITE, CPI, CORE, ILT, PLT, PRESSURE).
 
 source:
   connection: ${env:OSDU_DATA_DB}
@@ -117,7 +117,7 @@ source:
 ```
 
 `render`, `change`, `target` (endpoint, auth, headers, protocol, options), `reliability`, `schedule` and `verify` stay as
-in the current sample, with the schedule carrying `values: { logSource: STAT_COMP }`.
+in the current sample, with the schedule carrying `values: { logSource: COMPOSITE }`.
 
 ### 1.3 Pre and ing flows
 
@@ -657,7 +657,7 @@ the GUI, the API or the schedule) loads and delivers them with the same traceabi
 - **`ProtocolTests`** (863-1520): `NotParquetPayload` (1424) and `MemoryPayload` (1454) implement `IPayloadSource` with `PayloadFile` (1426-1460); `ParquetScopeReader.WriteAsync` and `PandasMetadataKey` (1512, 1516) become `ParquetFiles`.
 - **`DeliverRunScopeTests`** (1521-1540): `ForcesReplan` with `DeliveryRunPayload { RecordKeys }`, `{ Force = true }`, and the re-running flag.
 - **`DeliverOutcomeTests`** (1543-1594): field `Drop` becomes `Source`.
-- **`DeliveryRunBoundaryTests`** (1596-1629): `SampleDropBuilder.WriteAsync` (1611) becomes `SampleWellLogs` rows in `MemoryIngestionTables`; `DropLocation = "drops/STAT_COMP"` (1552) is removed.
+- **`DeliveryRunBoundaryTests`** (1596-1629): `SampleDropBuilder.WriteAsync` (1611) becomes `SampleWellLogs` rows in `MemoryIngestionTables`; `DropLocation = "drops/COMPOSITE"` (1552) is removed.
 
 **`SqlFlow.Delivery.Tests/ScaleEngineTests.cs`**
 - `using SqlFlow.Delivery.SampleDrop` (10) removed; `SampleDropBuilder.WriteAsync(..., partitions)` (29) becomes generated rows in `MemoryIngestionTables`.

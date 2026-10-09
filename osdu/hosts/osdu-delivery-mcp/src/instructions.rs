@@ -69,8 +69,9 @@ Running an OSDU flow: trigger_run with the kind's own arguments, never fullLoad 
   plan changes nothing and is the safe first step. reverse, undo, delete-ledger and an inventory's remove change or
   remove what OSDU holds: run one only when the person asked for that exact operation.
 - values: the flow's parameters by name (delivery_flow lists them), and partition for a flow that names its partitions.
-- payload: for delivery, force, submissionId, recordKeys, redeliver, interface, interfaces; for assertion, tests and
-  tags; for dimension, dimensions. get_doc(\"delivery-cli-run\") has the full table.
+- payload: for delivery, force, submissionId, runId, recordKeys, redeliver, rerender, slices, interface, interfaces,
+  confirm; for retrieval, force; for assertion, tests and tags; for dimension, dimensions; for inventory, inventories,
+  removal and confirm. A kind refuses any other property. get_doc(\"delivery-cli-run\") has the full table.
 
 Operator actions (they change state; each is recorded in the audit trail under the caller's name): delivery_probe_target,
 delivery_verify_record, delivery_sync_with_source, delivery_release_records, delivery_redeliver_record,

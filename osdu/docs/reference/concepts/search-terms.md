@@ -292,7 +292,7 @@ search reads: the term, its route for the kind searched, the mapping that render
 and each value carried through the mapping. A copy or steps become a condition on the property, as any is. A lookup, a
 search or a key is read through other records first: the explorer searches OSDU for the records the value finds (or
 makes the ids the key gives), then compares the property with what it found, and says so in the answer's notes, for
-example `WellLog.wellbore_name is NW-0042: 1 Wellbore record found by ..., compared by id with data.WellboreID.` A value
+example `WellLog.wellbore_name is Wellbore A-42: 1 Wellbore record found by ..., compared by id with data.WellboreID.` A value
 that finds nothing finds no record, or, for a condition that excludes, leaves every record.
 
 The refusals a search can meet, as the control plane words them:

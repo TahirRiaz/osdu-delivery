@@ -252,7 +252,9 @@ with coalesce(a, b)`), `? :` (`chooses with iif(condition, value, other)`), `!` 
 empty(status) or not empty(status)`), `a = 1 = 2` (`chains comparisons`), `a in []` (`'in' looks for a value among at
 least one`), `coalesce(a)` (`it takes at least 2 values: coalesce(value, value, ...)`), `iif(a, b)` (`it takes 3:
 iif(condition, value, other)`), `upper(a) and b = 1` (`the left side of 'and' is 'upper(a)', which gives text, not true or
-false`), `and` as a column (`a column named and is written in backticks`), `1a` (`a column whose name starts with a digit
+false`), `upper(a = 1)` (`a value given to upper is 'a = 1', a condition; conditions are joined with and, or and not, and
+choose between values with iif(condition, value, other), but are not compared or combined as values`), `and` as a
+column (`a column named and is written in backticks`), `1a` (`a column whose name starts with a digit
 is written in backticks`), and an expression over the limits (`is at most 2000`, `nests more than 48 levels deep`).
 
 ## Errors at render

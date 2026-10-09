@@ -338,7 +338,7 @@
       "path": "source.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). A literal is refused when the flow is read.",
       "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
     },
     {
@@ -368,21 +368,21 @@
       "path": "source.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here. A field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) holds a reference only; a literal there is refused when the flow is read. `client_id`, `scope` and `audience` may be literals.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent. A field named as a secret must be a reference.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
     },
     {
@@ -397,7 +397,7 @@
       "path": "source.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
     },
     {
@@ -433,7 +433,7 @@
       "path": "source.endpoint",
       "type": "string",
       "required": true,
-      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`, the same one the delivery flows it tests deliver to."
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`, the same one the delivery flows it tests deliver to. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "source.headers",
@@ -445,7 +445,7 @@
       "path": "source.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret}). A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "source.legalPath",
@@ -866,7 +866,7 @@
       "path": "tests[].assert[].indexed",
       "type": "boolean",
       "required": false,
-      "description": "true: the search indexed every record the test matches cleanly: none carries an index status other than 200 (a mapping or conversion failure, a missing schema). The failing examples carry the indexer's trace."
+      "description": "true: the search indexed every record the test matches cleanly: none carries an index status above 200 (a mapping or conversion failure, a missing schema). The failing examples carry the indexer's trace."
     },
     {
       "path": "tests[].assert[].interface",
@@ -1392,7 +1392,7 @@
       "path": "tests[].bulk.columns",
       "type": "list",
       "required": false,
-      "description": "The columns (curves) read; left out, those the assertions name."
+      "description": "The columns (curves) read; left out, those the assertions name; listed, they must include every column the assertions name (a list that leaves one out is refused when the flow loads)."
     },
     {
       "path": "tests[].bulk.columns[]",

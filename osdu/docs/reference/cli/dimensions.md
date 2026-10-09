@@ -130,9 +130,9 @@ sqlflow dimensions table flows/welldb-welllog-05-dimensions.yaml --dimension Wel
 ```text
 Wellbore: 3 of 2410 row(s) of osdu.dim_Wellbore
           id       records  FacilityName  WellboreID  Country  Operator  LoggingService
-         412            12  "Alpha-1"  dev:master-data--Wellbore:wb-0001:  Country="Norway"  Operator="Example Operator"  LoggingService="GR-RES"
-         413             3  "Alpha-1"  dev:master-data--Wellbore:wb-0001:  Country="Norway"  Operator="Example Operator"  LoggingService="Not specified"
-          97            40  "Alpha-2"  dev:master-data--Wellbore:wb-0002:  Country="Norway"  Operator="Not specified"  LoggingService="SONIC"
+         412            12  "Wellbore A-1"  dev:master-data--Wellbore:WB-0001:  Country="United States"  Operator="Example Operator"  LoggingService="GR-RES"
+         413             3  "Wellbore A-1"  dev:master-data--Wellbore:WB-0001:  Country="United States"  Operator="Example Operator"  LoggingService="Not specified"
+          97            40  "Wellbore A-2"  dev:master-data--Wellbore:WB-0002:  Country="United States"  Operator="Not specified"  LoggingService="SONIC"
   more rows follow: raise --max (now 3), narrow with --search or --attr, or export the table.
 ```
 
@@ -183,9 +183,9 @@ label when it differs from the value, its attributes and its own search filter.
 
 ```text
 Wellbore: 1 of 1203 key(s)
-            15  "dev:master-data--Wellbore:wb-0001:"  -> Alpha-1
-                Country: Norway; Operator: Example Operator; LoggingService: GR-RES (12), Not specified (3)
-                search data.WellboreID.keyword:"dev:master-data--Wellbore:wb-0001:"
+            15  "dev:master-data--Wellbore:WB-0001:"  -> Wellbore A-1
+                Country: United States; Operator: Example Operator; LoggingService: GR-RES (12), Not specified (3)
+                search data.WellboreID.keyword:"dev:master-data--Wellbore:WB-0001:"
 ```
 
 A key no query can carry is marked `(no query can carry it)`. With `--json`: `dimension` and `keys`, each with `keyId`,
@@ -252,11 +252,11 @@ search combines at most 20 dimensions and 1,000 clauses (each key or text compar
 and is refused rather than cut short past them.
 
 ```bash
-sqlflow dimensions search flows/welldb-welllog-05-dimensions.yaml --pick Wellbore=Alpha-1 --pick CurveMnemonic=GR --partition dev
+sqlflow dimensions search flows/welldb-welllog-05-dimensions.yaml --pick 'Wellbore=Wellbore A-1' --pick CurveMnemonic=GR --partition dev
 ```
 
 ```text
-(tags.DeliveredBy:"welldb") AND (data.WellboreID.keyword:"dev:master-data--Wellbore:wb-0001:") AND ((nested(data.Curves, (Mnemonic.keyword:"GAMMA"))) OR (nested(data.Curves, (Mnemonic.keyword:"GR"))) OR (nested(data.Curves, (Mnemonic.keyword:"GRC"))))
+(tags.DeliveredBy:"welldb") AND (data.WellboreID.keyword:"dev:master-data--Wellbore:WB-0001:") AND ((nested(data.Curves, (Mnemonic.keyword:"GAMMA"))) OR (nested(data.Curves, (Mnemonic.keyword:"GR"))) OR (nested(data.Curves, (Mnemonic.keyword:"GRC"))))
 ```
 
 The query goes to the console alone; the error stream says `kind osdu:wks:work-product-component--WellLog:1.4.0, 2
@@ -286,7 +286,7 @@ value (`moved`). `--build <n>` narrows it to one build, `--value <value>` to one
 
 ```text
 Wellbore: 1 change(s)
-  2026-10-08 03:00:40Z  build 57      moved     "dev:master-data--Wellbore:wb-0007:"  from Not specified to Alpha-7
+  2026-10-08 03:00:40Z  build 57      moved     "dev:master-data--Wellbore:WB-0007:"  from Not specified to Wellbore A-7
 ```
 
 With `--json`: `dimension` and `changes`, each with `changeId`, `build`, `key`, `change`, `from`, `to` and `changedUtc`.
@@ -314,7 +314,7 @@ values, keys, attribute values, collected texts, change log and its rows in its 
 partition writes it any more. It is refused for a dimension the file declares
 (`welldb-welllog-05-dimensions declares dimension CurveUnit, so it is not removed. Take it out of the flow's file first:
 only a dimension the flow no longer declares is removed.`) and for one a cache flow of the partition captures, naming
-the cache flow and its type. It is recorded as a `remove-dimension` activity of the flow under `cli:<user>`.
+the cache flow and its type. It is recorded as a `remove-dimension` activity of the flow under `cli:<user>@<machine>`.
 
 ```text
 Removed dimension CurveUnit of welldb-welllog-05-dimensions in dev: 38 value(s), 38 key(s), 0 attribute value(s), 0 collected text(s), 2 change(s) and 6 build(s); dropped the table osdu.dim_CurveUnit.
@@ -335,7 +335,7 @@ failure prints `ERROR  <message>` and exits 1; `filter` also exits 1 when no sea
 | `Dimensions live in the module's database. Run 'sqlflow dimensions' with --db <conn-ref>, or set the catalog variable.` | No module database. |
 | `Name the dimension with --dimension <name>; welldb-welllog-05-dimensions declares Wellbore, CurveMnemonic, CurveUnit, LegalTag.` | `--dimension` missing. |
 | `Dimension Wellbore has not been built in welldb-welllog-05-dimensions@dev yet. Build it with: sqlflow run <flow.yaml> --payload '{"dimensions":["Wellbore"]}'` | No build in the partition. |
-| `Dimension Wellbore has no value 'alpha-1'. Values are named exactly as the dimension holds them.` | A `--value` that is no value (compared exactly, case included). |
+| `Dimension Wellbore has no value 'wellbore a-1'. Values are named exactly as the dimension holds them.` | A `--value` that is no value (compared exactly, case included). |
 | `Dimension Wellbore reads no attribute 'Field'; it reads Country, Operator, LoggingService.` | An `--attr` or `--attribute` the dimension does not read. |
 | `The dimensions picked in read different kinds (...); a search reads one. Name the kind to search, which each dimension's kind has to cover.` | `search` across kinds without `--kind`. |
 | `The picks hold <n> keys and <n> clauses in all, and one search holds at most 1000 (the service allows 1024). Pick fewer values, or search each dimension's values on their own.` | Too many keys picked. |

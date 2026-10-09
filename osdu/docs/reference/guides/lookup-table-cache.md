@@ -175,7 +175,8 @@ Two choices matter for the cache:
 ## 3. Capture the table into the cache
 
 The cache flow declares the table as a `table` type. It reaches no OSDU platform, so it has no endpoint and no
-credentials, only the connection the table is read over:
+credentials, only the connection the table is read over. The estate's `welldb-lookups-00-cache.yaml` holds the lookup table
+beside the curve dictionary and a dictionary document:
 
 ```yaml
 flowType: cache
@@ -190,6 +191,13 @@ types:
   - table: OsduData.silver.UnitAlias
     key: source_unit
     fields: [osdu_unit]
+  - table: OsduData.silver.CurveDictionary
+    key: mnemonic
+    fields:
+      - log_curve_type_id
+      - { column: unit, as: curve_unit }
+  - dictionary: sampling-domain
+    name: SamplingDomain
 
 schedule: welldb-lookups
 ```

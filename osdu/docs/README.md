@@ -20,7 +20,6 @@ disagrees with the code or the reference pages, the code and the reference pages
   [reversal-plan.md](reversal-plan.md) and [validation-plan.md](validation-plan.md).
 - [osdu-testing.md](osdu-testing.md) (the live test waves) and [test-matrix.md](test-matrix.md) (which suite proves
   what).
-- [walkthrough/](walkthrough/): the WellLog 1.4.0 schema laid out section by section, and how each section is filled.
 - The designs in the repository's [docs/](../../docs/): [assertions-design.md](../../docs/assertions-design.md),
   [interfaces-design.md](../../docs/interfaces-design.md), [lineage-design.md](../../docs/lineage-design.md),
   [partitions-design.md](../../docs/partitions-design.md) and [stage4-design.md](../../docs/stage4-design.md).

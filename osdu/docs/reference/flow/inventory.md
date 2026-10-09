@@ -17,6 +17,8 @@ keywords:
   - purge
   - unlisted
   - drift between osdu and ledger
+  - kind wildcard
+  - missing checks in turn
 yamlPath: "(root, flowType: inventory)"
 related:
   - delivery-guide-finding-orphans
@@ -61,6 +63,8 @@ remove the orphan, stale or forgotten ids it found. The [orphans guide](../guide
 [`sqlflow inventory`](../cli/inventory.md) reads the results.
 
 ## Example
+
+The estate's inventory flow, `flows/welldb-06-inventory.yaml`:
 
 ```yaml
 flowType: inventory
@@ -115,7 +119,7 @@ Unknown keys are refused when the document is read.
 | `partitions` | list | none | The partitions the flow keeps inventories of, each a literal `data-partition-id`. Partitions are settled as a [dimension flow's](dimension.md#partitions) are: listed, hard-coded by `source.headers.data-partition-id`, or every registered partition. A run reads one partition; `*` is refused. |
 | `source` | map | required | The OSDU platform, and how it is read. See [source](#source). |
 | `owners` | list | inferred | The identities this estate's records are written as (OSDU's `createUser`: a user's e-mail, an application's client id), at most 50, each at most 256 characters with no whitespace, unique ignoring case. See [Owners](#owners). |
-| `maxMissingChecks` | integer | 100,000 | How many ids a ledger expects that one build reads from storage, to tell `missing` from `unlisted`: 0 (none) to 1,000,000. |
+| `maxMissingChecks` | integer | 100,000 | How many ids a ledger expects that one build reads from storage, to tell `missing` from `unlisted`: 0 (none) to 1,000,000. Never-asked ids first, then the longest ago asked, so successive builds take turns through all of them. |
 | `inventories` | list | required | The inventories, at least 1 and at most 100, names unique ignoring case. |
 | `removal` | map | none | What an operator may remove from OSDU of what the inventories found. Left out, the flow only reads OSDU. See [Removal](#removal). |
 | `reliability` | map | delivery defaults | The HTTP settings a [delivery flow](delivery.md) takes, and `concurrency` (default 8): how many version lists a build reads at once for `versions: all`. Inventories are read one after another. `parallelInterfaces` is refused. |
@@ -126,8 +130,8 @@ Unknown keys are refused when the document is read.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `endpoint` | text | required | The platform's base URL, usually `${env:OSDU_URL}`. |
-| `auth` | map | `type: none` | How requests authenticate, written as a delivery flow's `target.auth` is; secrets are references only. |
-| `headers` | map | none | Headers sent with every request; `data-partition-id` only for a flow that names no `partitions`. |
+| `auth` | map | `type: none` | How requests authenticate, written as a delivery flow's `target.auth` is; secrets are references only, and a literal is refused when the flow is read. |
+| `headers` | map | none | Headers sent with every request; `data-partition-id` only for a flow that names no `partitions`. A header that carries a credential holds a reference; a literal is refused when the flow is read. |
 | `read` | `search` or `storage` | `search` | How the inventories read OSDU. See [Reading OSDU](#reading-osdu). |
 | `queryPath` | text | `/api/search/v2/query` | The offset search a plan counts through. |
 | `searchPath` | text | `/api/search/v2/query_with_cursor` | The cursor search a search read pages through. |
@@ -150,8 +154,9 @@ A path must start with `/` and hold no whitespace, query or fragment.
 - **`read: storage`** lists every active record of each kind from storage itself (`GET /query/records?kind=`, 1,000 ids a
   page, the `service.storage.admin` role), and reads their system properties 1,000 at a time (`POST
   /query/records/headers`), or 100 at a time through `POST /query/records` where a deployment does not serve the headers
-  route. A kind with wildcards is expanded through the schema service into the kinds it matches, where `*` stands for a
-  whole segment. Unindexed records are listed. A storage read takes no `query`.
+  route. A kind with wildcards is expanded through the schema service into the kinds it matches, where `*` stands for
+  any text within its segment (`1.*.*` takes every 1.x.y version), matched ignoring case as the search service matches a
+  kind. Unindexed records are listed. A storage read takes no `query`.
 
 A soft-deleted record is not served, so it is in no inventory.
 
@@ -161,7 +166,7 @@ A soft-deleted record is not served, so it is in no inventory.
 | --- | --- | --- | --- |
 | `name` | text | required | A letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run's payload, the CLI and the GUI name the inventory by it. |
 | `description` | text | none | What the inventory holds. |
-| `kind` | text | required | The kind read, `authority:source:entityType:version`, each segment a value or `*`, at most 300 characters. |
+| `kind` | text | required | The kind read, `authority:source:entityType:version`, each segment a value, `*`, or a value with `*` inside it (`1.*.*`), at most 300 characters. |
 | `query` | text | every record | A Lucene query narrowing a search read, with `{name}` and `{partition}` tokens, at most 4,000 characters. Refused on a storage read. |
 | `versions` | `latest` or `all` | `latest` | `all` also keeps every version storage keeps of each record, read (`GET /records/versions/{id}`) only for a record that is new or whose latest version moved since its versions were read. |
 
@@ -221,9 +226,9 @@ and names exactly one inventory:
 | `removal.ids` | The ids picked, 1 to 1,000, each once, as many as `expected`. Left out, every id of the finding is removed. |
 | `confirm` | The partition the run acts in, typed back; it must be the run's partition. |
 
-`removal` and `confirm` are refused on any other operation. Anything else in the payload is refused: `An inventory flow's
-payload names the inventories a run builds or reconciles (inventories), and for a removal what it removes (removal,
-confirm), and nothing else; an inventory has no submission, record, slice, interface, test or dimension to name.`
+`removal` and `confirm` are refused on any other operation. Anything else in the payload is refused before the run
+starts, for example
+`payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal and confirm.`
 
 ```bash
 sqlflow run flows/welldb-06-inventory.yaml --set partition=dev
@@ -251,7 +256,7 @@ Each id gets one finding. "Live" artifacts are the datasets and other ids a deli
 | `foreign` | the record | nothing; another identity created it | no |
 | `superseded` | the dataset | a minted id a later delivery replaced, kept live on purpose | no |
 | `tracked` | the record | a delivered record at this version, or a live minted id | no |
-| `gone` | nothing | nothing: listed before, and no ledger expects it (or the build read nothing from storage) | no |
+| `gone` | nothing | nothing: listed before, and no ledger expects it, or a ledger expects it and storage has not been asked for it yet (its reason says which) | no |
 | `unreconciled` | the record | not compared yet: a build listed it and no reconcile has run since | no |
 
 Every finding keeps the ledger and record, or the minted id, it rests on, and why in a line (`the ledger holds version
@@ -269,9 +274,11 @@ the [orphans guide](../guides/finding-orphans.md#4-act-on-each-finding).
    it for ten minutes; this build merged nothing.`
 3. **Versions**, for `versions: all`: the version list of every record that is new or moved, `concurrency` at a time.
 4. **Reconcile**: the owners, the finding of every id served, then up to `maxMissingChecks` ids a ledger expects that the
-   read did not list, read by id from storage (`missing` when storage does not hold it, `unlisted` when it does). With
-   `maxMissingChecks: 0` nothing is read from storage and every id no longer listed is `gone`. A build that reaches the
-   bound logs that more may be missing.
+   read did not list, read by id from storage (`missing` when storage does not hold it, `unlisted` when it does). The ids
+   are asked for least recently asked first (never asked first, by the row's `CheckedUtc`), so builds that each reach the bound take turns through
+   all of them. An id a build did not ask for keeps what storage last answered; one never asked is `gone`, its detail
+   saying a ledger expects it and a later build asks. With `maxMissingChecks: 0` nothing is read from storage and every
+   id no longer listed is `gone`. A build that reaches the bound logs that more may be missing.
 
 Inventories run one after another; one that fails leaves the others to complete, and the run ends failed naming it.
 

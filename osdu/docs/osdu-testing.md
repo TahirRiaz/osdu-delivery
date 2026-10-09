@@ -21,7 +21,7 @@ implementation as it stood then, when a flow read a prepared drop.
 The current build, where data reaches OSDU through SQLFlow's pre-ingestion and ingestion flows, was run against a live
 platform on 2026-09-17 (UTC): **Azure Data Manager for Energy, release 0.29, data partition `dev`**. The checks, the
 ids each would create and how each would be removed were written out in [live-wave-one.md](../../docs/live-wave-one.md)
-and approved before anything was sent. The estate is the sample estate (`osdu/samples/recall`) rebuilt into the
+and approved before anything was sent. The estate is the sample estate (`osdu/samples/welldb`) rebuilt into the
 git-ignored `.sqlflow/live-e2e/repo` with the deployment's own partition, access groups and legal tag, and every record
 it wrote carried `tags.RunMarker = ODLIVE20260918`.
 
@@ -187,10 +187,10 @@ the catalog ([reference/flow/cache.md](reference/flow/cache.md)).
 | Flow | Kind and protocol | What it delivers |
 | --- | --- | --- |
 | `e2e-wellbore` | delivery, `storage` | 2 `master-data--Wellbore` records |
-| `recall-welllog` | delivery, `ddms` | 3 `work-product-component--WellLog` records and their wellbore DDMS bulk data: L-1001 (MD, GR, RHOB), L-1002 (MD, GR), L-2001 (MD, NPHI) |
+| `welldb-welllog` | delivery, `ddms` | 3 `work-product-component--WellLog` records and their wellbore DDMS bulk data: L-1001 (MD, GR, RHOB), L-1002 (MD, GR), L-2001 (MD, NPHI) |
 | `e2e-document` | delivery, `manifest` | 1 `work-product-component--Document` with a CSV file, through `Osdu_ingest` |
 | `e2e-file` | delivery, `file` | 1 `work-product-component--Document` with a CSV file, through the file service |
-| `e2e-cache-sync` | retrieval | Wellbore and reference data read into the OSDU cache that `recall-welllog` renders from |
+| `e2e-cache-sync` | retrieval | Wellbore and reference data read into the OSDU cache that `welldb-welllog` renders from |
 
 Runs held by the live catalog between its re-mints on 2026-09-10 and 2026-09-12 (the second re-mint added
 `osdu.InlineSubmission`; a full database backup was taken first, and the runs before the first re-mint are in the
@@ -202,7 +202,7 @@ ledger export taken then):
 | `e2e-document` | deliver, verify | 6 and 1 succeeded |
 | `e2e-file` | deliver, intake, drain, known-state, plan, verify | 9, 1, 1, 1, 1 and 6 succeeded |
 | `e2e-wellbore` | deliver, verify | 10 and 1 succeeded |
-| `recall-welllog` | deliver, known-state, verify | 19 succeeded and 1 failed, 1 and 1 succeeded |
+| `welldb-welllog` | deliver, known-state, verify | 19 succeeded and 1 failed, 1 and 1 succeeded |
 
 The failed run is a preflight refusal during the cache change tests: the mapping read a wellbore description the
 reference snapshot it rendered with did not cache. Nothing was sent.
@@ -245,7 +245,7 @@ reference snapshot it rendered with did not cache. Nothing was sent.
 | Verify | Verify runs on all four delivery flows report no drift after a clean delivery. |
 | Drift | A record changed outside OSDU Delivery (a storage `PUT` adding a tag) is reported drifted by verify. |
 | Reconcile | With `verify.reconcile: true` the drifted record's hashes are cleared, the next drop re-sends it, the foreign tag is gone, and verify reports no drift again. |
-| Known state | A known-state run publishes `known-state.parquet` and `known-state.json` for `recall-welllog` (3 records) and `e2e-file`. |
+| Known state | A known-state run publishes `known-state.parquet` and `known-state.json` for `welldb-welllog` (3 records) and `e2e-file`. |
 | Probe and read-back | The endpoint probe reaches the file service; read-back from the record page returns the record as OSDU holds it. |
 
 ### 2.5 Operator actions
@@ -279,7 +279,7 @@ driven through `POST /api/v1/delivery/submissions` exactly as a source system wo
 
 | Stage | What was proven |
 | --- | --- |
-| The flow offers it | `e2e-wellbore` declares `source.manualSubmission`; `GET /delivery/manual-submission/flows` names it and no other, and with `all=true` reports `recall-welllog`, `e2e-file` and `e2e-document` as taking none, each saying it streams payload files. |
+| The flow offers it | `e2e-wellbore` declares `source.manualSubmission`; `GET /delivery/manual-submission/flows` names it and no other, and with `all=true` reports `welldb-welllog`, `e2e-file` and `e2e-document` as taking none, each saying it streams payload files. |
 | Preview | `operation: plan` rendered the record and reported it; nothing reached OSDU. |
 | Delivery | The run wrote the records as a drop under the flow's work location and delivered them through the ordinary intake: `test:master-data--Wellbore:94a321a3935358d6b059c613aaeb3a4c` at version 1789193436546764, read back from OSDU through the record's read-back task. |
 | Idempotency | The same request under the same `submissionId` answered 200 with the run the first one started, and queued nothing. |
@@ -393,8 +393,8 @@ Each is fixed on `main`, and the live runs after each fix are in the action log.
 | Reserved drop-off uploads | A file of a few gigabytes is reserved, written straight to storage with a user delegation SAS, and the reservation completed (`POST /dropoffs/reserve`, `POST /dropoffs/{id}/complete`). `DeliveryDropOffReserveApiTests` covers the route, the refusals and the completion checks, but no reserved upload has run live: every live drop-off carried its bytes through the control plane. | The drop-off area on Azure Storage and the control plane's identity holding Storage Blob Delegator on the account, plus CORS for a browser writing directly. |
 | A submission's own reference | A submission carries the caller's name for the work (a filename, a ticket, a job id), stored, indexed and searchable, and a repeat that relabels the work is refused. Covered by `SubmissionReferenceTests` and `DeliverySubmissionApiTests`. Never sent live. | One live submission carrying a reference, and one repeat that changes it. |
 | Folded reference names | A mapping can match a name against the cache with punctuation and spacing folded away, opt-in per cache entry (`ignoreSeparators`), running only after exact and case-insensitive comparison find nothing. Covered by `ReferenceFoldTests` against a built cache. Never resolved against the live partition's own names. | One live mapping entry opted in, against a facility whose name OSDU spells differently from the drop. |
-| Assertion flows against the live partition | What the kind reads today (storage and search for every kind, bulk data from the Wellbore DDMS alone) is listed in [docs/assertions-design.md](../../docs/assertions-design.md) section 11. Its requests are held to the pinned OpenAPI specifications by the suites (search, storage, legal, the Wellbore DDMS), its evaluation and reports are tested against a fake platform, and its API against SQL Server, but no test has run against a live partition. A run only reads, so it creates no id and leaves nothing to clean up; it is still a live run, so it waits for its set of tests to be approved. | The sample flow `recall-welllog-04-header-assertion` run against `dev` once the Recall logs are delivered, and its report compared with what the Records page and search show. |
-| The explorer's queries and dimension builder | The query of an element is written from the saved templates by the code the module's lookups use, and pinned by `ExplorerElementQueriesTests` and `OsduQueryTests`; a nested list's item is asked as one `nested(path, (A:"x" AND B:"y"))`, the flat chain the module's model of the search service's parser (`ServiceParser`) says it reads, which the OpenAPI specification does not describe. The builder's keys and example reads are tested against a fake platform (`DimensionSamplerTests`) and through the API (`DeliveryExplorerDimensionApiTests`). None of it has run against a live partition. A search only reads, so it creates no id and leaves nothing to clean up; it is still a live run, so it waits for its set of tests to be approved. | Search on a GeoContexts item's query in `dev`, and the records it finds compared with the item's own; a dimension built from the Recall logs in the explorer and its example row compared with a build of the same YAML. |
+| Assertion flows against the live partition | What the kind reads today (storage and search for every kind, bulk data from the Wellbore DDMS alone) is listed in [docs/assertions-design.md](../../docs/assertions-design.md) section 11. Its requests are held to the pinned OpenAPI specifications by the suites (search, storage, legal, the Wellbore DDMS), its evaluation and reports are tested against a fake platform, and its API against SQL Server, but no test has run against a live partition. A run only reads, so it creates no id and leaves nothing to clean up; it is still a live run, so it waits for its set of tests to be approved. | The sample flow `welldb-welllog-04-header-assertion` run against `dev` once the WellDB logs are delivered, and its report compared with what the Records page and search show. |
+| The explorer's queries and dimension builder | The query of an element is written from the saved templates by the code the module's lookups use, and pinned by `ExplorerElementQueriesTests` and `OsduQueryTests`; a nested list's item is asked as one `nested(path, (A:"x" AND B:"y"))`, the flat chain the module's model of the search service's parser (`ServiceParser`) says it reads, which the OpenAPI specification does not describe. The builder's keys and example reads are tested against a fake platform (`DimensionSamplerTests`) and through the API (`DeliveryExplorerDimensionApiTests`). None of it has run against a live partition. A search only reads, so it creates no id and leaves nothing to clean up; it is still a live run, so it waits for its set of tests to be approved. | Search on a GeoContexts item's query in `dev`, and the records it finds compared with the item's own; a dimension built from the WellDB logs in the explorer and its example row compared with a build of the same YAML. |
 | Repeatable live tests | The live drivers are scripts outside the repository, so nobody else can re-run them, and the suites have no live integration tests. | The drivers moved into the repository, keeping the action log and marker rules. |
 
 ### 4.3 Known defects not yet fixed

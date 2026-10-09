@@ -84,7 +84,7 @@ source files ──file flow──▶ pre.Wellbore, pre.v_Wellbore ──ing flo
 | Step | Flow | What it does |
 | --- | --- | --- |
 | 1 | A SQLFlow file flow (`welldb-wellbore-01-pre`) | Lands the source files into a `pre` table as text and refreshes its typed view `pre.v_Wellbore` |
-| 2 | A SQLFlow `ing` flow (`welldb-wellbore-02-ing`) | Upserts the view into a keyed ingestion table, `OsduData.silver.Wellbore`, stamping `UpdatedDate_DW` on every row it changes |
+| 2 | A SQLFlow `ing` flow (`welldb-wellbore-02-ing`) | Upserts the view into a keyed ingestion table, `OsduData.silver.Wellbore`, stamping `UpdatedDate_DW` on every row it inserts or changes |
 | 3 | An OSDU delivery flow (`welldb-wellbore-03-delivery`) | Reads the rows changed since its last run, renders each with its pinned mapping, sends what renders differently, and records all of it |
 
 The delivery flow reads the ingestion table through SQLFlow's own columns: `UpdatedDate_DW` drives its incremental read,

@@ -75,13 +75,21 @@ template.
 
 ## 3. Write the flow
 
-Start small: one dimension, a key and a label.
+Start small: one dimension, a key and a label. This is the start of the estate's
+`flows/welldb-welllog-05-dimensions.yaml`; step 6 adds to it, and the whole file is the
+[dimension flow's example](../flow/dimension.md). `{deliveredBy}` is the flow's parameter, `welldb` unless a run
+names another.
 
 ```yaml
+# flows/welldb-welllog-05-dimensions.yaml, its top and its first dimension, a key and a label: step 6 adds to it
 flowType: dimension
 name: welldb-welllog-05-dimensions
+description: The wellbores, curve mnemonics and units of the well logs the welldb flows deliver, ready for a search panel.
 batch: welldb
 partitions: [dev, test]
+
+parameters:
+  deliveredBy: { default: welldb }
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -93,10 +101,13 @@ source:
       url: ${env:OSDU_TOKEN_URL}
       body: { scope: "${env:OSDU_SCOPE}" }
 
+reliability: { concurrency: 4 }
+
 dimensions:
   - name: Wellbore
+    description: Every wellbore the well logs name, by its name, with its country and operator.
     kind: osdu:wks:work-product-component--WellLog:1.4.0
-    query: 'tags.DeliveredBy:"welldb"'
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
     path: data.WellboreID
     label: data.FacilityName
 ```
@@ -112,7 +123,8 @@ OK  'welldb-welllog-05-dimensions' is valid (dimension: ${env:OSDU_URL} -> dimen
 ```
 
 `validate` checks the document: every path is one a query can name, the table's column names work, every clean step
-and pattern can run. It does not reach OSDU, the templates, or a dictionary file.
+and pattern can run, and every dictionary a `map` step names is found and reads. It does not reach OSDU or the
+templates.
 
 ## 4. Plan, then build
 
@@ -139,7 +151,7 @@ command line, `--payload '{"dimensions":["Wellbore"]}'`.
 ```bash
 sqlflow dimensions list   flows/welldb-welllog-05-dimensions.yaml --partition dev
 sqlflow dimensions values flows/welldb-welllog-05-dimensions.yaml --dimension Wellbore --order records --partition dev
-sqlflow dimensions keys   flows/welldb-welllog-05-dimensions.yaml --dimension Wellbore --search wb-0001 --partition dev
+sqlflow dimensions keys   flows/welldb-welllog-05-dimensions.yaml --dimension Wellbore --search WB-0001 --partition dev
 ```
 
 `values` lists each name with its records and the ids behind it; `keys` lists each wellbore id with the name read for it
@@ -155,34 +167,42 @@ Two things to look for:
 
 ## 6. Add attributes and clean steps
 
-Add the wellbore's country, the logging services of its logs, and a second dimension whose spellings are grouped:
+Add the wellbore's country and operator, the logging services of its logs, and a second dimension whose spellings are
+grouped. The file's first two dimensions then read (the file goes on with `CurveUnit` and `LegalTag`):
 
 ```yaml
 dimensions:
   - name: Wellbore
+    description: Every wellbore the well logs name, by its name, with its country and operator.
     kind: osdu:wks:work-product-component--WellLog:1.4.0
-    query: 'tags.DeliveredBy:"welldb"'
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
     path: data.WellboreID
     label: data.FacilityName
     unlabelled: Not specified
     attributes:
       Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']
+      Operator: [data.CurrentOperatorID, data.OrganisationName]
       LoggingService: { collect: data.LoggingService }
 
   - name: CurveMnemonic
+    description: The curve mnemonics of the well logs, spellings grouped.
     kind: osdu:wks:work-product-component--WellLog:1.4.0
-    query: 'tags.DeliveredBy:"welldb"'
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
     path: data.Curves.Mnemonic
     clean:
       - trim
+      - collapseSpaces
       - upper
+      - replace: { pattern: '^(\w+)_\d+$', with: '$1' }
       - map: curve-aliases
     countRecords: true
 ```
 
-`Country` follows each geopolitical entity the wellbore names and keeps the one whose type is a country.
+`Country` follows each geopolitical entity the wellbore names and keeps the one whose type is a country; `Operator`
+follows the wellbore's current operator to the organisation's name.
 `LoggingService` is collected from the logs themselves, so each wellbore holds every logging service its logs name,
-with how many logs name each. `map: curve-aliases` reads the [dictionary](../flow/dictionary.md)
+with how many logs name each. The clean steps trim, collapse runs of spaces, upper-case and strip a numeric suffix
+(`GR_2` is `GR`) before `map: curve-aliases` reads the [dictionary](../flow/dictionary.md)
 `dictionaries/curve-aliases.yaml` above the flow:
 
 ```yaml
@@ -202,15 +222,15 @@ to another value (a renamed wellbore moves to its new name).
 
 ## 7. Search with the values picked
 
-The search that finds every log of the wellbore `Alpha-1` holding a gamma ray curve:
+The search that finds every log of the wellbore `Wellbore A-1` holding a gamma ray curve:
 
 ```bash
-sqlflow dimensions search flows/welldb-welllog-05-dimensions.yaml --pick Wellbore=Alpha-1 --pick CurveMnemonic=GR --partition dev
+sqlflow dimensions search flows/welldb-welllog-05-dimensions.yaml --pick 'Wellbore=Wellbore A-1' --pick CurveMnemonic=GR --partition dev
 ```
 
 The query goes to the console alone, ready for a search request (`--json` gives the whole request body). Values picked in
 one dimension are joined with OR, dimensions with AND, and each dimension's own query is added once. A pick by attribute
-selects keys: `--where Wellbore.Country=Norway` compares every wellbore of that country. The GUI's search builder on the
+selects keys: `--where 'Wellbore.Country=United States'` compares every wellbore of that country. The GUI's search builder on the
 **Dimensions** page composes the same search.
 
 ## 8. Feed a cascade of drop-downs
@@ -219,7 +239,7 @@ Each drop-down lists the values of one attribute among the keys the other picks 
 
 ```bash
 sqlflow dimensions attributes flows/welldb-welllog-05-dimensions.yaml --dimension Wellbore --attribute Country --partition dev
-sqlflow dimensions attributes flows/welldb-welllog-05-dimensions.yaml --dimension Wellbore --attribute LoggingService --attr Country=Norway --partition dev
+sqlflow dimensions attributes flows/welldb-welllog-05-dimensions.yaml --dimension Wellbore --attribute LoggingService --attr 'Country=United States' --partition dev
 ```
 
 An application reads the same from the control plane (`GET /api/v1/delivery/dimensions/{id}/attributes/{name}`), or from
@@ -234,7 +254,7 @@ With a collected attribute, a row is a key and one value it collects.
 ```sql
 SELECT [FacilityName], [Country], [LoggingService], [records]
 FROM [osdu].[dim_Wellbore]
-WHERE [partition] = 'dev' AND [Country] = 'Norway'
+WHERE [partition] = 'dev' AND [Country] = 'United States'
 ORDER BY [FacilityName];
 ```
 
@@ -263,8 +283,8 @@ the dimension flow. How a mapping reads a lookup table is in [mapping lookups](.
 
 Schedule the flow after the delivery flows that write the well logs ([schedules](../../../../sqlflow/docs/reference/flow/schedule.md));
 lineage orders it after them. A dimension taken out of the YAML is built no more and keeps what it held; declaring it
-again brings its ids back. To delete one for good (here `CurveUnit`, which an earlier version of the flow declared),
-once no cache flow captures it:
+again brings its ids back. To delete one for good (here `CurveUnit`), take it out of the flow's file first, and make
+sure no cache flow captures it:
 
 ```bash
 sqlflow dimensions remove flows/welldb-welllog-05-dimensions.yaml --dimension CurveUnit --partition dev

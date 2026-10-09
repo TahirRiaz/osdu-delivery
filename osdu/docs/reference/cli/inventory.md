@@ -123,9 +123,9 @@ of the next.
 
 ```text
 WellLogs in dev: 2 id(s) missing
-         118  missing       dev:work-product-component--WellLog:wl-0042  v1712301122334455  ledger welldb-welllog-03-delivery@dev record 6f1c2a9e-3b7d-4c1e-9a55-0d4e2b8c7f10 delivered v1712301122334455
+         118  missing       dev:work-product-component--WellLog:6f1c2a9e3b7d4c1e9a550d4e2b8c7f10  v1712301122334455  ledger welldb-welllog-03-delivery@dev record 6f1c2a9e-3b7d-4c1e-9a55-0d4e2b8c7f10 delivered v1712301122334455
               a ledger expects it, and storage does not hold it
-         341  missing       dev:work-product-component--WellLog:wl-0107  v1712301199887766  ledger welldb-welllog-03-delivery@dev record 0b9e7d61-2c4a-4f8e-b1d3-5a6c7e8f9012 delivered v1712301199887766
+         341  missing       dev:work-product-component--WellLog:0b9e7d612c4a4f8eb1d35a6c7e8f9012  v1712301199887766  ledger welldb-welllog-03-delivery@dev record 0b9e7d61-2c4a-4f8e-b1d3-5a6c7e8f9012 delivered v1712301199887766
               a ledger expects it, and storage does not hold it
 ```
 
@@ -140,11 +140,11 @@ What every inventory of the partition holds of one OSDU id: each inventory listi
 its finding there, and what removals did to it.
 
 ```bash
-sqlflow inventory lookup dev dev:work-product-component--WellLog:wl-0900
+sqlflow inventory lookup dev dev:work-product-component--WellLog:9a41c7e2d05b4f6a8c3e1b7d2f9064ab
 ```
 
 ```text
-dev:work-product-component--WellLog:wl-0900 in dev: 1 inventory(ies)
+dev:work-product-component--WellLog:9a41c7e2d05b4f6a8c3e1b7d2f9064ab in dev: 1 inventory(ies)
   welldb-06-inventory / WellLogs (inventory 5): gone, v1712309988776655
       removed by analyst@example.com in removal 9 (run 0199a3c2-5e4f-7b21-9c3d-8e1f2a3b4c5d): soft deleted (reversible)
   removal 9 at 2026-10-09 09:12:30Z: removed (orphan): removed from OSDU (reversible, in bulk)
@@ -205,7 +205,7 @@ of the next.
 
 ```text
 removal 9 in dev (completed): 37 orphan, soft deleted (reversible), by analyst@example.com at 2026-10-09 09:12:02Z
-       301  skipped   dev:work-product-component--WellLog:wl-0311 v1712305566778899: OSDU serves version 1712309911223344, and the inventory listed version 1712305566778899: it changed since, so it is left for the next build to look at
+       301  skipped   dev:work-product-component--WellLog:3c7e9b10a2d54e8f96b1c4a07d5e2f38 v1712305566778899: OSDU serves version 1712309911223344, and the inventory listed version 1712305566778899: it changed since, so it is left for the next build to look at
 ```
 
 With `--json`: `partition`, `removal`, `outcome`, `next` and `items`, each with `item`, `removal`, `id`, `version`,

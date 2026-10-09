@@ -14,6 +14,7 @@ keywords:
   - osdu.partition
   - dev and test partitions
   - environments
+  - who registered a partition
 cliCommand: partition
 related:
   - delivery-concept-partitions
@@ -114,8 +115,8 @@ exactly one.
 Every registered partition, ordered by name:
 
 ```text
-dev  (default)  Development platform  [registered by cli at 2026-10-09 07:30:11Z]
-test  Acceptance testing platform  [registered by cli at 2026-10-09 07:31:40Z]
+dev  (default)  Development platform  [registered by cli:ops@build-agent at 2026-10-09 07:30:11Z]
+test  Acceptance testing platform  [registered by cli:ops@build-agent at 2026-10-09 07:31:40Z]
 ```
 
 With an empty registry it prints
@@ -150,7 +151,8 @@ After removal, the partition's records stay readable (`sqlflow records ... --par
 when the partition is named), and a run of a registry-driven flow in it is refused until it is registered again. A flow
 that hard-codes the partition is not affected.
 
-The command records `cli` as who registered or changed a partition; the Partitions page and the API record the signed-in
+The command records `cli:<user>@<machine>` (the account it runs as, on that machine) as who registered or changed a
+partition; the Partitions page and the API record the signed-in
 user. Registering, describing, changing the default and removing are admin actions there.
 
 ### Errors

@@ -70,7 +70,7 @@ runs, its background services and its `Osdu:*` settings. The routes themselves a
 | The `osdu` module database | The ledger, mappings, templates, caches, partitions and the central configuration, in schema `osdu` with its own migrations and version. Bootstrap migrates it after SQLFlow's catalog, and readiness stays red until it verifies against this build. |
 | The OSDU flow kinds | The delivery, retrieval, cache, assertion, dimension and inventory kinds, their executors and their compute operations, so the repository sync projects them as pipelines and the dispatcher hands their runs to nodes. |
 | The delivery routes | Every route under `/api/v1/delivery`, mapped into SQLFlow's `read`, `operate` and `author` groups, which all admit any signed-in user, with the admin routes on the `admin` policy, the only one that checks a scope ([authentication and identity](authentication-and-identity.md)). |
-| The central configuration | Attached to every delivery, retrieval, cache, assertion and dimension run as it is queued (below). |
+| The central configuration | Attached to every delivery, retrieval, cache, assertion, dimension and inventory run as it is queued (below). |
 | A `records` search category | The delivery records category of SQLFlow's `GET /api/v1/search/all`, answered from the ledger's indexed lookup. |
 | The assistant's tools | When `ControlPlane:Assistant:Mcp:AllowedTools` is left at SQLFlow's GUI default, the chat assistant is given SQLFlow's metadata tools and the `delivery_*` read tools ([the MCP server](../guides/mcp.md)). A list a deployment configures is kept. |
 | The OSDU data definitions | A local copy of the Open Group's public schema repository, which the Templates page browses and saves templates from. |
@@ -97,7 +97,8 @@ Which database holds the schema is chosen before the first migrate; see [sqlflow
 The control plane never delivers: runs, value checks and removals go to nodes. What a person asks of OSDU or the ingestion
 tables and waits on runs in the control plane instead, as the request:
 
-- a probe of a flow's target, a record read back, any record read by id, a record checked against its schema;
+- a probe of a flow's target (the one of these recorded in the audit trail, as a `probe` activity under the caller), a
+  record read back, any record read by id, a record checked against its schema;
 - a record's rows read from the ingestion tables, a preview, the values a scope parameter can take;
 - every explorer read (types, search, fields, read, validate, referenced-by, dimension keys).
 
@@ -115,16 +116,17 @@ every resolved secret redacted.
 
 ## The central configuration on every run
 
-The module wraps SQLFlow's run dispatcher. Every run of a delivery, retrieval, cache, assertion or dimension flow reaches
+The module wraps SQLFlow's run dispatcher. Every run of a delivery, retrieval, cache, assertion, dimension or inventory
+flow (an inventory's remove run included) reaches
 the queue through it, whether an endpoint, a schedule fire, a fan-out group or `sqlflow trigger` put it there, and is
 queued carrying the properties its repository resolves to: the values set for no partition and, for each partition, the values set for it. A run bound to a partition
 resolves `${env:NAME}` from the repository's value for that partition, then the control plane's value for it, then the
 repository's value, then the control plane's, and only then from the node's own environment. A compute task carries the
-values of the one partition it names.
+values of the one partition it names. The run's trace names where each reference took its value (the central
+configuration or the node's environment), never the value.
 
 A run whose payload already carries properties keeps them. When nothing is configured, nothing is attached, and runs of
-SQLFlow's own kinds pass through untouched. So do an inventory flow's runs: the dispatcher attaches nothing to them, so
-an inventory flow's references resolve from the node's environment alone. The properties are set with [sqlflow config](../cli/config.md) or the API;
+SQLFlow's own kinds pass through untouched. The properties are set with [sqlflow config](../cli/config.md) or the API;
 a property holds a value or a reference, never a secret.
 
 ## Background services
@@ -132,7 +134,7 @@ a property holds a value or a reference, never a secret.
 | Service | Runs | What it does |
 | --- | --- | --- |
 | Cache update rollout | Unless `Osdu:CacheRollout:Enabled` is false | Carries approved cache changes to the records built from the old value: every `PollSeconds` it marks at most `BatchesPerPass` batches of `BatchSize` records for redelivery, in delivery-key order from each change's cursor. The marking is metadata only, a restart resumes where it stopped, and marking a record twice is the same as once. |
-| Scheduled target probe | Only when `Osdu:TargetProbe:Enabled` is true | Probes every interface of every active delivery flow (or the `Pipelines` named) every `IntervalMinutes`, four at a time, through the same path as the GUI's Probe target, and records each as a `probe` activity by `service:schedule` ([watching the targets](run-trace-and-metrics.md#watching-the-targets)). |
+| Scheduled target probe | Only when `Osdu:TargetProbe:Enabled` is true | Probes every interface of every active delivery flow (or the `Pipelines` named) every `IntervalMinutes`, four at a time, through the same path as the GUI's Probe target, and records each as a `probe` activity by `service:schedule` ([watching the targets](run-trace-and-metrics.md#watching-the-targets)). The button's probe, the API's and the MCP tool's take the same path and are recorded the same way, under the caller (`user:<subject>`). |
 | Data definitions warmup | When `Osdu:SchemaRepository:WarmOnStart` is true (the default) | At start, reads the release list and downloads the newest release when it is not on disk. A failure is not fatal; the Templates page asks again. |
 | Interface catalog backfill | Once at start | Describes the interfaces of delivery pipelines a repository sync has not described yet, so a record's page finds its flow without waiting for the next sync. Retried every 30 seconds until a pass completes. |
 | Search term refresh | Once at start | Writes the search terms of every repository with delivery flows again, keeping what people made of them; a repository with no delivery flow left loses its terms. Retried every 30 seconds until a pass completes. |

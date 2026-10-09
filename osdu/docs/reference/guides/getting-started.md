@@ -178,6 +178,12 @@ transform:
     - { name: update_date, type: datetime2 }
 ```
 
+Declare the type of every column the mapping writes into a number property (depths, sizes), for example
+`- { name: top_depth, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }`. SQLFlow's type inference reads a column whose values are all 0 or 1 (or `true`, `false`, `yes`, `no`, `y`, `n`) as
+`bit`, which renders `false` where the template takes a number, and every record is then held with
+`value 'false' is not a valid number (a boolean is not a number)`. The wellbore file
+has no such column; the well log header's depths do ([well logs with their curves](bulk-data.md)).
+
 `flows/welldb-wellbore-02-ing.yaml`:
 
 ```yaml

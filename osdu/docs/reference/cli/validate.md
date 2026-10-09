@@ -17,6 +17,10 @@ keywords:
   - floating reference
   - dictionary
   - yaml error
+  - literal secret
+  - missing mapping file
+  - dictionary not found
+  - reference in a location
 related:
   - cli-validate
   - delivery-cli-check
@@ -64,8 +68,10 @@ CLI is SQLFlow's CLI with the OSDU verbs added, and the module registers its doc
 reads the documents OSDU Delivery adds as well. This page says what each of them checks.
 
 Validation is offline: no catalog, no module database, no OSDU, and no secret resolution (`${env:...}` and
-`${keyvault:...}` stay references). What needs the database (the template a mapping pins, the cache it reads, the
-partition registry) is [`sqlflow check`](check.md); what needs OSDU or the ingestion tables is the run.
+`${keyvault:...}` stay references). It does read the files a flow names beside it, from disk and the way a run finds
+them: the mapping a delivery flow pins, and the dictionaries a cache or dimension flow names (see each kind below). What
+needs the database (the template a mapping pins, the cache it reads, the partition registry) is
+[`sqlflow check`](check.md); what needs OSDU or the ingestion tables is the run.
 
 ## The documents it recognises
 
@@ -85,7 +91,7 @@ any flow does. The mapping and the dictionary are companion documents: they are 
 reported under their own document type. A `flowType` no kind registers fails with SQLFlow's message, which ends by
 listing the registered kinds (`Registered kinds: 'assertion' for ..., 'cache' for ..., 'delivery' for ..., ...`); a
 `documentType` no kind registers fails with
-`<file>: unknown documentType '<type>'. Registered document types: 'dictionary' for ..., 'mapping' for ...`.
+`<file>: unknown documentType '<type>'. Registered document types: 'dictionary' for a lookup table a cache flow holds in the partition's cache, 'mapping' for how a delivery flow renders the rows of an ingestion table into records of one OSDU kind.`
 
 In the folder mode each document is one line, and `--json` reports each document's `kind` as the discriminator above
 (`delivery`, `mapping`, `dictionary`, ...).
@@ -117,9 +123,29 @@ In the folder mode each document is one line, and `--json` reports each document
 - **Ranges and forms** of the settings: `reliability.concurrency must be at least 1.`, a service path starts with `/`,
   a kind is `authority:source:entityType:version`, and so on.
 - **Credentials.** SQLFlow's credential-hygiene check warns about a flow's credential references that embed a secret
-  keyword (`password=`, `secret=` and the like) without failing. The delivery and cache loaders go further and refuse a
-  `source.connection` that carries a literal password:
-  `<file>: source.connection carries a literal password. A flow document holds references only: put the connection string, or its password, behind ${keyvault:vault/secret} or ${env:NAME}, or connect with Azure AD (Authentication=Active Directory Default).`
+  keyword (`password=`, `secret=` and the like) without failing. The module's loaders go further and refuse a literal
+  secret in every OSDU flow document, naming the key and never the value:
+  - the `secretRef` of an auth block: a delivery flow's `target.auth` and `target.airflow.auth`, every other kind's
+    `source.auth`;
+  - a field of a token request named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...);
+  - a header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) in
+    `target.headers`, `target.airflow.headers` or `source.headers`; a scheme may stand before the reference
+    (`Bearer ${env:OSDU_TOKEN}`);
+  - an endpoint, `token.url` or `token.discoveryUrl` written literally whose user info or query carries a credential;
+  - a `source.connection` that carries a literal password (delivery and cache flows).
+
+  A credential header in `protocolOptions.uploadHeaders` and a `workflowPayload` entry named as a secret are refused
+  outright, reference or not: both are sent as written and never resolved. Literals stay allowed where the value is no
+  secret: `secondarySecretRef` (a user name or client id), `client_id`, `scope`, `audience`.
+
+  ```text
+  ERROR  <file>: target.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: write ${keyvault:vault/secret} or ${env:NAME}, and keep the value in the key vault or the environment of the nodes that run the flow (locally, the git-ignored .sqlflow/env file).
+  ERROR  <file>: source.connection carries a literal password. A flow document holds references only: put the connection string, or its password, behind ${keyvault:vault/secret} or ${env:NAME}, or connect with Azure AD (Authentication=Active Directory Default).
+  ```
+
+- **Locations.** A file location (a delivery flow's `source.work` and payload `root`s, a retrieval flow's
+  `target.location`) holds no `${...}` reference: it is substituted from the run's parameters and read as written.
+  `<file>: source.work '<location>' holds a ${...} reference, and a location is not resolved from one: write the path or storage URI itself, and vary it per run or environment with a {parameter} token declared under parameters.`
 
 ## Delivery flow
 
@@ -142,10 +168,20 @@ In the folder mode each document is one line, and `--json` reports each document
 - In the interface form: interface names are unique ignoring case, keys that belong to an interface are not written at
   the source level, `after:` names other interfaces of the document, and interfaces that wait for each other through
   `after:` are refused (`the interfaces wellbores -> welllogs -> wellbores wait for each other through after:, so none of them could run first.`).
+- A workflow stage's `context` holds no credential: whatever the workflow, with a contract or without, a value under a
+  key the contract marks a credential, or under any key named as a secret (a password, secret, token, assertion,
+  signature, authorization, an API or account key), is a single `{secret:name}` placeholder naming a reference under the
+  route's `secrets`. A literal would be sent to the Workflow service and kept in the record's step history:
+  `<file>: target.workflow.stages[0].context: 'Payload.client_secret' is named as a secret; give it as {secret:name} with the reference under secrets, never as a value in the document.`
+  A contract key whose value does not read as a template is refused with its reason.
+- The mapping each interface pins is found and read as a run finds it (`render.mappings`, else the nearest `mappings`
+  folder walking up from the flow file), and a flow whose mapping is missing or does not load is refused:
+  `<file>: render.mapping: Mapping 'Wellbore@1.0.0' was not found under '../mappings'. Expected one of: Wellbore@1.0.0.yaml, Wellbore@1.0.0.yml, 1.0.0.yaml, 1.0.0.yml.`
+  In the interface form the key is the interface's: `interfaces.<name>.mapping: Mapping ...`. Only `validate` refuses a
+  flow for this; parsing alone (the estate scan, the repository sync, a node) keeps the flow and reports the missing
+  mapping in its own terms.
 
-Not checked here: the mapping file the flow pins is not read (a flow pinning a mapping that does not exist validates);
-validate the `mappings/` folder with it, and `sqlflow check` loads it. Waits that come from the relationships a mapping
-fills, which need the templates, are worked out by `check` too.
+Waits that come from the relationships a mapping fills, which need the templates, are worked out by `check`.
 
 ## Mapping
 
@@ -182,8 +218,9 @@ The mapping's vocabulary is on [The mapping document](../flow/mapping.md) and th
 - A type that narrows `partitions` names partitions of the flow, and every partition the flow names is built by some
   type.
 
-Not checked here: the dictionary file a type names is not read (a cache flow naming a dictionary that does not exist
-validates); the refresh and the repository sync read it from the `dictionaries/` folder above the flow.
+- The dictionary each dictionary type names is found and read as a refresh finds it, in the nearest `dictionaries/`
+  folder walking up from the flow file, and a flow naming one that is missing or does not load is refused:
+  `<file>: type 'SamplingDomain': Dictionary 'sampling-domain' was not found under '../dictionaries'. Expected sampling-domain.yaml or sampling-domain.yml.`
 
 ## Dictionary
 
@@ -201,8 +238,11 @@ validates); the refresh and the repository sync read it from the `dictionaries/`
   required, and `source.kind` (one kind) or `source.kinds` (a list, each once).
 - `target.location` takes `{run}`, `{date}` and declared parameters only:
   `target.location uses '{region}', which is neither a run token ({run}, {date}) nor declared under parameters.`
+- `target.location` holds no `${...}` reference (see Locations above).
 - `target.format` is `jsonl`, `target.compression` `none` or `gzip`, `target.manifest` a file name, not a path;
   `source.pageSize`, `source.fetchParallelism`, `target.rollRecords` and the incremental window keep to their ranges.
+- `source.probePath` is a delivery flow's setting and is refused:
+  `<file>: source.probePath is not a key of a retrieval flow: the target probe covers delivery flows only, and a retrieval run never calls it. A retrieval that cannot reach the search service fails on its first page and says why; remove the key.`
 
 ## Assertion flow
 
@@ -213,6 +253,8 @@ validates); the refresh and the repository sync read it from the `dictionaries/`
   `tests[0] 'wellbores-landed' reads records by ids, and names a query as well: a test reads the records its ids name, or the records a search finds, not both.`
 - Each assertion names one subject with the keys that subject takes, and operands that suit its operator; tags, sort,
   spatial filters, `maxRecords` and bulk reads are checked. A `{token}` is `{partition}` or a declared parameter.
+- A bulk read's `columns`, when listed, include every column the test's assertions name:
+  `<file>: tests[2] 'log-curves': bulk.columns lists the only columns the test reads, and leaves out 'GR' (assert[4]); add it to bulk.columns, or leave bulk.columns out to read exactly the columns the assertions name.`
 
 Whether each path is a property of the kind is checked against the saved template when the tests run, or with
 `sqlflow run <flow.yaml> --operation plan`.
@@ -225,6 +267,8 @@ Whether each path is a property of the kind is checked against the saved templat
   `dimensions[0] 'Wellbore': path FacilityName is not a property the index holds of the record. ...; its data is under data.`
 - Labels, attributes, `clean` steps (each map step naming a dictionary), column names and `source.aggregationSize` are
   checked; two dimensions may not share a table name.
+- The dictionary each map step names is found and read in the nearest `dictionaries/` folder walking up from the flow
+  file: `<file>: dimension 'CurveMnemonic': Dictionary 'curve-aliases' was not found under '../dictionaries'. Expected curve-aliases.yaml or curve-aliases.yml.`
 
 ## Inventory flow
 
@@ -261,17 +305,19 @@ sqlflow validate welldb
 ```
 
 ```text
-OK      dictionaries\sampling-domain.yaml  (dictionary 'sampling-domain (3 entries, key key)')
+OK      dictionaries\curve-aliases.yaml  (dictionary 'curve-aliases (4 entries, key key)')
+OK      dictionaries\sampling-domain.yaml  (dictionary 'sampling-domain (5 entries, key key)')
 OK      flows\welldb-03-delivery.yaml  (delivery 'welldb-03-delivery')
 OK      flows\welldb-06-inventory.yaml  (inventory 'welldb-06-inventory')
 OK      flows\welldb-lookups-00-cache.yaml  (cache 'welldb-lookups-00-cache')
-OK      flows\welldb-retrieval-wellbores.yaml  (retrieval 'welldb-retrieval-wellbores')
+OK      flows\welldb-retrieval-01-wellbores.yaml  (retrieval 'welldb-retrieval-01-wellbores')
 OK      flows\welldb-wellbore-03-delivery.yaml  (delivery 'welldb-wellbore-03-delivery')
+OK      flows\welldb-welllog-03-delivery.yaml  (delivery 'welldb-welllog-03-delivery')
 OK      flows\welldb-welllog-04-assertion.yaml  (assertion 'welldb-welllog-04-assertion')
 OK      flows\welldb-welllog-05-dimensions.yaml  (dimension 'welldb-welllog-05-dimensions')
 OK      mappings\Wellbore@1.0.0.yaml  (mapping 'Wellbore@1.0.0 -> osdu:wks:master-data--Wellbore:1.3.0')
 OK      mappings\WellLog@1.0.0.yaml  (mapping 'WellLog@1.0.0 -> osdu:wks:work-product-component--WellLog:1.4.0')
-10 valid, 0 broken of 10 document(s) under <folder>.
+12 valid, 0 broken of 12 document(s) under <folder>.
 ```
 
 A mapping that names a modifier the language does not have:

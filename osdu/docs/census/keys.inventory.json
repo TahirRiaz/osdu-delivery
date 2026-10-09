@@ -51,7 +51,7 @@
       "path": "inventories[].kind",
       "type": "string",
       "required": true,
-      "description": "The kind read, `authority:source:entityType:version`, each segment a value or `*`. An inventory that names its entity type and leaves the other three segments and the query open covers its type whole: a ledger's delivered record, or live minted id, of the type that the read did not list is then read from storage and reported `missing` or `unlisted`. An inventory narrowed further reports only the ids it listed before and no longer lists."
+      "description": "The kind read, `authority:source:entityType:version`, each segment a value, `*`, or a value with `*` inside it (`1.*.*`), matched ignoring case as the search service matches a kind. An inventory that names its entity type and leaves the other three segments and the query open covers its type whole: a ledger's delivered record, or live minted id, of the type that the read did not list is then read from storage and reported `missing` or `unlisted`. An inventory narrowed further reports only the ids it listed before and no longer lists."
     },
     {
       "path": "inventories[].name",
@@ -80,7 +80,7 @@
       "path": "maxMissingChecks",
       "type": "integer",
       "required": false,
-      "description": "How many ids a ledger expects that one build reads from storage to tell `missing` (storage does not hold it) from `unlisted` (storage holds it, and the read did not list it), between 0 (none: they are reported `gone`) and 1,000,000. The ids an inventory listed before come first; a build that reaches the bound says so, and the next build reads on.",
+      "description": "How many ids a ledger expects that one build reads from storage to tell `missing` (storage does not hold it) from `unlisted` (storage holds it, and the read did not list it), between 0 (none: they are reported `gone`) and 1,000,000. Never-asked ids first, then the longest ago asked; successive builds take turns through all of them. An id a build did not ask keeps what storage last answered; one never asked is `gone` until a build asks. A build that reaches the bound says so.",
       "default": "100000"
     },
     {
@@ -384,7 +384,7 @@
       "path": "source.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). A literal is refused when the flow is read.",
       "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
     },
     {
@@ -414,21 +414,21 @@
       "path": "source.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here. A field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) holds a reference only; a literal there is refused when the flow is read. `client_id`, `scope` and `audience` may be literals.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent. A field named as a secret must be a reference.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
     },
     {
@@ -443,7 +443,7 @@
       "path": "source.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
     },
     {
@@ -486,7 +486,7 @@
       "path": "source.endpoint",
       "type": "string",
       "required": true,
-      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`."
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "source.headers",
@@ -498,7 +498,7 @@
       "path": "source.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret}). A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "source.headersPath",

@@ -377,7 +377,7 @@ async fn every_delivery_tool_is_described_for_a_model_choosing_between_tools() {
         assert!((300..=750).contains(&length), "{name}'s description is {length} characters");
         assert!(!description.contains('\u{2014}'), "{name}'s description uses an em dash");
         assert!(!description.contains("  "), "{name}'s description has a run of spaces: a broken line continuation");
-        assert!(description.contains("Use it") || description.contains("operate scope") || description.contains("Run it")
+        assert!(description.contains("Use it") || description.contains("operator action") || description.contains("Run it")
             || description.contains("Start here") || description.contains("This is how"),
             "{name}'s description does not say when to use it");
 
@@ -396,13 +396,13 @@ async fn every_delivery_tool_is_described_for_a_model_choosing_between_tools() {
     }
     assert!(total <= 17_000, "the delivery tools' descriptions add up to {total} characters");
 
-    // The operator's actions say what they are; nothing else claims the scope.
+    // The operator's actions say what they are; nothing else claims to be one.
     let acts = ["delivery_probe_target", "delivery_verify_record", "delivery_sync_with_source", "delivery_release_records",
         "delivery_redeliver_record", "delivery_decide_cache_changes"];
     for tool in &tools {
         let name = tool["name"].as_str().expect("a name");
-        let says = tool["description"].as_str().unwrap_or_default().contains("(operate scope)");
-        assert_eq!(says, acts.contains(&name), "{name}: an action names the scope it needs, and only an action does");
+        let says = tool["description"].as_str().unwrap_or_default().contains("(operator action)");
+        assert_eq!(says, acts.contains(&name), "{name}: an action says it is an operator action, and only an action does");
     }
 }
 
@@ -530,6 +530,10 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("environment variables for osdu delivery", &["delivery-concept-environment-variables"]),
     ("install the mcp server", &["delivery-guide-mcp"]),
     ("the ledger tables and traceability", &["delivery-concept-ledger"]),
+    ("recover a stopped submission", &["delivery-concept-submissions", "delivery-guide-operations-runbook"]),
+    ("literal secret in a flow", &["delivery-cli-validate", "delivery-flow-delivery"]),
+    ("seismic store ddms", &["delivery-flow-ddms-services"]),
+    ("undo unfinished deliveries", &["delivery-concept-removal-and-reversal"]),
 ];
 
 #[tokio::test(flavor = "multi_thread")]
@@ -823,7 +827,7 @@ async fn a_mapping_is_checked_against_its_template_without_reading_a_row() {
     let mut session = Session::open(&estate).await;
     let yaml = "documentType: mapping\nname: wellbore\n";
 
-    let check = session.json("delivery_check_mapping", json!({ "yaml": yaml, "shape": true, "parameters": { "system": "recall" } })).await;
+    let check = session.json("delivery_check_mapping", json!({ "yaml": yaml, "shape": true, "parameters": { "system": "welldb" } })).await;
 
     assert_eq!(check["loads"], json!(true));
     assert_eq!(check["valid"], json!(true), "a warning does not make a mapping invalid");
@@ -835,7 +839,7 @@ async fn a_mapping_is_checked_against_its_template_without_reading_a_row() {
     assert_eq!(estate.only("POST", "/api/v1/delivery/mapping-builder/coverage").body["yaml"], json!(yaml));
     assert_eq!(
         estate.only("POST", "/api/v1/delivery/mapping-builder/shape").body["parameters"],
-        json!({ "system": "recall" })
+        json!({ "system": "welldb" })
     );
     // Only the two checks of the document: no flow, no row, no cache is asked for.
     assert_eq!(estate.calls().len(), 2);
@@ -882,13 +886,13 @@ async fn a_scaffold_sends_the_builders_draft_back_exactly_as_it_came() {
     let scaffold = session
         .json(
             "delivery_scaffold_mapping",
-            json!({ "kind": " osdu:wks:master-data--Wellbore:1.5.1 ", "version": "1.5.1", "name": "wellbore", "mappingVersion": "1.0.0", "system": "recall", "partition": "dev" }),
+            json!({ "kind": " osdu:wks:master-data--Wellbore:1.5.1 ", "version": "1.5.1", "name": "wellbore", "mappingVersion": "1.0.0", "system": "welldb", "partition": "dev" }),
         )
         .await;
 
     assert_eq!(
         estate.only("POST", "/api/v1/delivery/mapping-builder/draft").body,
-        json!({ "scope": "dev", "kind": "osdu:wks:master-data--Wellbore:1.5.1", "version": "1.5.1", "name": "wellbore", "mappingVersion": "1.0.0", "system": "recall" })
+        json!({ "scope": "dev", "kind": "osdu:wks:master-data--Wellbore:1.5.1", "version": "1.5.1", "name": "wellbore", "mappingVersion": "1.0.0", "system": "welldb" })
     );
     let composed = estate.only("POST", "/api/v1/delivery/mapping-builder/compose").body;
     assert_eq!(composed["draft"], draft, "the draft went back unchanged");
@@ -1232,7 +1236,7 @@ async fn a_cache_decision_and_a_probe_say_what_they_did() {
         (
             route(format!("POST {probe}")),
             200,
-            json!({ "flow": "recall-welllog-03-header-delivery", "reachable": false, "status": 401, "detail": "Unauthorized", "path": "/api/storage/v2/info" }),
+            json!({ "flow": "welldb-welllog-03-header-delivery", "reachable": false, "status": 401, "detail": "Unauthorized", "path": "/api/storage/v2/info" }),
         ),
     ])
     .await;

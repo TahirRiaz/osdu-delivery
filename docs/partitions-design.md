@@ -61,17 +61,17 @@ runs in.
 
 ```yaml
 flowType: cache
-name: recall-lookups-00-cache
+name: welldb-lookups-00-cache
 partitions: [dev, test, prod]        # hard-coded; leave it out to build every registered partition
 source:
   connection: ${env:OSDU_DATA_DB}
 types:
-  - table: OsduData.arc.CacheCurveDictionary
+  - table: OsduData.silver.CurveDictionary
     name: CurveDictionary
     key: mnemonic
     fields: [log_curve_type_id, log_curve_main_family_id, log_curve_family_id]
-  - table: OsduData.arc.CacheRecallUnits
-    name: RecallUnits
+  - table: OsduData.silver.UnitAlias
+    name: UnitAlias
     key: source_unit
     fields: [osdu_unit]
     partitions: [dev, test]          # built only for these
@@ -93,7 +93,7 @@ types:
 
 ```yaml
 flowType: delivery
-name: recall-welllog-03-header-delivery
+name: welldb-welllog-03-header-delivery
 partitions:
   - name: dev
     keepLedger: true                 # the records this flow delivered before it named its partitions went to dev
@@ -102,7 +102,7 @@ partitions:
 
 ```yaml
 flowType: delivery
-name: recall-welllog-03-header-delivery
+name: welldb-welllog-03-header-delivery
 keepLedger: dev                      # registry-driven: no partitions, no data-partition-id header
 ```
 
@@ -317,7 +317,7 @@ next sync.
   partition per run: `*` is refused, since a report describes one partition. Each partition keeps its own ledger
   identity for the flow and so its own report history; a test's own `partitions` narrows it further, and a run in
   another partition skips it ([assertions-design.md](assertions-design.md)).
-- Moving a flow between the paths is a change in the repository, never made by the engine. The Recall estate made that
+- Moving a flow between the paths is a change in the repository, never made by the engine. The WellDB estate made that
   move: its cache flows name no partitions, and its delivery flow writes `keepLedger: dev` at the top, with `dev`
   registered as the default, so every registered partition is served and `dev` keeps the ledger it always had.
 - The ledger's upgrade to partition keys (`LedgerPartitions`, module version 1.14.0) changes no ledger identity and

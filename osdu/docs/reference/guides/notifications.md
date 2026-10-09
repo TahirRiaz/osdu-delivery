@@ -82,33 +82,15 @@ raises no notification at all. Bringing up a delivery chain means iterating on a
 half-built mapping fails often, so a new flow starts as `development`:
 
 ```yaml
+# flows/welldb-wellbore-03-delivery.yaml while it is built: the lifecycle line added to its top
 flowType: delivery
 name: welldb-wellbore-03-delivery
 batch: welldb
-partitions: [dev, test]
 lifecycle: development   # remove, or set to production, when the flow goes live
 
-source:
-  connection: ${env:OSDU_DATA_DB}
-  record:
-    object: OsduData.silver.Wellbore
-    key: [wellbore_id]
-  work: ../.work/wellbore
+partitions: [dev]
 
-render:
-  mapping: Wellbore@1.0.0
-
-target:
-  endpoint: ${env:OSDU_URL}
-  auth:
-    type: oauth2ClientCredentials
-    secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${env:OSDU_CLIENT_SECRET}
-    token:
-      url: ${env:OSDU_TOKEN_URL}
-      body:
-        scope: ${env:OSDU_SCOPE}
-  protocol: storage
+# ... source, render and target as getting started writes them
 ```
 
 The gate is applied when failures are detected, against the synced pipeline, so it takes effect on the repository's next

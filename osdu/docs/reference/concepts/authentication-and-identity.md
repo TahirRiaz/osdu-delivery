@@ -98,20 +98,23 @@ or renaming an account later does not rewrite what it did.
 
 | Actor | Recorded for |
 | --- | --- |
-| `user:<subject>` | What the control plane does itself on a person's request: a release, the records a redelivery or a rerender names, a purge from the ledger, an issue released, a dimension removed; and the removals and value checks it queues for a node. `<subject>` is the token's `sub` claim. |
+| `user:<subject>` | What the control plane does itself on a person's request: a release, the records a redelivery or a rerender names, a purge from the ledger, an issue released, a dimension removed, a probe of a flow's target; and the removals and value checks it queues for a node. `<subject>` is the token's `sub` claim. |
 | `<subject>` | A run a person queued through the API (the GUI, `sqlflow trigger`, an MCP tool, an external scheduler): the run's requester, which the delivery run records its activities under. |
 | `schedule:<name>` | A run a SQLFlow schedule fired. |
-| `cli:<user>@<machine>` | A run executed directly with `sqlflow run` on a workstation. |
+| `cli:<user>@<machine>` | Every change a command line verb records: a run executed directly with `sqlflow run` on a workstation, and a release, reversal, dimension removal, cache import, template, configuration property or partition set from the command line. |
 | `service:schedule` | A probe made by the scheduled target probe. |
 | `unknown` | A run with no requester recorded. |
 
 The run row itself carries the requester and the trigger source (`schedule`, `manual` or `cli`) as SQLFlow records them,
 so a delivery run's activities and its run agree on who asked. Outside the audit trail, a cache change records who
 approved or rejected it, and a configuration property, a partition, a saved template and a refined search term record
-who last set them, each as `user:<subject>` except the cache decision, which records the subject alone.
+who last set them, each as `user:<subject>` (or `cli:<user>@<machine>` when a command line verb set it) except the cache
+decision, which records the subject alone.
 
-A read a person waits on (a probe from the GUI, a record read back, a preview, a source read, an explorer search) changes
-nothing and writes no activity. The control plane logs it as `<actor> ran <operation> on <flow> in process.`
+A read a person waits on (a record read back, a preview, a source read, an explorer search) changes nothing and writes no
+activity. The control plane logs it as `<actor> ran <operation> on <flow> in process.` A probe of a flow's target is the
+exception: asked for or scheduled, it is recorded as a `probe` activity under who asked
+([watching the targets](run-trace-and-metrics.md#watching-the-targets)).
 
 ## Local development
 

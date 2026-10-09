@@ -69,7 +69,7 @@ cause and running again is all it takes.
 ## When a document is read
 
 Loading a flow refuses what is wrong in the document itself: unknown and duplicate keys, a floating mapping reference, a
-literal password, malformed names and bounds, cross-key rules such as a fan-out without a primary key, and, in the
+literal password or other literal secret, a `${...}` reference in a location, malformed names and bounds, cross-key rules such as a fan-out without a primary key, and, in the
 interface form, a misplaced key, an `after:` cycle or two interfaces keeping one ledger. The messages are on the
 [delivery flow](../flow/delivery.md#validation-errors) and [interfaces](../flow/interfaces.md#load-errors) pages.
 
@@ -89,8 +89,10 @@ refuses:
 - a search or a lookup that is read and not declared, or declared and not read:
   `search 'Wellbore' is declared and nothing reads it; a search costs a call to the platform for every value it is asked about, so one nothing reads is a mistake rather than spare capacity.`
 
-These need no catalog, so `sqlflow validate` on a folder checks every flow and mapping in it offline. What a mapping
-writes is described on [mapping](../flow/mapping.md) and its pages.
+These need no catalog, so `sqlflow validate` on a folder checks every flow and mapping in it offline. `validate` also
+finds and reads the mapping a delivery flow pins and the dictionaries a cache or dimension flow names, as a run finds
+them, and refuses a flow whose file is missing; a repository sync and a run keep such a flow and report the missing file
+in their own terms. What a mapping writes is described on [mapping](../flow/mapping.md) and its pages.
 
 ## The preflight gate
 

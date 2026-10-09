@@ -169,7 +169,7 @@
       "path": "interfaces.<name>.bulk.root",
       "type": "string",
       "required": true,
-      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held."
+      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "interfaces.<name>.change",
@@ -341,7 +341,7 @@
       "path": "interfaces.<name>.files.root",
       "type": "string",
       "required": true,
-      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held."
+      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "interfaces.<name>.incremental",
@@ -700,7 +700,7 @@
       "path": "interfaces.<name>.protocolOptions.uploadHeaders",
       "type": "map",
       "required": false,
-      "description": "Extra headers on the signed-URL upload. The Azure blob type (`x-ms-blob-type: BlockBlob`) is added for a `*.blob.core.*` URL anyway. Set here, it is merged key by key over the source's for this interface."
+      "description": "Extra headers on the signed-URL upload. The Azure blob type (`x-ms-blob-type: BlockBlob`) is added for a `*.blob.core.*` URL anyway. Set here, it is merged key by key over the source's for this interface. Sent to the signed URL as written, never resolved, so a header that carries a credential is refused outright, reference or not: the signed URL carries its own credential."
     },
     {
       "path": "interfaces.<name>.protocolOptions.uploadHeaders.<name>",
@@ -773,7 +773,7 @@
       "path": "interfaces.<name>.protocolOptions.workflowPayload",
       "type": "map",
       "required": false,
-      "description": "Extra `executionContext.Payload` entries of a workflow trigger, beside `AppKey` and `data-partition-id`. Set here, it is merged key by key over the source's for this interface."
+      "description": "Extra `executionContext.Payload` entries of a workflow trigger, beside `AppKey` and `data-partition-id`. Set here, it is merged key by key over the source's for this interface. Sent as written into a run the Workflow service keeps, so an entry named as a secret is refused outright: the service authenticates the run with the flow's own auth."
     },
     {
       "path": "interfaces.<name>.protocolOptions.workflowPayload.<name>",
@@ -1090,7 +1090,7 @@
       "path": "interfaces.<name>.systemColumns.fileName",
       "type": "string",
       "required": false,
-      "description": "The column naming the file a row was landed from, recorded in the ledger as the record's origin (at most 800 characters). `~` opts out of recording the origin file. Set here, it overrides the source's value for this interface.",
+      "description": "The column naming the file a row was landed from, recorded in the ledger as the record's origin (at most 800 characters). Named here, the record table must hold it; left at its default, it is read when the table holds it. `~` opts out of recording the origin file. Set here, it overrides the source's value for this interface.",
       "default": "the source's value, else FileName_DW"
     },
     {
@@ -1104,7 +1104,7 @@
       "path": "interfaces.<name>.systemColumns.rowNumber",
       "type": "string",
       "required": false,
-      "description": "The column holding the row's position in that file, recorded with the origin file in the ledger. `~` opts out. Set here, it overrides the source's value for this interface.",
+      "description": "The column holding the row's position in that file, a whole number, recorded with the origin file in the ledger. Named here, the record table must hold it; left at its default, it is read when the table holds it. `~` opts out. Set here, it overrides the source's value for this interface.",
       "default": "the source's value, else RowNumber_DW"
     },
     {
@@ -1233,7 +1233,7 @@
       "path": "interfaces.<name>.workflow.inputs.<name>.root",
       "type": "string",
       "required": true,
-      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held."
+      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "interfaces.<name>.workflow.results",
@@ -1363,7 +1363,7 @@
       "path": "interfaces.<name>.workflow.secrets",
       "type": "map",
       "required": false,
-      "description": "Names a context uses as `{secret:name}`, each a `${env:...}` or `${keyvault:...}` reference. Each is resolved only for the trigger request, and every step and message shows `***`."
+      "description": "Names a context uses as `{secret:name}`, each a `${env:...}` or `${keyvault:...}` reference. Each is resolved only for the trigger request, and every step and message shows `***`. A context entry named as a secret must name one of these."
     },
     {
       "path": "interfaces.<name>.workflow.secrets.<name>",
@@ -1387,7 +1387,7 @@
       "path": "interfaces.<name>.workflow.stages[].context",
       "type": "map",
       "required": false,
-      "description": "The execution context, any YAML, with placeholders in its strings (`{partition}`, `{record:path}`, `{input:name}`, `{stage:n.output}`, `{secret:name}` and others). It is checked against the workflow's contract when the document loads, and filled and checked again before every trigger."
+      "description": "The execution context, any YAML, with placeholders in its strings (`{partition}`, `{record:path}`, `{input:name}`, `{stage:n.output}`, `{secret:name}` and others). It is checked against the workflow's contract when the document loads, and filled and checked again before every trigger. Whatever the workflow, a value under a key the contract marks a credential, or under any key named as a secret (a password, secret, token, assertion, signature, authorization, an API or account key), is a single `{secret:name}` placeholder; a literal is refused when the document loads."
     },
     {
       "path": "interfaces.<name>.workflow.stages[].context.<name>",
@@ -1909,7 +1909,7 @@
       "path": "source.payloads.<name>.root",
       "type": "string",
       "required": true,
-      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held."
+      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "source.record",
@@ -1971,7 +1971,7 @@
       "path": "source.systemColumns.fileName",
       "type": "string",
       "required": false,
-      "description": "The column naming the file a row was landed from, recorded in the ledger as the record's origin (at most 800 characters). `~` opts out of recording the origin file.",
+      "description": "The column naming the file a row was landed from, recorded in the ledger as the record's origin (at most 800 characters). Named here, the record table must hold it; left at its default, it is read when the table holds it. `~` opts out of recording the origin file.",
       "default": "FileName_DW"
     },
     {
@@ -1985,7 +1985,7 @@
       "path": "source.systemColumns.rowNumber",
       "type": "string",
       "required": false,
-      "description": "The column holding the row's position in that file, recorded with the origin file in the ledger. `~` opts out.",
+      "description": "The column holding the row's position in that file, a whole number, recorded with the origin file in the ledger. Named here, the record table must hold it; left at its default, it is read when the table holds it. `~` opts out.",
       "default": "RowNumber_DW"
     },
     {
@@ -1999,7 +1999,7 @@
       "path": "source.work",
       "type": "string",
       "required": true,
-      "description": "Where the intake writes its work batches (the rendered documents the drains read back): a directory or storage prefix the nodes can write, relative to the flow file when relative. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`."
+      "description": "Where the intake writes its work batches (the rendered documents the drains read back): a directory or storage prefix the nodes can write, relative to the flow file when relative. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "target",
@@ -2048,7 +2048,7 @@
       "path": "target.airflow.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). Always a `${env:NAME}` or `${keyvault:vault/secret}` reference, never a literal.",
+      "description": "The primary secret: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). Always a `${env:NAME}` or `${keyvault:vault/secret}` reference, never a literal. A literal is refused when the flow is read.",
       "appliesWhen": "Required when `type` is bearer, apiKeyHeader or basic."
     },
     {
@@ -2076,19 +2076,19 @@
       "path": "target.airflow.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Form fields of the token request, as literals or references (`scope: ${env:OSDU_SCOPE}`). `grant_type: client_credentials` is added, and `client_id` and `client_secret` from secondarySecretRef and secretRef unless the body names them."
+      "description": "Form fields of the token request, as literals or references (`scope: ${env:OSDU_SCOPE}`); a field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) as a reference only, refused as a literal when the flow is read. `grant_type: client_credentials` is added, and `client_id` and `client_secret` from secondarySecretRef and secretRef unless the body names them."
     },
     {
       "path": "target.airflow.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request: the key is the field name, the value a literal or a `${env:...}` / `${keyvault:...}` reference."
+      "description": "One form field of the token request: the key is the field name, the value a literal or a `${env:...}` / `${keyvault:...}` reference. A field named as a secret must be a reference; `client_id`, `scope` and `audience` may be literals."
     },
     {
       "path": "target.airflow.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document URL, literal or a reference; its `token_endpoint` is used as the token URL."
+      "description": "An OIDC discovery document URL, literal or a reference; its `token_endpoint` is used as the token URL. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "target.airflow.auth.token.tokenPath",
@@ -2101,7 +2101,7 @@
       "path": "target.airflow.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, literal or a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, literal or a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "Needed unless `discoveryUrl` is set."
     },
     {
@@ -2128,7 +2128,7 @@
       "path": "target.airflow.endpoint",
       "type": "string",
       "required": true,
-      "description": "The Airflow REST API's base URL: an absolute http(s) URL or a reference to one (`${env:AIRFLOW_URL}`)."
+      "description": "The Airflow REST API's base URL: an absolute http(s) URL or a reference to one (`${env:AIRFLOW_URL}`). Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "target.airflow.headers",
@@ -2140,7 +2140,7 @@
       "path": "target.airflow.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header: the key is its name, the value its value or a reference."
+      "description": "One header: the key is its name, the value its value or a reference. A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "target.auth",
@@ -2165,7 +2165,7 @@
       "path": "target.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). Always a `${env:NAME}` or `${keyvault:vault/secret}` reference, never a literal.",
+      "description": "The primary secret: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). Always a `${env:NAME}` or `${keyvault:vault/secret}` reference, never a literal. A literal is refused when the flow is read.",
       "appliesWhen": "Required when `type` is bearer, apiKeyHeader or basic."
     },
     {
@@ -2193,19 +2193,19 @@
       "path": "target.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Form fields of the token request, as literals or references (`scope: ${env:OSDU_SCOPE}`). `grant_type: client_credentials` is added, and `client_id` and `client_secret` from secondarySecretRef and secretRef unless the body names them."
+      "description": "Form fields of the token request, as literals or references (`scope: ${env:OSDU_SCOPE}`); a field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) as a reference only, refused as a literal when the flow is read. `grant_type: client_credentials` is added, and `client_id` and `client_secret` from secondarySecretRef and secretRef unless the body names them."
     },
     {
       "path": "target.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request: the key is the field name, the value a literal or a `${env:...}` / `${keyvault:...}` reference."
+      "description": "One form field of the token request: the key is the field name, the value a literal or a `${env:...}` / `${keyvault:...}` reference. A field named as a secret must be a reference; `client_id`, `scope` and `audience` may be literals."
     },
     {
       "path": "target.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document URL, literal or a reference; its `token_endpoint` is used as the token URL."
+      "description": "An OIDC discovery document URL, literal or a reference; its `token_endpoint` is used as the token URL. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "target.auth.token.tokenPath",
@@ -2218,7 +2218,7 @@
       "path": "target.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, literal or a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, literal or a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "Needed unless `discoveryUrl` is set."
     },
     {
@@ -2541,7 +2541,7 @@
       "path": "target.endpoint",
       "type": "string",
       "required": true,
-      "description": "The base URL requests go to (`${env:OSDU_URL}`); `${env:NAME}` and `${keyvault:vault/secret}` references are resolved on the node. In a source with interfaces it is the platform root every interface reaches its services under; a ddms flow in the single form may point at the DDMS itself."
+      "description": "The base URL requests go to (`${env:OSDU_URL}`); `${env:NAME}` and `${keyvault:vault/secret}` references are resolved on the node. In a source with interfaces it is the platform root every interface reaches its services under; a ddms flow in the single form may point at the DDMS itself. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "target.etp",
@@ -2602,7 +2602,7 @@
       "path": "target.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header: the key is its name, the value its value or a `${env:...}` / `${keyvault:...}` reference."
+      "description": "One header: the key is its name, the value its value or a `${env:...}` / `${keyvault:...}` reference. A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "target.protocol",
@@ -2926,7 +2926,7 @@
       "path": "target.protocolOptions.uploadHeaders",
       "type": "map",
       "required": false,
-      "description": "Extra headers on the signed-URL upload. The Azure blob type (`x-ms-blob-type: BlockBlob`) is added for a `*.blob.core.*` URL anyway."
+      "description": "Extra headers on the signed-URL upload. The Azure blob type (`x-ms-blob-type: BlockBlob`) is added for a `*.blob.core.*` URL anyway. Sent to the signed URL as written, never resolved, so a header that carries a credential is refused outright, reference or not: the signed URL carries its own credential."
     },
     {
       "path": "target.protocolOptions.uploadHeaders.<name>",
@@ -2999,7 +2999,7 @@
       "path": "target.protocolOptions.workflowPayload",
       "type": "map",
       "required": false,
-      "description": "Extra `executionContext.Payload` entries of a workflow trigger, beside `AppKey` and `data-partition-id`."
+      "description": "Extra `executionContext.Payload` entries of a workflow trigger, beside `AppKey` and `data-partition-id`. Sent as written into a run the Workflow service keeps, so an entry named as a secret is refused outright: the service authenticates the run with the flow's own auth."
     },
     {
       "path": "target.protocolOptions.workflowPayload.<name>",
@@ -3153,7 +3153,7 @@
       "path": "target.workflow.inputs.<name>.root",
       "type": "string",
       "required": true,
-      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held."
+      "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
     },
     {
       "path": "target.workflow.results",
@@ -3283,7 +3283,7 @@
       "path": "target.workflow.secrets",
       "type": "map",
       "required": false,
-      "description": "Names a context uses as `{secret:name}`, each a `${env:...}` or `${keyvault:...}` reference. Each is resolved only for the trigger request, and every step and message shows `***`."
+      "description": "Names a context uses as `{secret:name}`, each a `${env:...}` or `${keyvault:...}` reference. Each is resolved only for the trigger request, and every step and message shows `***`. A context entry named as a secret must name one of these."
     },
     {
       "path": "target.workflow.secrets.<name>",
@@ -3307,7 +3307,7 @@
       "path": "target.workflow.stages[].context",
       "type": "map",
       "required": false,
-      "description": "The execution context, any YAML, with placeholders in its strings (`{partition}`, `{record:path}`, `{input:name}`, `{stage:n.output}`, `{secret:name}` and others). It is checked against the workflow's contract when the document loads, and filled and checked again before every trigger."
+      "description": "The execution context, any YAML, with placeholders in its strings (`{partition}`, `{record:path}`, `{input:name}`, `{stage:n.output}`, `{secret:name}` and others). It is checked against the workflow's contract when the document loads, and filled and checked again before every trigger. Whatever the workflow, a value under a key the contract marks a credential, or under any key named as a secret (a password, secret, token, assertion, signature, authorization, an API or account key), is a single `{secret:name}` placeholder; a literal is refused when the document loads."
     },
     {
       "path": "target.workflow.stages[].context.<name>",
@@ -3408,7 +3408,7 @@
       "path": "verify.reconcile",
       "type": "boolean",
       "required": false,
-      "description": "Whether the verify pass re-queues drifted or missing records for redelivery.",
+      "description": "Whether a verify run marks each drifted or missing record for redelivery of all of it, as a redelivery does, named under the verify's activity, so the flow's next deliver run reads it by key and sends it again whatever its incremental window reads.",
       "default": "false"
     }
   ]

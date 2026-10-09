@@ -31,11 +31,11 @@ Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalo
    consumer matching compared raw strings, so `./data/x` and `data/x` never linked either.
 5. **A mapping change did not recompute lineage.** The sync's lineage gate compares flow content hashes only. A delivery
    flow's OSDU type lives in its mapping, so editing the mapping left the stored graph stale.
-6. **A mapping was not in the graph, and most of what it reads was missing** (found on the Recall estate, 2026-10-01).
+6. **A mapping was not in the graph, and most of what it reads was missing** (found on the WellDB estate, 2026-10-01).
    A delivery flow declared only the cache types its mapping names (`$cache`, a lookup, a replace's table, a token of an
    id). But a mapping also reads the cache without naming a type: every id a `ref` or an `id` modifier builds is looked
    up among the cached records of the entity type it names. Lineage showed none of that, so 8 of the 14 cache types the
-   Recall reference flow fills (LogType, LogCurveType, LogCurveFamily, LogCurveMainFamily, LogCurveBusinessValue,
+   WellDB reference flow fills (LogType, LogCurveType, LogCurveFamily, LogCurveMainFamily, LogCurveBusinessValue,
    TechnicalAssuranceType, VerticalMeasurementType, WellLogSamplingDomainType) had a writer and no reader: leaf nodes
    that in fact feed the WellLog records. And nothing in the graph was the mapping itself, so the picture ran from a
    cache type straight to a flow with no sign of the document that decides what is read.
@@ -47,7 +47,7 @@ Checked against the synced e2e catalog (`SQLFlow_E2E`, then named `SqlFlowCatalo
 | Flow | The pipeline, as today. Every delivery, cache and retrieval flow is a flow node. | The flow's name, `delivery`/`cache`/`retrieval`, its wave |
 | OSDU type | The OSDU platform (the flow's endpoint reference), the data partition, and the record kind | The kind (`osdu:wks:master-data--Wellbore:1.3.0`), captioned `osdu type · dev.master-data` |
 | Partition cache type | The data partition and the cache type name | The type name (`UnitOfMeasure`), captioned `osdu cache · dev.cache` |
-| Mapping | The OSDU platform, the data partition, the directory the mapping is filed in (relative to the repository root) and the mapping's reference | The reference (`WellLog@1.5.0`), captioned `osdu mapping · dev.recall/mappings` |
+| Mapping | The OSDU platform, the data partition, the directory the mapping is filed in (relative to the repository root) and the mapping's reference | The reference (`WellLog@1.5.0`), captioned `osdu mapping · dev.welldb/mappings` |
 | File | The location relative to the repository root (a URL or an absolute path as written) | `data/welllog` |
 | Table, view | As today | As today |
 
@@ -105,7 +105,7 @@ for. Nothing a render reads is left out, because a mapping reads the cache in tw
 
 | How the mapping reads | Written as | What lineage declares |
 | --- | --- | --- |
-| A cache type by name | `$cache: UnitOfMeasure.id`, a `lookups` entry, `replace: $cache.RecallUnits`, a `{$cache.CurveDictionary.field}` token of an id | That cache type in the flow's partition (`MappingDefinition.CacheTypesRead`) |
+| A cache type by name | `$cache: UnitOfMeasure.id`, a `lookups` entry, `replace: $cache.UnitAlias`, a `{$cache.CurveDictionary.field}` token of an id | That cache type in the flow's partition (`MappingDefinition.CacheTypesRead`) |
 | Cached records by what they are | `id: "{$param.dataPartition}:reference-data--LogCurveType:{...}:"`, `ref`, `ref: reference-data--LogType` | Every cache type of the partition holding records of the entity type the id names |
 | The platform, as it renders | `$search: Wellbore` under a `searches` entry | The kind the search looks in, wildcards allowed (section 5) |
 
@@ -141,7 +141,7 @@ wells-welllog-03-header-delivery ──► osdu type: work-product-component--We
   ing.WellLogCurve  ◄── wells-welllog-02-curves-ing ◄── ...                        ◄── wells-welllog-01-curves-pre ◄── data/curves-meta
   data/curves (payload files, read at delivery rather than landed)
   osdu mapping: WellLog@1.4.0
-    osdu cache, named: CurveDictionary, RecallUnits, RecallDepthUnits, UnitOfMeasure
+    osdu cache, named: CurveDictionary, UnitAlias, DepthUnitAlias, UnitOfMeasure
     osdu cache, by the entity type its ids are checked against: LogType, WellLogSamplingDomainType,
       VerticalMeasurementType, LogCurveBusinessValue, LogCurveType, LogCurveMainFamily, LogCurveFamily
     osdu type pattern: master-data--Wellbore:* (searched on the platform as each log is rendered)

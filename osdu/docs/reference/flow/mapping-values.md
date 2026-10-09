@@ -68,7 +68,7 @@ record:
         $required: false
   legal:
     legaltags: ["{$param.legalTag}"]
-    otherRelevantDataCountries: [NO]
+    otherRelevantDataCountries: [US]
   data:
     FacilityName:                      # a column, trimmed
       $from: wellbore_name

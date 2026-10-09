@@ -36,7 +36,7 @@
       "path": "dimensions[].attributes",
       "type": "map",
       "required": false,
-      "description": "Further facts of each key, each under a name. A path, or a list of paths, is read from the record the key names, the way its label is: `attributes: { Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName'], SpudDate: data.SpudDate }`; `{ collect: <path> }` collects the values of the dimension's own records instead (`Source: { collect: data.Source }`), a dimension collecting one. At most 20; a name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and none of `value`, `keys`, `key`, `key_id`, `records`, `filter`, `label`, `id`, `partition` (the columns a dimension's table and a cached dimension's rows have already), nor the name of the dimension's own key or value column (`columns`). Each is a column of the dimension's table, `osdu.dim_<dimension>`, which gains the column of a new attribute on the next run. A build keeps each key's values (at most 256 characters each) with where it read them, indexed: values and keys are looked up by them (`attr=Country:Norway`), an attribute lists its values narrowed by the other picks of a cascade, a search picks keys (and for a collected attribute, records) by them, the table lists them a column each, and a cached dimension carries the ones its `fields` name. A value that is itself a record reference is kept as the code its id ends with, its escapes decoded."
+      "description": "Further facts of each key, each under a name. A path, or a list of paths, is read from the record the key names, the way its label is: `attributes: { Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName'], SpudDate: data.SpudDate }`; `{ collect: <path> }` collects the values of the dimension's own records instead (`Source: { collect: data.Source }`), a dimension collecting one. At most 20; a name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and none of `value`, `keys`, `key`, `key_id`, `records`, `filter`, `label`, `id`, `partition` (the columns a dimension's table and a cached dimension's rows have already), nor the name of the dimension's own key or value column (`columns`). Each is a column of the dimension's table, `osdu.dim_<dimension>`, which gains the column of a new attribute on the next run. A build keeps each key's values (at most 256 characters each) with where it read them, indexed: values and keys are looked up by them (`attr=Country:United States`), an attribute lists its values narrowed by the other picks of a cascade, a search picks keys (and for a collected attribute, records) by them, the table lists them a column each, and a cached dimension carries the ones its `fields` name. A value that is itself a record reference is kept as the code its id ends with, its escapes decoded."
     },
     {
       "path": "dimensions[].attributes.<name>",
@@ -467,7 +467,7 @@
       "path": "source.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). A literal is refused when the flow is read.",
       "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
     },
     {
@@ -497,21 +497,21 @@
       "path": "source.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here. A field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) holds a reference only; a literal there is refused when the flow is read. `client_id`, `scope` and `audience` may be literals.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent. A field named as a secret must be a reference.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
     },
     {
@@ -526,7 +526,7 @@
       "path": "source.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
     },
     {
@@ -555,7 +555,7 @@
       "path": "source.endpoint",
       "type": "string",
       "required": true,
-      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`."
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
     },
     {
       "path": "source.headers",
@@ -567,7 +567,7 @@
       "path": "source.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret}). A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "source.queryPath",

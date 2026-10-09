@@ -16,6 +16,8 @@ keywords:
   - worker container image
   - delivery-check-values
   - delivery-delete
+  - positional argument refused
+  - hosted service failed to start
 related:
   - cli-worker
   - delivery-cli-db
@@ -64,11 +66,13 @@ SqlFlow.Delivery.Worker.Host [--url <control-plane>] [--token <ref>] [--pool a,b
 ## The worker host
 
 In a deployment the node is `osdu/hosts/SqlFlow.Delivery.Worker.Host`: the CLI's `worker` verb with the OSDU module
-installed and nothing else on the command line. It takes the node's options only; the verb is implied, and naming it is
-refused so the image can never behave as another program:
+installed and nothing else on the command line. It takes the node's options only; the verb is implied, and any
+positional argument is refused, the verb itself or anything else, so the image can never behave as another program or
+ignore an argument silently. An option's value is never taken for one: `--pool worker` serves the pool named `worker`.
 
 ```text
 ERROR  this host is the OSDU Delivery worker; pass the node's options only (the 'worker' verb is implied).
+ERROR  this host is the OSDU Delivery worker and takes the node's options only (--url, --token, --pool, --poll-seconds, --drain-seconds, -v); 'run' is not one of them.
 ```
 
 `sqlflow worker` run from the OSDU Delivery CLI is the same node. Either way the module registers on the node's
@@ -110,7 +114,7 @@ there, unless the central configuration supplies it with the run ([sqlflow confi
 | --- | --- | --- |
 | The ingestion database | `${env:OSDU_DATA_DB}` | Reading the keyed ingestion tables the OSDU flow delivers from, and a cache flow's lookup tables. |
 | The OSDU endpoint and its credentials | `${env:OSDU_URL}`, `${env:OSDU_TOKEN_URL}`, `${env:OSDU_CLIENT_ID}`, `${env:OSDU_CLIENT_SECRET}`, `${env:OSDU_SCOPE}` | The flow's `target` (or a cache, retrieval or assertion flow's `source`) and its token request. |
-| The destination parameters | `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}`, `${env:OSDU_LEGAL_TAG}` | The mapping parameters the OSDU flow kind supplies when a flow does not set them. A flow bound to a partition takes `dataPartition` from the partition instead. |
+| The destination parameters | `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}`, `${env:OSDU_LEGAL_TAG}` | The mapping parameters the OSDU flow kind supplies when a flow does not set them. A flow bound to a partition takes `dataPartition` from its partition, or from its `data-partition-id` header, instead. |
 | Azure storage | `SQLFLOW_AZURE_AUTH` and the `AZURE_*` family | Reading payload files and writing work batches and retrieval output on `abfss://`, `wasbs://` or blob and dfs `https://` locations, and resolving `${keyvault:...}` references. See [sqlflow auth](auth.md). |
 
 The names in the middle column are the generic estate's; a flow can name any variable. A `${keyvault:...}` reference is
@@ -138,7 +142,13 @@ A node takes its metrics export settings from its environment: `OSDU_TELEMETRY_E
 `_AZURE_MONITOR_CONNECTION`, `_EXPORT_SECONDS`, `_SERVICE_NAME` and `_SERVICE_INSTANCE`. They are read and checked when the
 node starts; a value the setting cannot take (an exporter name that does not exist, a non-numeric export interval, a
 literal where a reference belongs) stops the node with
-`ERROR  CLI module 'osdu' failed to configure its services: <reason>`. What the meters publish is in
+`ERROR  CLI module 'osdu' failed to configure its services: <reason>`.
+
+The export is a hosted service of the node's services: it starts with the node, before the node takes any work, and
+stops and flushes after the drain, so the last measurements leave the process. The node logs where its metrics go
+(`Metrics on the meter SqlFlow.Delivery are exported to <Exporter> every <n>s as service <name>.`, or that they are
+exported nowhere). A hosted service that fails to start stops the node before it takes work:
+`ERROR  the worker refuses to start: hosted service <type> failed to start: <reason>`. What the meters publish is in
 [Run trace and metrics](../concepts/run-trace-and-metrics.md).
 
 ## Container image
@@ -173,7 +183,8 @@ Beyond SQLFlow's (0 after a clean drain, 1 when the URL or token is missing):
 | --- | --- | --- |
 | `SQLFLOW_OSDU_DB` unset, or the module database is not current | 1 | `ERROR  the worker refuses to start: <reason>` before the node polls |
 | An `OSDU_TELEMETRY_*` value the setting cannot take | 1 | `ERROR  CLI module 'osdu' failed to configure its services: <reason>` |
-| The worker host given the `worker` verb | 1 | `ERROR  this host is the OSDU Delivery worker; ...` |
+| The worker host given the `worker` verb, or any other positional argument | 1 | `ERROR  this host is the OSDU Delivery worker; ...` |
+| A hosted service of the node (the metrics export) fails to start | 1 | `ERROR  the worker refuses to start: hosted service <type> failed to start: <reason>` before the node polls |
 
 ## See also
 

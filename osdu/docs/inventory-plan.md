@@ -25,7 +25,7 @@ no OSDU table changes without its migration.
 | 2. The tables | Done: migration `InventoryFlows` (module 1.30.0), `InventoryLedgerTests` |
 | 3. Reading OSDU: search and storage | Done: `InventoryRunTests` |
 | 4. The reconcile | Done: `InventoryLedgerTests`, `InventoryRunTests` |
-| 5. The API, the CLI and the GUI | In progress |
+| 5. The API, the CLI and the GUI | Done: the routes under `/inventories` and `/flows/{pipelineId}/inventories` (`DeliveryInventoryApiTests`), `sqlflow inventory list\|show\|records\|lookup\|runs\|export`, the flow kind's panels and the Inventories page |
 | 6. Removing what an inventory found | Done: migration `InventoryRemovals` (module 1.31.0), `InventoryRemovalTests`, `DeliveryInventoryApiTests` |
 
 ## The document

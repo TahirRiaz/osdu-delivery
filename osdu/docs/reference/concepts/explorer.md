@@ -177,9 +177,9 @@ lists every record of the place again. A hint at the field's end says what Enter
 | --- | --- | --- |
 | nothing | every record of the place | none |
 | a whole id, `dev:master-data--Wellbore:abc123` (a version or a trailing colon is dropped) | opens the record | |
-| the start of an id, `dev:master-data--Wellbore:NW-` or `master-data--Wellbore:NW-` (completed with the partition) | the ids starting with it | `id:dev\:master\-data\-\-Wellbore\:NW\-*` |
-| words, `NW 0042 B` | a phrase anywhere in a record | `"NW 0042 B"` |
-| one word of three or more characters with one type in view | the phrase, or the record of that type whose id is or starts with it | `"NW-0042" OR id:"dev:master-data--Wellbore:NW-0042" OR id:...*` |
+| the start of an id, `dev:master-data--Wellbore:WB-` or `master-data--Wellbore:WB-` (completed with the partition) | the ids starting with it | `id:dev\:master\-data\-\-Wellbore\:WB\-*` |
+| words, `Wellbore A 1` | a phrase anywhere in a record | `"Wellbore A 1"` |
+| one word of three or more characters with one type in view | the phrase, or the record of that type whose id is or starts with it | `"WB-0042" OR id:"dev:master-data--Wellbore:WB-0042" OR id:...*` |
 | a machine-minted unique part (a GUID, a hash) in every type | the phrase, or any id of the partition ending with it | `"..." OR id:dev\:*\:...*` |
 | a Lucene query, with the braces button on | as written | the text |
 
@@ -198,7 +198,7 @@ field with **Edit**, to be changed there.
 What is typed in the field is searched in every property. It can be searched in one property or source column instead,
 picked at the field's start (**In** a property; **Every property** goes back), and any property can be asked a condition
 of its own with **Filter**. Every condition holds together with the text, and each is a chip over the grid that reads as
-a sentence (`FacilityName starts with NW`); a click opens it again, its cross drops it, **Clear all** drops every one. A
+a sentence (`FacilityName starts with Wellbore A`); a click opens it again, its cross drops it, **Clear all** drops every one. A
 page takes at most 12 conditions. The editor lists the values the records in view hold at the property, the commonest
 first with their counts; picked under **contains** or **starts with**, a listed value becomes **is**.
 
@@ -206,10 +206,10 @@ Every condition is written the way the platform indexes the property:
 
 | Condition | For | Query |
 | --- | --- | --- |
-| **contains** | text | the words as a phrase anywhere, any case: `data.FacilityName:"NW 0042"` |
+| **contains** | text | the words as a phrase anywhere, any case: `data.FacilityName:"Wellbore A"` |
 | **is**, **is not** | any | the whole value: `data.Source.keyword:"welldb"`, `NOT (...)` |
 | **is one of**, **is none of** | any but a boolean | up to 50 whole values: `(data.Source.keyword:("welldb" OR "WELLDB"))` |
-| **starts with** | text, a keyword | the start of the whole value, case included: `data.FacilityName.keyword:NW\-00*` |
+| **starts with** | text, a keyword | the start of the whole value, case included: `data.FacilityName.keyword:Wellbore\ A\-*` |
 | **is in a range** | a number, a date | from a value (included) up to another (not included), either end open: `data.TopMeasuredDepth:["1000" TO "2000"}` |
 | **has a value**, **has no value** | any | `_exists_:data.FacilityName`, `NOT (...)` |
 

@@ -214,7 +214,7 @@
       "type": "object",
       "required": false,
       "freeForm": true,
-      "description": "The legal block every OSDU record carries: legaltags and otherRelevantDataCountries, each a literal list of at least one value, free of repeats, such as legaltags: [\"{$param.legalTag}\"] and otherRelevantDataCountries: [NO]. A DSPDM business object row has none."
+      "description": "The legal block every OSDU record carries: legaltags and otherRelevantDataCountries, each a literal list of at least one value, free of repeats, such as legaltags: [\"{$param.legalTag}\"] and otherRelevantDataCountries: [US]. A DSPDM business object row has none."
     },
     {
       "path": "record.tags",

@@ -24,8 +24,8 @@ returns at most `AGGREGATION_SIZE` (1,000 by default) distinct values, ordered b
 query takes an aggregation. A field with more values, a wildcard kind, or a property inside a nested array, has no API
 that lists all of it. The values it does return are the index's exact values, spelled as each source spelled them, so a
 dimension a person can filter by needs them cleaned, and the spelling each record holds still has to be what a search
-compares. A reference is worse: the index holds the id of the record it names (`dev:master-data--Wellbore:NO-15-9-F-1:`),
-and the name a person filters by (`15/9-F-1`, or the wellbore's country) is in another record, which a search cannot join.
+compares. A reference is worse: the index holds the id of the record it names (`dev:master-data--Wellbore:WB-0001:`),
+and the name a person filters by (`Wellbore A-1`, or the wellbore's country) is in another record, which a search cannot join.
 
 ## Decision
 

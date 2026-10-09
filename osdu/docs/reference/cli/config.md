@@ -16,6 +16,8 @@ keywords:
   - endpoint per partition
   - legal tag and acl groups
   - node environment
+  - config list filters
+  - repository not registered
 cliCommand: config
 related:
   - delivery-concept-partitions
@@ -43,7 +45,7 @@ sourceRefs:
 # sqlflow config
 
 OSDU Delivery's command line is `sqlflow`: SQLFlow's CLI with the OSDU verbs added. `config` is one of those verbs. It
-reads and writes the central configuration: named values the control plane attaches to the delivery, cache, retrieval, assertion and dimension runs it queues, so a
+reads and writes the central configuration: named values the control plane attaches to the delivery, cache, retrieval, assertion, dimension and inventory runs it queues, so a
 flow that names `${env:OSDU_URL}` or `${env:OSDU_LEGAL_TAG}` gets its value from one place instead of from the
 environment of whichever node picks the run up.
 
@@ -84,8 +86,9 @@ control plane's values only. How runs are bound to partitions is in [Partitions]
 
 - **Runs the control plane queues.** A run triggered from the GUI or with `sqlflow trigger`, a schedule fire, and every
   member of a run group is queued carrying the values set for no partition and every partition's own values. This
-  applies to delivery, cache, retrieval, assertion and dimension flows; runs of SQLFlow's own flow kinds, and of
-  inventory flows, are queued without them. The node then resolves with the values of the partition the run binds to.
+  applies to every flow kind of the module (delivery, cache, retrieval, assertion, dimension and inventory, an
+  inventory's remove run included); runs of SQLFlow's own flow kinds are queued without them. The node then resolves
+  with the values of the partition the run binds to.
 - **Node tasks of the module.** A value check (`delivery-check-values`) and a removal (`delivery-delete`) carry the
   effective values of the one partition they act in.
 - **What the control plane runs while a person waits**: a probe of the target, a record read back from OSDU, a preview,
@@ -103,20 +106,24 @@ always resolved by the node directly. A property whose value is itself a referen
 resolver: `OSDU_CLIENT_SECRET = ${keyvault:welldb-vault/osdu-client-secret}` makes the node read the vault, and a value of
 `${env:OTHER}` is read from the node's environment even when `OTHER` is also a property (properties do not chain). A
 property whose value is its own reference (`OSDU_URL = ${env:OSDU_URL}`) is handed back to the node's environment.
+A run's trace names where each reference it resolves took its value, the configuration or the node's environment,
+never the value.
 
 The OSDU flow kind supplies four mapping parameters a flow does not set under `render.parameters`: `dataPartition`,
 `aclOwner`, `aclViewer` and `legalTag`, which default to `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`,
 `${env:OSDU_ACL_VIEWER}` and `${env:OSDU_LEGAL_TAG}`. Those names are therefore natural properties. A flow bound to a
-partition is given `dataPartition` as that partition, written literally, and never reads `OSDU_DATA_PARTITION`.
+partition is given `dataPartition` as that partition, written literally, and never reads `OSDU_DATA_PARTITION`; a
+flow whose header names its partition is given its header's value (`target.headers.data-partition-id`, as written).
+Only a flow bound to no partition reads `OSDU_DATA_PARTITION`.
 
 ### Limits
 
 | Item | Rule |
 | --- | --- |
 | Name | A letter or underscore, then letters, digits and underscores; at most 64 characters. A run matches it to a flow's `${env:NAME}` exactly, case included. |
-| Value | Not empty, at most 1,000 characters, no control characters. |
+| Value | Trimmed; then not blank, at most 1,000 characters, no control characters. |
 | Partition | A data-partition-id written literally: letters, digits, underscore, hyphen and dot, at most 200 characters. It need not be registered. |
-| Description | At most 400 characters, the width of its column. Neither the command nor the API checks it first: a longer one fails when the row is written, with the database's own error. |
+| Description | Trimmed; at most 400 characters, the width of its column, refused before anything is saved. |
 | Per run | At most 64 properties in any one scope, and values for at most 64 partitions. A configuration beyond either, or one too large for a run's payload, is not attached: the run resolves every reference on the node, and the control plane logs a warning naming the flow. |
 
 The command does not inspect a value for secrets. A literal secret in a property is a defect: the row is ordinary
@@ -134,10 +141,10 @@ catalog content, and the run payload that carries it is readable beside the run.
 
 | Flag | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--repo <id>` | repository id | none (the control plane's own) | The repository the property is set for, by its id (a GUID), not its name. `sqlflow repos show <name>` prints it. Anything that is not a GUID is refused. The command does not check that a repository with that id exists, so a mistyped id sets a value no run reads. |
-| `--partition <id>` | data-partition-id | none (no particular partition) | The partition the property is set for, or read in. |
+| `--repo <id>` | repository id | none (the control plane's own) | The repository the property is set for, or read for, by its id (a GUID), not its name. `sqlflow repos show <name>` prints it. Anything that is not a GUID is refused. `set` refuses an id the catalog does not hold, reading the catalog through `--db`, else `${env:SQLFLOW_CATALOG_DB}`, even when `SQLFLOW_OSDU_DB` gives the module a database of its own; `list` and `remove` do not look it up, so a deleted repository's properties can still be found and removed. |
+| `--partition <id>` | data-partition-id | none (no particular partition) | The partition the property is set for, or read for. |
 | `--value <value>` | string | none | `set` only, required: the value or reference. |
-| `--description <text>` | string | none | `set` only: what the property is for. Replaced by every `set`, and cleared when left out. |
+| `--description <text>` | string | none | `set` only: what the property is for, trimmed. Replaced by every `set`, and cleared when left out. |
 | `--db <conn-ref>` | connection reference | `${env:SQLFLOW_CATALOG_DB}` | The catalog database, which holds the `osdu` schema unless `SQLFLOW_OSDU_DB` names its own. |
 | `--json` | flag | off | Writes one JSON document to stdout instead of text (not for `remove`). |
 
@@ -145,21 +152,21 @@ catalog content, and the run payload that carries it is readable beside the run.
 
 ### list
 
-Without `--repo`, `list` prints every property of every scope, ordered by name, and ignores `--partition`. With `--repo`,
-it prints the properties set at exactly that scope: the repository's values for no partition, or with `--partition` the
-repository's values for that partition. There is no form that lists only the control plane's own values for one
-partition; read them from the full listing.
+`list` prints every property of every scope, ordered by name, then repository, then partition. `--repo` narrows it to
+that repository's properties in every partition, `--partition` to that partition's at every scope, and both to that
+repository's properties in that partition.
 
 ```text
-OSDU_CLIENT_SECRET = ${keyvault:welldb-vault/osdu-client-secret}  [(all repositories)]  set by cli at 2026-10-09 07:40:52Z
-OSDU_LEGAL_TAG = welldb-test-legal  [0b5e7f3a-2c41-4d8e-9a6b-1f0c2d3e4a5b, partition test]  set by cli at 2026-10-09 07:41:12Z
-OSDU_URL = https://osdu.example.com  [(all repositories)]  set by cli at 2026-10-09 07:40:03Z
-OSDU_URL = https://osdu-test.example.com  [(all repositories), partition test]  set by cli at 2026-10-09 07:40:31Z
+OSDU_CLIENT_SECRET = ${keyvault:welldb-vault/osdu-client-secret}  [(all repositories)]  set by cli:ops@build-agent at 2026-10-09 07:40:52Z
+OSDU_LEGAL_TAG = welldb-test-legal  [0b5e7f3a-2c41-4d8e-9a6b-1f0c2d3e4a5b, partition test]  set by cli:ops@build-agent at 2026-10-09 07:41:12Z
+OSDU_URL = https://osdu.example.com  [(all repositories)]  set by cli:ops@build-agent at 2026-10-09 07:40:03Z
+OSDU_URL = https://osdu-test.example.com  [(all repositories), partition test]  set by cli:ops@build-agent at 2026-10-09 07:40:31Z
 ```
 
-With nothing at the scope asked for it prints
-`no configuration property is set; every reference a flow names is resolved on the node that runs it`. With `--json` it
-prints an array of `{ name, value, repoId, partition, description, updatedUtc, updatedBy }`.
+With nothing set at all it prints
+`no configuration property is set; every reference a flow names is resolved on the node that runs it`; with nothing
+for the filter asked, `no configuration property is set for repository <id> in partition <p>` (naming only the filters
+given). With `--json` it prints an array of `{ name, value, repoId, partition, description, updatedUtc, updatedBy }`.
 
 ### effective
 
@@ -172,8 +179,8 @@ one object of name to value. It needs `--repo`; without it the command stops wit
 ### set
 
 `set` creates the property at the scope given, or replaces the value and description already there, and prints
-`<name> set` (with `--json`, the stored property). The command records `cli` as who set it; a property set through the
-API records the signed-in user.
+`<name> set` (with `--json`, the stored property). The value and the description are trimmed before they are checked.
+The command records `cli:<user>@<machine>` as who set it; a property set through the API records the signed-in user.
 
 ### remove
 
@@ -186,9 +193,13 @@ state.
 | Message | Cause |
 | --- | --- |
 | `'<name>' does not name a configuration property: a property is named as a flow spells it in ${env:NAME}, which is a letter or underscore followed by letters, digits and underscores, at most 64 characters.` | The name breaks the name rule. |
-| `the value of '<name>' is empty, longer than 1000 characters, or holds a control character; a property holds an identifier, a URL or a ${env:...} or ${keyvault:...} reference.` | The value breaks the value rule. |
+| `'<name>' needs a value; remove the property instead of setting it to nothing.` | The value is blank once trimmed. |
+| `the value of '<name>' is longer than 1000 characters (<n>) or holds a control character; a property holds an identifier, a URL or a ${env:...} or ${keyvault:...} reference.` | The value breaks the value rule. |
+| `the description of '<name>' is <n> characters; a property's description is at most 400.` | The description is too long once trimmed. |
 | `'<partition>' is not a data-partition-id a property can be set for: letters, digits, underscore, hyphen and dot, at most 200 characters.` | `--partition` is a reference or holds other characters. |
-| `--repo '<text>' is not a repository id.` | `--repo` is not a GUID. |
+| `--repo '<text>' is not a repository id (a GUID; 'sqlflow repos show <name>' prints it).` | `--repo` is not a GUID. |
+| `No repository <id> is registered with the catalog, so a configuration property set for it would never be read by a run. 'sqlflow repos list' and the Repositories page show the registered repositories and their ids.` | `set --repo` names a repository the catalog does not hold. |
+| `--repo is checked against the catalog's repositories, and the catalog connection <ref> did not resolve: ... Name it with --db <conn-ref>, or set SQLFLOW_CATALOG_DB.` | `set --repo` with no catalog connection to check it in. |
 | `name the property to set.` / `give the value with --value <value>.` / `name the property to remove.` | A required argument is missing; the verb's usage follows. |
 | `use 'config list', 'config effective --repo <id>', ...` | No subcommand, or one that is not listed; the verb's usage follows. |
 
@@ -196,11 +207,13 @@ Each is printed as `ERROR  <message>` on stderr. A usage error is followed by th
 
 ## The same through the API
 
-The control plane serves the same table: `GET /api/v1/delivery/config` (every property, with each repository named),
-`PUT /api/v1/delivery/config/{name}` and `DELETE /api/v1/delivery/config/{name}` (both admin, with optional `repoId`
-and `partition` query parameters), and `GET /api/v1/delivery/config/effective/{repoId}` (optional `partition`). The
-API checks that the repository exists and trims the value; the CLI does neither. The GUI has no page for it. See
-[The delivery API](../concepts/api.md).
+The control plane serves the same table: `GET /api/v1/delivery/config` (every property, with each repository named;
+`repoId` and `partition` filter it as `list`'s options do), `PUT /api/v1/delivery/config/{name}` and
+`DELETE /api/v1/delivery/config/{name}` (both admin, with optional `repoId` and `partition` query parameters), and
+`GET /api/v1/delivery/config/effective/{repoId}` (optional `partition`). The command and the API go through the same
+store checks: the API answers 400 `Configuration property refused` with the same message, and 404 `Repository not
+found` for a `PUT` naming a repository the catalog does not hold. `DELETE` does not look the repository up. The GUI has
+no page for it. See [The delivery API](../concepts/api.md).
 
 ## Examples
 
@@ -246,7 +259,7 @@ sqlflow config list --db '${env:SQLFLOW_CATALOG_DB}' --json
 | Exit code | Meaning |
 | --- | --- |
 | 0 | The subcommand did what it was asked, including `remove` of a property that was not set. |
-| 1 | A usage error, a refused name, value, partition or repository id, or a database connection that could not be resolved, printed as `ERROR  <message>`. |
+| 1 | A usage error, a refused name, value, description, partition or repository, or a database connection that could not be resolved, printed as `ERROR  <message>`. |
 | 130 | Interrupted with Ctrl+C. |
 
 ## See also

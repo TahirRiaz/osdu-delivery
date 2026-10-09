@@ -12,15 +12,16 @@ keywords:
   - payload parts
   - legal tag check
   - validatelegaltags
-  - unit of work
   - unfinished delivery
   - undo
-  - artifact
   - inline retry
   - redirects
+  - error redaction
+  - signed url credentials
 related:
   - delivery-flow-routes
   - delivery-flow-ddms
+  - delivery-flow-ddms-services
   - delivery-concept-record-lifecycle
   - delivery-concept-removal-and-reversal
   - delivery-concept-ledger
@@ -55,7 +56,8 @@ sourceRefs:
 A delivery flow sends its records by one of ten routes: `storage`, `file`, `dataset`, `manifest`, `ddms`,
 `fileAndDdms`, `manifestAndDdms`, `workflow`, `dspdm` and `etp`. A flow in the single form names its route with
 `target.protocol`; an interface of a source gets one from what it declares. What each route sends, and its keys, is on
-[Routes](../flow/routes.md); the DDMSs the `ddms` routes reach are on [DDMSs](../flow/ddms.md). This page is what every
+[Routes](../flow/routes.md); the DDMSs the `ddms` routes reach are on [DDMSs](../flow/ddms.md) and
+[DDMS shapes and services](../flow/ddms-services.md). This page is what every
 route does the same way: identity, rendering, change detection, the ledger and the preflight gate never depend on the
 route, and every route reports its work to the ledger in the same form.
 
@@ -193,43 +195,21 @@ All routes send their HTTP requests through one executor, so these rules hold on
 - **Addresses.** A connection opens only to an address the deployment reaches; `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` names
   the private networks a node may reach ([Environment variables](environment-variables.md)). A refused address fails
   the request at once, without a retry.
-- **Errors.** An error for a refused status, a transport failure or a timeout names the request URL without its query
-  string, so a signed URL's credential stays out of it, and carries what the service said (its error body read for the
-  message) rather than raw JSON. Every error is redacted again before the ledger stores it.
+- **Errors.** Every error the executor raises (a refused status, a transport failure, a timeout, a redirect loop, a
+  refused URL, a response over `reliability.maxResponseBytes`) names the request URL without its user info, query
+  string or fragment, so a signed URL's credential or a URL's password stays out of it, and carries what the service
+  said (its error body read for the message) rather than raw JSON. The transport's own message is redacted too. Every
+  error is redacted again before the ledger stores it. The redactor removes bearer tokens and the value of every other
+  Authorization scheme, a URL's password, and every query parameter, `name=value` pair or JSON field named as a secret
+  or a signer: passwords, secrets, tokens, assertions, signatures and API or account keys, an Azure shared access
+  signature (`sig`, `sv`, `se`, `sp`, `sr`), S3's `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`,
+  `AWSAccessKeyId` and `Signature`, and Google Cloud Storage's `X-Goog-Signature`, `X-Goog-Credential` and
+  `GoogleAccessId`.
 
 ## When a delivery does not complete
 
-A delivery of one record's pending work is a unit of work: it begins with the first call that can change OSDU, spans
-every try while the record stays pending, and ends committed or aborted. Every object a unit creates in OSDU, or sets out
-to create, is an artifact in `osdu.Artifact`, written in the same transaction as the step that made it. A call whose id
-the service mints, and whose answer can be lost, is preceded by an intent: the artifact is written before the call with
-what finds the object without its id (a file's landing-zone path, the record a session belongs to), and completed with
-the id when the answer comes.
-
-An aborted unit is undone:
-
-| When | What undoes it |
-| --- | --- |
-| A try ends held or failed | The worker, at once, under the record's lease. |
-| Newer work is planned for a record while a unit is unfinished | The claim that next takes the record, before the newer work is sent. |
-| Anything left: an undo that failed and is past its backoff, a unit nothing claimed again | The sweep at the end of every `deliver` run and flow-wide `drain`, and the `undo` operation (`sqlflow run <flow.yaml> --operation undo`). |
-| A removal, and deleting the ledger | The removal, before it takes the record out of OSDU. |
-
-An undo removes what the unit created at the route's reversible scope (a soft delete, a logical DDMS delete, an abandoned
-session, a released lock), writes back the version the unit replaced where the route can, and keeps, with why, what no
-call removes. A record is removed only when the storage service's `createTime` says the unit created it (no earlier than
-the unit's start, less five minutes for clocks); an update is given back its earlier version, never deleted. What a DDMS
-made beside the record goes back before the record, and the record before the datasets it names; when one of them cannot
-be undone yet, the others wait with it, so OSDU never serves a record naming what the undo already removed.
-
-An undo is idempotent. One that cannot reach OSDU, or that OSDU refuses, is tried again after 1, 2, 4 ... minutes (at
-most six hours apart), up to ten times, then left for an operator: `sqlflow records undos <flow.yaml>` lists what is
-left, and `sqlflow run <flow.yaml> --operation undo --payload '{"force":true}'` tries the exhausted ones again. Newer
-work for the record waits, uncharged, until the undo finishes, and the record is held once the undo has used its tries
-([Waiting for an undo](record-lifecycle.md#waiting-for-an-undo)).
-
-Some things no call removes, and an undo keeps them, named: the series versions the production historian accepted, a
-Seismic Store dataset registered on gc (where one dataset's delete takes the files of every dataset in its subproject), RAFS content
-kept in its own blob store, what a Wellbore DDMS session aggregated, and the files a registration left in a landing zone
-or staging area. `sqlflow records artifacts <flow.yaml> --key <key>` lists every artifact of a
-record with where it stands.
+A delivery of one record can take several calls that each change OSDU, and OSDU has no transaction across them, so each
+route records every object a delivery creates, or sets out to create, as an artifact of a unit of work (with an intent
+before a call whose id the service mints), and a unit that does not complete is undone at the route's reversible scope.
+When an undo runs, what it removes and keeps, how it is retried, and the commands that list and force it are on
+[Unfinished deliveries and their undo](removal-and-reversal.md#unfinished-deliveries-and-their-undo).

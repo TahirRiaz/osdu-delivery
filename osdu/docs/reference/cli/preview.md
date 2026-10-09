@@ -16,6 +16,7 @@ keywords:
   - placeholder
   - route steps
   - dry run
+  - preview written whole
 cliCommand: preview
 related:
   - delivery-cli-check
@@ -75,7 +76,7 @@ sqlflow preview <flow.yaml> [--interface <name>] [--partition <id>] [--key <key>
 | `--interface <name>` | string | every interface | Preview one interface of a source. A source is otherwise previewed one interface at a time, each with its own first record. `--key` needs it on a source with several interfaces: `ERROR  a key names a record of one interface; name it with --interface (<names>).` |
 | `--partition <id>` | string | as a run settles it | The partition to preview a flow that works in partitions in, settled as `sqlflow check` settles it ([sqlflow check](check.md)). |
 | `--set name=value` | repeatable | the declared defaults | Values for the flow's own parameters. They fill the scope the record is read from, as a run's values do. |
-| `--out <file.json>` | path | none | Also write the preview as JSON to this file: one preview, or an array of one per interface. The folder must exist (`--out names <path>, in a folder that does not exist.`). The text answer names the file after the document it prints (`written to <path>`). |
+| `--out <file.json>` | path | none | Also write the preview as JSON to this file, whole: one preview, or an array of one per interface, every rendered document kept whatever its size. The folder must exist (`--out names <path>, in a folder that does not exist.`); a refused folder is said before anything renders. The text answer names the file after the document it prints (`written to <path>`). |
 | `--db <conn-ref>` | string | `${env:SQLFLOW_CATALOG_DB}` | The module database when the `osdu` schema lives in the catalog's database; `SQLFLOW_OSDU_DB` names it otherwise. See [The osdu module database in sqlflow db](db.md). |
 | `--json` | switch | off | Print the preview as JSON on stdout instead of the text form. |
 
@@ -140,12 +141,15 @@ holds it; the searches the render made; and the preflight's warnings, which do n
 The preview's answer is bounded whatever the record's size: child rows to 100 per dataset, a source value to 4,000
 characters, payload files to 50 per part (every file still counted and sized), parquet footers to the first ten files,
 and the references looked up in the ledger to 50. A rendered document longer than 2,000,000 characters of canonical
-JSON is described by its size and hash and left out, in the text, the JSON and the `--out` file alike.
+JSON is described by its size and hash and left out of the console (text and `--json`), as the GUI does; `--out`
+writes it whole, and the console's note names the file:
+`The rendered document is <n> characters, more than the 2,000,000 a preview shows. Its hash is <hash>; the whole preview is written to <path>.`
+Without `--out` the note ends `'sqlflow preview' writes it whole with --out.`
 
 ## Output
 
 The text answer, one block per interface previewed (lines without content are left out; an interface's block names it
-as `<flow>/<interface> / <interface>`):
+as `<flow>/<interface>`, as a run names it):
 
 ```text
 OK  welldb-wellbore-03-delivery: welldb:WB-0001 [<label>]
@@ -208,7 +212,7 @@ sqlflow preview flows/welldb-wellbore-03-delivery.yaml --partition dev
 Preview one wellbore by its source key, and keep the whole preview in a file:
 
 ```bash
-sqlflow preview flows/welldb-wellbore-03-delivery.yaml --partition dev --key welldb:WB-0001 --out wb-0001.json
+sqlflow preview flows/welldb-wellbore-03-delivery.yaml --partition dev --key welldb:WB-0001 --out WB-0001.json
 ```
 
 Preview one well log of a source with interfaces, by its key parts:

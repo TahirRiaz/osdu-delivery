@@ -1,10 +1,10 @@
 # How the working implementation delivers well logs
 
-Two systems already publish Equinor's well logs into OSDU, and between them they answer questions this project is
-still deciding. This page is what they do, read from their source, and what OSDU Delivery should take from each.
+Two existing systems publish well logs into OSDU, and between them they answer questions this project is still
+deciding. This page is what they do, read from their source, and what OSDU Delivery should take from each.
 
-- `D:\Projects\eq\src\wl-pipelines-main`, the Databricks estate, package `recall_to_osdu`.
-- `D:\Projects\eq\src\petrodb-api-main`, the C# service, `src/PetroDb`.
+- A Databricks estate, whose package `welldb_to_osdu` moves well logs out of WellDB, the well database.
+- `facade-api`, a C# facade service in front of the DDMS.
 
 Neither is edited by this project. They are read as the working reference, the way `osdu/specs` is read for the
 platform's own contracts.
@@ -13,21 +13,21 @@ platform's own contracts.
 
 The two halves divide the work at one line, and it is the line this project has been deciding on its own.
 
-**`recall_to_osdu` moves data and shapes nothing.** It runs in two phases, as two Databricks tasks
-(`functions/recall_to_osdu.py`):
+**`welldb_to_osdu` moves data and shapes nothing.** It runs in two phases, as two Databricks tasks
+(`functions/welldb_to_osdu.py`):
 
 | Phase | What it does |
 | --- | --- |
-| `prepare_osdu_payloads` | Reads `wl_pipelines_dsis_intermediate.recall_logcurve_enriched` in Unity Catalog, filtered to one `log_name`, and materializes a parquet payload per wellbore plus a Delta manifest. |
+| `prepare_osdu_payloads` | Reads `intermediate.welldb_logcurve_enriched` in Unity Catalog, filtered to one `log_name`, and materializes a parquet payload per wellbore plus a Delta manifest. |
 | `transfer_osdu_payloads` | Uploads those payloads to the service over HTTP. |
 
-What it sends is **source-shaped**. `utils/builders.py` renames Recall columns to OSDU-ish names
-(`recallcommonmodel:WellLog__wellbore_uwi` becomes `WellboreId`, `recall:LOG_RUN` becomes `LogRun`) and stops there.
-The clearest evidence is the unit of measure: it splits `recall:ELEV_MEAS_REF` on whitespace and takes the second
+What it sends is **source-shaped**. `utils/builders.py` renames WellDB columns to OSDU-ish names
+(`welldbcommonmodel:WellLog__wellbore_uwi` becomes `WellboreId`, `welldb:LOG_RUN` becomes `LogRun`) and stops there.
+The clearest evidence is the unit of measure: it splits `welldb:ELEV_MEAS_REF` on whitespace and takes the second
 token, so `VerticalMeasurementUnitOfMeasureID` leaves the pipeline as the literal string `M`, not as
 `dev:reference-data--UnitOfMeasure:m:`. The pipeline resolves no reference data, mints no OSDU id, and holds no cache.
 
-**`petrodb-api` turns that into an OSDU record.** Everything below is its work.
+**`facade-api` turns that into an OSDU record.** Everything below is its work.
 
 The consequence worth stating plainly: in the working system the pipeline is a transport, and one service owns every
 decision about what an OSDU record looks like. `osdu/docs/decisions/0003-rendering-location.md` records this project
@@ -36,11 +36,11 @@ the patterns below are the ones that still apply once rendering moves.
 
 ## 2. Mapping is generated code, not interpreted configuration
 
-`MappingGenerator` emits a C# mapper per source and target pair. `Api/Generated/RecallToWellLogMapper/RecallToWellLogMapper.g.cs`
+`MappingGenerator` emits a C# mapper per source and target pair. `Api/Generated/WellDbToWellLogMapper/WellDbToWellLogMapper.g.cs`
 is 180 lines of straight assignments:
 
 ```csharp
-public class RecallToWellLogMapper : IRecallToWellLogMapper
+public class WellDbToWellLogMapper : IWellDbToWellLogMapper
 {
     CurveUnit = _unitOfMeasureReferenceResolver.Resolve(
         source.CurveUnit, "reference-data", "UnitOfMeasure",
@@ -59,7 +59,7 @@ Three things are worth copying, and one is worth knowing about rather than copyi
 `G/CC`, `G/CM3` and `G/C_3` all become `g/cm3`; `Â°C` and `°C` and `C` all become `degC`. This is accumulated
 knowledge of one source system's dirt, and it lives beside the field it cleans. OSDU Delivery has `modifiers` on a
 mapping entry, and a `replace` modifier is the same shape; the sample estate uses one for `V/V` to `m3/m3`. The
-difference is scale: the working system carries ninety entries for `CurveUnit` alone, because that is what real Recall
+difference is scale: the working system carries ninety entries for `CurveUnit` alone, because that is what real WellDB
 data needs.
 
 **Normalization happens exactly once.** `ValueMapNormalizer.Normalize(value, valueMap)` is applied by the resolver,
@@ -172,7 +172,7 @@ So there are two coherent positions, and this project currently sits between the
    evaluated against a fixed reference set rather than the partition's live cache, or they are only valid for the one
    partition and the one day they were captured.
 2. **A fixture tests the mapping's own logic**, and reference resolution is covered separately, by tests over the
-   resolver with a stub cache. This is what petrodb-api does.
+   resolver with a stub cache. This is what facade-api does.
 
 Position 1 with a live cache is what is in place now, and it is why the sample estate cannot render against a real
 partition: its fixtures assert facts about invented reference data.

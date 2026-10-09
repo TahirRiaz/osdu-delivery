@@ -51,6 +51,7 @@ serves. It ends by removing the orphans, which the flow allows only when its doc
 ```yaml
 flowType: inventory
 name: welldb-06-inventory
+description: Every wellbore and well log OSDU serves in the partition, set against the ledgers of the welldb flows.
 batch: welldb
 partitions: [dev, test]
 
@@ -63,18 +64,31 @@ source:
     token:
       url: ${env:OSDU_TOKEN_URL}
       body: { scope: "${env:OSDU_SCOPE}" }
+  read: search
+
+owners: [welldb-delivery@example.com]
+maxMissingChecks: 100000
+removal: { findings: [orphan, stale], purge: false }
+reliability: { concurrency: 4 }
 
 inventories:
   - name: Wellbores
+    description: Every wellbore record, whatever its authority, source and schema version.
     kind: "*:*:master-data--Wellbore:*"
   - name: WellLogs
     kind: "*:*:work-product-component--WellLog:*"
+    versions: all
+  - name: LogFiles
+    kind: "osdu:wks:dataset--File.Generic:*"
+    query: 'tags.DeliveredBy:"welldb"'
 ```
 
-Each inventory names its entity type and leaves the authority, source and version as `*`, with no query. That makes it
-**cover the type whole**: besides the ids it lists, it reads from storage the records the ledgers delivered of that type
+The estate's `flows/welldb-06-inventory.yaml` keeps three inventories. `Wellbores` and `WellLogs` name their entity type
+and leave the authority, source and version as `*`, with no query. That makes each **cover the type whole**: besides the ids it lists, it reads from storage the records the ledgers delivered of that type
 and it did not list, so it can say one is `missing`. An inventory narrowed by a query or a version reports only the ids
-it listed before and no longer lists.
+it listed before and no longer lists, as `LogFiles` does: it lists the `dataset--File.Generic` records the welldb flows
+registered. `maxMissingChecks` bounds how many ids a build reads from storage; `owners` and `removal` come into play
+later (steps 3 and 5).
 
 The flow reads through the search index (`source.read: search`, the default), which a viewer's entitlements allow. The
 index lags writes and leaves out records it failed to index; `source.read: storage` lists every active record from
@@ -114,7 +128,7 @@ they stand now, reading from storage only the ids a ledger expects; it is the qu
 sqlflow inventory list --partition dev
 sqlflow inventory show dev 5
 sqlflow inventory records dev 5 --finding orphan
-sqlflow inventory lookup dev dev:work-product-component--WellLog:wl-0900
+sqlflow inventory lookup dev dev:work-product-component--WellLog:9a41c7e2d05b4f6a8c3e1b7d2f9064ab
 ```
 
 `show` gives the ids by finding, with the raised ones marked, and the owners the reconcile used. `records` pages through
@@ -125,9 +139,9 @@ opens the id as OSDU holds it now. `sqlflow inventory export dev 5 --finding orp
 as CSV.
 
 **Check the owners first.** An id no ledger knows is an `orphan` when an identity this estate writes as created it, and
-`foreign` otherwise. Without `owners` in the flow, a reconcile infers them: every identity that created at least 1% of
-the ids a ledger claims. `show` prints them and says `inferred`. If the list is wrong, name the identities in the flow
-(`owners: [welldb-delivery@example.com]`) so orphans and foreign records are told apart the same way every time.
+`foreign` otherwise. The flow names its identities (`owners: [welldb-delivery@example.com]`), so orphans and foreign
+records are told apart the same way every time, and `show` prints them as `declared`. Without `owners`, a reconcile
+infers them: every identity that created at least 1% of the ids a ledger claims, which `show` prints as `inferred`.
 
 ## 4. Act on each finding
 
@@ -142,37 +156,20 @@ the ids a ledger claims. `show` prints them and says `inferred`. If the list is 
 | `drifted` | OSDU serves another version than the ledger delivered. | Run the delivery flow's `verify` to see whether the change was legitimate ([operations runbook](operations-runbook.md)). |
 | `unlisted` | Storage holds it and the read did not list it. | Wait for the index and build again, or read through storage. |
 
-`foreign`, `superseded`, `tracked`, `gone` and `unreconciled` need nothing. Acting on a finding goes through the
+`foreign`, `superseded`, `tracked`, `gone` and `unreconciled` need nothing; a `gone` whose reason says a ledger expects
+it waits for a later build to ask storage. Acting on a finding goes through the
 ledger's own actions; the inventory flow removes only the ids no ledger holds live, and only when its document allows it.
 
 ## 5. Allow removal, and remove the orphans
 
-Removing from OSDU is a line of the flow's document, reviewed where the document is:
+Removing from OSDU is a line of the flow's document, reviewed where the document is. The file of step 1 has it, beside
+the identities it writes as:
 
 ```yaml
-flowType: inventory
-name: welldb-06-inventory
-batch: welldb
-partitions: [dev, test]
-
-source:
-  endpoint: ${env:OSDU_URL}
-  auth:
-    type: oauth2ClientCredentials
-    secondarySecretRef: ${env:OSDU_CLIENT_ID}
-    secretRef: ${env:OSDU_CLIENT_SECRET}
-    token:
-      url: ${env:OSDU_TOKEN_URL}
-      body: { scope: "${env:OSDU_SCOPE}" }
-
+# flows/welldb-06-inventory.yaml: the lines that allow removal
 owners: [welldb-delivery@example.com]
-removal: { findings: [orphan, stale] }
-
-inventories:
-  - name: Wellbores
-    kind: "*:*:master-data--Wellbore:*"
-  - name: WellLogs
-    kind: "*:*:work-product-component--WellLog:*"
+maxMissingChecks: 100000
+removal: { findings: [orphan, stale], purge: false }
 ```
 
 `removal.findings` names what may be removed, of `orphan`, `stale` and `forgotten`. Removals are soft deletes (reversible
@@ -181,8 +178,7 @@ own `source` credentials, which must be an owner of the records: a soft delete n
 identity in each record's owners ACL; a purge needs `service.storage.admin` and owner. Read-only viewer credentials are
 refused by storage, and the removal stops at its first chunk saying so.
 
-Sync the repository so the catalog has the new document, reconcile once more so the findings use the declared owners,
-and remove:
+With the document synced to the catalog and reconciled, remove:
 
 - **From the GUI.** On the inventory's report, open the **orphan** tab: each row has a box. Pick ids, or **Select all**
   to take every orphan however many, and **Remove**. The dialog offers **Remove the record** (a soft delete) or **Purge

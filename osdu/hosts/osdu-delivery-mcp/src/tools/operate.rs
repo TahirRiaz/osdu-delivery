@@ -131,10 +131,10 @@ pub struct DecideCacheChangesInput {
 #[tool_router(router = operate_router, vis = "pub(crate)")]
 impl DeliveryTools {
     #[tool(
-        description = "Probe a delivery flow's OSDU target (operate scope): the control plane runs the flow's token exchange and reaches \
+        description = "Probe a delivery flow's OSDU target (operator action): the control plane runs the flow's token exchange and reaches \
 the service it delivers to, and the answer says whether it answered, with the status and the path asked. Use it for \
 'is the dev OSDU reachable', 'why does every delivery fail with 401', and after credentials or configuration changed. \
-It reads no records and writes nothing. It answers in seconds."
+It reads no records and writes nothing to OSDU; the probe is recorded in the audit trail under your name. It answers in seconds."
     )]
     async fn delivery_probe_target(&self, Parameters(i): Parameters<FlowTargetInput>) -> String {
         let pipeline = match guid("pipelineId", &i.pipeline_id, PIPELINE_HINT) {
@@ -149,7 +149,7 @@ It reads no records and writes nothing. It answers in seconds."
     }
 
     #[tool(
-        description = "Queue a verify run for one record (operate scope): a node compares what OSDU holds with what the \
+        description = "Queue a verify run for one record (operator action): a node compares what OSDU holds with what the \
 ledger delivered and records the outcome on the record; a difference is drift. Returns the run id: poll get_run, \
 then read delivery_record (lastVerifiedUtc, lastVerifyOutcome). Use it when asked whether OSDU still holds what was \
 delivered. To verify a whole flow, use trigger_run with operation=\"verify\"."
@@ -165,7 +165,7 @@ delivered. To verify a whole flow, use trigger_run with operation=\"verify\"."
     }
 
     #[tool(
-        description = "Queue a sync run (operate scope) that reconciles the ledger with the ingestion tables: for each \
+        description = "Queue a sync run (operator action) that reconciles the ledger with the ingestion tables: for each \
 record it records what the ledger lacks of its row, marks a row that changed unseen to be planned by the flow's next \
 run, and notes a row that is gone. It sends nothing to OSDU. Give one record (flowId and deliveryKey), or a flow \
 (pipelineId) with keys, a filter plus the expected count, or neither for every record of the interface. Returns the \
@@ -222,7 +222,7 @@ run id: poll get_run, then read its entry in delivery_activities. Use it when th
     }
 
     #[tool(
-        description = "Release held records (operate scope) so their flow's next run tries them again. A record is held \
+        description = "Release held records (operator action) so their flow's next run tries them again. A record is held \
 when it used up its attempts or a gate stopped it; releasing says the cause is dealt with. Give one record (flowId \
 and deliveryKey), or a flow (pipelineId) with keys, or allHeld=true for every held record of the interface. Returns \
 how many were released and is recorded in the audit trail under your name; it sends nothing itself. Read why they are \
@@ -272,7 +272,7 @@ attempts again."
     }
 
     #[tool(
-        description = "Send one record to OSDU again (operate scope), whether or not it changed. The record is marked \
+        description = "Send one record to OSDU again (operator action), whether or not it changed. The record is marked \
 for redelivery in the ledger under your name and, unless run=false, a deliver run is queued now. THIS WRITES A NEW \
 VERSION TO OSDU: do it only when asked, for a record whose copy in OSDU is not what it should be (drift, a record \
 removed by hand, a payload that went missing). A record that merely changed at the source needs no redelivery; its \
@@ -291,7 +291,7 @@ for the new attempt."
     }
 
     #[tool(
-        description = "Approve or reject pending cache changes (operate scope): the changes a refresh found in a cached \
+        description = "Approve or reject pending cache changes (operator action): the changes a refresh found in a cached \
 type declared `onChange: approve`, which wait until someone decides. Approving releases the delivered records built \
 from the old value, so each flow's next run redelivers them; rejecting leaves OSDU as it is. Takes tagIds from \
 delivery_cache_changes(status=\"pending\"). APPROVING CAUSES REDELIVERIES, possibly many: read each change's \

@@ -155,8 +155,9 @@ A flow of dictionaries alone reaches neither OSDU nor a database, and still writ
   fails the refresh with `Cache flow '<flow>' could not read dictionary <name> for type <type>, so nothing was captured:
   ...`, and the cache keeps its version.
 
-`sqlflow validate` on a cache flow does not look for the file. `sqlflow lineage <folder>` does, and warns when a
-declared dictionary is not found: `type '<type>' holds dictionary <name>, which was not found in a dictionaries/
+`sqlflow validate` on a cache flow finds and reads the file the way a refresh does, and refuses the flow when it is
+missing or does not load: `<file>: type '<type>': Dictionary '<name>' was not found under '../dictionaries'. Expected <name>.yaml or <name>.yml.`
+`sqlflow lineage <folder>` looks for it too, and warns when a declared dictionary is not found: `type '<type>' holds dictionary <name>, which was not found in a dictionaries/
 directory above the flow, so its lineage leaves the file out.` The proposal preflight checks a dictionary document
 before it is pushed, as it checks a mapping.
 

@@ -94,13 +94,13 @@ Most of it needs nobody.
 | The `osdu` schema | The control plane applies pending migrations of SQLFlow's catalog and then of the module database when it starts, and stops when a database is missing, behind or ahead of the build. `/health/ready` carries the refusal (its `module-databases` check). |
 | Runs a stopped node held | SQLFlow requeues them once their run lease lapses, while they have execution attempts left. |
 | Records a stopped worker was sending | Every claim of the flow first recovers its leases that ran out: it applies what the stopped worker had appended and hands the rest back to `pending` with the try charged ([Submissions](submissions.md#leases-and-claims)). A run that finds records of its own submission still leased waits for the lease to run out, then recovers and sends them. |
-| A submission whose run stopped mid-drain | Its records stay with it. Re-run the submission (a deliver run with `submissionId`) or run `drain` for it; a released or recovered record of a submission that settled is sent by the flow's next deliver run. |
+| A submission whose run stopped mid-drain | A run executed again resumes it; otherwise the flow's next deliver run takes it over once no run holds it and its leases have run out, sends what it holds and closes it ([Recovering a stopped submission](submissions.md#recovering-a-stopped-submission)); a re-run (a deliver run with `submissionId`) or a `drain` of it still works at once. A released or recovered record of a submission that settled is sent by the flow's next deliver run. |
 | What unfinished deliveries left in OSDU | The sweep at the end of the next deliver run or flow-wide drain undoes it ([Removal and reversal](removal-and-reversal.md#unfinished-deliveries-and-their-undo)). |
 | Removals and value checks queued as tasks | SQLFlow fails a task no worker claimed within `Dispatch:TaskQueuedExpiryMinutes` (15) with `No worker claimed the task within <n> minutes...`; a running one is requeued. A removal that runs again reports what is already gone as `already-gone` and writes its own attempts. |
 | Approved cache changes | Each resumes its rollout from its own cursor ([The partition cache](partition-cache.md)). |
 | The identity and issue backfills | Resume where they stopped: each reads only what is left to do. |
 | Interface descriptions and search terms | The interfaces of a repository not described yet, and every repository's search terms, are written once when the control plane starts, and again by each repository sync. |
-| Scheduled target probes | A probe the host left open is found from the ledger and closed as unfinished by the next pass. |
+| Target probes | A probe left open by a host that stopped, scheduled or asked for, is closed as unfinished 15 minutes after it started, by the next probe of that interface or the next scheduled pass. |
 | Schedules | SQLFlow fires the next occurrence; a missed one fires only when the schedule declares `catchup: true`. A deliver run plans from its watermark, so one run after an outage covers every row that changed during it. |
 
 Then the operator's own pass, in this order:
@@ -185,7 +185,9 @@ What is not in the database and has to be restored beside it:
 the ingress, an API gateway) to one deliberate number and declare it on the flows as `reliability.maxRequestBodyBytes`
 (0, the default, means not declared). On the routes that send payloads, a file or request above it then holds its record
 before anything is sent, rather than failing after the record was written. A 413 from the service holds the record too.
-`reliability.maxResponseBytes` (64 MiB by default) bounds what a node reads back.
+`reliability.maxResponseBytes` (64 MiB by default) bounds what a node reads back; a bigger response fails the call with
+`Response from <url> exceeds the <n> MB limit. Raise reliability.maxResponseBytes.`, the URL named without its query,
+and a limit below 1 MiB stated in bytes (`exceeds the 500000 byte limit`).
 
 **What one record costs in the ledger.** Each limit is a column width; what does not fit is refused or held with a message,
 never stored cut short where it would mislead:

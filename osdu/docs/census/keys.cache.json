@@ -305,7 +305,7 @@
       "path": "source.auth.secretRef",
       "type": "string",
       "required": false,
-      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). A literal is refused when the flow is read.",
       "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
     },
     {
@@ -335,21 +335,21 @@
       "path": "source.auth.token.body",
       "type": "map",
       "required": false,
-      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here. A field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) holds a reference only; a literal there is refused when the flow is read. `client_id`, `scope` and `audience` may be literals.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.body.<name>",
       "type": "string",
       "required": false,
-      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent. A field named as a secret must be a reference.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials."
     },
     {
       "path": "source.auth.token.discoveryUrl",
       "type": "string",
       "required": false,
-      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
     },
     {
@@ -364,7 +364,7 @@
       "path": "source.auth.token.url",
       "type": "string",
       "required": false,
-      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
     },
     {
@@ -400,7 +400,7 @@
       "path": "source.endpoint",
       "type": "string",
       "required": false,
-      "description": "The base URL of the OSDU platform the OSDU types are searched on, usually a reference such as `${env:OSDU_URL}`. The cache flows of one partition should search the same platform: the sync warns when they declare different endpoints.",
+      "description": "The base URL of the OSDU platform the OSDU types are searched on, usually a reference such as `${env:OSDU_URL}`. The cache flows of one partition should search the same platform: the sync warns when they declare different endpoints. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
       "appliesWhen": "Required when a type declares `kind`; refused, with `source.auth`, when every type is a table or dictionary type."
     },
     {
@@ -414,7 +414,7 @@
       "path": "source.headers.<name>",
       "type": "string",
       "required": false,
-      "description": "One header; `<name>` is the header name. `data-partition-id` is an id segment (letters, digits, underscore, hyphen and dot, at most 200 characters) or a `${env:...}` or `${keyvault:...}` reference; a cache is keyed by what it resolves to."
+      "description": "One header; `<name>` is the header name. `data-partition-id` is an id segment (letters, digits, underscore, hyphen and dot, at most 200 characters) or a `${env:...}` or `${keyvault:...}` reference; a cache is keyed by what it resolves to. A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
     },
     {
       "path": "types",

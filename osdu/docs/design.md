@@ -39,7 +39,7 @@ difference shows up entirely in where state lives and at what grain.
 
 ## 2. Why the current design does not fit
 
-The existing `recall_to_osdu` package is a pipeline, and its failure modes follow from
+The existing `welldb_to_osdu` package is a pipeline, and its failure modes follow from
 that rather than from any individual bug. Each of the following was verified in the
 source and each is addressed by a specific decision below.
 
@@ -50,10 +50,10 @@ source and each is addressed by a specific decision below.
 | The previous run's `error_message` is wiped, because prepare upserts `status=prepared, error_message=None` over it. | One mutable row per record. | Append-only attempts (7.3) |
 | `attempt_count` counts state writes, not attempts, and climbs two to three per real attempt. | Same. | Append-only attempts (7.3) |
 | The end-of-run summary counts every `success` and `failed` row for the log source, not the records the run touched. | Run-grained reporting over record-grained state. | Submission scope (7.2) |
-| A record delivered in January never updates when Recall changes it in March. The only alternative is `--force_update`, which resends everything. | No change detection at all. `written_from_recall` exists in the schema, is written as `None`, and is never populated. | Content hashing (6) |
-| The generated PySpark select reads `recall:BUSINESS_VALUE`; production reads `recall_curve:BUSINESS_VALUE`. Production reads `NoDataValue`, which the mapping does not declare. | Two copies of one contract, fixes flowing only into the copy. | Single interpreted mapping (4.2), preflight gate (10) |
+| A record delivered in January never updates when WellDB changes it in March. The only alternative is `--force_update`, which resends everything. | No change detection at all. `written_from_welldb` exists in the schema, is written as `None`, and is never populated. | Content hashing (6) |
+| The generated PySpark select reads `welldb:BUSINESS_VALUE`; production reads `welldb_curve:BUSINESS_VALUE`. Production reads `NoDataValue`, which the mapping does not declare. | Two copies of one contract, fixes flowing only into the copy. | Single interpreted mapping (4.2), preflight gate (10) |
 | Every status write costs six catalog round trips plus a Spark job, twice per record, from eight threads contending on Delta optimistic concurrency. | Delta doing an OLTP job. | Relational ledger (7.1) |
-| No `MaxRequestBodySize` is configured in petrodb-api, so Kestrel's 30 MB default applies. The 10 million cell chunk limit appears to have been tuned to stay under it. | An inherited default mistaken for a capability limit. | Section 14.3 |
+| No `MaxRequestBodySize` is configured in `facade-api`, the facade service in front of the DDMS, so Kestrel's 30 MB default applies. The 10 million cell chunk limit appears to have been tuned to stay under it. | An inherited default mistaken for a capability limit. | Section 14.3 |
 
 ## 3. Architecture
 
@@ -194,9 +194,9 @@ Three keys, with distinct jobs.
 
 ### 5.1 Source key
 
-The source system's own identity, carried verbatim as provenance. For Recall well logs
+The source system's own identity, carried verbatim as provenance. For WellDB well logs
 that is the source project plus the log id, which is what
-`RECALL_LOGCURVE_ENRICHED_CONTRACT` already declares as its row key.
+`WELLDB_LOGCURVE_ENRICHED_CONTRACT` already declares as its row key.
 
 Note this is finer than the key the current pipeline tracks on.
 `build_collected_metadata_df` groups on wellbore plus log name and collapses `LogRun`,
@@ -239,7 +239,7 @@ to remember it.
 
 A mapping may make the unique segment from the key's own values instead
 (`dataset.idFrom: key`), so reference data reads as OSDU's own catalogs do
-(`RECALL::GAPI` beside `LIS-LAS::GAPI`). The id is still deterministic and client-supplied;
+(`WELLDB::GAPI` beside `LIS-LAS::GAPI`). The id is still deterministic and client-supplied;
 the delivery key stays the ledger's identity for the record, and a record keeps the id it
 first claimed ([reference/flow/mapping.md](reference/flow/mapping.md#the-osdu-id)).
 
@@ -662,7 +662,7 @@ terminal attempts are rolled up and aged out. Getting this wrong turns the ledge
 the new bottleneck, which is the Delta mistake wearing a different hat.
 
 Snapshot the ledger into Delta periodically for the analytical view. The coverage
-dashboards under `dsis_liberation_completeness` want that shape, and they want it as an
+dashboards under `delivery_completeness` want that shape, and they want it as an
 analytical table rather than a live status store. Delta was never the wrong technology,
 it was being asked to be a write-ahead log.
 
@@ -833,8 +833,8 @@ An override is variation imposed on it from outside.
 ### 10.1 Each input can be valid while the combination is broken
 
 This is the mechanism behind systematic garbage, and it has already happened here. The
-generator's select reads `recall:BUSINESS_VALUE`; production reads
-`recall_curve:BUSINESS_VALUE`. Production reads `NoDataValue`, which the mapping does not
+generator's select reads `welldb:BUSINESS_VALUE`; production reads
+`welldb_curve:BUSINESS_VALUE`. Production reads `NoDataValue`, which the mapping does not
 declare. The mapping declares `Mnemonic`, `DateStamp`, `NativeUID` and `SourceProject`,
 which production never sends. Every artifact was individually valid.
 
@@ -856,7 +856,7 @@ If the combination does not validate, nothing renders. Not a warning.
 
 ### 10.3 Schema validation is structurally complete and semantically blind
 
-Point 4 would not have caught the `recall_curve` bug. Both are strings, both bind to a
+Point 4 would not have caught the `welldb_curve` bug. Both are strings, both bind to a
 string field, both validate. Semantic drift is caught by what a change would deliver: a
 `plan` run renders the rows against the ledger and reports the records a mapping change
 would send again before any is sent. Mappings once carried fixtures for this, example rows
@@ -975,7 +975,7 @@ streaming and retry therefore coexist, and worker memory is bounded by concurren
 the copy buffer. Had the executor taken a pre-built request, buffering would have been
 unavoidable.
 
-Note that petrodb-api already does this correctly, end to end: the endpoint takes
+Note that facade-api already does this correctly, end to end: the endpoint takes
 `httpContext.Request.Body` as a `Stream` rather than binding a byte array, carries it
 through as a `Stream`, and wraps it in `StreamContent`. It has no retry, which is why its
 pre-built request has not yet bitten; if retry is ever added there, `ExecuteRequestAsync`
@@ -1051,7 +1051,7 @@ where enterprise scanning finds things.
 
 ### 14.3 Three undeclared size ceilings
 
-petrodb-api configures no `MaxRequestBodySize`, so Kestrel's 30,000,000 byte default
+facade-api configures no `MaxRequestBodySize`, so Kestrel's 30,000,000 byte default
 applies and larger payloads are rejected with 413 before the handler runs. Ten million
 cells of float64 is roughly 80 MB raw, which parquet compression lands near that ceiling.
 
@@ -1059,7 +1059,7 @@ A 413 surfaces as a curve upload failure after the metadata write has already su
 which under the current retry path produces a duplicate record on the next run. The
 missing configuration may have been quietly generating duplicates.
 
-There are two further ceilings nobody set deliberately: the Radix ingress body size and
+There are two further ceilings nobody set deliberately: the hosting platform's ingress body size and
 the APIM gateway limit. Measure all three, set them to the same intentional number, and
 derive the chunk cell limit from the measured ceiling rather than from folklore. Check
 OSDU's own documented bulk limit first, since that is the one ceiling that cannot be
@@ -1307,7 +1307,7 @@ These block schema design and should be settled first.
    follows from the answer.
 2. **Deterministic client-supplied OSDU ids.** Confirm OSDU and the data partition accept
    them for the kinds in scope. If yes, adopt; most of section 2 dissolves.
-3. **Where rendering runs.** petrodb-api with the runtime renderer, or the delivery
+3. **Where rendering runs.** facade-api with the runtime renderer, or the delivery
    service. Either works and the pinned inputs are neutral, but it determines whether the
    translate renderer is vendored.
 4. **Storage and database access.** Whether the nodes' identity can be granted read on the

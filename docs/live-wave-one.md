@@ -30,14 +30,14 @@ Every check below names what it creates, how many ids, and how each id is remove
 
 ## The estate wave one uses
 
-The live estate is rebuilt from the sample estate (`osdu/samples/recall-welllog`) into `.sqlflow/live-e2e/repo`, which
+The live estate is rebuilt from the sample estate (`osdu/samples/welldb-welllog`) into `.sqlflow/live-e2e/repo`, which
 is git-ignored: two wellbores, three well logs with tiny bulk data, and one document with one CSV file. Its flows are
 the ones the previous runs used, on the current build:
 
 | Flow | Route | What it delivers |
 | --- | --- | --- |
 | `e2e-wellbore` | `storage` | 2 `master-data--Wellbore` |
-| `recall-welllog` | `ddms` (Wellbore DDMS well logs) | 3 `work-product-component--WellLog` and their bulk data |
+| `welldb-welllog` | `ddms` (Wellbore DDMS well logs) | 3 `work-product-component--WellLog` and their bulk data |
 | `e2e-file` | `file` | 1 `work-product-component--Document` with one CSV |
 | `e2e-document` | `manifest` | 1 `work-product-component--Document` with one CSV, through `Osdu_ingest` |
 | `osdu-cache` | cache | Reads reference data from the partition; creates nothing |
@@ -55,7 +55,7 @@ and `.sqlflow/live-e2e/test-data.md` is updated as each is created and removed.
 | 3 | Storage route, first delivery | `e2e-wellbore` deliver | 2 `master-data--Wellbore` |
 | 4 | Storage route, unchanged re-run | The same run again: nothing is sent | none |
 | 5 | Storage route, one revision | One wellbore's description changed: 1 sent, 1 skipped | none (a new version of an existing id) |
-| 6 | DDMS route, metadata and bulk | `recall-welllog` deliver: 3 logs, each with a parquet chunk of 9 rows | 3 `work-product-component--WellLog` |
+| 6 | DDMS route, metadata and bulk | `welldb-welllog` deliver: 3 logs, each with a parquet chunk of 9 rows | 3 `work-product-component--WellLog` |
 | 7 | DDMS route, payload only | New GR values for one log, same metadata: only that log is sent | none (a new bulk version) |
 | 8 | DDMS route, a session | One log's bulk data split into two chunk files (5 and 4 rows), committed as one version | none |
 | 9 | DDMS route, two refusals | Two chunks numbering rows from zero (held before a session opens); one file with repeated index labels (the DDMS refuses, the record is held) | none: nothing is written |

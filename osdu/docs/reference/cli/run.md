@@ -18,6 +18,8 @@ keywords:
   - delete-ledger
   - refresh
   - trigger
+  - "--full refused"
+  - payload property refused
 related:
   - cli-run
   - cli-control-plane
@@ -99,10 +101,12 @@ operation must be one of deliver, plan, intake, drain, verify, replan, sync, rev
 ```
 
 SQLFlow's backfill flags (`--full`, `--from`/`--to`, `--file-pattern`, `--source-filter`) have no meaning for an OSDU
-flow: each kind reads its source its own way. Given together with a kind argument they are refused, for example
+flow: each kind reads its source its own way. They are refused whether or not the run carries a kind argument, because
+the kind's own check runs for every run of the kind: `sqlflow run <flow.yaml> --full` alone fails with the kind's
+message and runs nothing, for example
 `fullLoad do(es) not apply to 'delivery' flows; the replan operation reads every row of the scope again, and recordKeys in the payload scope a run to chosen records.`
-Without any kind argument (no `--operation`, `--set` or `--payload`) they are not checked, and the run ignores them.
-`--assertions-only` is refused for every kind but `ing`.
+A trigger from the API or the GUI answers 400 with the same message, and so does a node-scoped trigger whose backfill
+window is anchored on an OSDU flow. `--assertions-only` is refused for every kind but `ing`.
 
 ## What a run needs
 
@@ -119,8 +123,9 @@ On a workstation the module database is the catalog's (`--db`, else `${env:SQLFL
 `SQLFLOW_OSDU_DB` names one of its own ([The osdu module database in sqlflow db](db.md)). A node takes it from
 `SQLFLOW_OSDU_DB` alone. The flow's own references (its ingestion connection, the OSDU endpoint and credentials) resolve
 on the machine that runs it, from the central configuration a run carries first ([sqlflow config](config.md)) and the
-environment after. The control plane attaches that configuration to the runs it queues of every OSDU kind but
-`inventory`; an inventory run, and a `sqlflow run` on a workstation, carry none and resolve from the environment alone.
+environment after. The control plane attaches that configuration to the runs it queues of every OSDU kind (an
+inventory's `remove` run included); a `sqlflow run` on a workstation carries none and resolves from the environment
+alone.
 
 ## The partition
 
@@ -149,9 +154,9 @@ parameter instead. A partition named for a flow that follows the registry has to
 | --- | --- | --- | --- |
 | `delivery` | `deliver` (default) | Plan the rows the ingestion tables changed and deliver what renders differently. | yes |
 | | `plan` | Plan the changed rows and report what a delivery would send, changing nothing. | no |
-| | `intake` | Plan the rows into work batches without delivering them: a fan-out member's share of a plan. | no |
+| | `intake` | Plan the rows into work batches without delivering them: a fan-out member's share of a plan. The flow's next deliver run sends what it planned unless a drain of it comes first. | no |
 | | `drain` | Deliver the work batches a submission already planned. | yes |
-| | `verify` | Compare what OSDU holds with what the ledger recorded (5,000 records a run, passing over records verified in the last 24 hours unless forced). With the flow's `verify.reconcile`, forget what OSDU holds of each drifted or missing record, so the next plan that reads its row sends it. | no |
+| | `verify` | Compare what OSDU holds with what the ledger recorded (5,000 records a run, passing over records verified in the last 24 hours unless forced). With the flow's `verify.reconcile`, mark each drifted or missing record for redelivery, named under the verify's activity; the flow's next deliver run sends it again, whatever its incremental window reads. | no |
 | | `replan` | Read every row of the scope again and deliver what renders differently now. | yes |
 | | `sync` | Read the ledger's records from the ingestion tables and consolidate the ledger: record what it lacks, flag rows that changed unseen for the next run, report rows that are gone. Sends nothing. | no |
 | | `reverse` | Put OSDU back as it was before one run or submission: remove what it created, restore the version it replaced, and block those records until their source changes or they are released. | yes |
@@ -196,7 +201,7 @@ no engine path could honour is refused before anything is queued.
 | `interfaces` | array of text | The interfaces a run of a source runs, each once (at most 200); every interface when left out. |
 | `slices` | array of whole numbers | The key slices of `submissionId` an `intake` member plans: 0 to 1023, each once. Written by a fan-out, not by hand. |
 | `confirm` | text | The partition a `delete-ledger` run acts in, as the person who asked typed it. Required by `delete-ledger` and taken by no other operation of a delivery flow (an inventory flow's `remove` takes its own). |
-| `references`, `partitionReferences` | objects | The central configuration the control plane supplies with every delivery, cache, retrieval, assertion and dimension run it queues (not with an inventory run) ([sqlflow config](config.md)). Not written by hand. |
+| `references`, `partitionReferences` | objects | The central configuration the control plane supplies with every delivery, cache, retrieval, assertion, dimension and inventory run it queues ([sqlflow config](config.md)). Not written by hand. |
 
 Which fields each operation takes:
 
@@ -217,20 +222,27 @@ Across every operation: `submissionId` and `recordKeys` never together; `interfa
 `interfaces` never with `submissionId`, `recordKeys` or `slices`; `runId` only on `reverse`; `confirm` only on
 `delete-ledger`; and `tests`, `tags`, `dimensions`, `inventories` and `removal`, which belong to the other kinds, never.
 A refusal names the field and why, for example
-`payload redeliver does not apply to the plan operation: a plan sends nothing.`
+`payload redeliver does not apply to the plan operation: a plan sends nothing.`, and a property of another kind is
+refused in the shape every kind uses (below):
+`payload tests does not apply to a delivery flow: only an assertion flow's runs select tests; a delivery flow's payload names only force, submissionId, runId, recordKeys, redeliver, rerender, slices, interface, interfaces and confirm.`
 
 A redelivery or a release of many records is planned by the next deliver run whole: the records the ledger was asked
 to plan again are read by key, 5,000 to a pass and each pass in a submission of its own, before the run's own pass.
 
 ### Other kinds' payloads
 
-| Kind | Takes | Refused with |
+Every kind refuses each payload property it does not take in one shape:
+`payload <property> does not apply to a|an <kind> flow: <the runs that take it>; a|an <kind> flow's payload names only <what it takes>.`
+A property counts when it asks for something (`force` set to `true`, a list that names something); one written as
+`false` or empty asks for nothing and is not refused.
+
+| Kind | Takes | Refused with, for example |
 | --- | --- | --- |
-| `cache` | Nothing but the central configuration the control plane supplies. | `A cache flow's payload carries only the central configuration the control plane supplies; a run names its partition and the flow's parameter values under values.` |
-| `retrieval` | `force`: restart an incremental retrieval at its declared start. | `A retrieval flow's payload carries only force; ...` |
-| `assertion` | `tests` (test names) and `tags` (every test carrying one of them), each at most 500 names, each once. With neither, every test runs. | `An assertion flow's payload names the tests a run runs (tests, tags) and nothing else; ...` |
-| `dimension` | `dimensions`: the dimensions to build; every one when left out. | `A dimension flow's payload names the dimensions a run builds (dimensions) and nothing else; ...` |
-| `inventory` | `inventories`: the inventories to build or reconcile. A `remove` run names exactly one inventory, `removal` (`finding`, `scope` `record` or `everything`, `expected`, and optionally `ids`) and `confirm`, the partition. | `An inventory flow's payload names the inventories a run builds or reconciles (inventories), and for a removal what it removes (removal, confirm), and nothing else; ...` |
+| `cache` | Nothing but the central configuration the control plane supplies. | `payload force does not apply to a cache flow: only delivery and retrieval runs force; a cache flow's payload carries only the central configuration the control plane supplies.` |
+| `retrieval` | `force`: restart an incremental retrieval at its declared start. | `payload submissionId does not apply to a retrieval flow: only a delivery flow's runs name a submission; a retrieval flow's payload names only force.` |
+| `assertion` | `tests` (test names) and `tags` (every test carrying one of them), each at most 500 names, each once. With neither, every test runs. | `payload recordKeys does not apply to an assertion flow: only a delivery flow's runs are scoped to records; an assertion flow's payload names only tests and tags.` |
+| `dimension` | `dimensions`: the dimensions to build; every one when left out. | `payload tests does not apply to a dimension flow: only an assertion flow's runs select tests; a dimension flow's payload names only dimensions.` |
+| `inventory` | `inventories`: the inventories to build or reconcile. A `remove` run names exactly one inventory, `removal` (`finding`, `scope` `record` or `everything`, `expected`, and optionally `ids`) and `confirm`, the partition. | `payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal and confirm.` |
 
 A name that is not a test, tag, dimension or inventory of the flow fails the run naming what the flow has, for example
 `Assertion flow '<name>' has no test named '<x>'; its tests are <names>.`

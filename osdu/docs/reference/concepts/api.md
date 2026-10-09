@@ -153,7 +153,7 @@ Each runs in the control plane with the flow's credentials and answers JSON; not
 
 | Route | Policy | Parameters | Answers |
 | --- | --- | --- | --- |
-| `POST /flows/{pipelineId}/probe` | operate | `interface`, `partition` | Whether the target answers under the flow's credentials: reachable, status, the path asked. A refusal is an answer. |
+| `POST /flows/{pipelineId}/probe` | operate | `interface`, `partition` | Whether the target answers under the flow's credentials: reachable, status, the path asked. A refusal is an answer. Recorded as a `probe` activity under the caller and counted on the probe metric; 422 `The probe could not be recorded` for a flow whose ledger cannot be placed, which is then not probed. |
 | `POST /records/{flowId}/{key}/read` | operate | body `version` | The OSDU record the ledger's record claimed, at its latest or at `version`, with its version list; a record that never queued a document has none to read. |
 | `POST /flows/{pipelineId}/osdu/read` | operate | body `targetId`; `interface`, `partition` | Any OSDU record by id through the flow's route, at its latest version. |
 | `POST /flows/{pipelineId}/osdu/validate` | operate | body `targetId`, `version`, `schema` (`osdu` or `saved`), `templateVersion`; `interface`, `partition` | One record checked against the schema of its kind. 409 for a route that keeps no record in storage (`dspdm`, `etp`). |
@@ -244,9 +244,9 @@ See [the partition cache](partition-cache.md).
 | `PUT /partitions/{name}` | admin | body `description` | Sets what a partition is for. |
 | `POST /partitions/{name}/default` | admin | | Makes it the partition a run that names none runs in. |
 | `DELETE /partitions/{name}` | admin | | 204; nothing kept under it is deleted. The default is refused while others are registered. |
-| `GET /config` | read | | Every property of every scope, values shown (a property never holds a secret). |
-| `PUT /config/{name}` | admin | body `value`, `description`; `repoId`, `partition` | Sets a property for the control plane, a repository or a partition. |
-| `DELETE /config/{name}` | admin | `repoId`, `partition` | 204, or 404 when it was not set there. |
+| `GET /config` | read | `repoId`, `partition` | Every property of every scope, values shown (a property never holds a secret), ordered by name, repository and partition; `repoId` narrows it to one repository's, `partition` to one partition's, both to that repository's in that partition. 400 for a `partition` that is not a data-partition-id. |
+| `PUT /config/{name}` | admin | body `value`, `description`; `repoId`, `partition` | Sets a property for the control plane, a repository or a partition, through the store checks `sqlflow config set` makes (value and description trimmed). 400 `Configuration property refused` on a refusal, 404 `Repository not found` for a `repoId` the catalog does not hold. |
+| `DELETE /config/{name}` | admin | `repoId`, `partition` | 204, or 404 when it was not set there. The repository is not looked up, so a deleted repository's properties can be removed. |
 | `GET /config/effective/{repoId}` | read | `partition` | What a run of the repository's flows is given, flattened. |
 
 See [partitions](partitions.md), [sqlflow partition](../cli/partition.md) and [sqlflow config](../cli/config.md).

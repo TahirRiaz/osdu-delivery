@@ -15,6 +15,7 @@ keywords:
   - "--format"
   - "--run"
   - "--partition"
+  - why a test run failed
 cliCommand: assertions
 related:
   - delivery-flow-assertion
@@ -108,14 +109,21 @@ The flow's runs in the partition, newest first: the report number, status (`runn
 $ sqlflow assertions list welldb-welllog-04-assertion.yaml --partition dev --max 2
 welldb-welllog-04-assertion@dev: 2 run(s)
        418  failed     2026-10-09 03:05:12Z  3 passed, 1 failed, 0 warned, 0 errored, 0 skipped  by cli:ci@build-agent
+            4 of 4 test(s) evaluated, 3 passed; 1 failed on an assertion of severity error (log-headers)
        412  passed     2026-10-08 03:05:09Z  4 passed, 0 failed, 0 warned, 0 errored, 0 skipped  by cli:ci@build-agent
 ```
 
-A run that stopped (`errored` because the run itself could not go on, or `cancelled`) has its reason on the next line.
+A run that did not pass has its reason on the next line. For a run that completed, it is how many tests failed (on an
+assertion of severity error) or errored, and which, then the tests that warned or were skipped:
+`4 of 4 test(s) evaluated, 3 passed; 1 errored (log-names)`. For a run that stopped (`cancelled`, or `errored` because
+the run itself could not go on), it is why it stopped. A completed run records a result for every test it selected
+(passed + failed + warned + errored + skipped = tests); a stopped one records fewer. A run with no test to judge in its
+partition asks OSDU nothing and completes `passed`, its tests skipped.
 A flow with no run yet says `none yet. Run the tests with: sqlflow run <flow.yaml> (a plan checks them without running: --operation plan)`.
 
 With `--json`: `flow`, `ledger` and `runs[]`, each run with `assertionRunId`, `runId`, `partition`, `status`, `tests`,
-`passed`, `failed`, `warned`, `errored`, `skipped`, `actor`, `startedUtc`, `completedUtc` and `error`.
+`passed`, `failed`, `warned`, `errored`, `skipped`, `actor`, `startedUtc`, `completedUtc` and `error`: the same reason,
+set for every run that did not pass (how many tests failed or errored and which, or why the run stopped).
 
 ## status
 

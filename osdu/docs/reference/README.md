@@ -20,7 +20,7 @@ osdu/docs/reference/
                          control-plane and auth
   flow/<document>.md     one page per document the extension adds (delivery, retrieval, cache, assertion, dimension and
                          inventory flows, the mapping and its parts, the dictionary), plus the delivery flow's interfaces,
-                         routes and DDMSs
+                         routes, DDMSs and the other DDMS shapes and services
   concepts/<slug>.md     how the extension works: the ledger, record lifecycle, submissions, change detection, templates,
                          the partition cache, partitions, protocols, removal and reversal, lineage, the GUI, the API, ...
   guides/<slug>.md       task-oriented walkthroughs, and the pattern catalog that maps a problem to the shape that solves it

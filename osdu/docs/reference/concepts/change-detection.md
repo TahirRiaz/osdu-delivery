@@ -56,7 +56,8 @@ sends anything, it asks the last question once more. This page is what each ques
 operator can predict what a change will send and why a record was or was not delivered.
 
 The ingestion side of the chain has its own change detection: an `ing` flow updates a row only when its row hash changed,
-and stamps `UpdatedDate_DW` only then ([upsert and change detection](../../../../sqlflow/docs/reference/concepts/upsert-and-change-detection.md)).
+and stamps `UpdatedDate_DW` only then, or when it first inserts the row, so a row landed again unchanged keeps its stamp
+([upsert and change detection](../../../../sqlflow/docs/reference/concepts/upsert-and-change-detection.md)).
 A row landed again unchanged is therefore never read again by a delivery.
 
 ## Render-affecting versus operational
@@ -207,11 +208,15 @@ moved), and is sent only if it renders differently. The cache, its versions and 
 
 ## A record keeps the OSDU id it claimed
 
-A record's OSDU id is fixed when it first queues a document. A mapping edit that would give it another id (a changed
-`dataset.idFrom`) holds the record, naming both ids, instead of writing a second OSDU record the ledger does not name. A
-changed `dataset.system` or key makes other delivery keys, so the rows become new records of the ledger, each with its own
-id; under `idFrom: key` a new record whose key gives an id an old record already claimed is held instead, since one OSDU
-id belongs to one record of the ledger ([mapping](../flow/mapping.md#the-osdu-id)).
+A record's OSDU id is fixed when it first queues a document. An edit that would give it another id (a changed
+`dataset.idFrom`, a kind of another entity type, or another `dataPartition`) holds the record, naming both ids, instead
+of writing a second OSDU record the ledger does not name:
+
+`the mapping now gives this record the OSDU id <new id>, and the record claimed <old id> when it first queued a document; a record keeps the OSDU id it claimed, so nothing is sent. To deliver the flow's records under the ids the mapping gives now, remove them from OSDU (the record scope) and either deliver them under a ledger of their own (the interface's ledger:), which keeps their history, or delete them from the ledger with the removal, after which the next run delivers the rows as new records; or put back what moved the id: the mapping's dataset.idFrom, the entity type of the kind it renders, or the partition the flow mints ids in (dataPartition)`
+
+A changed `dataset.system` or key makes other delivery keys, so the rows become new records of the ledger, each with its
+own id; under `idFrom: key` a new record whose key gives an id an old record already claimed is held instead, since one
+OSDU id belongs to one record of the ledger ([mapping](../flow/mapping.md#the-osdu-id)).
 
 ## Sending records again on purpose
 

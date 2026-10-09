@@ -127,7 +127,8 @@ as keyless, since its record cannot be tracked.
 
 ## Output
 
-The text answer, one block per interface checked (an interface's block names it as `<flow>/<interface> / <interface>`).
+The text answer, one block per interface checked (an interface's block names it as `<flow>/<interface>`, as a run names
+it).
 The first line starts with `OK` when no row is held, invalid or keyless, and with `!!` when one is:
 
 ```text
@@ -179,7 +180,7 @@ held, invalid or empty for, written as the check meets it:
 
 | Column | Holds |
 | --- | --- |
-| `flow` | The flow; for an interface of a source, `<flow>/<interface> / <interface>`. |
+| `flow` | The flow; for an interface of a source, `<flow>/<interface>`. |
 | `variable` | The property checked. |
 | `at` | Where the reason is: the property, or a property inside the value written there. |
 | `outcome` | `held`, `invalid` or `empty`. |

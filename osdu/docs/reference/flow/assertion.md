@@ -18,6 +18,7 @@ keywords:
   - failrunon
   - indexsettleseconds
   - test report
+  - bulk.columns
 yamlPath: "(root, flowType: assertion)"
 related:
   - delivery-guide-data-quality-tests
@@ -70,6 +71,8 @@ only reads: nothing is ever written to OSDU. SQLFlow's own `assertions:` on an `
 checks OSDU.
 
 ## Example
+
+The estate's well log tests, `flows/welldb-welllog-04-assertion.yaml`:
 
 ```yaml
 flowType: assertion
@@ -200,8 +203,8 @@ The document is read strictly: an unknown key fails validation naming it.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `endpoint` | required | The platform's base URL, usually `${env:OSDU_URL}`: the one the delivery flows deliver to. |
-| `auth` | `type: none` | Written as `target.auth` on a delivery flow. Secrets are references only (`${env:NAME}`, `${keyvault:NAME}`). |
-| `headers` | none | Headers sent with every request; `data-partition-id` only for a flow tested in one fixed partition. |
+| `auth` | `type: none` | Written as `target.auth` on a delivery flow. Secrets are references only (`${env:NAME}`, `${keyvault:NAME}`): a literal is refused when the flow is read. |
+| `headers` | none | Headers sent with every request; `data-partition-id` only for a flow tested in one fixed partition. A header that carries a credential holds a reference; a literal is refused when the flow is read. |
 | `queryPath` | `/api/search/v2/query` | The search that counts, groups and finds index errors. |
 | `searchPath` | `/api/search/v2/query_with_cursor` | The cursor search records are paged through. |
 | `recordQueryPath` | `/api/storage/v2/query/records` | Storage's read of records and references by id, 100 at a time. |
@@ -253,7 +256,7 @@ flow's partitions; a run in another records it as `skipped`. See [Partitions](..
 | `sample` | `false` | When more records match than `maxRecords`: `false` evaluates no assertion over the records and says so; `true` evaluates the first `maxRecords` and marks the result as a sample. |
 | `indexSettleSeconds` | `defaults.indexSettleSeconds` | This test's settle window. |
 | `severity` | `error` | The severity of its assertions that state none: `error`, `warning` or `info`. |
-| `bulk` | none | Read each record's bulk data: `columns` (the columns read) and `maxRows` (default 1,000,000, at most 100,000,000). See [Bulk data](#bulk-data). |
+| `bulk` | none | Read each record's bulk data: `columns` (the columns read; they include every column the assertions name) and `maxRows` (default 1,000,000, at most 100,000,000). See [Bulk data](#bulk-data). |
 | `assert` | required | The assertions, 1 to 100. |
 
 A test first counts what its query matches (`POST /api/search/v2/query` with `trackTotalCount`), or reads its ids from
@@ -411,13 +414,22 @@ at a time in JSON). Only kinds the DDMS keeps bulk data for take it:
 
 `rowCount`, `columns`, `column`, a column `aggregate` and `monotonic` need it. Each record's bulk data is held to each
 assertion on its own, records in parallel up to `reliability.concurrency`, and the assertion holds when every record's
-does. A record the DDMS holds no bulk data for (it answers 404) fails, so does one lacking a column an assertion names.
+does. A record the DDMS holds no bulk data for (it answers 404) fails, so does one lacking a column an assertion names,
+and so does one the DDMS answers a page of without a column the read asked for:
+`the DDMS answered the page of its bulk data from row <n> without the column <c>, which the read asked for and its description lists`.
 One holding more rows than `bulk.maxRows` fails the assertions that read its rows, unless the test sets `sample: true`,
 which reads the first `maxRows` rows.
 `NaN` and infinite values read as no value.
 
 `bulk.columns` (no commas, at most 256 characters each) is the columns read. Left out, the read takes exactly the
-columns the assertions name; listed, only those are read, so list every column the assertions name.
+columns the assertions name: a `column` assertion's own column and its `where` columns, a column `aggregate`'s, a
+`monotonic`'s. Listed, only those are read, so the list must include every one of them; a list that leaves one out is
+refused when the flow loads. The example's `log-curves` test, given a fifth assertion `column: GR` while its
+`bulk.columns` stays `[MD]`:
+
+```text
+<file>: tests[2] 'log-curves': bulk.columns lists the only columns the test reads, and leaves out 'GR' (assert[4]); add it to bulk.columns, or leave bulk.columns out to read exactly the columns the assertions name.
+```
 
 Other DDMSs, and the files behind dataset records, are not read by a test; their storage records are tested like any
 other record.
@@ -457,11 +469,11 @@ it does not mark the test as changed.
 | --- | --- |
 | Assertion | `passed`, `failed`, `errored` (it could not find out: a refused query, an unreachable service, a limit passed, more records matched than the test reads) or `skipped`. A failed one keeps what it expected, what it found, how many it checked and failed, and the first failing records (`examples`), each with its id, value and reason. |
 | Test | `errored` when an assertion errored or the test does not fit its template; else `failed` when an `error` assertion failed; `warned` when only `warning` ones did; `passed` otherwise (a failed `info` assertion is reported and changes nothing); `skipped` when it does not run in the partition or the index has not settled. |
-| Run | `failed` when a test failed, else `errored` when one errored, else `passed`; `cancelled` when stopped, and `errored` when the run itself could not go on. |
+| Run | `failed` when a test failed, else `errored` when one errored, else `passed`; `cancelled` when stopped, and `errored` when the run itself could not go on. A run whose tests failed or errored keeps, as its reason, how many did and which; a run that stopped keeps why, and records fewer results than tests. A run with no test to judge in its partition asks OSDU nothing and completes `passed`, its tests skipped. |
 
 `failRunOn` decides whether the platform run fails: `error` (the default) on a failed or errored test, `warning` on a
 warned one as well, `never` not at all. A run failed by its tests still carries its outcome, and its error names them:
-`assertion flow '<name>' in partition '<p>': <n> of <m> test(s) evaluated, <k> passed; 1 failed (log-headers).`
+`assertion flow '<name>' in partition '<p>': <n> of <m> test(s) evaluated, <k> passed; 1 failed on an assertion of severity error (log-headers).`
 Notifications fire on it as on any failed run.
 
 ## Operations and the run payload
@@ -481,8 +493,8 @@ sqlflow run welldb-welllog-04-assertion.yaml --set partition=dev --payload '{"ta
 ```
 
 A name that is not a test fails the run: `Assertion flow '<name>' has no test named '<x>'; its tests are <names>.`, and so
-does a tag no test carries. Other payload keys fail with
-`An assertion flow's payload names the tests a run runs (tests, tags) and nothing else; a test has no submission, record, slice, interface, dimension or inventory to name.`
+does a tag no test carries. Any other payload property is refused before the run starts, for example
+`payload recordKeys does not apply to an assertion flow: only a delivery flow's runs are scoped to records; an assertion flow's payload names only tests and tags.`
 A schedule's `values` can name the partition and the parameters; a scheduled run runs every test. The values of a
 schedule several flows join reach every one of them, so an assertion flow sharing its delivery flow's schedule declares
 the delivery's parameters too, or fails with `parameter '<name>' is not declared under parameters.` On the control plane,
@@ -506,7 +518,8 @@ Where to read it:
 
 - The GUI: **OSDU**, **In OSDU**, **Tests** is the board of every assertion flow in the partition. An assertion flow's
   pipeline has a **Tests** tab (its board), a **History** tab (its tests against its runs) and a **Reports** tab (its
-  runs); a report page runs the tests not passing again.
+  runs); a report page runs the tests not passing again. A report page shows "The run stopped" only for a run that
+  stopped (cancelled, or errored with fewer results than tests); a run whose tests errored shows its reason instead.
 - The CLI: [sqlflow assertions](../cli/assertions.md) `list`, `status` and `report`.
 - The API, every route a `GET` under `/api/v1/delivery`: `/assertions` (the board of every flow),
   `/flows/{pipelineId}/assertions` (one flow's board), `/flows/{pipelineId}/assertion-runs`,
@@ -536,6 +549,7 @@ ordered before the tests, and a schedule firing both runs the tests after the re
 | Ids per test | 1,000 |
 | Values in `in`, `notIn`; rows in a `recordSet` | 1,000 |
 | Fields in `unique`; columns in a `recordSet` | 20 |
+| Records compared by `unique` | `maxRecords`, at most 1,000,000 |
 | Conditions in a `where` | 10 |
 | Distinct references per `resolves` | 200,000 |
 | Distinct values per `distinct` | 1,000,000 |
@@ -555,6 +569,8 @@ Past one of the last four, the assertion does not pass, and its result says why.
 | `<test>: query uses '{<token>}', which is neither {partition} nor declared under parameters.` | An undeclared token. |
 | `<test> reads bulk data, and its kind '<kind>' is not one the Wellbore DDMS keeps bulk data for; it serves ...` | `bulk` on another kind. |
 | `<test>: assert[<n>] is a monotonic assertion, which reads each record's bulk data; give the test a bulk block (bulk: { columns: [...] }).` | A bulk assertion without `bulk`. |
+| `<test>: bulk.columns lists the only columns the test reads, and leaves out '<column>' (assert[<n>]); add it to bulk.columns, or leave bulk.columns out to read exactly the columns the assertions name.` | A `bulk.columns` list without a column an assertion names. |
+| `source.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: ...` | A literal secret. |
 | `<test>: assert[<n>] names atLeast and atMost; a condition has one operator. Write between for a range, or one assertion for each.` | Two operators. |
 | `<test>: assert[<n>].field '<path>' starts at '<root>', which is not a property of an OSDU record; ...` | A path that does not start at a record root. |
 | `<test>: assert[<n>] asserts that every record meets its template, which needs each record as storage holds it; ... Take read: index out.` | `conforms` with `read: index`. |
