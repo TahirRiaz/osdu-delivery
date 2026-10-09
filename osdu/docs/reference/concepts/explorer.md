@@ -1,0 +1,367 @@
+---
+id: delivery-concept-explorer
+title: "The explorer: browsing and searching what an OSDU partition holds"
+type: concept
+summary: "How the explorer reads an OSDU partition live: browse types, search by id, text, property or source column, open records and versions, validate, references."
+keywords:
+  - explorer
+  - browse osdu
+  - search osdu records
+  - what is in osdu
+  - lucene query
+  - record inspector
+  - compare versions
+  - validate records
+  - schema check
+  - referenced by
+  - mentioned by
+  - group by
+  - filter by property
+  - build a dimension
+related:
+  - delivery-concept-search-terms
+  - delivery-concept-gui
+  - delivery-concept-templates
+  - delivery-concept-preflight
+  - delivery-flow-assertion
+  - delivery-flow-dimension
+  - delivery-flow-inventory
+  - delivery-concept-partitions
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Validate.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.References.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Element.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Dimension.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Terms.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DirectOperationRunner.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/ExploreOperation.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/TargetClients.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/RecordExplorer.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/RecordExplorer.Via.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/OsduSearch.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerChecks.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerReferences.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/PartitionSchemaIndex.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/SchemaServiceReader.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerElementQueries.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerFieldCatalog.cs
+  - osdu/src/SqlFlow.Delivery.Search/OsduQuery.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduRecordProtocol.cs
+  - osdu/gui/src/module.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerPage.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerWelcome.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerResults.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerTypeRail.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerSearchBar.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerFilterEditor.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerRecord.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerValidation.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerReferences.tsx
+  - osdu/gui/src/features/delivery/explorer/ExplorerElementQuery.tsx
+  - osdu/gui/src/features/delivery/explorer/explorerModel.ts
+  - osdu/gui/src/features/delivery/explorer/dimension/DimensionBuildPanel.tsx
+  - osdu/gui/src/features/delivery/OsduRecordInspector.tsx
+  - osdu/specs/core/search/openapi.yaml
+  - osdu/specs/core/storage/openapi.yaml
+  - osdu/specs/core/schema_service/openapi.yaml
+---
+
+# The explorer
+
+The explorer is a browser of what an OSDU partition holds, read live from OSDU's own search, storage and schema
+services. It answers "what is in OSDU?", where the Records page answers "what did the delivery system do?". Nothing it
+shows comes from the ledger, a mapping, the cache or the catalog: the types, the records, their versions, their links
+and the records that mention them are what OSDU answers at that moment. Delivery metadata only ever helps write a query:
+a search by a column of a source system ([search terms](search-terms.md)) is carried to what the records hold the way a
+delivery carries it, then asked of OSDU like any other. The explorer never reads a DDMS.
+
+It is the **Explorer** entry under **In OSDU** in the workbench's OSDU menu (`/delivery/explorer`), and it reads the
+partition picked in the title bar.
+
+## How it reaches OSDU
+
+The explorer borrows one thing from OSDU Delivery: a way in. Every read runs in the control plane as the request's
+answer (the operation `delivery-explore`), nothing queued and nothing polled, through the OSDU connection of a delivery
+flow that reaches the partition: the flow's endpoint, credentials and `data-partition-id`, resolved with the partition's
+central configuration as a run resolves them. The reader never picks the flow. Of the active delivery flows (every
+interface of a source), the control plane takes one that reaches the partition:
+
+- a flow that names its partitions must serve this one;
+- a flow that names none must either write this partition literally in its `data-partition-id` header (a `${...}`
+  reference does not count) or have a ledger kept in it;
+- its route must use the platform's own services: `storage` first (its endpoint is the platform root by definition),
+  then `manifest`, `file`, `dataset`, `workflow`, `fileAndDdms`, `manifestAndDdms` and `ddms`; a `dspdm` or `etp` flow
+  never lends its connection;
+- ties go to the first flow by name, so a partition is always read the same way.
+
+When one is found, a green badge with the partition's name stands beside the page's title; its tooltip, **Read live from
+OSDU**, names the flow (`flow/interface` for a source's interface) and its endpoint as the flow writes it. When none is,
+every read answers 409 with the reason, for example `No delivery flow reaches partition 'test', so the explorer has no
+connection to it. A flow that delivers there through the platform's own services (any route but dspdm and etp) lends the
+explorer its connection.`
+
+Whatever route the flow delivers by, the explorer reads:
+
+| Service | Calls | For |
+| --- | --- | --- |
+| Search | `POST /api/search/v2/query` | types and their counts, records, groups of values, mentions |
+| Storage | `GET /api/storage/v2/records/{id}`, `GET /api/storage/v2/records/versions/{id}`, `GET /api/storage/v2/records/{id}/{version}` | a record, its version list, an older version |
+| Storage | `POST /api/storage/v2/query/records` | the records a record refers to, during a validation |
+| Schema | `GET /api/schema-service/v1/schema`, `GET /api/schema-service/v1/schema/{id}` | a kind's properties, validation, Referenced by |
+
+A record is read the way a record page's OSDU tab reads it back, so both pages show a record the same way. A `storage`
+flow's `protocolOptions.verifyPath`, and any flow's `protocolOptions.verifyBatchPath`, replace the default storage paths.
+
+The control plane keeps the connection between reads (at most 64 targets, each retired after 10 minutes unused or 30
+minutes in all, and at once on the 401 a rotated secret draws), so a token is fetched once rather than for every read.
+A person is waiting on these reads, so they retry as a person would rather than as a run: at most two attempts, a
+backoff of at most two seconds, no wait on a `Retry-After`, and at most 60 seconds (or the flow's own shorter timeout)
+for an answer.
+
+**Who may use it.** The page's route asks for the `operate` scope, and its reads sit in the control plane's operate
+group, because they use a flow's credentials. SQLFlow resolves `operate` to any signed-in user
+([authentication and identity](authentication-and-identity.md)), so in practice anyone signed in can use the explorer.
+The MCP server offers none of its routes: it answers from metadata alone, and the explorer reads OSDU's data.
+
+## The welcome
+
+The page opens on a welcome that reads nothing from OSDU, so it shows at once however large the partition:
+
+- **Recently opened**: the records opened lately in this browser (the last 20), as a grid; **Clear** forgets them.
+- **Types**: **Browse every type**, and the types browsed lately (the last 12).
+- **Search syntax**: what the search field takes, with an example of each.
+
+Both lists are kept in the browser only. `/` anywhere on the page outside a field puts the cursor in the search field.
+OSDU is read only once the reader asks: **Browse every type** reads the types and waits for one to be picked, a type
+picked reads its records, a search reads what it finds, and a record opened reads that record and nothing behind it.
+
+## Types and records
+
+Once asked, the page shows the partition's kinds beside the records of the place picked.
+
+- **The type list.** One search aggregation over `kind` across every kind (`*:*:*:*`) counts the records of each, and the
+  list groups them as OSDU names them: the group (`master-data`, `reference-data`, `work-product-component`, `dataset`),
+  the type, and under a type kept in several kinds (versions, authorities) each kind. Groups start folded, but for the
+  one holding the place picked, and while a search is in view the groups it finds something in open (unless one holds
+  more than 24 types). **Filter types** finds a type among hundreds; **All types** lists every record of the partition.
+  Picking a group, a type or a kind narrows the records to it (`*:*:master-data--*:*`, `*:*:master-data--Wellbore:*`, or
+  the kind). The counts follow the search and the conditions, so the list also says where else a search finds something.
+- **The records grid.** One row per record: its name (the first of `data.FacilityName`, `data.Name`,
+  `data.ProjectName`, `data.Code` or the file name in `data.DatasetProperties.FileSourceInfo.Name`, else the unique part
+  of its id), its type when every type is in view, its id (cut from the start, so the end that tells ids apart stays
+  visible, with a copy on hover), when it last changed, and a column for each property a condition asks, so the grid
+  shows why each record is there. Rows load a hundred at a time as the grid scrolls; only the rows in view are drawn.
+  The arrow keys, Page Up and Down, Home and End move through them, and Enter opens one.
+- **The place line** over the grid says where the records are (each step a way back), how many there are (the index's
+  exact count), and what the search service made the explorer do. At its end: the order, **Filter**, **Group by**, then
+  as icons the query sent, **Referenced by**, **Validate** and **Read again from OSDU**.
+- **Order**: Index order (Best match once text is typed), Last modified or Last created, newest first. An order the
+  service refuses is dropped with a note.
+- **Group by**: any property of the records in view, grouped by its distinct values with their counts; a value picked
+  narrows the records to it, as the condition **is**. A property inside a nested list is grouped through it.
+
+The search service pages through the first 10,000 records a query matches; past them the grid's foot says to narrow the
+search. Every page is one query of the index, so a partition of millions reads as fast as one of hundreds. What was read
+is kept for a minute and reused (the types of a whole partition and a kind's properties for ten minutes); **Read again
+from OSDU** reads at once.
+
+## Searching
+
+One search field, in the page's header, searches the place in view and keeps it (`Search Wellbore by id, name or any
+text`, or `Search every type by id, name or any text`). Clearing it (its cross, Escape, or Enter on the empty field)
+lists every record of the place again. A hint at the field's end says what Enter will do (`open`, `search`, `query`,
+`clear`). What is typed is read once into a query:
+
+| Typed | Read as | Query sent |
+| --- | --- | --- |
+| nothing | every record of the place | none |
+| a whole id, `dev:master-data--Wellbore:abc123` (a version or a trailing colon is dropped) | opens the record | |
+| the start of an id, `dev:master-data--Wellbore:NW-` or `master-data--Wellbore:NW-` (completed with the partition) | the ids starting with it | `id:dev\:master\-data\-\-Wellbore\:NW\-*` |
+| words, `NW 0042 B` | a phrase anywhere in a record | `"NW 0042 B"` |
+| one word of three or more characters with one type in view | the phrase, or the record of that type whose id is or starts with it | `"NW-0042" OR id:"dev:master-data--Wellbore:NW-0042" OR id:...*` |
+| a machine-minted unique part (a GUID, a hash) in every type | the phrase, or any id of the partition ending with it | `"..." OR id:dev\:*\:...*` |
+| a Lucene query, with the braces button on | as written | the text |
+
+A value is always sent as a quoted phrase, since the service ORs bare words together. A query the service refuses (400)
+is not a failure: the explorer drops the order, then the clause the reading added beyond its core (the id clauses), each
+with a note, and a query still refused is the page's answer, with the service's words (**The search service refused this
+search**). Anything else that keeps an answer from coming fails the read, since an empty page would say OSDU holds
+nothing. A search is at most 2,000 characters, and a character that cannot be printed is refused.
+
+**The query** icon in the place line shows what the list is read by, exactly as sent: the `kind` and the Lucene `query`
+(none where the list is every record of the kind). It is copied as written or as a request, or taken into the search
+field with **Edit**, to be changed there.
+
+## Conditions and properties
+
+What is typed in the field is searched in every property. It can be searched in one property or source column instead,
+picked at the field's start (**In** a property; **Every property** goes back), and any property can be asked a condition
+of its own with **Filter**. Every condition holds together with the text, and each is a chip over the grid that reads as
+a sentence (`FacilityName starts with NW`); a click opens it again, its cross drops it, **Clear all** drops every one. A
+page takes at most 12 conditions. The editor lists the values the records in view hold at the property, the commonest
+first with their counts; picked under **contains** or **starts with**, a listed value becomes **is**.
+
+Every condition is written the way the platform indexes the property:
+
+| Condition | For | Query |
+| --- | --- | --- |
+| **contains** | text | the words as a phrase anywhere, any case: `data.FacilityName:"NW 0042"` |
+| **is**, **is not** | any | the whole value: `data.Source.keyword:"welldb"`, `NOT (...)` |
+| **is one of**, **is none of** | any but a boolean | up to 50 whole values: `(data.Source.keyword:("welldb" OR "WELLDB"))` |
+| **starts with** | text, a keyword | the start of the whole value, case included: `data.FacilityName.keyword:NW\-00*` |
+| **is in a range** | a number, a date | from a value (included) up to another (not included), either end open: `data.TopMeasuredDepth:["1000" TO "2000"}` |
+| **has a value**, **has no value** | any | `_exists_:data.FacilityName`, `NOT (...)` |
+
+A property inside a nested list (`data.GeoContexts.FieldID`) is asked in the service's nested form,
+`nested(data.GeoContexts, (FieldID.keyword:"..."))`; **starts with** and the two value tests are not offered there. The
+search service refuses a query whose every clause excludes, so conditions that only exclude, with no text beside them,
+start from every record: `_exists_:id AND NOT (...)`. A value the index cannot compare (longer than the 256 characters a
+keyword keeps whole, a word where a number is indexed) is refused before anything is read, with why.
+
+For a type or a kind, the editor lists that type's [search terms](search-terms.md) first, as **Source columns**: a
+value typed for one is the source's own, carried through the mapping before OSDU is asked.
+
+**The properties of a place**, offered by Filter, Group by and the field, are read in one ask and grouped:
+
+- **Content**: every value the kind's schema declares that a query can reach, read from the partition's Schema service,
+  each asked as the schema has the platform index it, with the schema's title and description on hover. For a type, the
+  schema read is that of its kind holding the most records.
+- **Not in the schema**: values the first 20 records of the place hold that the schema does not declare, such as
+  properties an index augmentation copies onto a record, or properties of another version of the kind.
+- **Record**: the properties every record holds: `kind`, `id`, `createUser`, `createTime`, `modifyUser`, `modifyTime`,
+  `acl.viewers`, `acl.owners`, `legal.legaltags`, `legal.otherRelevantDataCountries`.
+
+Across every type, only the record's own properties and the name properties are offered. A schema that cannot be read is
+a note at the foot of the list.
+
+## A record
+
+A record opens in the record inspector (the one the record page's OSDU tab uses), filling the page, with **Back to the
+records** returning to the list as it was left. Its outline:
+
+- **Record**: **Full document** (the record as OSDU returned it), **System fields** (Id, Kind, Version, Created, Last
+  modified, when and through which flow it was read, the correlation id) and **Access & legal** (Viewers, Owners, Legal
+  tags, Countries, Legal status).
+- **Content**: the record's own blocks (`data`, `meta`, `tags`, `ancestry`), shown as **Fields** (rows of field and
+  value, a list of objects as a table) or **JSON**. A value that names another OSDU record is a link that opens it in the
+  inspector. **Find in record** counts and steps through matches.
+- **References**: **Linked records**, every record the document names, by type, each with the paths that name it.
+- **Checks**: **Validation** (see [Validate](#validate)) and **Mentioned by**, the records whose values name this one
+  (`"<id>" AND NOT id:"<id>"` over every property), the first hundred listed by type.
+
+**Versions.** The version picker reads the record at any version OSDU keeps. **Compare** puts any two side by side: what
+was added, changed and removed, the two documents with their unchanged stretches folded, and every moved value with its
+path. A version is read once and kept, since a version never changes. The record can also be downloaded as JSON.
+
+**An id OSDU holds nothing under** answers `OSDU holds no record under this id`, and offers **Records with a near id**:
+those whose ids go on from it (a paste cut short) and the same unique part under another type.
+
+**The query of an element.** Beside every value and section of a record, a search button shows the Lucene query that
+finds the records holding exactly that element, with **Copy** and **Search**: a value by its exact form (a text by its
+`keyword` sub-field), its words, and whether a record holds one; an item of a nested list as one `nested(...)` clause
+with all its values; a list or an object as every value it holds (up to 48). How each value is indexed is read from the
+saved template of the record's kind; where no template says, the query is marked **guessed**. Nothing is read from OSDU
+to write it.
+
+Every record opened is remembered in this browser (the last 20). An [inventory](../flow/inventory.md) report opens one of
+its ids in this same record view, in the workbench's bottom panel, with **Open in the explorer** to come here.
+
+## Validate
+
+The explorer checks what OSDU holds against what OSDU expects of it, with the same check the delivery system makes
+before it sends a document ([preflight](preflight.md)), so a record the explorer calls invalid breaks the rule a
+document would be held for.
+
+**Validation**, under a record's Checks, checks the version in view against:
+
+- **OSDU schema** (the default): what the partition's Schema service holds for the kind, with every schema it refers to
+  bundled in (at most 200 for a kind). A reference that cannot be followed is named, and the values it describes are
+  counted as not checked rather than passed.
+- **Saved template**: a [template](templates.md) saved in OSDU Delivery, the kind's newest or a version picked.
+
+The answer is the verdict a delivered record carries in its history: **valid**, **invalid** with the number of
+problems, or **unverified** when a part could not be checked and nothing else is wrong. Under it: **Problems** (where,
+the rule, what is wrong, and guidance: the value found, what the schema takes there, how to fix it, and OSDU's own
+example value for the kind where the data definitions publish one), **Not checked** (and why), and **References not
+found** (ids the record names that storage holds nothing under, looked up in storage alone). A record storage does not
+hold, a kind with no schema, or a Schema service that refuses to answer is reported as not checked, with why. A record
+read back with `ancestry`, `meta` or `tags` null or empty is read as if the block were absent, and the answer says so.
+
+**Validate these records** (the shield in the place line) checks the records the search finds, as it stands, against the
+schemas of their kinds: the first 1,000 the search returns, read from storage in batches. It answers how many records
+the search matches and how many were read, how many came to each outcome, **Rules broken most often** (each rule at each
+place with the records that break it and one example, at most 50 rules), and **Records** with each record's outcome and
+first problem. When the search matches more than a check reads, it says so; a whole kind is checked by an
+[assertion flow](../flow/assertion.md)'s `conforms` test.
+
+A record page's OSDU tab offers the same Validation for the record it shows, read through that record's own flow and
+partition.
+
+## Referenced by
+
+**Referenced by**, in the place line when one type or one of its kinds is picked, lists the types whose schemas name
+records of that type: the users of a code list before it changes, or the kinds a master record is named from.
+
+- **What counts**: a property marked `x-osdu-relationship` naming the type, wherever it sits (in `data`, in `meta`,
+  inside a list, inside an abstract schema the kind is made of, in one form of a choice). Where a schema marks no
+  relationship, an id pattern naming the type counts too, marked **by pattern**.
+- **The answer**: the types by group, each version the partition holds as a chip (solid where its schema names the type,
+  dashed where it does not), and under it each property path. A type opens its records. **Only types with records**
+  keeps the versions the partition holds records of. Properties that name any record of the type's group are listed
+  apart.
+
+The Schema service cannot be asked which schemas refer to a type, so the control plane reads the partition's schemas once
+and keeps what each names: one reading per Schema service and partition (16 partitions at most), shared by every reader.
+A pass lists every schema a hundred at a time, then reads each kind's schema eight at a time; an ask waits a few seconds
+and then answers with where the pass stands, and the dialog asks again until it is done. A later pass reads only the
+kinds added since and those in development, since a published or obsolete schema never changes. A pass runs when nothing
+has been read, when the reader asks (**Read the partition's schemas again**), or when the reading is older than twelve
+hours; a pass that fails keeps the last reading and runs again when asked, or after two minutes. A pass that has failed
+to read 50 kinds, more than it read, stops, since the service is failing rather than one schema.
+
+## Building a dimension
+
+**Build a dimension**, in the header, docks the dimension builder beside the records (the workbench's side bar folds
+meanwhile). The key, the value and the attributes of a [dimension](../flow/dimension.md) are picked on the values
+themselves as records are browsed and their links followed: beside each value a menu offers **Make it the key**,
+**Collect it**, **Read it as the value** or **Read it as an attribute**, depending on where the record sits on the trail.
+The builder suggests keys from the kind's saved template (the values that name other records), fills an example row with
+what one key reads, and writes the `dimensions:` item a dimension flow lists, checked by the loader a flow is read by.
+**Copy the YAML** takes it. The builder saves nothing: no flow, no dimension, nothing in OSDU or the database. The draft
+lives in the page's address (`dim`), so a link or a refresh brings it back; closing the builder drops it. See
+[building and using a dimension](../guides/dimensions.md).
+
+## Kept in the address
+
+The text (`q`) and whether it is Lucene (`lq`), the place (`kind`), the conditions (`f`), the order (`sort`), the type
+list alone (`view=types`), the record open (`id`, and `v` for a version) and a dimension being built (`dim`) are the
+page's address, so a link, Back and a refresh land on the same view. A link naming a partition (`partition`) makes it the
+title bar's.
+
+## The API
+
+The bodies and answers are listed on the [API page](api.md). The routes that read OSDU take `?partition=`; without it
+the workbench's partition, else the registry's default, is read.
+
+| Route | Group | What it does |
+| --- | --- | --- |
+| `GET /api/v1/delivery/explorer/connection` | read | How the partition is reached: `available`, `through`, `endpoint`, `route`, or `reason`. |
+| `POST /api/v1/delivery/explorer/types` | operate | The records a search finds, counted kind by kind. |
+| `POST /api/v1/delivery/explorer/search` | operate | One page of records: `text`, `lucene` or `mentions`, `kind`, `filters` (at most 12; a filter may name a search `term`), `sort`, `offset` and `limit` (1 to 200, inside the first 10,000), `facet`, `columns` (at most 8). |
+| `POST /api/v1/delivery/explorer/fields` | operate | The properties the records of a `kind` hold. |
+| `POST /api/v1/delivery/explorer/read` | operate | One record from storage by `targetId`, at its latest or at `version`, with its version list. |
+| `POST /api/v1/delivery/explorer/validate` | operate | One record checked against its kind's schema (`schema`: `osdu` or `saved`). |
+| `POST /api/v1/delivery/explorer/validate-list` | operate | The records a search finds checked (`max` 1 to 1,000). |
+| `POST /api/v1/delivery/flows/{pipelineId}/osdu/validate` | operate | The same check of one record through a flow's own route; 409 for a `dspdm` or `etp` flow. |
+| `POST /api/v1/delivery/explorer/referenced-by` | operate | The types whose schemas name records of a `type`; `refresh` reads the schemas again. |
+| `POST /api/v1/delivery/explorer/element-queries` | operate | The query that finds an element of a record, from the saved templates alone. |
+| `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys a kind's saved template suggests for a dimension. |
+| `POST /api/v1/delivery/explorer/dimension/keys` | operate | The commonest keys of a drafted dimension's path. |
+| `POST /api/v1/delivery/explorer/dimension/compose` | operate | A draft written as a dimension flow's item, and checked. |
+
+A request the read would refuse (a kind that is not one, more than 12 conditions, a page past the window, an id that is
+not one) answers 400 before anything is read, with the reason, for example `The search service pages through the first
+10,000 records a query matches; narrow the search to reach the others.` A partition no flow reaches answers 409. When
+OSDU refuses or cannot be reached the answer is 502, and with no answer within the timeout 504, each with the reason
+redacted.

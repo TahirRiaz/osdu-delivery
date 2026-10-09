@@ -4,7 +4,7 @@
   "flowType": "assertion",
   "strictKeys": true,
   "includeEnvelope": true,
-  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "generatedFrom": "osdu/docs/reference/flow/assertion.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
   "keyCount": 231,
   "keys": [
@@ -1469,7 +1469,7 @@
       "path": "tests[].query",
       "type": "string",
       "required": false,
-      "description": "A Lucene query narrowing the kind (`data.Source:\"Recall\"`), with `{parameter}` and `{partition}` tokens. Leading wildcards are refused by the search service.",
+      "description": "A Lucene query narrowing the kind (`data.Source:\"WellDB\"`), with `{parameter}` and `{partition}` tokens. Leading wildcards are refused by the search service.",
       "appliesWhen": "Not beside ids."
     },
     {

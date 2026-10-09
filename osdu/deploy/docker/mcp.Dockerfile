@@ -21,13 +21,13 @@ FROM rust:1.88-slim AS build
 WORKDIR /src
 # The server compiles its documentation and the key census into the binary through repository-relative paths, so the
 # build keeps the repository's shape: SQLFlow's server and language engine with the reference pages they embed, and
-# the host crate with the product's pages. The root .dockerignore re-includes these documentation trees for this.
+# the host crate with the product's reference pages, decision records and census (osdu/docs). The root .dockerignore
+# re-includes these documentation trees for this.
 COPY sqlflow/tools/ sqlflow/tools/
 COPY sqlflow/docs/reference/ sqlflow/docs/reference/
 COPY sqlflow/docs/wiki/ sqlflow/docs/wiki/
 COPY osdu/hosts/osdu-delivery-mcp/ osdu/hosts/osdu-delivery-mcp/
 COPY osdu/docs/ osdu/docs/
-COPY docs/assertions-design.md docs/interfaces-design.md docs/partitions-design.md docs/lineage-design.md docs/
 # --locked: the build is the one the committed lock file names, which is the one the tests ran against.
 RUN cargo build --release --locked --manifest-path osdu/hosts/osdu-delivery-mcp/Cargo.toml
 

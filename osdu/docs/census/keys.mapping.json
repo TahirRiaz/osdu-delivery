@@ -3,7 +3,7 @@
   "product": "OSDU Delivery",
   "documentType": "mapping",
   "strictKeys": true,
-  "generatedFrom": "osdu/docs/mapping-templates.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and MappingMapper.Record.cs",
+  "generatedFrom": "osdu/docs/reference/flow/mapping.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and MappingMapper.Record.cs",
   "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
   "keyCount": 35,
   "keys": [
@@ -98,7 +98,7 @@
       "path": "dataset.idFrom",
       "type": "enum(deliveryKey|key)",
       "required": false,
-      "description": "What the last part of every record's OSDU id is made from: deliveryKey (the default), the delivery key's 32 hexadecimal digits; or key, the values of dataset.key, trimmed, case kept and percent-encoded where an id cannot carry them, so the id reads as the code it stands for (dev:reference-data--ExternalUnitOfMeasure:RECALL::G%2FCC). The ledger keys the record by its delivery key either way, and a record keeps the id it first claimed: choose before anything is delivered.",
+      "description": "What the last part of every record's OSDU id is made from: deliveryKey (the default), the delivery key's 32 hexadecimal digits; or key, the values of dataset.key, trimmed, case kept and percent-encoded where an id cannot carry them, so the id reads as the code it stands for (dev:reference-data--ExternalUnitOfMeasure:WELLDB::G%2FCC). The ledger keys the record by its delivery key either way, and a record keeps the id it first claimed: choose before anything is delivered.",
       "enumValues": [
         "deliveryKey",
         "key"

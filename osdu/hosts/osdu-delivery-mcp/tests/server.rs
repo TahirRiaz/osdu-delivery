@@ -413,10 +413,15 @@ async fn the_instructions_name_only_what_the_server_has() {
     let text = session.instructions().to_string();
     let listed = names(&session.tools().await);
 
-    // SQLFlow's instructions first, then the module's section, then what is not offered.
-    let module_at = text.find("OSDU DELIVERY (the delivery_* tools). METADATA ONLY.").expect("the module's section");
+    // The product introduces itself first, then SQLFlow's instructions, then the module's section, then what is not
+    // offered. Nothing recommends a tool this server leaves out.
+    let module_at = text
+        .find("OSDU DELIVERY (the extension: the delivery_* tools and the delivery- pages). METADATA ONLY.")
+        .expect("the module's section");
     let withheld_at = text.find("Not offered by this server").expect("the withheld note");
-    assert!(text.starts_with("SQLFlow MCP server."));
+    assert!(text.starts_with(instructions::INTRODUCTION), "{text}");
+    assert!(!text.contains("SQLFlow MCP server."), "{text}");
+    assert!(!text.contains("Source discovery"), "the instructions recommend discover_source, which is withheld");
     assert!(module_at < withheld_at);
     for tool in WITHHELD {
         assert!(text[withheld_at..].contains(tool), "the note does not name {tool}");
@@ -435,13 +440,26 @@ async fn the_instructions_name_only_what_the_server_has() {
     for tool in DELIVERY_TOOLS {
         assert!(words.contains(tool), "the instructions never say when to use {tool}");
     }
-    assert!(!instructions::INSTRUCTIONS.contains('\u{2014}'));
+    assert!(!instructions::INSTRUCTIONS.contains('\u{2014}') && !instructions::INTRODUCTION.contains('\u{2014}'));
 
-    // The page they point at for a run's arguments is one the doc tools return.
+    // Every page the section names in full is one the doc tools return: the extension's own, and SQLFlow's.
     let ids: BTreeSet<String> = docs::pages().into_iter().map(|page| page.meta.id).collect();
-    assert!(instructions::INSTRUCTIONS.contains("get_doc(\"delivery-cli-the-run-options\")"));
-    assert!(ids.contains("delivery-cli-the-run-options"));
-    let page = session.call("get_doc", json!({ "id": "delivery-cli-the-run-options" })).await;
+    let named: BTreeSet<&str> = instructions::INSTRUCTIONS
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .filter(|word| word.starts_with("delivery-") && !word.ends_with('-'))
+        .collect();
+    assert!(named.contains("delivery-guide-pattern-catalog") && named.contains("delivery-cli-run"), "{named:?}");
+    for id in &named {
+        assert!(ids.contains(*id), "the instructions name the page {id}, which is not indexed");
+    }
+    for id in ["flow-ing", "flow-source", "guide-table-to-table-ingestion"] {
+        assert!(instructions::INSTRUCTIONS.contains(id));
+        assert!(session.call("get_doc", json!({ "id": id })).await.starts_with("# "), "SQLFlow's {id}");
+    }
+
+    // The page they point at for a run's arguments carries them.
+    assert!(instructions::INSTRUCTIONS.contains("get_doc(\"delivery-cli-run\")"));
+    let page = session.call("get_doc", json!({ "id": "delivery-cli-run" })).await;
     assert!(page.contains("`recordKeys`") && page.contains("`redeliver`"), "{page}");
 }
 
@@ -450,23 +468,21 @@ async fn the_products_documentation_and_flow_kinds_are_answered_by_sqlflows_own_
     let estate = Estate::start(vec![]).await;
     let mut session = Session::open(&estate).await;
 
-    // A question about the product finds its pages beside SQLFlow's, section by section.
-    let found = session.json("search_docs", json!({ "query": "ledger leasing" })).await;
-    let first = found["results"][0]["id"].as_str().expect("a hit").to_string();
-    assert!(first.starts_with("delivery-ledger"), "{found}");
-    let page = session.call("get_doc", json!({ "id": first })).await;
-    assert!(page.starts_with("# The ledger"), "{}", &page[..page.len().min(200)]);
-
-    // SQLFlow's own corpus is still there.
+    // A page of the product is served whole, under its own title, beside SQLFlow's corpus.
+    let page = session.call("get_doc", json!({ "id": "delivery-flow-cache" })).await;
+    assert!(page.starts_with("# Cache flow"), "{}", &page[..page.len().min(200)]);
+    assert!(page.contains("id: delivery-flow-cache") && page.contains("sourceRefs:"), "the page with its frontmatter");
     assert!(session.call("get_doc", json!({ "id": "cli-run" })).await.starts_with("# "));
 
-    // A verb of the product answers by its name, and a document's entry lists its sections.
+    // A verb of the extension answers by its name, and a page leads to its related pages, SQLFlow's among them.
     assert!(session.call("get_doc_by_cli_command", json!({ "command": "check" })).await.contains("sqlflow check"));
-    let related = session.json("related_docs", json!({ "id": "delivery-protocols" })).await;
-    assert!(related["related"].as_array().is_some_and(|sections| sections.len() >= 10), "{related}");
+    let related = session.json("related_docs", json!({ "id": "delivery-guide-lookup-table-cache" })).await;
+    let related: Vec<&str> = related["related"].as_array().expect("related pages").iter().filter_map(|r| r["id"].as_str()).collect();
+    assert!(related.contains(&"delivery-flow-cache"), "{related:?}");
+    assert!(related.iter().any(|id| !id.starts_with("delivery-")), "a guide leads to SQLFlow's pages too: {related:?}");
 
     // The flow-language tools know the kinds and documents the module adds.
-    for kind in ["delivery", "retrieval", "cache", "assertion", "dimension"] {
+    for kind in ["delivery", "retrieval", "cache", "assertion", "dimension", "inventory"] {
         let keys = session.json("list_flow_keys", json!({ "flowType": kind })).await;
         assert!(keys["count"].as_u64().is_some_and(|count| count > 5), "{kind}: {keys}");
     }
@@ -474,6 +490,71 @@ async fn the_products_documentation_and_flow_kinds_are_answered_by_sqlflows_own_
     assert_eq!(key["path"], json!("render.mapping"), "{key}");
     assert!(key["description"].as_str().is_some_and(|d| !d.is_empty()));
     assert!(estate.calls().is_empty(), "the docs and the census are in the binary");
+}
+
+/// Questions people ask, in their own words, and the pages that answer each. The documentation is written so that the
+/// search, which ranks on a page's title, keywords and summary, puts the answer near the top
+/// (osdu/docs/reference/README.md, Page format); a page whose frontmatter drifts away from how it is asked about fails
+/// here. The first is the question this corpus was rebuilt for.
+const QUESTIONS: &[(&str, &[&str])] = &[
+    (
+        "reading json files into a staging and then into a silver table, the next step is to read this into the cache so a mapping can use it",
+        &["delivery-guide-lookup-table-cache"],
+    ),
+    ("lookup table from an ingestion table", &["delivery-guide-lookup-table-cache", "delivery-flow-cache"]),
+    ("cache import", &["delivery-cli-cache"]),
+    ("cache flow table key fields", &["delivery-flow-cache"]),
+    ("replace a value from the cache", &["delivery-flow-mapping-modifiers"]),
+    ("findBy cached reference data unit of measure", &["delivery-flow-mapping-lookups", "delivery-guide-reference-data-cache"]),
+    ("why is my record held", &["delivery-concept-record-lifecycle", "delivery-guide-operations-runbook"]),
+    ("redeliver a record", &["delivery-guide-operations-runbook", "delivery-concept-removal-and-reversal", "delivery-cli-run"]),
+    ("remove records from osdu", &["delivery-concept-removal-and-reversal"]),
+    ("well log curves bulk data wellbore ddms", &["delivery-guide-bulk-data", "delivery-flow-ddms"]),
+    ("data quality tests", &["delivery-guide-data-quality-tests", "delivery-flow-assertion"]),
+    ("distinct values of a field", &["delivery-flow-dimension", "delivery-guide-dimensions"]),
+    ("find orphan records in osdu", &["delivery-guide-finding-orphans", "delivery-flow-inventory"]),
+    ("check a flow before running it", &["delivery-cli-check", "delivery-concept-preflight"]),
+    ("getting started first delivery", &["delivery-guide-getting-started"]),
+    ("one source delivers several kinds", &["delivery-flow-interfaces", "delivery-guide-multi-kind-source"]),
+    ("save an osdu schema as a template", &["delivery-cli-template", "delivery-concept-templates"]),
+    ("register a partition", &["delivery-cli-partition", "delivery-concept-partitions"]),
+    ("which route should a delivery flow use", &["delivery-flow-routes", "delivery-guide-pattern-catalog"]),
+    ("run payload recordKeys redeliver", &["delivery-cli-run"]),
+    ("mapping expression when condition", &["delivery-flow-mapping-expressions", "delivery-flow-mapping-values"]),
+    ("search the platform for a wellbore in a mapping", &["delivery-flow-mapping-lookups"]),
+    ("what changed since the last run, why did a record deliver again", &["delivery-concept-change-detection"]),
+    ("retrieve osdu records into a table", &["delivery-guide-retrieving-records", "delivery-flow-retrieval"]),
+    ("dictionary of static values for a mapping", &["delivery-flow-dictionary"]),
+    ("approve a cache change", &["delivery-concept-partition-cache"]),
+    ("delivery api endpoints", &["delivery-concept-api"]),
+    ("environment variables for osdu delivery", &["delivery-concept-environment-variables"]),
+    ("install the mcp server", &["delivery-guide-mcp"]),
+    ("the ledger tables and traceability", &["delivery-concept-ledger"]),
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_finds_the_page_that_answers_it() {
+    let estate = Estate::start(vec![]).await;
+    let mut session = Session::open(&estate).await;
+    let ids: BTreeSet<String> = docs::pages().into_iter().map(|page| page.meta.id).collect();
+
+    let mut missed = Vec::new();
+    for (question, answers) in QUESTIONS {
+        for answer in *answers {
+            assert!(ids.contains(*answer), "{answer} is not a page of the corpus");
+        }
+        let found = session.json("search_docs", json!({ "query": question, "limit": 5 })).await;
+        let top: Vec<String> = found["results"]
+            .as_array()
+            .expect("search results")
+            .iter()
+            .filter_map(|hit| hit["id"].as_str().map(str::to_string))
+            .collect();
+        if !answers.iter().any(|answer| top.iter().any(|id| id == answer)) {
+            missed.push(format!("'{question}' found {top:?}, not any of {answers:?}"));
+        }
+    }
+    assert!(missed.is_empty(), "questions whose answer is not in the top five:\n{}", missed.join("\n"));
 }
 
 // ---- Records ---------------------------------------------------------------------------------------------------------

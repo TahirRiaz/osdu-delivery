@@ -1,0 +1,218 @@
+---
+id: delivery-concept-partition-cache
+title: "The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery"
+type: concept
+summary: "How a partition's cache works: versions, several cache flows sharing one cache, when a version is written, change tags, approval, rollout, system properties."
+keywords:
+  - partition cache
+  - cache version
+  - current version
+  - cache refresh
+  - several cache flows
+  - onchange approve
+  - approve a cache change
+  - update tag
+  - cache rollout
+  - system properties
+  - keywordlower
+  - render.cacheversion
+  - cache import
+  - osdu.cacheversion
+related:
+  - delivery-flow-cache
+  - delivery-flow-dictionary
+  - delivery-cli-cache
+  - delivery-concept-change-detection
+  - delivery-concept-partitions
+  - delivery-concept-ledger
+  - delivery-guide-lookup-table-cache
+  - delivery-guide-reference-data-cache
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery/Snapshots/CacheScope.cs
+  - osdu/src/SqlFlow.Delivery/Snapshots/CacheDeclaration.cs
+  - osdu/src/SqlFlow.Delivery/Snapshots/CacheOrigin.cs
+  - osdu/src/SqlFlow.Delivery/Snapshots/SystemProperty.cs
+  - osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs
+  - osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs
+  - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/SystemPropertyCapture.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheUpdateRolloutService.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Configuration/DeliveryModuleOptions.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCacheStreams.cs
+  - osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs
+  - osdu/gui/src/features/delivery/DeliveryCachePage.tsx
+  - osdu/gui/src/module.tsx
+---
+
+# The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery
+
+OSDU Delivery keeps one cache per OSDU data partition. Every [cache flow](../flow/cache.md) that serves a partition
+writes into that partition's cache, and every delivery flow that delivers to the partition reads from it while it
+renders records: the reference data a mapping resolves ids against, the lookup tables it translates source values
+through, the dictionaries and dimension values it reads. The cache is versioned, so every delivered record can say
+exactly which cached values it was built from, and a later change to one of those values can find and redeliver exactly
+the records it reaches. It lives in the module's database (the `osdu` schema), never in a repository: the cache flow
+files define what is cached, and their runs fill it.
+
+## One cache per partition
+
+A cache is keyed by the partition the flows reach, after references are resolved: a flow naming `partitions: [dev]`,
+one whose `source.headers.data-partition-id` is `dev`, and one whose header is `${env:OSDU_PARTITION}` resolving to
+`dev` all fill the same cache. A capture, an import, the repository sync and a render resolve the partition the same
+way, so a flow can move from a header to named partitions and keep the cache it had. A partition name is letters,
+digits, underscore, hyphen and dot, at most 200 characters, or a `${env:...}` or `${keyvault:...}` reference.
+
+A delivery run reads the cache of the partition it delivers to ([partitions](partitions.md)). Its mapping reads each
+type by name (`$cache.UnitAlias`, `$cache: UnitOfMeasure.id`), whichever cache flow filled it and whatever its origin.
+
+## Versions
+
+Each refresh that changes what a partition's cache holds writes a new version of the whole cache:
+
+- **The label is the capture instant,** `20261009T012000Z`; when two captures of one partition share a second, the
+  sequence is appended (`20261009T012000Z-7`).
+- **The newest version is always current.** Every delivery renders against the current version unless its flow pins an
+  earlier one with `render.cacheVersion`.
+- **Every version is kept,** because the render context of a delivered record names the version it was rendered
+  against. A version records the cache flow and run that wrote it, who asked, and where its content came from.
+- **A version that would change nothing is not written.** A version label enters the render context, so writing one for
+  a capture that found nothing new would re-render every record built from the cache. A refresh that finds exactly what
+  the current version holds writes nothing, and nothing renders again: refreshing often is free.
+- **Each type carries its own content hash,** how it compares with the version before (`added`, `changed` or
+  `unchanged`), and the version its content dates from. A version moves when any type or system property moves; a type
+  that only rode along keeps its hash, and nothing built from it is analysed again.
+- **Every load is checked.** A version whose records no longer match the hash it was written with is refused (`Version
+  <v> of the cache of partition '<p>' does not match the content hash it was written with ...: its records were altered
+  after the version was written, so nothing renders against it.`).
+
+In the database a version is a row of `osdu.CacheVersion`; the records are kept by version range in `osdu.CacheItem`
+(a record is stored once and a new row is written only when it changes, arrives or leaves); `osdu.CacheMember` says
+which cache flow's last capture holds each record ([the ledger](ledger.md)).
+
+## Several cache flows, one cache
+
+Several cache flows may fill one partition, in one repository or several, so each project declares the reference data it
+needs without copying another project's file. The cache holds the union of what they declare:
+
+- **Types are shared by name.** Flows declaring a type under the same name share one type. A refresh of any of them
+  fetches every path any synced flow of the partition declares for the type, so a field one project asks for is there
+  for every pipeline reading the partition, and every flow's query adds records to it.
+- **The newest capture of a record wins.** A captured record replaces what the cache held for it. A record the capturing
+  flow no longer finds leaves the cache only when no other flow's last capture still holds it. Types a capture does not
+  cover stay as they are, except a type no synced flow declares any more, which the merge removes.
+- **A lookup table has one owner.** A table, dictionary or dimension type is declared by one cache flow of a partition:
+  its capture replaces the whole type, so a second flow declaring it would replace the first one's rows.
+- **Declarations must agree.** Two declarations of one type that disagree on the entity type, or cache one field name from
+  different paths, are refused. The repository sync leaves the declaration synced second out of the catalog with a
+  warning naming both flows, and a refresh of a flow that disagrees fails before it captures anything.
+- **One platform per partition.** The sync warns when the cache flows of a partition search different endpoints.
+- **Refreshes of one partition merge one after another.** A refresh takes the partition's merge lock, so a second waits for
+  the first to commit and merges onto the version it wrote. After five minutes of waiting it gives up, keeps nothing of
+  its capture, and says to run the refresh again. Refreshes of different partitions never wait on each other.
+- **onChange is the strictest.** A type's changes wait for approval when any flow declaring it says `onChange: approve`.
+
+When a flow stops declaring a type, the sync deletes that flow's hold on the type's records, so a later capture by
+another flow lets go of the records only the first one kept.
+
+## What a refresh does
+
+1. Resolves the partition and reads every synced declaration of it; a conflict with another flow stops here.
+2. Captures each declared type from its origin: OSDU types through the search service (every path the partition keeps
+   for the type), table types from the ingestion database, dictionaries from the repository tree, dimension types from
+   the dimension's last build. A type that cannot be read whole fails the refresh before anything is written.
+3. Reads the partition's system properties, when it reached OSDU (below).
+4. Merges the capture into the current version and writes the next version, unless nothing moved.
+5. Compares each type that moved with the version before, and tags the changes that delivered records were built from.
+
+A run over several partitions does this for each in turn; a partition that fails leaves the others refreshed.
+
+## From a cache change to OSDU
+
+Every delivered record points at the set of cached values its render read: the record a value was found by, each value
+written into the document, each path read that held nothing, each key a lookup table did not list, and each id written as
+an unverified reference. A refresh compares
+the new version with the one it replaces over those sets (thousands of them, never the records themselves) and writes
+one tag per change: the partition, the type, the cached record, the path, the value before and after, the versions it
+moved between, and how many delivered records it reaches.
+
+| Change | Meaning |
+| --- | --- |
+| `changed` | A value records read now reads differently. |
+| `removed` | A cached record records used is no longer in the cache. |
+| `unmatched` | A record no longer matches by the value records found it by. |
+| `listed` | A lookup table now lists a key records looked up and found no row under, or an OSDU type now holds a record by a value records found none by. |
+| `relisted` | The rows a key finds are no longer the ones records read every one of. |
+| `found` | The cache now holds a record that records reference as an unverified id. |
+
+What a tag does depends on the type's `onChange`:
+
+- **`auto`** (the default): the tag is approved as it is written, and each affected record is delivered again on its
+  flow's next run.
+- **`approve`**: the affected records are held back; a plan skips them as `awaiting approval` ("a cache change is tagged
+  against this record and is waiting for approval"), so OSDU keeps the documents it has, until someone decides on the
+  Cache page. Approving lets the rollout carry the change out; rejecting leaves the delivered documents alone. If the
+  value moves again after an approval and before the rollout carried it, the tag reopens, because the approval was for
+  the value someone looked at.
+
+A tag's status moves through `pending`, `approved` or `rejected`, `rolling` (its records are being marked), `delivering`
+(all are marked and some flow has not rendered them again yet) and `applied`.
+
+The control plane carries approved changes out in batches, so a corrected unit that reaches millions of records drains
+at a set pace and resumes after a restart. The marking is metadata only: no payload is re-uploaded because a reference
+value changed.
+
+| Setting (`Osdu:CacheRollout`) | Default | Meaning |
+| --- | --- | --- |
+| `Enabled` | `true` | Turns the automatic rollout off; approved changes then wait. |
+| `BatchSize` | `5000` | Records marked for redelivery per batch. |
+| `BatchesPerPass` | `2` | Batches per pass, across all approved changes. |
+| `PollSeconds` | `60` | Seconds between passes. |
+
+## System properties
+
+A refresh that reaches OSDU also reads the partition's system properties: the feature flags the indexer and the search
+service report through `GET /api/indexer/v2/info` and `GET /api/search/v2/info` (their `featureFlagStates`). They are
+kept with the version, apart from the cached records: they have no record id, and no mapping reads them. The engine
+relies on one, `featureFlag.keywordLower.enabled`: where the indexer keeps a lowercased copy of every text property, a
+search that finds no record exactly asks again regardless of case.
+
+- A state reported for the partition wins over one reported for no partition; states for other partitions are ignored.
+- A service that cannot be asked fails nothing: the refresh logs why and keeps what the cache knew of that service. A
+  property the engine relies on that no service reports is recorded as unknown, and nothing relies on it being on.
+- A changed state is a change of the cache, so the refresh writes a version even when every record is the same.
+- A flow of lookup tables alone reaches no platform and reads none.
+
+## Filling a cache without a platform
+
+For work without OSDU, `sqlflow cache import <cache flow> --from-dir <dir>` merges type files into the cache of the
+flow's partition as that flow's capture ([`sqlflow cache`](../cli/cache.md)). The files stand in for what a search of
+the partition would return: every record is an OSDU record of the declared entity type in the flow's partition. A lookup
+table is never imported: it is captured from its table, dictionary or dimension wherever the flow runs.
+
+## Where to see it
+
+- **The Cache page** (OSDU, Build, Cache) shows the cache of the partition picked in the title bar: the cache flow files
+  that fill it, with **Cache files** and **Refresh now** (a **Refresh** menu naming the flows when several fill the
+  partition, since a refresh captures what one flow declares); and four tabs. **Records** browses what a version holds, a type
+  at a time, with how a mapping reads each row. **History** lists the versions and which types each changed.
+  **Deliveries** lists the changes with what they reach, the approvals waiting, and the records built without something
+  the cache did not hold yet. **Setup** lists the cache flows, the types each declares, and the partition's OSDU feature
+  flags.
+- **A cache flow's pipeline page** opens on its **Cache versions** tab.
+- **`sqlflow cache list <partition>`** prints the versions, newest first, and the current version's system properties.
+- **The API** (`/api/v1/delivery`): `GET /caches`, `/cache/versions`, `/cache/items`, `/cache/history`, `/cache/diff`,
+  `/cache/tags`, `/cache/gaps`, `/cache/streams` (each type's upstream flows, from files to the cache flow, and who reads
+  it), and `POST /cache/tags/decide` ([the API](api.md)).
+
+## Related
+
+- [Cache flow](../flow/cache.md): the document that declares what a cache holds.
+- [Change detection](change-detection.md): what else makes a record deliver again.
+- [The ledger](ledger.md): where cache sets and tags are kept.

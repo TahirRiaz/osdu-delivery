@@ -1,82 +1,185 @@
-# sqlflow worker: an OSDU Delivery node
+---
+id: delivery-cli-worker
+title: "sqlflow worker in OSDU Delivery: what a delivery node needs beyond a SQLFlow node"
+type: cli-command
+summary: "The OSDU Delivery worker host and what a node needs to deliver: SQLFLOW_OSDU_DB, the flows' credentials, the network guard and the start-up check."
+keywords:
+  - worker node
+  - compute node
+  - delivery node
+  - sqlflow_osdu_db
+  - worker host
+  - node credentials
+  - module database on a node
+  - worker refuses to start
+  - private networks
+  - worker container image
+  - delivery-check-values
+  - delivery-delete
+related:
+  - cli-worker
+  - delivery-cli-db
+  - delivery-concept-environment-variables
+  - delivery-cli-config
+  - delivery-cli-auth
+  - delivery-guide-deployment
+  - delivery-concept-run-trace-and-metrics
+sourceRefs:
+  - osdu/hosts/SqlFlow.Delivery.Worker.Host/Program.cs
+  - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
+  - osdu/src/SqlFlow.Delivery/Hosting/OsduModuleDatabase.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryServices.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Http/NetworkPolicy.cs
+  - osdu/src/SqlFlow.Delivery/Http/HttpClientBuilder.cs
+  - osdu/src/SqlFlow.Delivery/Storage/FileStore.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/CheckValuesOperation.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs
+  - osdu/src/SqlFlow.Delivery.Telemetry/TelemetryOptions.cs
+  - osdu/src/SqlFlow.Delivery.Telemetry/DeliveryTelemetry.cs
+  - osdu/deploy/docker/worker.Dockerfile
+  - osdu/deploy/docker/worker-entrypoint.sh
+  - osdu/deploy/k8s/worker-pool.yaml
+  - osdu/deploy/bicep/worker.bicep
+  - sqlflow/src/SqlFlow.Cli/Program.cs
+  - sqlflow/src/SqlFlow.Catalog/Modules/ModuleDatabaseConnections.cs
+  - sqlflow/src/SqlFlow.Catalog/Modules/ModuleDatabaseStatus.cs
+---
+
+# sqlflow worker in OSDU Delivery
+
+OSDU Delivery's command line is `sqlflow`: SQLFlow's CLI with the OSDU verbs added. `worker` is SQLFlow's verb. The
+node runtime (the poll, leases and the attempt budget, version pinning and git materialization, the live trace, failure
+handling, the drain on shutdown) and every option (`--url`, `--token`, `--pool`, `--poll-seconds`, `--drain-seconds`)
+are documented in [sqlflow worker](../../../../sqlflow/docs/reference/cli/worker.md). This page covers what an OSDU
+Delivery node needs that a plain SQLFlow node does not.
+
+## Synopsis
 
 ```bash
-sqlflow worker --url <control-plane> [--token <ref>] [--pool a,b] [--poll-seconds N] [--drain-seconds N]
+sqlflow worker --url <control-plane> [--token <ref>] [--pool a,b] [--poll-seconds N] [--drain-seconds N] [-v]
+SqlFlow.Delivery.Worker.Host [--url <control-plane>] [--token <ref>] [--pool a,b] [--poll-seconds N] [--drain-seconds N] [-v]
 ```
 
-The node runtime is SQLFlow's: the claim loop, the heartbeat, version pinning and git materialization, execution
-and recording, failure handling, crash recovery, the drain on shutdown and the options above are documented in
-[../../../../sqlflow/docs/reference/cli/worker.md](../../../../sqlflow/docs/reference/cli/worker.md). In an
-OSDU Delivery deployment the node is
-`osdu/hosts/SqlFlow.Delivery.Worker.Host`: the same runtime with the OSDU module installed, so a delivery,
-retrieval, cache or assertion flow executes on it exactly as it does from the command line.
+## The worker host
 
-This page covers what an OSDU Delivery node needs that a plain SQLFlow node does not.
+In a deployment the node is `osdu/hosts/SqlFlow.Delivery.Worker.Host`: the CLI's `worker` verb with the OSDU module
+installed and nothing else on the command line. It takes the node's options only; the verb is implied, and naming it is
+refused so the image can never behave as another program:
 
-## It takes work outbound, and holds no catalog connection
+```text
+ERROR  this host is the OSDU Delivery worker; pass the node's options only (the 'worker' verb is implied).
+```
 
-The node polls the control plane's dispatcher over HTTP and is handed a run with everything it needs: the run's
-definition, its snapshotted YAML, its lineage context, and the channel its trace and outcome travel back on. It
-opens no catalog connection. `--url` defaults to `SQLFLOW_URL`, and the credential is a personal access token
-minted with the `node` scope (`--token`, or `SQLFLOW_TOKEN`, as a value or a `${env:...}` / `${keyvault:...}`
-reference resolved here on the node).
+`sqlflow worker` run from the OSDU Delivery CLI is the same node. Either way the module registers on the node's
+services, so a run of a delivery, retrieval, cache, assertion, dimension or inventory flow executes exactly as it does
+with `sqlflow run`. Two compute tasks of the module also drain on nodes: a value check of a mapping across a scope
+(`delivery-check-values`) and a removal of records from OSDU (`delivery-delete`). What a person asks and waits on (a
+probe of a target, a record read back, a preview, a scope's values, the explorer) is not a node task: the control plane
+runs it while the request waits.
 
-Every connection is outbound: HTTPS to the control plane, SQL to the ingestion database, HTTPS to the OSDU
-endpoint and the payload storage, and git to the flow repository's remote for a pinned run.
+## The module database: SQLFLOW_OSDU_DB
 
-## The ledger is read and written here
+The delivery engine reads and writes the `osdu` schema record by record while it plans and delivers: that is what makes
+every attempt and outcome traceable. A node opens no catalog connection, so on a node the module database is always the
+reference `${env:SQLFLOW_OSDU_DB}`, whatever the catalog database is. The variable holds the connection string of the
+database that holds the `osdu` schema: the catalog's own database in the default estate, or the module's own.
 
-The delivery engine reads and writes the `osdu` schema per record while it plans and delivers: that is what makes
-every attempt and every outcome traceable. Because the node has no catalog connection, **the OSDU module database
-needs a connection reference of its own on this tier**, supplied as an environment variable on the node. Without
-it the module reports that its database uses the catalog connection but a worker node has none, and says to give
-it a reference of its own.
+Before it polls for work, the node verifies that database against its build, as the control plane does at startup (the
+catalog migration the module needs is not checked here, since a node has no catalog):
 
-## What else the node holds
+```text
+OK   module 'osdu' (schema 'osdu', own connection): current at '<last-migration>' (N migration(s) applied, 0 pending; build version <version>, recorded version <version>, catalog migration '<catalog-migration>' not checked).
+```
 
-Every `${env:...}` reference the pool's flows declare resolves here, and in the control plane as well, which answers
-a person's reads of a flow (a probe, a record read back, a preview, a source read, the explorer) under the same
-credentials:
+A node without the variable, or over a module database that is missing, behind, ahead or diverged, does not start:
 
-| Reference | Used for |
+```text
+ERROR  the worker refuses to start: Environment variable 'SQLFLOW_OSDU_DB' is not set.
+ERROR  the worker refuses to start: The database of module 'osdu' (schema 'osdu', own connection) is behind this build: 2 migration(s) are not applied (...). Apply them with 'sqlflow db migrate'.
+```
+
+Migrating is the control plane's or `sqlflow db migrate`'s job, never a node's (see [sqlflow db](db.md)).
+
+## What else a node resolves
+
+Credentials are resolved on the node that runs the flow. Every `${env:...}` reference a pool's flows name has to resolve
+there, unless the central configuration supplies it with the run ([sqlflow config](config.md)):
+
+| What | Typical reference | Used for |
+| --- | --- | --- |
+| The ingestion database | `${env:OSDU_DATA_DB}` | Reading the keyed ingestion tables the OSDU flow delivers from, and a cache flow's lookup tables. |
+| The OSDU endpoint and its credentials | `${env:OSDU_URL}`, `${env:OSDU_TOKEN_URL}`, `${env:OSDU_CLIENT_ID}`, `${env:OSDU_CLIENT_SECRET}`, `${env:OSDU_SCOPE}` | The flow's `target` (or a cache, retrieval or assertion flow's `source`) and its token request. |
+| The destination parameters | `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}`, `${env:OSDU_LEGAL_TAG}` | The mapping parameters the OSDU flow kind supplies when a flow does not set them. A flow bound to a partition takes `dataPartition` from the partition instead. |
+| Azure storage | `SQLFLOW_AZURE_AUTH` and the `AZURE_*` family | Reading payload files and writing work batches and retrieval output on `abfss://`, `wasbs://` or blob and dfs `https://` locations, and resolving `${keyvault:...}` references. See [sqlflow auth](auth.md). |
+
+The names in the middle column are the generic estate's; a flow can name any variable. A `${keyvault:...}` reference is
+resolved with the node's own Azure identity.
+
+## The network guard
+
+The engine opens a connection only to an address its network policy reaches, checked for the address a URL names, every
+address a host name resolves to when the connection opens, and every redirect. These settings are read from the node's
+environment (and from the CLI's and control plane's, which run the engine too):
+
+| Variable | Effect |
 | --- | --- |
-| The ingestion database connection | Reading the keyed ingestion tables the OSDU flow delivers from. |
-| The payload storage credential | Reading the payload files a record points at, and writing the run's work batch files. Resolved through `SQLFLOW_AZURE_AUTH` and the `AZURE_*` family on Azure storage. |
-| The OSDU endpoint credential | The OAuth2 client credentials, and any API management key the target requires. |
+| `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` | The private ranges the node may reach, as CIDR ranges or single addresses separated by commas, semicolons or white space (`10.20.0.0/16,fd12:3456::/48`): an OSDU, a storage account or a proxy behind a private endpoint. Empty by default, which reaches public addresses only. |
+| `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | `true` lets a flow target a loopback address (a local OSDU stub, tests). Off by default. |
+| `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS` | `true` lets a flow that declares `reliability.verifyTls: false` run on this node. Off by default, so a repository document cannot take a node off TLS on its own. |
 
-`SQLFLOW_DELIVERY_ALLOW_LOOPBACK=true` lets a flow target a loopback address (a local OSDU stub, the tests). It is
-off by default: the URL guard refuses loopback and private targets, so a misconfigured endpoint cannot quietly
-deliver to something inside the node's own network. `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` lists the private ranges a node
-may reach (CIDR, comma separated) when its OSDU, storage accounts or proxy resolve to private addresses. The guard
-checks the address a URL names, every address a host name resolves to when the connection opens, and every redirect;
-link-local and cloud metadata addresses are never reachable.
+Link-local and cloud metadata addresses and the Azure wireserver address are never reachable, whatever the list says.
+The variables are described with the rest in [Environment variables](../concepts/environment-variables.md).
 
-## Compute tasks run here too
+## Metrics
 
-A value check of a mapping, which may render every row of a scope, and a removal, which writes to OSDU and the
-ledger, are queued as compute tasks and drain on a node. They are drained ahead of runs on their own bounded gate, so
-a node busy with long deliveries still answers the GUI promptly, and a burst of them never starves run execution. A
-person's reads (a probe, a read-back, a preview, a source read, the explorer) are not queued: the control plane runs
-them while the request waits.
-
-## The drain is what keeps a scale-in cheap
-
-A stopping node finishes the runs it already holds, for up to `--drain-seconds` (default 540), and keeps
-heartbeating for the whole drain so the liveness sweep leaves that work alone. **Set the orchestrator's
-termination grace period above that window.** A severed delivery loses no records (the ledger leases each record
-to one attempt at a time, and a lease the severed node held expires), but the run is requeued, that consumes one
-of its execution attempts, and the work is repeated. See
-[../guides/deployment.md](../guides/deployment.md#scale-in-must-not-sever-a-delivery).
+A node takes its metrics export settings from its environment: `OSDU_TELEMETRY_EXPORTER` (`none`, `otlp`,
+`azuremonitor` or `console`) and `OSDU_TELEMETRY_OTLP_ENDPOINT`, `_OTLP_PROTOCOL`, `_OTLP_HEADERS`,
+`_AZURE_MONITOR_CONNECTION`, `_EXPORT_SECONDS`, `_SERVICE_NAME` and `_SERVICE_INSTANCE`. They are read and checked when the
+node starts; a value the setting cannot take (an exporter name that does not exist, a non-numeric export interval, a
+literal where a reference belongs) stops the node with
+`ERROR  CLI module 'osdu' failed to configure its services: <reason>`. What the meters publish is in
+[Run trace and metrics](../concepts/run-trace-and-metrics.md).
 
 ## Container image
 
-`osdu/deploy/docker/worker.Dockerfile` packages the node. Its entrypoint composes the invocation from
-`SQLFLOW_WORKER_POOL`, `SQLFLOW_WORKER_POLL_SECONDS` and `SQLFLOW_WORKER_DRAIN_SECONDS`, so the control plane URL
-and the token never appear on the command line or in `ps` output. All three are optional, so a bare container
-takes untargeted runs on the default cadence. The container exposes no ports.
+`osdu/deploy/docker/worker.Dockerfile` packages the worker host; build it from the repository root, since the context
+spans `osdu/` and `sqlflow/`:
+
+```bash
+docker build -f osdu/deploy/docker/worker.Dockerfile -t osdu-delivery-worker:latest .
+docker run -d \
+  -e SQLFLOW_URL="https://sqlflow.example.com" \
+  -e SQLFLOW_TOKEN="$NODE_TOKEN" \
+  -e SQLFLOW_OSDU_DB="$OSDU_MODULE_CONNECTION" \
+  -e OSDU_DATA_DB="$INGESTION_CONNECTION" \
+  -e SQLFLOW_WORKER_POOL="osdu" \
+  osdu-delivery-worker:latest
+```
+
+The entrypoint composes the node's options from `SQLFLOW_WORKER_POOL`, `SQLFLOW_WORKER_POLL_SECONDS` and
+`SQLFLOW_WORKER_DRAIN_SECONDS` (all optional), so the control plane URL, the token and the database connections never
+appear on the command line or in `ps` output. The container exposes no ports. The shipped Kubernetes manifest
+(`osdu/deploy/k8s/worker-pool.yaml`) mounts `SQLFLOW_OSDU_DB` from a secret and, like the Azure template
+(`osdu/deploy/bicep/worker.bicep`), sets the termination grace period to 600 seconds, above the default 540-second
+drain. The Azure template also sets `SQLFLOW_AZURE_AUTH=mi` with the app's managed identity, so `${keyvault:...}`
+references and storage resolve as that identity.
+
+## Exit behavior
+
+Beyond SQLFlow's (0 after a clean drain, 1 when the URL or token is missing):
+
+| Condition | Exit code | Output |
+| --- | --- | --- |
+| `SQLFLOW_OSDU_DB` unset, or the module database is not current | 1 | `ERROR  the worker refuses to start: <reason>` before the node polls |
+| An `OSDU_TELEMETRY_*` value the setting cannot take | 1 | `ERROR  CLI module 'osdu' failed to configure its services: <reason>` |
+| The worker host given the `worker` verb | 1 | `ERROR  this host is the OSDU Delivery worker; ...` |
 
 ## See also
 
-- [../../environment-variables.md](../../environment-variables.md): every variable a node reads.
-- [../../../deploy/README.md](../../../deploy/README.md): minting the node token, and the pool manifests.
-- [delivery.md](delivery.md): the operations a run on a node performs.
+- [sqlflow worker](../../../../sqlflow/docs/reference/cli/worker.md): the node runtime, its options and the drain.
+- [sqlflow db](db.md): the module database and its migrations.
+- [sqlflow config](config.md): values the control plane hands to runs instead of node variables.
+- [sqlflow auth](auth.md): checking the node's Azure identity.
+- [Environment variables](../concepts/environment-variables.md): every variable a node reads.
+- [Deploying OSDU Delivery](../guides/deployment.md): the images, the tiers and the node token.

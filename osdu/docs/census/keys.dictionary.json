@@ -3,7 +3,7 @@
   "product": "OSDU Delivery",
   "documentType": "dictionary",
   "strictKeys": true,
-  "generatedFrom": "osdu/docs/documents.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and DictionaryMapper.cs",
+  "generatedFrom": "osdu/docs/reference/flow/dictionary.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and DictionaryMapper.cs",
   "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
   "keyCount": 9,
   "keys": [

@@ -1,3 +1,18 @@
+---
+id: delivery-decision-0005
+title: "Decision 0005: attempts are pruned by age, keeping the latest per record"
+type: decision
+summary: "Why the ledger's attempt history is pruned by age while every record keeps its latest attempt."
+keywords:
+  - "retention"
+  - "attempts"
+  - "pruning"
+  - "ledger size"
+  - "history"
+related:
+  - delivery-concept-availability-and-retention
+  - delivery-concept-ledger
+---
 # 0005: Attempts are pruned by age, keeping the latest per record
 
 Status: proposed. Design reference: sections 7.7 and 17.6.

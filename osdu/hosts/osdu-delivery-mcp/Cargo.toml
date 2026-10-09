@@ -23,7 +23,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 
+# build.rs reads the documentation corpus's manifest to embed its pages.
+[build-dependencies]
+serde_json = "1"
+
 [dev-dependencies]
+# The documentation tests parse each page's frontmatter as the manifest builder does; the version the flow-language
+# library already locks.
+yaml-rust2 = "0.10"
 # The control plane the tests call is a small HTTP server of their own, and the HTTP transport is driven as a remote
 # client drives it. Same versions as the server library's, so nothing is built twice.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

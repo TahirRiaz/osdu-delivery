@@ -1,92 +1,217 @@
+---
+id: delivery-guide-deployment
+title: "Deploying OSDU Delivery: the images, what each tier needs beyond SQLFlow, and a first start in order"
+type: guide
+summary: "Deploying OSDU Delivery with compose, Kubernetes or Container Apps: its images, databases, what each tier needs, and a first start."
+keywords:
+  - deploy
+  - deployment
+  - docker compose
+  - kubernetes
+  - azure container apps
+  - bicep
+  - images
+  - osdu-delivery-worker
+  - sqlflow_osdu_db
+  - node token
+  - first deployment
+  - external scheduler
+  - azure data factory
+related:
+  - guide-deployment
+  - cli-worker
+  - delivery-concept-control-plane
+  - delivery-concept-environment-variables
+  - delivery-concept-architecture
+  - delivery-guide-getting-started
+  - delivery-cli-db
+  - delivery-guide-mcp
+sourceRefs:
+  - osdu/deploy/README.md
+  - osdu/deploy/docker/control-plane.Dockerfile
+  - osdu/deploy/docker/worker.Dockerfile
+  - osdu/deploy/docker/worker-entrypoint.sh
+  - osdu/deploy/docker/gui.Dockerfile
+  - osdu/deploy/docker/mcp.Dockerfile
+  - osdu/deploy/compose/docker-compose.yml
+  - osdu/deploy/compose/.env.example
+  - osdu/deploy/k8s/controlplane.yaml
+  - osdu/deploy/k8s/worker-pool.yaml
+  - osdu/deploy/k8s/mcp.yaml
+  - osdu/deploy/k8s/secrets.example.yaml
+  - osdu/deploy/bicep/main.bicep
+  - osdu/deploy/bicep/control-plane.bicep
+  - osdu/deploy/bicep/worker.bicep
+  - osdu/deploy/bicep/entra-app.bicep
+  - osdu/hosts/SqlFlow.Delivery.ControlPlane.Host/Program.cs
+  - osdu/hosts/SqlFlow.Delivery.Worker.Host/Program.cs
+  - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
+  - osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs
+  - sqlflow/src/SqlFlow.Cli/Program.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs
+---
+
 # Deploying OSDU Delivery
 
-The deployment assets and their step-by-step instructions are in [../../../deploy/](../../../deploy/README.md):
-the three container images, the docker compose stack, the Kubernetes manifests and the Azure Container Apps Bicep
-templates. This page is the reasoning behind them, and what an OSDU Delivery deployment needs that a plain SQLFlow
-one does not. SQLFlow's own deployment guide is
-[../../../../sqlflow/docs/reference/guides/deployment.md](../../../../sqlflow/docs/reference/guides/deployment.md).
+OSDU Delivery deploys exactly as SQLFlow does: an always-on control plane that owns the run queue and runs one replica,
+a static GUI, and worker nodes that poll the control plane for work and scale on its replica target. The tiers, KEDA, the
+ingress layouts, the drain contract, pools and triggering from Azure Data Factory are explained in
+[SQLFlow's deployment guide](../../../../sqlflow/docs/reference/guides/deployment.md). OSDU Delivery ships its own
+deployment assets under `osdu/deploy/` (docker, compose, Kubernetes, Bicep, with a README of their own), because its
+images are different artifacts. This guide covers what an OSDU Delivery deployment needs that a plain SQLFlow one does not.
 
-## Three images, one context
+## The images
 
-| Image | Publishes | Scales on | Behind the ingress? |
+| Image | Dockerfile | Publishes | Scales on |
 | --- | --- | --- | --- |
-| `osdu-delivery-control-plane` | `osdu/hosts/SqlFlow.Delivery.ControlPlane.Host` | one replica (dispatch has one owner) | yes, under `/api` |
-| `osdu-delivery-gui` | `osdu/gui` (with the vendored `sqlflow/gui` compiled in place) | trivially (static) | yes, under `/` |
-| `osdu-delivery-worker` | `osdu/hosts/SqlFlow.Delivery.Worker.Host` | the control plane's replica target (KEDA) | never (it takes work outbound) |
+| `osdu-delivery-control-plane` | `osdu/deploy/docker/control-plane.Dockerfile` | `osdu/hosts/SqlFlow.Delivery.ControlPlane.Host` | one replica |
+| `osdu-delivery-worker` | `osdu/deploy/docker/worker.Dockerfile` | `osdu/hosts/SqlFlow.Delivery.Worker.Host` | the control plane's replica target (KEDA) |
+| `osdu-delivery-gui` | `osdu/deploy/docker/gui.Dockerfile` | `osdu/gui`, compiled with the vendored `sqlflow/gui` | trivially (static) |
+| `osdu-delivery-mcp` (optional) | `osdu/deploy/docker/mcp.Dockerfile` | `osdu/hosts/osdu-delivery-mcp` | trivially (stateless) |
 
-All three build from the **repository root**. The .NET hosts reference both `osdu/src` and `sqlflow/src`, and the
-GUI compiles `osdu/gui` together with the vendored `sqlflow/gui` sources it imports, so no image can be built from
-a narrower context. The root `.dockerignore` keeps that context small.
+Every image builds from the **repository root**: the .NET hosts reference both `osdu/src` and `sqlflow/src`, the GUI
+compiles both GUI trees, and the MCP server compiles the documentation of both into its binary.
 
-The image names carry the product rather than the platform, because the vendored SQLFlow ships its own `sqlflow-*`
-images from its own deployment assets and these are different artifacts. Project, namespace, binary and
-environment-variable names stay `SqlFlow.*` and `SQLFLOW_*`.
+```bash
+docker build -f osdu/deploy/docker/control-plane.Dockerfile -t osdu-delivery-control-plane:latest .
+docker build -f osdu/deploy/docker/worker.Dockerfile        -t osdu-delivery-worker:latest .
+docker build -f osdu/deploy/docker/gui.Dockerfile           -t osdu-delivery-gui:latest .
+docker build -f osdu/deploy/docker/mcp.Dockerfile           -t osdu-delivery-mcp:latest .
+```
 
-A fourth image, `osdu-delivery-mcp`, is optional: the MCP server an AI assistant connects to, built from
-`osdu/hosts/osdu-delivery-mcp` with the same context. It is stateless, holds no credential, and sits behind the
-ingress under `/mcp` in an estate that offers an assistant ([mcp.md](mcp.md)).
+The worker host is the `sqlflow worker` verb with the OSDU module installed and nothing else: its entrypoint passes only
+the node's options (`--pool` from `SQLFLOW_WORKER_POOL`, `--poll-seconds`, `--drain-seconds`), and it refuses to be told to
+run another verb.
 
-## What each tier holds
+## The databases
 
-- **The control plane** is the API, the scheduler, the managed git sync and the run dispatcher, plus the module's
-  delivery and template endpoints and its background services. It owns the run queue through a lease, so it runs
-  **one replica**. It holds the catalog connection (which also carries the `osdu` schema), the JWT material, the
-  bootstrap admin and the git token, and no data-plane credential at all.
-- **Nodes** take work from the dispatcher with a personal access token minted with the `node` scope. A node holds
-  the OSDU module database reference, the ingestion database connection, the payload storage credential and the
-  OSDU client secret its pool's flows use. It opens no catalog connection.
-- **The GUI** is a static SPA. Its API base URL is written at container start from `SQLFLOW_API_BASE_URL`, so one
-  image serves every environment: empty means same-origin behind a path-splitting ingress, a URL means a separate
-  API origin with CORS configured on the control plane.
+| Database (shipped names) | Holds |
+| --- | --- |
+| `SQLFlow` | The metadata: SQLFlow's catalog schema and the module's `osdu` schema beside it (the ledger, mappings, templates, caches, partitions, central configuration). |
+| `OsduDeliveryPre` | What the pre flows land from the source files. |
+| `OsduDeliveryIng` | The keyed ingestion tables the delivery flows read. |
 
-## First start, in order
+The control plane's bootstrap creates (with `ControlPlane__Bootstrap__AllowCreate`) and migrates the metadata database:
+SQLFlow's catalog first, then the `osdu` schema. Nothing creates the two data databases; the compose stack's `dbinit`
+service does it once, and elsewhere they are provisioned with the server.
 
-1. Deploy the control plane and the GUI. Bootstrap provisioning applies SQLFlow's catalog migrations and then the
-   OSDU module's, seeds the roles, and creates the admin. It refuses to create a missing database unless
-   `ControlPlane__Bootstrap__AllowCreate` is on, so a mistyped connection never provisions the wrong server.
-2. Sign in and mint a node-scoped personal access token (`POST /api/v1/me/tokens` with scopes `["node"]`, or the
-   GUI's token page). Nodes cannot take work before this exists, which is why it cannot be a deployment parameter
-   on a first run.
-3. Deploy the worker pool with that token, and with the OSDU credentials and database references its flows need.
-4. Register the flow repository as a managed repo source, so the pre, ingestion and OSDU flow documents are synced
-   into the catalog and their schedules start firing.
-5. Save the templates the mappings pin and fill the OSDU cache (`sqlflow template`, and a `refresh` run of the
-   cache flow), so the preflight gate has something to check against.
+**Decide where the `osdu` schema lives before the first migrate.** By default it sits in the catalog's database. An estate
+that must keep it apart (Azure SQL lets no statement reach across two databases) names its database in
+`Osdu:Database:Connection` (or `SQLFLOW_OSDU_DB`) on the control plane, and points every node at it; the choice cannot be
+changed by editing the setting afterwards. In the Bicep templates this is `osduDatabaseName`.
 
-## Scale-in must not sever a delivery
+The source database a delivery flow reads allows snapshot isolation once, so a record and its child rows are read as one
+moment: `ALTER DATABASE [OsduDeliveryIng] SET ALLOW_SNAPSHOT_ISOLATION ON;` (Azure SQL Database allows it by default). A
+flow that cannot have it declares `source.incremental.isolation: readCommitted`; without either, the run fails with
+`the source database does not allow snapshot isolation, which is how a record and its child rows are read as one moment`.
 
-A node handles SIGTERM by draining: it stops taking work and lets the runs it already holds finish and record
-their outcomes, for up to `SQLFLOW_WORKER_DRAIN_SECONDS` (default 540). That only works if the orchestrator waits.
-Both Kubernetes and Container Apps default to a 30 second grace period, so **set the termination grace period
-above the drain window on every node workload**; the shipped manifests and templates set 600.
+## What each tier is given beyond SQLFlow's
 
-Left at the default, the drain starts and is killed 30 seconds in. Every unfinished run is severed with no outcome
-recorded, is recovered only by a requeue, and each requeue consumes one of that run's execution attempts, so three
-unlucky scale-ins fail a perfectly healthy delivery and report the run itself as the cause. A severed delivery
-loses no records, because the ledger leases each record to one attempt at a time and a lease the severed node held
-expires, but it does repeat the work.
+| Tier | OSDU Delivery adds |
+| --- | --- |
+| Control plane | Every `${env:...}` reference the flows use, the same list as the nodes', because a person's reads of a flow (a probe, a read-back, a preview, a source read, the explorer) run here with the flow's credentials; `SQLFLOW_DELIVERY_PRIVATE_NETWORKS`; the `Osdu:*` settings it needs. It never delivers. |
+| Node | `SQLFLOW_OSDU_DB`, the connection of the database holding the `osdu` schema with a login on that schema alone; every `${env:...}` reference its pool's flows use (the ingestion database, the OSDU endpoint and its credentials); `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` when a target resolves to a private address. A node opens no catalog connection. |
+| GUI | Nothing beyond SQLFlow's `SQLFLOW_API_BASE_URL`. |
+| MCP server | Optional; holds no credential ([the MCP server](mcp.md#running-it-as-a-service)). |
 
-## Placement
+Without `SQLFLOW_OSDU_DB` a node refuses to start (`ERROR  the worker refuses to start: ...`), and it also refuses a
+module database that is missing, behind or ahead of its build. Every variable is listed in
+[environment variables](../concepts/environment-variables.md).
 
-Nodes must run where they can reach the ingestion database, the payload storage and the OSDU endpoint their pool's
-flows touch. That is what pools are for: a cloud pool serves cloud-reachable data, and an on-prem pool means nodes
-on-prem pointed at the same control plane and registered under that pool name. Only the node needs that reach; the
-control plane never touches any of it.
+The shipped assets wire the two data databases as `SQLFLOW_CONN_PRE` and `SQLFLOW_CONN_DWH`, and the sample OSDU references
+(`OSDU_URL`, `OSDU_TOKEN_URL`, `OSDU_SCOPE`, `OSDU_CLIENT_ID`, `OSDU_CLIENT_SECRET`, `OSDU_DATA_PARTITION`, `OSDU_ACL_OWNER`,
+`OSDU_ACL_VIEWER`, `OSDU_LEGAL_TAG`) on both the control plane and the nodes. Rename them to whatever your flows reference,
+and keep the two lists equal. Values the central configuration holds ([sqlflow config](../cli/config.md)) need no variable
+on any tier.
+
+## A first start, in order
+
+1. **Deploy the control plane and the GUI.** Bootstrap migrates the catalog and then the `osdu` schema, seeds the roles and
+   creates the admin. Startup refuses pending module migrations, a database newer than the build and a catalog older than
+   the module needs, naming the migration ([sqlflow db](../cli/db.md)).
+2. **Mint a node token.** Sign in as the admin and mint a personal access token with the `node` scope
+   (`POST /api/v1/me/tokens` with scopes `["node"]`, or the GUI's token page). It can only be minted once the control plane
+   runs, which is why a first start has two steps.
+3. **Deploy the workers** with that token as `SQLFLOW_TOKEN`, `SQLFLOW_OSDU_DB`, and the references their flows use.
+4. **Register the flow repository** as a managed repository source, so the pre, ingestion and OSDU flows, the mappings and
+   the cache flows are synced and their schedules fire.
+5. **Register the partitions** the flows deliver to ([sqlflow partition](../cli/partition.md)), save the templates the
+   mappings pin ([sqlflow template](../cli/template.md)) and fill each partition's cache with a refresh run of its cache
+   flows.
+6. **Plan before anything touches OSDU**: run the pre and ingestion flows, then the delivery flow with operation `plan`,
+   then `deliver` a small scope. [Getting started](getting-started.md) walks through it.
+
+### docker compose
+
+```bash
+cd osdu/deploy/compose
+cp .env.example .env                      # set the secrets there, never in the compose file
+docker compose up -d --build mssql dbinit controlplane gui
+# mint the node token, put it in .env as SQLFLOW_NODE_TOKEN, then:
+docker compose up -d --build worker
+docker compose --profile mcp up -d --build mcp   # optional: the MCP server on http://localhost:8787/mcp
+```
+
+The GUI is on `http://localhost:8081` and the API on `http://localhost:5000`.
+
+### Kubernetes
+
+`osdu/deploy/k8s` holds `namespace.yaml`, `controlplane.yaml`, `gui.yaml`, `ingress.yaml`, `worker-pool.yaml` (one pool;
+copy it per pool), `mcp.yaml` (optional, adds `/mcp` to the same host) and `secrets.example.yaml`, which names every key of
+the `osdu-delivery-secrets` secret, including `osdu-module-connection` (the node's `SQLFLOW_OSDU_DB`). The layout is
+SQLFlow's: one host with `/api` to the control plane and `/` to the GUI, so no CORS.
+
+### Azure Container Apps
+
+`osdu/deploy/bicep/main.bicep` deploys the whole estate: Log Analytics, the environment, a Key Vault holding every secret,
+the Azure SQL databases, and the control plane, a worker pool and the GUI (not the MCP server). OSDU Delivery's
+parameters beyond SQLFlow's:
+
+| Parameter | Meaning |
+| --- | --- |
+| `osduDatabaseName` | The database holding the `osdu` schema; the catalog's database by default. |
+| `preDatabaseName`, `ingestionDatabaseName` | The two data databases (`OsduDeliveryPre`, `OsduDeliveryIng`). |
+| `workerFlowEnv` | One `{ name, secretName }` per further `${env:...}` reference the flows use, each naming a Key Vault secret created out of band. The control plane is given the same references. |
+| `privateNetworks` | `SQLFLOW_DELIVERY_PRIVATE_NETWORKS` for the apps. |
+| `nodeToken` | The node token; empty on a first deployment, then redeployed with it. |
+| `provisionEntraApp`, `azureAdAllowedGroupObjectId` | The Entra registration with the `SqlFlow.User` app role and assignment required ([authentication and identity](../concepts/authentication-and-identity.md)). |
+
+## Scale-in, placement and the module's own settings
+
+- **Drain.** A node draining on SIGTERM finishes the deliveries it holds for up to `SQLFLOW_WORKER_DRAIN_SECONDS` (540 by
+  default), so the termination grace period has to be longer: `worker-pool.yaml` and `worker.bicep` set 600. A severed
+  delivery loses no record (the ledger leases each record to one attempt), but it repeats work and consumes one of the
+  run's execution attempts ([SQLFlow's worker](../../../../sqlflow/docs/reference/cli/worker.md)).
+- **Placement.** A node runs where it reaches its pool's ingestion database and OSDU endpoint. The control plane needs
+  the same reach for the reads it answers.
+- **Probing and metrics.** The scheduled target probe (`Osdu:TargetProbe`) and the metrics export (`Osdu:Telemetry` on the
+  control plane, `OSDU_TELEMETRY_*` on nodes) are off until a deployment turns them on
+  ([run trace and metrics](../concepts/run-trace-and-metrics.md)).
 
 ## Triggering from an external scheduler
 
-OSDU Delivery runs under Azure Data Factory, or any scheduler, as a thin trigger rather than a container booted
-per run: the control plane is always on and a trigger is a sub-second authenticated call. Each step is one HTTP
-request:
+An OSDU flow is triggered as SQLFlow's ADF integration triggers any flow: authenticate with a service account's personal
+access token, `POST /api/v1/runs`, poll `GET /api/v1/runs/{runId}` until it is terminal, and fail the pipeline when it did
+not succeed. The trigger body adds the kind's own arguments:
 
-1. **Authenticate.** A service account's personal access token, read from a secret store. The break-glass
-   alternative is `POST /api/v1/auth/token` with the bootstrap secret, mapped only when one is configured.
-2. **Trigger.** `POST /api/v1/runs` (scope `operate`) with the repository and flow, the flow's parameter values,
-   and the operation and payload the kind takes. A 202 carries the run id.
-3. **Wait.** Poll `GET /api/v1/runs/{runId}` until the status is terminal. The detail carries the record counts
-   and the submission the run produced.
-4. **Fail on failure.** Fail the pipeline when the terminal status is not `succeeded`, so a failed delivery
-   surfaces as a failed pipeline run.
+```json
+{
+  "repoId": "0195c9a2-7f30-7c44-9c1e-0aa1b2c3d4e5",
+  "flowName": "welldb-wellbore-03-delivery",
+  "operation": "deliver",
+  "values": { "partition": "dev" }
+}
+```
 
-See [../cli/control-plane.md](../cli/control-plane.md) for the same calls from a terminal, and
-[../cli/delivery.md](../cli/delivery.md) for what each operation does.
+`operation` is the kind's (`deliver`, `plan`, `verify`, ... for a delivery flow), `values` are the flow's parameters and,
+for a flow that names its partitions, `partition`; `payload` carries the kind's options. They are described in
+[running an OSDU flow](../cli/run.md). A delivery run that held records still succeeds: held records are an outcome in the
+ledger, not a failure of the run, so a pipeline that must stop on them reads the held and failed counts in the run
+detail's `resultJson`.
+
+## See also
+
+- [SQLFlow: deploying](../../../../sqlflow/docs/reference/guides/deployment.md)
+- [Environment variables](../concepts/environment-variables.md)
+- [The control plane](../concepts/control-plane.md)
+- `osdu/deploy/README.md`, beside the assets

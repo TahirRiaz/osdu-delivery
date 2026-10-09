@@ -70,6 +70,7 @@ pub fn host() -> McpHost {
     McpHost::new(SERVER_NAME, env!("CARGO_PKG_VERSION"))
         .registered_as(REGISTRATION)
         .state_prefix(SERVER_NAME)
+        .introduced_as(instructions::INTRODUCTION)
         .without_tools(WITHHELD.iter().copied())
         .with_module(module())
 }

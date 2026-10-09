@@ -1,0 +1,339 @@
+---
+id: delivery-cli-run
+title: "Running an OSDU flow with sqlflow run and sqlflow trigger: operations, values, payload and result"
+type: cli-command
+summary: "What OSDU flows add to sqlflow run and trigger: each kind's operations, --set values and the partition, the --payload fields, the result and exit codes."
+keywords:
+  - run a delivery flow
+  - "--operation"
+  - "--payload"
+  - "--set"
+  - partition
+  - deliver
+  - redeliver
+  - recordKeys
+  - verify
+  - reverse
+  - undo
+  - delete-ledger
+  - refresh
+  - trigger
+related:
+  - cli-run
+  - cli-control-plane
+  - delivery-flow-delivery
+  - delivery-concept-submissions
+  - delivery-concept-partitions
+  - delivery-concept-removal-and-reversal
+  - delivery-cli-records
+  - delivery-cli-config
+sourceRefs:
+  - sqlflow/src/SqlFlow.Cli/Program.cs
+  - sqlflow/src/SqlFlow.Core/Runs/RunParameters.cs
+  - sqlflow/src/SqlFlow.Execution/DocumentExecutor.cs
+  - sqlflow/src/SqlFlow.Yaml/YamlDocumentLoader.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/SourceRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/RetrievalExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/AssertionExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DimensionExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/InventoryExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/CacheFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/RetrievalFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/DimensionFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Model/DeclaredPartition.cs
+  - osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Model/CacheDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryServices.cs
+---
+
+# Running an OSDU flow with sqlflow run and sqlflow trigger: operations, values, payload and result
+
+An OSDU flow runs like any SQLFlow flow: `sqlflow run <flow.yaml>` runs it on this machine, `sqlflow trigger` queues it
+on the fleet, and a schedule fires it. The verbs, their other options, the run artifacts (`run.json`, `run.log`) and the
+catalog write-back are SQLFlow's, documented in [sqlflow run](../../../../sqlflow/docs/reference/cli/run.md) and
+[the control-plane verbs](../../../../sqlflow/docs/reference/cli/control-plane.md). This page covers what the OSDU flow
+kinds (`delivery`, `retrieval`, `cache`, `assertion`, `dimension`, `inventory`) add: the operations each kind runs, the
+values a run takes (the partition among them), the payload, the result, and the exit codes.
+
+The command line is `sqlflow`: OSDU Delivery's CLI is SQLFlow's CLI with the OSDU verbs added. The options every
+command shares (`--db`, `--json`, `-v`, the `.sqlflow/env` file) are described in
+[CLI conventions](../../../../sqlflow/docs/reference/concepts/cli-conventions.md).
+
+## Synopsis
+
+```bash
+sqlflow run <flow.yaml> [--operation <name>] [--set name=value]... [--payload <json> | --payload @<file>]
+            [--db <conn-ref>] [--json] [--log-level info|debug|trace] [...sqlflow run's other options]
+
+sqlflow trigger --repo <name|id> --flow <flow> [--operation <name>] [--set name=value]... [--payload <json> | @<file>]
+            [...sqlflow trigger's other options]
+```
+
+## The kind arguments
+
+`--operation`, `--set` and `--payload` are SQLFlow's generic arguments for a flow of a registered kind. They are parsed
+and validated the same way by `run`, by `trigger` (on the control plane, before anything is queued) and by a schedule,
+and they are recorded on the run, so its history says exactly what was asked.
+
+| Option | Shape | Meaning |
+| --- | --- | --- |
+| `--operation <name>` | 1 to 32 characters: lower-case letters, digits and `-`, starting with a letter | Which of the kind's operations the run performs. Left out, the kind's default. |
+| `--set name=value` | repeatable; at most 32; a name is an identifier of at most 64 characters, a value at most 1,000 characters without control characters | A run value: one of the flow's own `parameters`, or `partition` (see [The partition](#the-partition)). A later `--set` of the same name wins. |
+| `--payload <json>` or `--payload @<file>` | one JSON object, at most 64,000 characters, inline or read from a file | The kind's own arguments (see [The payload](#the-payload)). |
+
+What SQLFlow refuses before the run starts, each as one `ERROR  <message>` line and exit 1:
+
+```text
+operation must be 1 to 32 characters of lowercase letters, digits and '-', starting with a letter.
+Parameter '<assignment>' must be written as name=value.
+At most 32 parameter values can be supplied.
+payload must be at most 64000 characters of JSON.
+--payload is not valid JSON: <parser message>
+operation must be one of deliver, plan, intake, drain, verify, replan, sync, reverse, undo, delete-ledger for 'delivery' flows; '<name>' is not.
+```
+
+SQLFlow's backfill flags (`--full`, `--from`/`--to`, `--file-pattern`, `--source-filter`) have no meaning for an OSDU
+flow: each kind reads its source its own way. Given together with a kind argument they are refused, for example
+`fullLoad do(es) not apply to 'delivery' flows; the replan operation reads every row of the scope again, and recordKeys in the payload scope a run to chosen records.`
+Without any kind argument (no `--operation`, `--set` or `--payload`) they are not checked, and the run ignores them.
+`--assertions-only` is refused for every kind but `ing`.
+
+## What a run needs
+
+| Kind | Needs the module database for |
+| --- | --- |
+| `delivery` | Every operation: the ledger, the templates and the partition's cache live there. Without it a run fails, for example with `This host has no osdu database connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB); the delivery ledger, templates and caches are unavailable. ...` |
+| `cache` | `refresh`: it writes the version into the partition's cache. |
+| `assertion` | `test`: it keeps the report there. |
+| `dimension` | `build`: it keeps the builds there, and reads the templates of the kinds the dimensions read. |
+| `inventory` | `build`, `reconcile` and `remove`: it keeps the inventories there. |
+| `retrieval` | Nothing; when it has one, each `retrieve` is recorded in the flow's ledger. |
+
+On a workstation the module database is the catalog's (`--db`, else `${env:SQLFLOW_CATALOG_DB}`) unless
+`SQLFLOW_OSDU_DB` names one of its own ([The osdu module database in sqlflow db](db.md)). A node takes it from
+`SQLFLOW_OSDU_DB` alone. The flow's own references (its ingestion connection, the OSDU endpoint and credentials) resolve
+on the machine that runs it, from the central configuration a run carries first ([sqlflow config](config.md)) and the
+environment after. The control plane attaches that configuration to the runs it queues of every OSDU kind but
+`inventory`; an inventory run, and a `sqlflow run` on a workstation, carry none and resolve from the environment alone.
+
+## The partition
+
+A flow that works in partitions (it names them under `partitions`, or names neither them nor a
+`data-partition-id` header and so serves every partition registered with the catalog) runs in the partition the run
+value `partition` names: `--set partition=test`, a schedule's `values: { partition: test }`, or the partition picked in
+the GUI's title bar when a run is started there. The value never reaches the flow's own parameters: it binds the flow,
+so the ids, the `data-partition-id` header, the cache, the ledger and the central configuration of the run are that
+partition's ([Partitions](../concepts/partitions.md)).
+
+| Kind | No partition named | `partition=*` |
+| --- | --- | --- |
+| `delivery` | The registry's default when the flow serves it, else the flow's only listed partition; otherwise refused (`Flow '<name>' serves dev, test and no partition is the default; name the one this run or request targets, or make one the default.`) | Refused: `A run or request of delivery flow '<name>' acts in one partition; name it rather than '*'.` |
+| `cache` | As for a delivery flow. | Refreshes every partition the flow serves, one after another. One that fails fails the run, naming it; the others stay refreshed. |
+| `assertion`, `dimension`, `inventory` | As for a delivery flow. | Refused: one partition per run (a report, a build, an inventory describes one partition). |
+| `retrieval` | It reads the partition its `source.headers` name. | Any partition is refused: `Retrieval flow '<name>' names no partitions: it retrieves from the partition its source.headers name, so a run cannot target '<id>'. Leave the partition out of its run.` |
+
+A flow whose partition is its `data-partition-id` header refuses a partition too. A delivery, cache or retrieval flow of
+that kind that declares a parameter named `partition` (one written before partitions existed) takes the value as that
+parameter instead. A partition named for a flow that follows the registry has to be registered
+([sqlflow partition](partition.md)).
+
+## Operations
+
+| Kind | Operation | What it does | Writes to OSDU |
+| --- | --- | --- | --- |
+| `delivery` | `deliver` (default) | Plan the rows the ingestion tables changed and deliver what renders differently. | yes |
+| | `plan` | Plan the changed rows and report what a delivery would send, changing nothing. | no |
+| | `intake` | Plan the rows into work batches without delivering them: a fan-out member's share of a plan. | no |
+| | `drain` | Deliver the work batches a submission already planned. | yes |
+| | `verify` | Compare what OSDU holds with what the ledger recorded (5,000 records a run, passing over records verified in the last 24 hours unless forced). With the flow's `verify.reconcile`, forget what OSDU holds of each drifted or missing record, so the next plan that reads its row sends it. | no |
+| | `replan` | Read every row of the scope again and deliver what renders differently now. | yes |
+| | `sync` | Read the ledger's records from the ingestion tables and consolidate the ledger: record what it lacks, flag rows that changed unseen for the next run, report rows that are gone. Sends nothing. | no |
+| | `reverse` | Put OSDU back as it was before one run or submission: remove what it created, restore the version it replaced, and block those records until their source changes or they are released. | yes |
+| | `undo` | Undo what deliveries that did not complete left in OSDU. Deliver runs, and drains of the whole flow, end with the same sweep. | yes |
+| | `delete-ledger` | Remove every record of the ledger from OSDU (reversibly), then delete the whole ledger, so the next run reads every row and delivers each as a new record. | yes |
+| `retrieval` | `retrieve` (default) | Retrieve the records the query matches into files on the lake, from where the last run stopped. | no |
+| | `plan` | Count what the query matches and say where a retrieve would write. | no |
+| `cache` | `refresh` (default) | Capture every declared type (from OSDU, a dictionary or an ingestion table) and merge it into the partition's cache, writing a version when the content moved. | no |
+| | `plan` | Count what each declared type would hold, writing nothing. | no |
+| `assertion` | `test` (default) | Run the tests (all, or those the payload names) against what OSDU holds, and record the report. | no |
+| | `plan` | Check every test against the template of its kind and count what each would read, recording nothing. | no |
+| `dimension` | `build` (default) | Read every distinct key of each dimension from the search index, read labels, clean them into values, and keep what changed. | no |
+| | `plan` | Check every dimension against the templates and count the records each would read, keeping nothing. | no |
+| `inventory` | `build` (default) | Read every id each inventory's kind holds, keep what changed, and compare every id with the ledgers of the partition. | no |
+| | `reconcile` | Compare each inventory, as its last build left it, with the ledgers as they stand now. | no |
+| | `plan` | Count the records each inventory would read, and say what would stop it. | no |
+| | `remove` | Remove from OSDU the ids of one finding (`orphan`, `stale` or `forgotten`), for a flow whose document allows it. | yes |
+
+A source with interfaces runs the interfaces its payload selects, every one when it selects none: every selected
+interface is checked first, then they run in waves of their dependencies, and an interface that stops takes only the
+interfaces waiting for it along ([Interfaces](../flow/interfaces.md)). What each operation does to the ledger is on
+[Submissions](../concepts/submissions.md) and [Removal and reversal](../concepts/removal-and-reversal.md).
+
+## The payload
+
+Everything that scopes or forces a run beyond its operation travels in the `--payload` JSON object, because SQLFlow's
+own flags are kind-agnostic. The kind parses it strictly: an unknown property, a wrong type or a value out of range is
+refused naming it (`payload property '<name>' is not one of ...`), at every boundary a run is validated at, so a payload
+no engine path could honour is refused before anything is queued.
+
+### A delivery flow's payload
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `force` | `true`/`false` | Look at every record past the whole-run gates (the tier 0 skip and an already completed submission). Each record's own hashes still decide what is sent; to send records again, use `redeliver`. A `verify` with `force` checks records verified in the last 24 hours too; an `undo` with `force` also takes the undos that failed as often as the sweep tries. |
+| `submissionId` | UUID | The submission the run works on: a re-run, a fan-out member's share, or the submission a `reverse` run reverses. |
+| `runId` | UUID | The run a `reverse` run reverses. Only `reverse` takes it. |
+| `recordKeys` | array of UUIDs | The delivery keys the run is scoped to: at most 1,000, each once. A `deliver` run sends the named records again (everything of them, unless `redeliver` names a part). |
+| `redeliver` | text | What a `deliver` run sends again, changed or not: `all`, `record` (the document; its datasets and bulk data keep what OSDU holds), `files`, `bulk`, `workflow`, or the older names `metadata` (the record) and `payload` (the files or the bulk data). Without `recordKeys`, every record the flow has delivered in the partition. A part the route does not send is refused, naming the parts it does. |
+| `rerender` | `true`/`false` | Bring records up to date: render the named records, or every delivered record, again under today's rules and let each record's hashes decide, so only what renders differently is sent. A `plan` with `rerender` renders every record it reads and says what that would send. |
+| `interface` | text | The one interface of a source the run works on. A run on records or slices, and a `reverse` of a run, of a source with several interfaces has to name it; a run on a submission finds its interface from the submission. |
+| `interfaces` | array of text | The interfaces a run of a source runs, each once (at most 200); every interface when left out. |
+| `slices` | array of whole numbers | The key slices of `submissionId` an `intake` member plans: 0 to 1023, each once. Written by a fan-out, not by hand. |
+| `confirm` | text | The partition a `delete-ledger` run acts in, as the person who asked typed it. Required by `delete-ledger` and taken by no other operation of a delivery flow (an inventory flow's `remove` takes its own). |
+| `references`, `partitionReferences` | objects | The central configuration the control plane supplies with every delivery, cache, retrieval, assertion and dimension run it queues (not with an inventory run) ([sqlflow config](config.md)). Not written by hand. |
+
+Which fields each operation takes:
+
+| Operation | Takes | Refuses |
+| --- | --- | --- |
+| `deliver` | `force`, `submissionId`, `recordKeys`, `redeliver`, `rerender`, `interface`, `interfaces` | `slices`; `redeliver` or `rerender` with `submissionId`; `rerender` with `redeliver` |
+| `plan` | `force`, `submissionId`, `recordKeys`, `rerender`, `interface`, `interfaces` | `redeliver`, `slices`; `rerender` with `submissionId` |
+| `intake` | `force`, `submissionId`, `recordKeys`, `slices` (with `submissionId`), `interface`, `interfaces` | `redeliver`, `rerender` |
+| `drain` | `submissionId`, `interface`, `interfaces` | `force`, `recordKeys`, `redeliver`, `rerender`, `slices` |
+| `verify` | `force`, `recordKeys`, `interface`, `interfaces` | `submissionId`, `redeliver`, `rerender`, `slices` |
+| `replan` | `force`, `interface`, `interfaces` | `submissionId`, `recordKeys`, `redeliver`, `rerender`, `slices` |
+| `sync` | `recordKeys`, `interface`, `interfaces` | `force`, `submissionId`, `redeliver`, `rerender`, `slices` |
+| `reverse` | `submissionId` or `runId` (exactly one), `interface` | `force`, `recordKeys`, `redeliver`, `rerender`, `slices`, `interfaces` |
+| `undo` | `force`, `interface`, `interfaces` | `submissionId`, `recordKeys`, `redeliver`, `rerender`, `slices` |
+| `delete-ledger` | `confirm` (required), `interface`, `interfaces` | `force`, `submissionId`, `recordKeys`, `redeliver`, `rerender`, `slices` |
+
+Across every operation: `submissionId` and `recordKeys` never together; `interface` and `interfaces` never together;
+`interfaces` never with `submissionId`, `recordKeys` or `slices`; `runId` only on `reverse`; `confirm` only on
+`delete-ledger`; and `tests`, `tags`, `dimensions`, `inventories` and `removal`, which belong to the other kinds, never.
+A refusal names the field and why, for example
+`payload redeliver does not apply to the plan operation: a plan sends nothing.`
+
+A redelivery or a release of many records is planned by the next deliver run whole: the records the ledger was asked
+to plan again are read by key, 5,000 to a pass and each pass in a submission of its own, before the run's own pass.
+
+### Other kinds' payloads
+
+| Kind | Takes | Refused with |
+| --- | --- | --- |
+| `cache` | Nothing but the central configuration the control plane supplies. | `A cache flow's payload carries only the central configuration the control plane supplies; a run names its partition and the flow's parameter values under values.` |
+| `retrieval` | `force`: restart an incremental retrieval at its declared start. | `A retrieval flow's payload carries only force; ...` |
+| `assertion` | `tests` (test names) and `tags` (every test carrying one of them), each at most 500 names, each once. With neither, every test runs. | `An assertion flow's payload names the tests a run runs (tests, tags) and nothing else; ...` |
+| `dimension` | `dimensions`: the dimensions to build; every one when left out. | `A dimension flow's payload names the dimensions a run builds (dimensions) and nothing else; ...` |
+| `inventory` | `inventories`: the inventories to build or reconcile. A `remove` run names exactly one inventory, `removal` (`finding`, `scope` `record` or `everything`, `expected`, and optionally `ids`) and `confirm`, the partition. | `An inventory flow's payload names the inventories a run builds or reconciles (inventories), and for a removal what it removes (removal, confirm), and nothing else; ...` |
+
+A name that is not a test, tag, dimension or inventory of the flow fails the run naming what the flow has, for example
+`Assertion flow '<name>' has no test named '<x>'; its tests are <names>.`
+
+## The result
+
+Without `--json`, `sqlflow run` prints SQLFlow's shared line for a registered kind and the run's folder:
+
+```text
+OK  delivery 'welldb-wellbore-03-delivery' completed in <seconds>s
+  run log: <flow folder>/.sqlflow/runs/welldb-wellbore-03-delivery/<yyyyMMdd-HHmmss>_<run id prefix>
+```
+
+or `FAILED  <error>` in place of the `OK` line. The run log says what the run did, step by step. With `--json`, stdout
+carries the run's result object (camelCase, enum values as names, `operation` first), which is also the `result` of its
+`run.json` and what the run page and the run list show:
+
+| Run | Result carries |
+| --- | --- |
+| `deliver`, `replan` | `operation`, `submissionId`, `source`, `selection`, `status`, `recordCount`, this run's `planned`, `skippedUnchanged`, `awaitingApproval`, `skippedStale`, `unchangedAtPush`, `blocked`, `delivered`, `held`, `failed`, `retried`, `waiting` and `batches`, the fan-out (`intakeMembers`, `drainMembers`), the passes over records asked to be planned again (`requestedPasses`, `requestedSubmissionId`, `requestedRecords`), `nothingToDo`, `error`, the submission's totals across every run (`submission`), what the closing sweep undid (`undone`) and `rowsLoaded` (the records delivered). |
+| `plan` | `records`, `deliveries` (of them `metadata` and `payload`), `skips`, `awaitingApproval`, `stale`, `holds`, `blocked`, `untracked`, `slices`, `skippedWholeRun` and `skipReason`, `issues`, `renderedEvery`, and `sample`: the first 20 records a delivery would send, each with its key, label, source key, action and reason. |
+| `intake` | `submissionId`, `slices`, `records`, `planned`, `skippedUnchanged`, `awaitingApproval`, `skippedStale`, `held`, `blocked`, `untracked`, `batches`, `alreadyProcessed`. |
+| `drain` | `submissionId`, `processed`, `delivered`, `unchanged`, `retried`, `held`, `failed`, `batches`, `waiting`, `undone`. |
+| `verify` | `checked`, `matched`, `drifted`, `missing`, `errors`, `reconcile`. |
+| `sync` | `checked`, `inAgreement`, `arrivalsRecorded`, `changedUnseen`, `deletedUnseen`, `plansRequested`, `restored`, `notFound`, `notFoundRecorded`, `foundAgain`, `withoutKey`, `notInLedger`, `notFoundSample`. |
+| `reverse` | `reversalId`, `source`, `sourceId`, `records`, `taken`, `restored`, `removed`, `skipped`, `failed`, `open`, and `outcomes` across every run of the reversal. |
+| `undo` | `records`, `removed`, `restored`, `gone`, `kept`, `superseded`, `failed`. |
+| `delete-ledger` | `partition`, `removed`, `alreadyGone`, `alreadyRemoved`, `neverInOsdu`, and what was deleted: `records`, `submissions`, `workBatches`, `watermarks`, `reversals`; `undone`. |
+| A source with interfaces | `operation`, `source` and `interfaces`, each with its `interface`, `flowId`, `ledger`, `route`, `routeReason`, `waitsFor`, `waitReasons`, `wave`, `state` (`completed`, `stopped` or `skipped`), `reason`, `startedUtc`, `completedUtc` and `result` (what a run of it alone returns), with totals added up. |
+| `refresh` | `scope` (the partition), `flow`, `version`, `previousVersion`, `written`, `capturedUtc`, `types` (each with its origin, records, change and the delivered records its changes reach) and `systemProperties`. A run over several partitions gives `partitions`, each with its `outcome` or `error`. |
+| cache `plan` | `scope`, `flow`, `currentVersion`, `types` (each with what it would hold), `records`, `systemProperties`. |
+| `plan` of a retrieval, assertion, dimension or inventory flow | What the plan counted: a retrieval's `kinds`, `total` and the `location` a retrieve would write to; an assertion flow's `tests` (each with what it matches and would read, the template it fits and its problems) and `testsLeftOut`; a dimension flow's `dimensions`; an inventory flow's `inventories`. |
+| `retrieve` | `retrievalId`, `location`, `manifest`, the window (`windowField`, `windowFrom`, `windowTo`), `records`, `files`, `bytes`, `nothingToDo`, `kinds`. |
+| `test` | `assertionRunId`, `flow`, `partition`, `status`, `tests`, `passed`, `failed`, `warned`, `errored`, `skipped`, `results` (the tests that did not pass, the first 50) and `resultsLeftOut`. |
+| `build` (dimension) | `flow`, `partition`, `built`, `failed`, `skipped`, `dimensions`. |
+| `build`, `reconcile` (inventory) | `flow`, `partition`, `completed`, `failed`, `inventories`. |
+| `remove` (inventory) | `inventoryRemovalId`, `inventory`, `finding`, `scope`, `requested`, `removed`, `gone`, `skipped`, `failed`, `error`. |
+| A run that failed before it produced an outcome | `operation` and `error`. |
+
+## Examples
+
+Plan the wellbores of the `test` partition, forcing past the change gates:
+
+```bash
+sqlflow run flows/welldb-wellbore-03-delivery.yaml --operation plan --set partition=test --payload '{"force":true}'
+```
+
+Deliver the `dev` partition, then send two wellbores again, the record documents only:
+
+```bash
+sqlflow run flows/welldb-wellbore-03-delivery.yaml --set partition=dev
+sqlflow run flows/welldb-wellbore-03-delivery.yaml --set partition=dev \
+  --payload '{"recordKeys":["<delivery key>","<delivery key>"],"redeliver":"record"}'
+```
+
+Run only the well log interface of a source:
+
+```bash
+sqlflow run flows/welldb-03-delivery.yaml --set partition=dev --payload '{"interfaces":["welllogs"]}'
+```
+
+Put OSDU back as it was before one run, queued on the fleet:
+
+```bash
+sqlflow trigger --repo welldb --flow welldb-wellbore-03-delivery --set partition=dev \
+  --operation reverse --payload '{"runId":"<run id>"}'
+```
+
+Undo what unfinished deliveries left, retrying the undos that used every try:
+
+```bash
+sqlflow run flows/welldb-wellbore-03-delivery.yaml --set partition=dev --operation undo --payload '{"force":true}'
+```
+
+Refresh the lookup cache of every partition the cache flow serves, and run the smoke tests of an assertion flow:
+
+```bash
+sqlflow run flows/welldb-lookups-00-cache.yaml --set 'partition=*'
+sqlflow run flows/welldb-welllog-04-assertion.yaml --set partition=dev --payload '{"tags":["smoke"]}'
+```
+
+Read a long payload from a file:
+
+```bash
+sqlflow run flows/welldb-wellbore-03-delivery.yaml --set partition=dev --payload @keys.json
+```
+
+## Exit behavior
+
+| Exit code | Condition |
+| --- | --- |
+| 0 | The run succeeded. |
+| 1 | The run failed: its operation failed; an interface of a source stopped or was skipped; a cache partition of a run over several failed; a dimension build or an inventory failed; a removal stopped part way; or an assertion flow's tests came out as its `failRunOn` says fails the run (a failed or errored test by default). The result still says what was done. Also exit 1, with one `ERROR  <message>` line and no run, for kind arguments refused before the run starts. |
+| 130 | Interrupted with Ctrl+C. |
+
+A catalog write-back failure never changes the exit code (SQLFlow's rule). `sqlflow trigger` exits as SQLFlow's
+control-plane verbs do: 0 once queued, or with `--follow` by the outcome of the run.
+
+## See also
+
+- [sqlflow run](../../../../sqlflow/docs/reference/cli/run.md): the verb, its other options, run artifacts and catalog write-back.
+- [The control-plane verbs](../../../../sqlflow/docs/reference/cli/control-plane.md): `trigger`, `runs`, `--follow`.
+- [Delivery flow](../flow/delivery.md): the document a delivery run reads.
+- [Submissions](../concepts/submissions.md): planning, work batches, fan-out and draining.
+- [Removal and reversal](../concepts/removal-and-reversal.md): `reverse`, `undo` and `delete-ledger`.
+- [sqlflow records](records.md): the ledger a run writes, record by record.

@@ -1,59 +1,128 @@
-# Authentication and identity
+---
+id: delivery-concept-authentication-and-identity
+title: "Who may operate OSDU Delivery: scopes on the delivery routes, and how the ledger names people"
+type: concept
+summary: "Which delivery actions any signed-in user can take, which need admin, who can sign in at all, and how the ledger names who acted."
+keywords:
+  - authentication
+  - authorization
+  - permissions
+  - roles
+  - scopes
+  - admin scope
+  - who can deliver
+  - who can delete records
+  - actor
+  - audit trail
+  - entra app role
+  - sqlflow.user
+  - node token
+  - requested by
+related:
+  - concept-authentication-and-identity
+  - concept-control-plane
+  - delivery-concept-api
+  - delivery-concept-ledger
+  - delivery-guide-deployment
+  - delivery-guide-mcp
+  - cli-auth
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryConfigEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryPartitionEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliverySearchTermEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DirectOperationRunner.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Background/ScheduledTargetProbeService.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Configuration/DeliveryAssistantTools.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs
+  - osdu/deploy/bicep/entra-app.bicep
+  - osdu/deploy/bicep/main.bicep
+  - osdu/tools/dev-setup.ps1
+  - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlanePolicies.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlaneHost.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Api/RequestActor.cs
+  - sqlflow/src/SqlFlow.Core/Runs/RunActors.cs
+  - sqlflow/src/SqlFlow.Node/RunWorker.cs
+---
 
-How the control plane signs users in, issues tokens, validates them, and administers users and roles is SQLFlow's,
-unchanged, and documented in
-[../../../../sqlflow/docs/reference/concepts/authentication-and-identity.md](../../../../sqlflow/docs/reference/concepts/authentication-and-identity.md):
-local login, Microsoft Entra single sign-on, the device grant the CLI uses, personal access tokens, rolling
-sessions, and the role and scope model.
+# Who may operate OSDU Delivery, and how the ledger names people
 
-This page covers what that means for OSDU Delivery.
+How the control plane signs people in and issues tokens is SQLFlow's, unchanged: local login, Microsoft Entra single
+sign-on, the device grant the CLI and the MCP server use, personal access tokens, rolling sessions, roles and scopes. All
+of it is documented in
+[SQLFlow's authentication and identity page](../../../../sqlflow/docs/reference/concepts/authentication-and-identity.md).
+This page says what that model means for the delivery surface, and how the ledger records who did what.
 
-## Who may operate the delivery surface
+## Any signed-in user can deliver and remove
 
-Authorization has two tiers. The `read`, `operate` and `author` policies all resolve to "authenticated", and only
-`admin` consults the token's scope claim. So any signed-in user gets the whole operational product, the delivery
-surface included: reading the ledger, triggering and cancelling runs, releasing and redelivering records, probing
-a target, and saving templates. Only user administration, and pruning the ledger, are fenced off behind `admin`.
+The delivery routes are mapped into SQLFlow's policy groups. `read`, `operate` and `author` all resolve to "a signed-in
+user"; only `admin` checks the token's scope claim. So every signed-in user, a `viewer` included, can read the ledger and
+also act on OSDU: trigger and cancel delivery runs, release and redeliver records, bring records up to date, reverse a run,
+remove records from OSDU, delete a flow's ledger, approve cache changes, probe a target and use the explorer.
 
-That is a deliberate platform choice rather than an OSDU one, and it has a consequence worth stating plainly for
-this product: **a signed-in user can send records to a live OSDU platform and can remove delivered records.** The
-gate is who gets an account, and with Entra sign-on that is the app registration's assignment requirement. The
-bundled Bicep provisions the registration with an app role, `SqlFlow.User`, and assignment required, so nobody
-signs in until a group or a user is assigned to it.
+| Policy | Delivery routes behind it |
+| --- | --- |
+| `admin` (the `admin` scope) | Setting and removing central configuration properties (`PUT`, `DELETE /config/{name}`); registering, describing, defaulting and removing partitions; the ledger's retention pass (`POST /ledger/prune`); removing a dimension (`DELETE /dimensions/{id}`). |
+| `author` (any signed-in user) | Saving and deleting template versions (`POST`, `DELETE /templates`); refining, resetting, deleting and restoring search terms. |
+| `operate` (any signed-in user) | Every intervention, every removal, every in-process read of OSDU or the source, the explorer, value checks, reversals, ledger deletion, the data definitions sync. |
+| `read` (any signed-in user) | Every listing and detail of the ledger, mappings, templates, caches, partitions, configuration, assertions, dimensions and inventories. |
 
-## Nodes have a scope of their own
+The full list is in [the delivery API](api.md). Because a signed-in user can send records to a live OSDU and take them
+away, **the gate is who can sign in**. With Entra sign-on, the bundled Bicep (`entra-app.bicep`, on by default through
+`provisionEntraApp`) creates the app registration with one app role, `SqlFlow.User`, and assignment required, so nobody
+signs in until a group (`azureAdAllowedGroupObjectId`) or a user is assigned to the role. A first Entra sign-in is
+provisioned with `ControlPlane:AzureAd:DefaultRole` (`azureAdDefaultRole` in the Bicep, `viewer` by default), which decides only whether the account reaches the `admin`
+routes and user administration.
 
-A compute node is not a user. It authenticates to the control plane with a personal access token minted with the
-`node` scope, which is what the dispatcher accepts for taking work, reporting outcomes and streaming a trace. The
-scaler reads the same endpoint with the same token. Mint it from an account whose own scopes cover it, keep it out
-of the catalog and the images, and supply it as `SQLFLOW_TOKEN` from a secret store.
+## Nodes, assistants and automation
 
-The `node` scope can never be requested through the device grant, so a node credential is always a deliberate,
-revocable act by an administrator.
+- **Nodes** are not people. A worker authenticates with a personal access token minted with the `node` scope, as any
+  SQLFlow node does ([sqlflow worker](../../../../sqlflow/docs/reference/cli/worker.md)); OSDU Delivery adds nothing to it.
+  Mint it from an account whose own scopes cover it, and keep it in a secret store.
+- **The MCP server** holds the token of the person who approved its sign-in, or, run as a service, forwards each
+  request's own bearer token. Its tools can do what that token can do ([the MCP server](../guides/mcp.md)).
+- **The GUI chat assistant** forwards the signed-in user's own token, and OSDU Delivery gives it the read tools only:
+  none of the six operator tools (probe, verify, sync, release, redeliver, decide cache changes) is on its list, unless a
+  deployment sets `ControlPlane:Assistant:Mcp:AllowedTools` itself.
+- **An external scheduler** triggers OSDU runs with a service account's personal access token
+  ([deployment](../guides/deployment.md#triggering-from-an-external-scheduler)).
 
-## The ledger records who asked
+## How the ledger names who acted
 
-Every delivery run and every intervention is attributed. The run row records who requested it, or the trigger
-source (`schedule:<name>`, `manual`, `cli`) when nobody did, and the ledger's audit trail records the requesting user
-against each release, redelivery, verification and removal, with the run or compute task it produced. A run recorded
-before the platform named the schedule that fired it reads `unknown`. Revoking an
-account does not rewrite that history: it is the record of what was done to the data.
+Every activity in the ledger's audit trail carries an actor, written as text when the activity is recorded, so revoking
+or renaming an account later does not rewrite what it did.
 
-Because a personal access token's effective scopes are its own cap intersected with the owner's current role,
-deactivating a person narrows or disables every token they hold without touching the token rows, and their name
-stays on what they did.
+| Actor | Recorded for |
+| --- | --- |
+| `user:<subject>` | What the control plane does itself on a person's request: a release, the records a redelivery or a rerender names, a purge from the ledger, an issue released, a dimension removed; and the removals and value checks it queues for a node. `<subject>` is the token's `sub` claim. |
+| `<subject>` | A run a person queued through the API (the GUI, `sqlflow trigger`, an MCP tool, an external scheduler): the run's requester, which the delivery run records its activities under. |
+| `schedule:<name>` | A run a SQLFlow schedule fired. |
+| `cli:<user>@<machine>` | A run executed directly with `sqlflow run` on a workstation. |
+| `service:schedule` | A probe made by the scheduled target probe. |
+| `unknown` | A run with no requester recorded. |
 
-## Local development shares the real user table
+The run row itself carries the requester and the trigger source (`schedule`, `manual` or `cli`) as SQLFlow records them,
+so a delivery run's activities and its run agree on who asked. Outside the audit trail, a cache change records who
+approved or rejected it, and a configuration property, a partition, a saved template and a refined search term record
+who last set them, each as `user:<subject>` except the cache decision, which records the subject alone.
 
-`dev.bat` runs against the estate's own catalog, so a local sign-in is the same account, with the same role, as
-the deployed GUI. A first Entra sign-in provisions the user just in time with the configured default role, in the
-shared catalog, so it is a real row in the real estate rather than a local one. `osdu/tools/dev-setup.ps1`
-therefore copies the estate's signing key, issuer and audience into `.sqlflow/env`, which is what makes a token
-minted by the cloud GUI valid locally, and deliberately writes no bootstrap admin: re-provisioning one would
-rewrite the estate's admin password.
+A read a person waits on (a probe from the GUI, a record read back, a preview, a source read, an explorer search) changes
+nothing and writes no activity. The control plane logs it as `<actor> ran <operation> on <flow> in process.`
+
+## Local development
+
+A developer's control plane started against an estate's own catalog shares that estate's user table, so a local sign-in
+is the same account and role as the deployed GUI. `osdu/tools/dev-setup.ps1` writes the estate's JWT signing key, issuer
+and audience into the git-ignored `.sqlflow/env`, which makes a token minted by the deployed GUI valid locally and the
+other way round, and deliberately configures no bootstrap admin, so a local start never re-provisions the estate's admin.
 
 ## See also
 
-- [The control plane](control-plane.md): the delivery endpoints and the policy groups they are mapped into.
-- [../../environment-variables.md](../../environment-variables.md): `SQLFLOW_TOKEN`, `SQLFLOW_URL` and the rest.
-- [../../../deploy/README.md](../../../deploy/README.md): minting the node token as part of a first deployment.
+- [SQLFlow: authentication and identity](../../../../sqlflow/docs/reference/concepts/authentication-and-identity.md)
+- [The delivery API](api.md)
+- [The ledger](ledger.md)
+- [sqlflow auth in OSDU Delivery](../cli/auth.md)

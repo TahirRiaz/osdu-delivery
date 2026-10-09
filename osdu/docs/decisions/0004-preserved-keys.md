@@ -1,3 +1,19 @@
+---
+id: delivery-decision-0004
+title: "Decision 0004: Datasets, DDMSDatasets and ExtensionProperties belong to OSDU"
+type: decision
+summary: "Why an update keeps the properties a DDMS or External Data Services writes into a record, and leaves them out of the hash."
+keywords:
+  - "preserved keys"
+  - "datasets"
+  - "ddmsdatasets"
+  - "extensionproperties"
+  - "record update"
+  - "eds"
+related:
+  - delivery-flow-ddms
+  - delivery-concept-change-detection
+---
 # 0004: Datasets, DDMSDatasets and ExtensionProperties are OSDU's
 
 Status: proposed. Design reference: sections 7.6 and 17.5.

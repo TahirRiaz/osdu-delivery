@@ -1,3 +1,17 @@
+---
+id: delivery-decision-0006
+title: "Decision 0006: rendered documents live in work batch files, not in the ledger"
+type: decision
+summary: "Why rendered documents are written to work batch files the ledger points at, and how large submissions fan out."
+keywords:
+  - "work batch"
+  - "rendered documents"
+  - "key slice"
+  - "fan out"
+  - "submission"
+related:
+  - delivery-concept-submissions
+---
 # 0006: Rendered documents live in work batch files, not in the ledger
 
 Status: proposed. Design reference: sections 16.1, 16.2 and 16.4.
@@ -6,7 +20,7 @@ Status: proposed. Design reference: sections 16.1, 16.2 and 16.4.
 > pointers, not documents. What has been replaced is the input it describes. There is no drop and no drop reader any
 > more: the intake streams the flow's **ingestion tables**, and a large submission fans out over **key slices** of the
 > record key rather than over a drop's partitions. Read "the drop" below as "the rows the ingestion tables changed",
-> and "drop partition" as "key slice". See [../architecture.md](../architecture.md).
+> and "drop partition" as "key slice". See [concepts/architecture.md](../reference/concepts/architecture.md).
 
 ## Context
 

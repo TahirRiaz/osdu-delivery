@@ -1,0 +1,571 @@
+---
+id: delivery-flow-assertion
+title: "Assertion flow (flowType: assertion): data quality tests of what an OSDU partition holds"
+type: flow-reference
+summary: "Tests of what OSDU holds once data has landed: counts, field values, references, schema conformance, legal tags, the delivery ledger and bulk data."
+keywords:
+  - assertion flow
+  - data quality tests
+  - test osdu records
+  - assert
+  - count
+  - field condition
+  - resolves
+  - conforms
+  - delivered
+  - bulk data checks
+  - severity
+  - failrunon
+  - indexsettleseconds
+  - test report
+yamlPath: "(root, flowType: assertion)"
+related:
+  - delivery-guide-data-quality-tests
+  - delivery-cli-assertions
+  - delivery-flow-delivery
+  - delivery-concept-templates
+  - delivery-concept-partitions
+  - delivery-concept-ledger
+  - flow-ing-quality
+  - flow-schedule
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionLineage.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Model/DeclaredPartition.cs
+  - osdu/src/SqlFlow.Delivery/Model/DdmsCatalog.cs
+  - osdu/src/SqlFlow.Delivery/Engine/AssertionExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionRunner.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/TestEvaluator.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/Evaluators.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/BulkEvaluators.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/ValueComparer.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionTemplates.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/IndexSettling.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/WellboreBulk.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/TestResult.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionReport.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Assertions.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryAssertionEndpoints.cs
+  - osdu/specs/core/search/openapi.yaml
+  - osdu/specs/core/storage/openapi.yaml
+  - osdu/specs/core/legal/openapi.yaml
+---
+
+# Assertion flow (flowType: assertion): data quality tests of what an OSDU partition holds
+
+A `flowType: assertion` document holds tests of what an OSDU partition holds once your data has landed: that search
+finds the records, that their values are the ones meant, that their references resolve, that they meet their schema,
+that their legal tags are valid, that every record a delivery flow says it delivered is there, and that their bulk data
+is in the Wellbore DDMS. Each test reads one OSDU kind in one version and holds what it reads to its assertions. Each run
+keeps a report in the module's database, which the GUI, the API and `sqlflow assertions` read.
+
+Use it after a [delivery flow](delivery.md), to check what users of OSDU see rather than what the delivery sent. A test
+only reads: nothing is ever written to OSDU. SQLFlow's own `assertions:` on an `ing` flow
+([data quality assertions](../../../../sqlflow/docs/reference/flow/ing-quality.md)) check a SQL table; an assertion flow
+checks OSDU.
+
+## Example
+
+```yaml
+flowType: assertion
+name: welldb-welllog-04-assertion
+batch: welldb
+description: What the well logs of the well database look like in OSDU once they are delivered.
+
+partitions: [dev, test]
+
+parameters:
+  system:
+    default: welldb
+    description: The data.Source value the delivered records carry.
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  ddmsRoot: /api/os-wellbore-ddms
+
+defaults:
+  maxRecords: 10000
+  examples: 20
+
+failRunOn: error
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+
+tests:
+  - name: logs-delivered
+    description: Every log the delivery flow holds as delivered is in the search index, indexed cleanly.
+    tags: [smoke]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    read: index
+    assert:
+      - count: { atLeast: 1 }
+      - delivered: welldb-welllog-03-delivery
+      - indexed: true
+
+  - name: log-headers
+    description: Each log header meets the WellLog schema, and its references resolve.
+    tags: [smoke]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    assert:
+      - conforms: true
+      - field: data.WellboreID
+        resolves: master-data--Wellbore
+      - field: data.Curves.CurveUnit
+        resolves: reference-data--UnitOfMeasure
+        severity: warning
+      - name: a depth curve is among the curves
+        field: data.Curves.Mnemonic
+        in: [MD, DEPT]
+        values: any
+      - field: acl.viewers
+        length: { atLeast: 1 }
+      - legal: valid
+      - unique: [data.WellboreID, data.Name]
+        severity: warning
+      - aggregate: missing
+        field: data.SamplingInterval
+        equals: 0
+        severity: info
+
+  - name: log-curves
+    description: Each log's curve data is in the Wellbore DDMS, indexed by a depth that only increases.
+    tags: [bulk]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    maxRecords: 200
+    sample: true
+    bulk: { columns: [MD], maxRows: 2000000 }
+    assert:
+      - rowCount: { atLeast: 1 }
+      - columns: { includes: [MD] }
+      - column: MD
+        monotonic: strictlyIncreasing
+      - column: MD
+        exists: true
+        for: 99%
+
+  - name: log-names
+    description: No delivered log is filed under a placeholder name.
+    tags: [coverage]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    assert:
+      - groupBy: data.Name
+        absent: [UNKNOWN]
+        groupCount: { atLeast: 1 }
+```
+
+`sqlflow validate` prints `OK  'welldb-welllog-04-assertion' is valid (assertion: ${env:OSDU_URL} -> report).`
+The queries find the records by `data.Source`, which assumes the mappings write `Source: welldb` under `data`; narrow
+by whatever your records carry. [Testing what OSDU holds](../guides/data-quality-tests.md) builds a flow like this step
+by step.
+
+## Keys reference
+
+The document is read strictly: an unknown key fails validation naming it.
+
+| Key | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowType` | string | yes | none | `assertion`. |
+| `name` | string | yes | none | The flow's name: its pipeline identity, and the name its reports are kept under (`name@partition` for a flow that tests partitions). |
+| `batch`, `description` | string | no | none | The SQLFlow batch, and free text. |
+| `partitions` | list | no | none | The partitions the flow tests, 1 to 64, each once (see [Which partition a run tests](#which-partition-a-run-tests)). |
+| `parameters` | map | no | none | Named parameters (`required`, `default`, `description`), used as `{name}` tokens in queries, ids and the text a test compares with. `partition` is reserved: `{partition}` is always the partition the run tests. |
+| `source` | map | yes | none | The platform and where its services are. |
+| `defaults` | map | no | see below | What a test takes when it says nothing itself. |
+| `failRunOn` | string | no | `error` | Which outcomes fail the platform run: `error`, `warning` or `never` (see [Outcomes](#outcomes)). |
+| `tests` | list | yes | none | The tests, 1 to 500. |
+| `reliability` | map | no | defaults | The HTTP settings, as on a [delivery flow](delivery.md), and `concurrency`: how many tests run at once, and how many requests one test has in flight (default 8, at least 1). `parallelInterfaces` is refused. |
+| `schedule`, `mode`, `lifecycle` | | no | none | SQLFlow's envelope keys: see [schedule](../../../../sqlflow/docs/reference/flow/schedule.md). |
+
+### source
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `endpoint` | required | The platform's base URL, usually `${env:OSDU_URL}`: the one the delivery flows deliver to. |
+| `auth` | `type: none` | Written as `target.auth` on a delivery flow. Secrets are references only (`${env:NAME}`, `${keyvault:NAME}`). |
+| `headers` | none | Headers sent with every request; `data-partition-id` only for a flow tested in one fixed partition. |
+| `queryPath` | `/api/search/v2/query` | The search that counts, groups and finds index errors. |
+| `searchPath` | `/api/search/v2/query_with_cursor` | The cursor search records are paged through. |
+| `recordQueryPath` | `/api/storage/v2/query/records` | Storage's read of records and references by id, 100 at a time. |
+| `legalPath` | `/api/legal/v1` | The legal service, under which `/legaltags:validate` is asked (25 names a request). |
+| `ddmsRoot` | `/api/os-wellbore-ddms` | Where the Wellbore DDMS is, for tests that read bulk data. |
+
+A path starts with `/` and has no whitespace, query or fragment.
+
+### defaults
+
+| Key | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `maxRecords` | 10000 | 1 to 1,000,000 | The most records a test reads. |
+| `examples` | 20 | 1 to 500 | The most failing records an assertion names. Counts are always exact. |
+| `read` | `storage` | `storage`, `index` | Where a test reads its records. |
+| `indexSettleSeconds` | 300 | 0 to 3600 | How long the index is given to list a change (see [Records the index may not list yet](#records-the-index-may-not-list-yet)). |
+
+## Which partition a run tests
+
+A run tests one partition and keeps its report under it. A flow says which partitions it tests in one of three ways:
+
+| The flow | A run tests |
+| --- | --- |
+| `partitions: [dev, test]` | The partition the run names (`--set partition=test`, a schedule's `values: { partition: test }`, the GUI's title bar), which has to be one of them. With none named: the registry's default partition if the flow names it, else the flow's only partition. |
+| Neither `partitions` nor a `data-partition-id` header | Any partition registered with the catalog: the one the run names, or the registry's default. |
+| `source.headers: { data-partition-id: dev }` | That partition, always. A run that names a partition is refused. |
+
+Partitions are written literally, never as references; `*` is not a partition, and a run asking for `*` is refused
+(`Assertion flow '<name>' tests one partition per run, since a report describes one partition; name the partition to test instead of '*'.`).
+A flow that names its partitions may not also name the header. A test's own `partitions` narrows it to some of the
+flow's partitions; a run in another records it as `skipped`. See [Partitions](../concepts/partitions.md).
+
+## Tests
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `name` | required | Unique in the flow, ignoring case: a letter or digit followed by letters, digits, `.`, `_` and `-`, at most 100 characters. Runs and reports name tests by it. |
+| `description` | none | What the test checks, shown on the board and in reports. |
+| `tags` | none | Up to 20 labels, written as names are. A run can select tests by tag. |
+| `partitions` | all | The flow's partitions the test runs in. |
+| `kind` | required | The one type the test reads, in one version: `authority:source:entityType:major.minor.patch`, as the delivering mapping's `template.kind` names it. Wildcards are refused. |
+| `template` | newest | The saved template version its fields are checked against: the mapping's `template.version`. Left out, the most recently captured template of the kind. |
+| `query` | none | A Lucene query narrowing the kind, with `{parameter}` and `{partition}` tokens. Left out, every record of the kind. |
+| `ids` | none | 1 to 1,000 record ids to read from storage instead of searching, with tokens. Not with `query`, `spatial` or `sort`. |
+| `spatial` | none | The search's `spatialFilter`: a geo `field` and exactly one of `byBoundingBox` (`topLeft`, `bottomRight`), `byDistance` (`point`, `distance` in metres), `byGeoPolygon` (`points`), `byIntersection` (`polygons`, each with `points`), `byWithinPolygon` (`points`); a point is `{ latitude, longitude }`. |
+| `sort` | none | 1 to 5 `{ field, order: asc or desc }`: the order the search returns records in. |
+| `read` | `defaults.read` | `storage`: each record as storage holds it, read by the ids the search finds. `index`: the search hits themselves, only what the index holds. |
+| `maxRecords` | `defaults.maxRecords` | The most records the test reads; a test naming more ids than this is refused. |
+| `sample` | `false` | When more records match than `maxRecords`: `false` evaluates no assertion over the records and says so; `true` evaluates the first `maxRecords` and marks the result as a sample. |
+| `indexSettleSeconds` | `defaults.indexSettleSeconds` | This test's settle window. |
+| `severity` | `error` | The severity of its assertions that state none: `error`, `warning` or `info`. |
+| `bulk` | none | Read each record's bulk data: `columns` (the columns read) and `maxRows` (default 1,000,000, at most 100,000,000). See [Bulk data](#bulk-data). |
+| `assert` | required | The assertions, 1 to 100. |
+
+A test first counts what its query matches (`POST /api/search/v2/query` with `trackTotalCount`), or reads its ids from
+storage. Assertions that the search answers on its own (`count`, `groupBy`, `indexed`) read no record. When an assertion
+needs the records, the test pages through them with a cursor and, reading `storage`, reads each page's ids back 100 at a
+time; every record is handed to every assertion once, so memory holds a page, not the partition. A record the index
+lists and storage does not return is left out and noted. An id storage does not hold, or a record of another kind than
+the test's, is left out and noted too.
+
+```yaml
+  - name: wellbores-in-area
+    kind: osdu:wks:master-data--Wellbore:1.3.0
+    spatial:
+      field: data.SpatialLocation.Wgs84Coordinates
+      byBoundingBox:
+        topLeft: { latitude: 31.0, longitude: -98.0 }
+        bottomRight: { latitude: 29.0, longitude: -94.0 }
+    assert:
+      - count: { atLeast: 1, atMost: 5000 }
+
+  - name: named-wellbores
+    kind: osdu:wks:master-data--Wellbore:1.3.0
+    ids:
+      - "{partition}:master-data--Wellbore:1001"
+      - "{partition}:master-data--Wellbore:1002"
+    assert:
+      - count: 2
+      - field: data.FacilityName
+        matches: '^[A-Z0-9 /-]+$'
+```
+
+## Assertions
+
+An assertion has exactly one subject, the keys that subject takes, and optionally `name` (what reports call it, at most
+200 characters; left out, a label read off what it asserts), `description` and `severity`. A key its subject does not
+take fails validation: `<test>: assert[<n>] is a <subject> assertion, which does not take <keys>.`
+
+| Subject | Takes | Holds when |
+| --- | --- | --- |
+| `count: <n or comparison>` | | The number of records the test matches (the index's exact count, or for `ids` the records storage returns of the kind) compares true. |
+| `field: <path>` | one condition, `for`, `values`, `optional`, `where`, `ignoreCase`, `tolerance` | The condition holds of the path's values in the records read, for the share `for` asks. |
+| `aggregate: min, max, sum, avg, count, distinct, missing` | `field` (or `column`), comparison keys, `tolerance` | The aggregate of the field over every record read (or of the column over each record's rows, record by record) compares true. |
+| `unique: [paths]` | | No two records read share the values of all the paths (1 to 20). Records holding none of them are passed over. |
+| `groupBy: <path>` | `groups`, `mode`, `absent`, `groupCount` | The search's groups of the path's values (`aggregateBy`): each group under `groups` has a count that compares true (`mode: exact` allows no other group; `includes`, the default, does), no group under `absent` is there, and the number of groups compares true with `groupCount`. Reads no record. Not with `ids`. |
+| `recordSet: { columns, rows, mode }` | | The records projected onto `columns` (1 to 20 paths) match `rows` (at most 1,000): `exact` (the same rows in any order, the default), `ordered` (in the test's `sort` order), `includes` or `excludes`. |
+| `conforms: true` | | Every record read meets the schema of its kind as the template states it (required properties, types, formats, patterns, enumerations), and is of the test's kind. Needs `read: storage`. |
+| `indexed: true` | | No record the test matches has an index status of 201 or above (`index.statusCode:[201 TO *]`): the indexer mapped every record whole. Not with `ids`. |
+| `legal: valid` | | Every record read carries a legal tag, and every tag is valid now, as Legal's `POST /legaltags:validate` answers. |
+| `delivered: <delivery flow>` | `interface`, `exact` | Every record that flow's ledger holds as delivered in the partition is among what the test matches; with `exact: true`, nothing else is. |
+| `rowCount: <n or comparison>` | | Each record's bulk data has that many rows. |
+| `columns: { includes, excludes, equals }` | | Each record's bulk data has these columns, lacks those, or has exactly these (in any order). |
+| `column: <name>` | one condition, `for`, `optional`, `where`, `ignoreCase`, `tolerance` | The condition holds of the column's values in each record's bulk data, for the share of its rows `for` asks. |
+| `monotonic: increasing, decreasing, strictlyIncreasing, strictlyDecreasing` | `column` | The column's values only go that way, row after row, in each record's bulk data. Absent values are passed over. |
+
+An assertion with no subject fails with `names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, indexed, legal, delivered, rowCount, columns or monotonic.`;
+one with two fails with `names <a> and <b>; an assertion has one subject. Write one assertion for each.`
+
+When there is nothing to check (no record matched, or none had a value), `field`, `column`, `resolves`, `unique`,
+`conforms`, `legal` and the bulk assertions fail, except a `field` or `column` assertion with `for: none`. An `aggregate`
+compares what it found (`count`, `distinct` and `missing` come to 0; `sum`, `avg`, `min` and `max` fail with no number),
+and so do `recordSet` (an `exact` set with no rows asserts that no record matches) and `delivered`.
+
+`delivered` reads the ledger of the delivery flow named (ignoring case) in the run's partition. A flow delivering several
+interfaces needs `interface`. It cannot be judged on a sample, and errors when the ledger holds more delivered records
+than the test's `maxRecords`.
+
+### Comparisons of numbers: count, rowCount, groupCount, groups, length
+
+These take a whole number (equals) or a mapping of `equals`, `notEquals`, `atLeast`, `atMost`, `greaterThan`,
+`lessThan` and `between: [low, high]`, every one of which has to hold: `count: { atLeast: 1, atMost: 5000 }`. An
+`aggregate` takes the same keys beside it (`aggregate: avg`, `field: ...`, `between: [0.1, 0.2]`); `min` and `max`
+compare numbers or ISO 8601 dates, the others numbers.
+
+### Conditions
+
+A `field` or `column` assertion, and each `where` condition, takes exactly one of these operators:
+
+| Operator | Operand | A value meets it when |
+| --- | --- | --- |
+| `equals`, `notEquals` | a value | It equals (or does not equal) the operand. |
+| `in`, `notIn` | 1 to 1,000 values | It equals one of them (or none). |
+| `atLeast`, `atMost`, `greaterThan`, `lessThan` | a number or text | It orders that way against the operand. |
+| `between` | `[low, high]` | It lies between them, both included; both numbers, or both text (dates compare as instants), low first. |
+| `matches`, `notMatches` | a .NET regular expression | Its text matches (or does not). One second at most per value; no tokens are substituted. |
+| `startsWith`, `endsWith` | text | It is text starting (or ending) with it. |
+| `contains`, `notContains` | a value | It is a list holding a value equal to the operand, or text containing it. |
+| `exists` | `true` or `false` | The record (or row) has a value there at all, or has none. |
+| `empty` | `true` or `false` | It is empty (null, empty text, an empty list or object), or not. |
+| `type` | `string`, `number`, `integer`, `boolean`, `object`, `array`, `null` | It is of that JSON type; `integer` is a number without a fraction. |
+| `length` | a number or a comparison | Its text length, or its list's item count, compares true. |
+| `resolves` | `true`, or an entity type such as `master-data--Wellbore` | It is a record id (`partition:entity-type:id`, with or without a version) storage holds, of that entity type when one is named. Fields only, and not in `where`. |
+
+How values compare:
+
+- A number compares as a number, exactly as written unless `tolerance` is given, when it may be that far off. Text
+  holding a number equals that number, and text `true` or `false` that boolean, since OSDU keeps some values as text.
+- Text compares ordinally, or ignoring case with `ignoreCase: true`. Two ISO 8601 dates compare as the instants they
+  name, so `greaterThan: "2026-01-01T00:00:00Z"` orders dates.
+- A list or an object never equals a single value: test each item with `[*]`, or use `contains`.
+- `ignoreCase` applies to `equals`, `notEquals`, `in`, `notIn`, `matches`, `notMatches`, `startsWith`, `endsWith`,
+  `contains` and `notContains`; `tolerance` to the equalities, `in`, `notIn`, the orderings and `between`, against a
+  number.
+- `{parameter}` and `{partition}` tokens are substituted in the text a condition compares with, in `recordSet` rows and
+  in group names, never in a regular expression. A `recordSet` compares values exactly as JSON: `5` and `"5"` differ there.
+
+What decides a record:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `for` | `all` | The share of records (rows, for a column) the condition has to hold for: `all`, `any`, `none`, or a percentage such as `99%`. `all`, `any` and a percentage fail when nothing was checked. |
+| `values` | `all` | For a path yielding several values in one record: `all` holds the record when every value meets the condition, `any` when one does. Fields only. |
+| `optional` | `false` | `true` passes over a record (or row) with no value at all, instead of failing it. |
+| `where` | none | 1 to 10 conditions, each with its own `field` (or `column`) and operator, selecting the records (or rows) looked at: all of them have to hold, and one holds when one of its values meets it. |
+
+`resolves` takes no `for` or `values`: every reference the records carry is looked up (100 a request, at most 200,000
+distinct references per assertion).
+
+```yaml
+      - field: data.TopMeasuredDepth
+        atLeast: 0
+        where:
+          - field: data.ReferenceCurveID
+            equals: MD
+      - field: data.Curves.Mnemonic
+        equals: gr
+        ignoreCase: true
+        values: any
+        for: 95%
+      - field: data.Name
+        equals: UNKNOWN
+        for: none
+      - aggregate: max
+        field: modifyTime
+        atLeast: "2026-01-01T00:00:00Z"
+```
+
+### Paths
+
+A path is dotted from the record's root, which is one of `id`, `kind`, `version`, `acl`, `legal`, `data`, `tags`,
+`ancestry`, `meta`, `createTime`, `createUser`, `modifyTime` and `modifyUser`. Arrays are crossed implicitly
+(`data.Curves.Mnemonic` is every curve's mnemonic), or with `[*]` or `[n]`. A null is no value.
+
+## Bulk data
+
+A test with `bulk` reads each record's bulk data from the Wellbore DDMS
+(`GET {ddmsRoot}/ddms/v3/{collection}/{id}/data`, first `?describe=true` for its columns and rows, then the rows a page
+at a time in JSON). Only kinds the DDMS keeps bulk data for take it:
+
+| Entity type | Collection |
+| --- | --- |
+| `work-product-component--WellLog` | `welllogs` |
+| `work-product-component--WellboreTrajectory` | `wellboretrajectories` |
+| `work-product-component--PPFGDataset` | `ppfgdataset` |
+| `work-product-component--WellPressureTestRawMeasurement` | `wellpressuretestrawmeasurement` |
+
+`rowCount`, `columns`, `column`, a column `aggregate` and `monotonic` need it. Each record's bulk data is held to each
+assertion on its own, records in parallel up to `reliability.concurrency`, and the assertion holds when every record's
+does. A record the DDMS holds no bulk data for (it answers 404) fails, so does one lacking a column an assertion names.
+One holding more rows than `bulk.maxRows` fails the assertions that read its rows, unless the test sets `sample: true`,
+which reads the first `maxRows` rows.
+`NaN` and infinite values read as no value.
+
+`bulk.columns` (no commas, at most 256 characters each) is the columns read. Left out, the read takes exactly the
+columns the assertions name; listed, only those are read, so list every column the assertions name.
+
+Other DDMSs, and the files behind dataset records, are not read by a test; their storage records are tested like any
+other record.
+
+## Checked against the template
+
+Before a test that reads fields (a field condition, a field aggregate, `unique`, `groupBy`, `recordSet`, `conforms`, a
+`sort` or a `spatial` filter) reads anything, it is checked against the template of its kind (see
+[Templates](../concepts/templates.md)): every path has to be a property of the schema, every operator has to suit the
+property's type, and every value compared with has to be one the property can hold (its type, date format and pattern).
+A test that does not fit is reported `errored` with each problem, and is not evaluated:
+
+- `'<label>': '<path>' is not a property of <kind> (template <version>); did you mean '<nearest>'?`
+- `'<label>': '<path>' is a list in <kind> (template <version>); equals compares one value, so test each item with '<path>[*]', or ask what the list contains.`
+- `'<label>': '<path>' refers to master-data--Wellbore in <kind> (template <version>), never to master-data--Well.`
+- `No template of <kind> is saved, so the test's fields cannot be checked against the kind's schema. Capture it on the Templates page (or with 'sqlflow template capture --kind <kind>'), then run the test again.`
+
+A test that only counts, checks the index, legal tags or the ledger, or reads bulk data, needs no template.
+
+## Records the index may not list yet
+
+OSDU indexes a change from a queue, so for a while after records are written, removed or put back at an earlier version,
+search lists them as they were, and a test judged then fails on records that are fine. Before a run judges anything it
+reads from the ledger what this module's delivery flows changed in OSDU in the partition within each test's
+`indexSettleSeconds`: records written, records taken out or put back at an earlier version, and records deleted from a
+ledger that OSDU had held. A test whose entity type (its kind's, or for `ids` theirs) changed within its window is
+`skipped`, and its result says which ledgers changed what, the latest change, and from when a run judges it. Other
+versions of the same entity type count. A test that does not fit its template is reported as such whatever changed.
+
+A skipped test does not fail the run. Changes other systems make are not in the ledger and are not waited for. With
+`indexSettleSeconds: 0` a test is judged at once. The window says when a test is judged, not what it checks, so changing
+it does not mark the test as changed.
+
+## Outcomes
+
+| Level | Outcomes |
+| --- | --- |
+| Assertion | `passed`, `failed`, `errored` (it could not find out: a refused query, an unreachable service, a limit passed, more records matched than the test reads) or `skipped`. A failed one keeps what it expected, what it found, how many it checked and failed, and the first failing records (`examples`), each with its id, value and reason. |
+| Test | `errored` when an assertion errored or the test does not fit its template; else `failed` when an `error` assertion failed; `warned` when only `warning` ones did; `passed` otherwise (a failed `info` assertion is reported and changes nothing); `skipped` when it does not run in the partition or the index has not settled. |
+| Run | `failed` when a test failed, else `errored` when one errored, else `passed`; `cancelled` when stopped, and `errored` when the run itself could not go on. |
+
+`failRunOn` decides whether the platform run fails: `error` (the default) on a failed or errored test, `warning` on a
+warned one as well, `never` not at all. A run failed by its tests still carries its outcome, and its error names them:
+`assertion flow '<name>' in partition '<p>': <n> of <m> test(s) evaluated, <k> passed; 1 failed (log-headers).`
+Notifications fire on it as on any failed run.
+
+## Operations and the run payload
+
+| Operation | What it does |
+| --- | --- |
+| `test` (default) | Selects the tests, checks them against their templates, runs them (up to `reliability.concurrency` at once) and keeps the report. Needs the module's database. |
+| `plan` | Selects and checks the same tests and counts what each matches and would read, evaluating nothing and recording nothing. It needs the module's database only for the templates. |
+
+The payload takes `tests` (names) and `tags` and nothing else; a test runs when it is named or carries one of the tags,
+and with neither every test runs. Each list holds at most 500 names, each once.
+
+```bash
+sqlflow run welldb-welllog-04-assertion.yaml --set partition=dev
+sqlflow run welldb-welllog-04-assertion.yaml --set partition=dev --operation plan
+sqlflow run welldb-welllog-04-assertion.yaml --set partition=dev --payload '{"tags":["smoke"],"tests":["log-curves"]}'
+```
+
+A name that is not a test fails the run: `Assertion flow '<name>' has no test named '<x>'; its tests are <names>.`, and so
+does a tag no test carries. Other payload keys fail with
+`An assertion flow's payload names the tests a run runs (tests, tags) and nothing else; a test has no submission, record, slice, interface, dimension or inventory to name.`
+A schedule's `values` can name the partition and the parameters; a scheduled run runs every test. The values of a
+schedule several flows join reach every one of them, so an assertion flow sharing its delivery flow's schedule declares
+the delivery's parameters too, or fails with `parameter '<name>' is not declared under parameters.` On the control plane,
+`${env:NAME}` references resolve from the central configuration (the partition's own values first) before the node's
+environment. See [Running OSDU flows](../cli/run.md).
+
+The run's `result` names the report (`assertionRunId`), `partition`, `status`, the counts (`tests`, `passed`, `failed`,
+`warned`, `errored`, `skipped`) and the tests that did not pass first (`results`, at most 50, each with `test`, `kind`,
+`outcome`, `matched` and the first failed assertions); a plan's lists each test with its `query`, `matched`, `wouldRead`,
+`template`, `problems` and `error`.
+
+## The report
+
+Each run keeps one `osdu.AssertionRun` row and one `osdu.AssertionResult` row per test, written the moment the test
+finishes, so a long run shows its progress and a stopped one keeps what it found. A result keeps the whole of what each
+assertion found, up to 1,000,000 characters; past that it keeps fewer examples, marked as cut back. Each result carries
+its test's definition hash, so a result that answers an earlier definition of the test shows as changed. See
+[the ledger](../concepts/ledger.md).
+
+Where to read it:
+
+- The GUI: **OSDU**, **In OSDU**, **Tests** is the board of every assertion flow in the partition. An assertion flow's
+  pipeline has a **Tests** tab (its board), a **History** tab (its tests against its runs) and a **Reports** tab (its
+  runs); a report page runs the tests not passing again.
+- The CLI: [sqlflow assertions](../cli/assertions.md) `list`, `status` and `report`.
+- The API, every route a `GET` under `/api/v1/delivery`: `/assertions` (the board of every flow),
+  `/flows/{pipelineId}/assertions` (one flow's board), `/flows/{pipelineId}/assertion-runs`,
+  `/flows/{pipelineId}/assertion-matrix` (tests against runs), `/flows/{pipelineId}/assertions/{test}/history`,
+  `/assertion-runs/{id}` (a run with every result) and `/assertion-runs/{id}/report?format=json|md|html|junit`. A read is
+  in the partition `?partition=` names, else the `X-Osdu-Partition` header's, else the one a run would test.
+
+A report renders as JSON, Markdown, self-contained HTML or JUnit XML (a suite per kind, a case per test: failed is a
+failure, errored an error, skipped skipped, warned passes with its warnings in its output). The retention pass
+(`POST /api/v1/delivery/ledger/prune`) removes a finished run older than its cut-off only whole, once a later result of
+each of its tests superseded it, so every test's latest result stays.
+
+## Lineage
+
+The flow reads the kind of each test, in its one version, on its platform and partition, and writes nothing. That is
+the type node the delivery flow writing the kind links to through its mapping's `template.kind`, so the delivery is
+ordered before the tests, and a schedule firing both runs the tests after the records land. See
+[Lineage](../concepts/lineage.md).
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Tests per flow, names and tags per payload | 500 |
+| Assertions per test | 100 |
+| Tags per test | 20 |
+| Ids per test | 1,000 |
+| Values in `in`, `notIn`; rows in a `recordSet` | 1,000 |
+| Fields in `unique`; columns in a `recordSet` | 20 |
+| Conditions in a `where` | 10 |
+| Distinct references per `resolves` | 200,000 |
+| Distinct values per `distinct` | 1,000,000 |
+| Distinct legal tags per `legal` | 10,000 |
+| Time per value for `matches` | 1 second |
+
+Past one of the last four, the assertion does not pass, and its result says why.
+
+## Validation errors
+
+| Message (after the file path) | Cause |
+| --- | --- |
+| `tests must list at least one test; an assertion flow without tests has nothing to run.` | No tests. |
+| `tests[<i>] is named '<name>', as an earlier test is; a run and a report name each test by its name, so each needs its own.` | A duplicate test name. |
+| `<test>: kind '<kind>' has wildcards; a test reads one type in one version, ...` | A kind with `*`. |
+| `<test> reads records by ids, and names a query as well: a test reads the records its ids name, or the records a search finds, not both.` | `ids` with `query`, `spatial` or `sort`. |
+| `<test>: query uses '{<token>}', which is neither {partition} nor declared under parameters.` | An undeclared token. |
+| `<test> reads bulk data, and its kind '<kind>' is not one the Wellbore DDMS keeps bulk data for; it serves ...` | `bulk` on another kind. |
+| `<test>: assert[<n>] is a monotonic assertion, which reads each record's bulk data; give the test a bulk block (bulk: { columns: [...] }).` | A bulk assertion without `bulk`. |
+| `<test>: assert[<n>] names atLeast and atMost; a condition has one operator. Write between for a range, or one assertion for each.` | Two operators. |
+| `<test>: assert[<n>].field '<path>' starts at '<root>', which is not a property of an OSDU record; ...` | A path that does not start at a record root. |
+| `<test>: assert[<n>] asserts that every record meets its template, which needs each record as storage holds it; ... Take read: index out.` | `conforms` with `read: index`. |
+| `<test>: assert[<n>] compares the records in order, and the test names no sort; ... Give the test a sort.` | `recordSet` `mode: ordered` without `sort`. |
+| `source.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it tests. Remove the header.` | Both ways of naming the partition. |
+| `partitions[<i>] '<name>' is not a data-partition-id: letters, digits, underscore, hyphen and dot, at most 200 characters.` | A partition such as `*`. |
+| `parameters declares 'partition', which an assertion flow keeps for the partition a run tests: {partition} in a test is always that partition. Rename the parameter.` | A parameter named `partition`. |
+
+## See also
+
+- [Testing what OSDU holds](../guides/data-quality-tests.md): writing, running and scheduling tests, step by step.
+- [sqlflow assertions](../cli/assertions.md): reading the reports from a terminal or a CI job.
+- [Delivery flow](delivery.md): what the tests check.
+- [Templates](../concepts/templates.md): saving the template a test is checked against.

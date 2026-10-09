@@ -1,3 +1,18 @@
+---
+id: delivery-decision-0010
+title: "Decision 0010: assertion flows read OSDU, check against templates, and keep whole reports"
+type: decision
+summary: "Why data quality tests read what OSDU serves, never write, and keep every report whole."
+keywords:
+  - "assertion"
+  - "data quality"
+  - "read only"
+  - "test report"
+  - "template check"
+related:
+  - delivery-flow-assertion
+  - delivery-guide-data-quality-tests
+---
 # 0010: Assertion flows read OSDU, check themselves against templates, and keep whole reports
 
 Status: proposed. Design reference: section 15.4, and [docs/assertions-design.md](../../../docs/assertions-design.md).

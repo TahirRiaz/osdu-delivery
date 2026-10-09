@@ -1,57 +1,128 @@
-# Failure notifications
+---
+id: delivery-guide-notifications
+title: "Failure notifications for OSDU flows: which delivery, cache and assertion runs alert, and why held records do not"
+type: guide
+summary: "Which OSDU flow runs alert subscribers, why held or failed records do not, and keeping a delivery flow quiet while it is built."
+keywords:
+  - notifications
+  - alerts
+  - failure alert
+  - email
+  - slack
+  - lifecycle
+  - development
+  - held records
+  - failed run
+  - failrunon
+  - subscription
+  - digest
+related:
+  - guide-notifications
+  - delivery-flow-delivery
+  - delivery-flow-assertion
+  - delivery-concept-record-lifecycle
+  - delivery-concept-run-trace-and-metrics
+  - delivery-guide-operations-runbook
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/SourceRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/AssertionExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionRunner.cs
+  - osdu/src/SqlFlow.Delivery/Engine/RunFailure.cs
+  - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Hosting/OsduDeliveryBranding.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Background/NotificationService.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Notifications/NotificationComposer.cs
+  - sqlflow/src/SqlFlow.Catalog/NotificationStore.cs
+  - sqlflow/src/SqlFlow.Catalog/CatalogSync.cs
+---
 
-The control plane watches the run history and tells the users who asked when something goes wrong: a run failed,
-was cancelled, or was skipped because an upstream member of its run group did not succeed. Subscriptions are
-strictly opt-in and per user, they coalesce into one message per window rather than one per event, and they are
-delivered by email or Slack.
+# Failure notifications for OSDU flows
 
-All of that is SQLFlow's, unchanged, and documented in
-[../../../../sqlflow/docs/reference/guides/notifications.md](../../../../sqlflow/docs/reference/guides/notifications.md):
-the pipeline and its phases, immediate and digest pacing, what a subscription selects, the estate digest, the
-channels and their configuration, and the API. This page covers only what it means for OSDU Delivery.
+The control plane tells the people who subscribed when a run goes wrong: it failed, was cancelled, or was skipped
+because an upstream member of its run group did not succeed. Subscriptions are opt-in and per user, they coalesce into
+one message per window, and they go out by email or Slack. All of that is SQLFlow's, unchanged, and documented in
+[SQLFlow's notifications guide](../../../../sqlflow/docs/reference/guides/notifications.md): the pipeline, immediate and
+digest pacing, what a subscription selects, the channels and their configuration. This guide covers what it means for
+OSDU flows.
 
-## What gets reported
+## A notification is about a run, not a record
 
-A notification is about a **run**, not about a record. Every OSDU Delivery flow kind is an ordinary platform flow,
-so a failed run of any of them alerts: a `delivery` flow, a `retrieval` flow, a `cache` flow whose refresh
-could not capture what it declares, and an `assertion` flow whose tests failed it as its `failRunOn` says (a failed or
-errored test by default, a warned one as well with `warning`, never with `never`); its error names the tests.
+Every OSDU flow kind is an ordinary SQLFlow flow, so its runs alert like any other. What fails a run differs by kind:
 
-A run that succeeded reports nothing, even when it **held** records. Held records are a normal outcome of a
-delivery run (a value the mapping could not resolve, a payload that is not where the record says it is), they are
-recorded in the ledger with their reason, and the flow's Delivery tab and the record search are where they are
-seen and acted on. Watching them through failure notifications would either page on healthy runs or say nothing
-useful, so the ledger is the surface for them and the run counts on the run page are the summary.
+| Kind | The run fails when |
+| --- | --- |
+| `delivery` | Something stops the run: the target, the ledger, the source or the flow document refuses or fails as a whole; or, for a source with several interfaces, an interface does not complete (the run ends failed and still reports what each interface did). |
+| `cache` | The refresh cannot capture what it declares, or, for a flow over several partitions, one partition does not complete. |
+| `assertion` | Its tests come out as `failRunOn` says: a failed or errored test (`error`, the default), a warned one as well (`warning`), or never (`never`). The error names the tests. |
+| `retrieval`, `dimension`, `inventory` | Something stops the run. |
 
-The flow-name filter on a subscription is the useful narrowing here: an estate with one delivery chain per data
-set gives each chain its own flow names, so a subscription can follow just the chain someone owns, pre and
-ingestion flows included.
+**A delivery run that held or failed records still succeeds.** A held record (a value the mapping could not resolve, a
+payload that is not where the record says) and a failed one are outcomes the ledger keeps with their reason, and the run
+goes on with the rest. They are seen and acted on in the flow's issues, the Records page and
+[sqlflow records](../cli/records.md) (`records issues`), and counted in the run's result. Alerting on them through notifications would page
+on healthy runs, so the surfaces for record problems are:
 
-## Development flows never alert
+- the flow's issues, which group blocked records by the error they share ([record lifecycle](../concepts/record-lifecycle.md));
+- the `osdu_delivery.records` metric, whose `held` and `failed` share per flow is what to alert on
+  ([run trace and metrics](../concepts/run-trace-and-metrics.md#what-to-alert-on));
+- the scheduled target probe, which records an `unreachable` target in the audit trail before a run is due.
 
-Every flow document can declare a top-level `lifecycle:` in its envelope, next to `flowType` and `name`. The
-accepted values are `production` (the default, which alerts subscribers on failure) and `development`, which runs,
-schedules and records history identically but generates no notification events at all:
+A subscription's flow-name filter is the useful narrowing: give each delivery chain its own flow names
+(`welldb-wellbore-01-pre`, `welldb-wellbore-02-ing`, `welldb-wellbore-03-delivery`), and a subscription follows the chain
+someone owns, pre and ingestion flows included.
+
+## Keep a flow quiet while it is built
+
+Every flow document, an OSDU flow included, can declare `lifecycle:` in its envelope beside `flowType` and `name`:
+`production` (the default) alerts on failure, and `development` runs, schedules and records history identically but
+raises no notification at all. Bringing up a delivery chain means iterating on a mapping against a real OSDU, and a
+half-built mapping fails often, so a new flow starts as `development`:
 
 ```yaml
 flowType: delivery
-name: recall-welllog-03-header-delivery
-lifecycle: development   # remove (or set to production) when the flow goes live
+name: welldb-wellbore-03-delivery
+batch: welldb
+partitions: [dev, test]
+lifecycle: development   # remove, or set to production, when the flow goes live
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.Wellbore
+    key: [wellbore_id]
+  work: ../.work/wellbore
+
+render:
+  mapping: Wellbore@1.0.0
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
 ```
 
-That matters more here than in a plain ETL estate, because bringing up a delivery chain means iterating on a
-mapping against a real OSDU platform, and a half-built mapping fails often and loudly. The gate is applied at
-detection time against the synced catalog pipeline, so it takes effect on the next repository sync after the YAML
-changes.
+The gate is applied when failures are detected, against the synced pipeline, so it takes effect on the repository's next
+sync. Another value is refused by `sqlflow validate`: `'lifecycle' has unknown value 'staging'. Allowed: production, development.`
 
-## Links in a message
+## What a message carries
 
-Set `ControlPlane:Notifications:GuiBaseUrl` to the GUI origin and every message carries "Open run" and "Open flow"
-links. For a delivery failure that is the fastest path to the run trace and, from it, to the records the run
-touched.
+Messages are SQLFlow's, under the product's name: a subject reads `OSDU Delivery: ...`, or `OSDU Delivery digest: ...` for
+a digest. Set `ControlPlane:Notifications:GuiBaseUrl` to the GUI's address and each failure links to its run, whose trace
+says what stopped it and which records it touched ([run trace and metrics](../concepts/run-trace-and-metrics.md)).
 
 ## See also
 
-- [Deployment](deployment.md)
-- [The control plane](../concepts/control-plane.md)
-- [Environment variables and secrets](../../environment-variables.md)
+- [SQLFlow: failure notifications](../../../../sqlflow/docs/reference/guides/notifications.md)
+- [Delivery flow](../flow/delivery.md)
+- [Assertion flow](../flow/assertion.md)
+- [Operations runbook](operations-runbook.md)

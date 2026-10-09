@@ -1,82 +1,163 @@
-# Control-plane verbs for OSDU flows
+---
+id: delivery-cli-control-plane
+title: "Control-plane verbs in OSDU Delivery: triggering, scheduling and following OSDU runs from a terminal"
+type: cli-command
+summary: "What sqlflow trigger, runs, schedules, pipelines, search, datasources tasks and health do against an OSDU Delivery control plane."
+keywords:
+  - control plane
+  - trigger an osdu run
+  - runs list --kind delivery
+  - schedules create --operation
+  - run result
+  - resultjson
+  - remote verbs
+  - delivery-check-values
+  - module-databases readiness
+  - partition run value
+  - direct database verbs
+related:
+  - cli-control-plane
+  - delivery-cli-run
+  - delivery-cli-config
+  - delivery-concept-control-plane
+  - delivery-concept-api
+  - delivery-cli-records
+  - delivery-concept-partitions
+sourceRefs:
+  - osdu/hosts/SqlFlow.Delivery.ControlPlane.Host/Program.cs
+  - osdu/hosts/SqlFlow.Delivery.Cli.Host/Program.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Background/ConfiguredRunDispatcher.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs
+  - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/CheckValuesOperation.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs
+  - osdu/src/SqlFlow.Delivery/Model/DeclaredPartition.cs
+  - sqlflow/src/SqlFlow.Cli/Remote/RemoteVerbs.cs
+  - sqlflow/src/SqlFlow.Cli/Remote/RemoteVerbs.Estate.cs
+  - sqlflow/src/SqlFlow.Cli/Remote/RemoteContracts.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Api/RunEndpoints.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Api/SearchEndpoints.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlaneHost.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Infrastructure/ModuleDatabaseVerification.cs
+---
 
-The `sqlflow` binary drives the same `/api/v1` API the GUI uses, so anything verified in the browser can be
-verified from a terminal or a script. Signing in, the credential resolution order, the estate verbs (runs,
-schedules, repos, pipelines, search, nodes) and the environment helpers are documented in
-[../../../../sqlflow/docs/reference/cli/control-plane.md](../../../../sqlflow/docs/reference/cli/control-plane.md).
-In an OSDU Delivery deployment the binary is `osdu/hosts/SqlFlow.Delivery.Cli.Host`, which adds the module's own
-verbs ([delivery.md](delivery.md)).
+# Control-plane verbs in OSDU Delivery
 
-This page covers the estate verbs as they are used against OSDU flows.
+OSDU Delivery's command line is `sqlflow`: SQLFlow's CLI with the OSDU verbs added. The control-plane verbs (`login`,
+`trigger`, `runs`, `groups`, `schedules`, `repos`, `pipelines`, `search`, `datasources`, `nodes`, `health`, `doctor`)
+are SQLFlow's, and signing in, the credential order, every subcommand and its output are documented in
+[Control-plane verbs](../../../../sqlflow/docs/reference/cli/control-plane.md). OSDU Delivery's control plane
+(`osdu/hosts/SqlFlow.Delivery.ControlPlane.Host`) is SQLFlow's control plane with the OSDU module composed in, so these
+verbs work against it unchanged. This page covers what is different when they are pointed at OSDU flows.
 
-## Triggering a run
+## Two kinds of verbs in one binary
 
-```bash
-# the hourly deliver for one log source, now
-sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --set logSource=STAT_COMP
+| Verbs | Talk to | Need |
+| --- | --- | --- |
+| SQLFlow's control-plane verbs (`trigger`, `runs`, `schedules`, ...) | The control plane's `/api/v1` | `--url` or `SQLFLOW_URL`, and a token (`sqlflow login`, `--token` or `SQLFLOW_TOKEN`). |
+| The OSDU verbs (`check`, `preview`, `values`, `records`, `config`, `partition`, `cache`, `template`, `assertions`, `dimensions`, `inventory`) | The module's database directly | `--db` or `SQLFLOW_CATALOG_DB` (and `SQLFLOW_OSDU_DB` when the `osdu` schema has a database of its own). None of them calls the control plane. |
 
-# plan it instead: render and compare, change nothing, and follow the trace
-sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --operation plan --set logSource=STAT_COMP --follow
+So a terminal that can reach the control plane but not the database can trigger and follow OSDU runs, but cannot read a
+ledger with `sqlflow records`; it reads records through the GUI or the delivery API instead
+([The delivery API](../concepts/api.md)).
 
-# refresh a partition's cache
-sqlflow trigger --repo recall --flow recall-lookups-00-cache
+## Triggering an OSDU run
 
-# what would be enqueued, without enqueuing it
-sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --preview
-```
-
-`trigger` enqueues one flow. `--repo` (a name or id) and `--flow` are required; `--pool` routes the run to a node
-pool, `--commit` pins an exact git object id (otherwise the run is pinned to the repository's last synced commit),
-and `--follow` attaches to the live trace and exits by the run's outcome.
-
-The kind arguments are the same three flags a local `sqlflow run` takes, parsed and validated once for both:
+`trigger` takes the kind arguments of the flow, the same three a local `sqlflow run` takes, and sends them with the run:
 
 | Flag | Meaning |
 | --- | --- |
-| `--operation <name>` | Which of the kind's operations the run performs. Omitted takes the kind's default. |
-| `--set name=value` | A flow parameter value; repeatable. |
+| `--operation <name>` | Which of the kind's operations the run performs (`deliver`, `plan`, `verify`, ... for a delivery flow; `refresh` for a cache flow). Omitted takes the kind's default. |
+| `--set name=value` | A run value, repeatable: a flow parameter, or `partition`, which names the OSDU partition the run targets. |
 | `--payload <json>` or `--payload @<file>` | One JSON object whose shape the flow kind owns. |
 
-What each operation does, and what the payload carries for a delivery run, is in [delivery.md](delivery.md). A
-`--scope` other than `flow` is refused: a whole set of flows runs through its schedule, whose membership is what a
-fire runs.
-
-## Following what happened
-
 ```bash
-sqlflow runs list --kind delivery --status failed --repo wells
-sqlflow runs show <runId>              # the header: parameters, counts, error
-sqlflow runs trace <runId> --follow    # the trace as text, live
-sqlflow runs cancel <runId>
+# plan one log source in the test partition, change nothing, and follow the trace
+sqlflow trigger --repo welldb --flow welldb-welllog-03-delivery --operation plan \
+  --set partition=test --set logSource=WIRELINE --follow
+
+# deliver it
+sqlflow trigger --repo welldb --flow welldb-welllog-03-delivery --set partition=test --set logSource=WIRELINE
+
+# refresh the lookup cache of every partition the cache flow serves, one after another
+sqlflow trigger --repo welldb --flow welldb-lookups-00-cache --set 'partition=*'
 ```
 
-A delivery run's header carries the submission it produced and its record counts (planned, delivered, held,
-failed, unchanged), so `runs show` answers "what did that run actually do to the data" without opening the GUI.
-`--kind` filters by flow kind, and the kinds an OSDU Delivery estate has are `delivery`, `retrieval`, `cache`,
-`assertion`, and the `pre` and `ing` flows feeding them.
+What each operation does and what a delivery payload carries is in [Running an OSDU flow](run.md); how a run settles
+its partition is in [Partitions](../concepts/partitions.md). The partition is taken off the run's values before the
+flow's parameters are read, so it never moves a watermark or a submission's scope.
 
-## The estate
+The control plane attaches the central configuration to every delivery, cache, retrieval, assertion and dimension run it
+queues, from a trigger, a schedule or a run group alike, so the node resolves `${env:NAME}` from it first
+([sqlflow config](config.md)). A local `sqlflow run` gets none of it.
+
+## Schedules
+
+`schedules create` carries `--operation` and `--set` values into every fire of the schedule, so an operation or a
+partition is part of the schedule rather than something to remember:
 
 ```bash
-sqlflow pipelines list --repo recall --kind delivery
-sqlflow pipelines show <id> --yaml
-sqlflow schedules create --repo recall --flow recall-welllog-03-header-delivery --cron "0 * * * *" --operation deliver
-sqlflow schedules create --repo recall --flow recall-welllog-03-header-delivery --cron "0 3 * * *" --operation verify
-sqlflow repos sync recall
-sqlflow search <term>
+# the hourly delivery to test, and a nightly verify of the same flow as a schedule of its own
+sqlflow schedules create --repo welldb --flow welldb-welllog-03-delivery --cron "0 * * * *" \
+  --set partition=test --set logSource=WIRELINE
+sqlflow schedules create --repo welldb --flow welldb-welllog-03-delivery --cron "0 3 * * *" \
+  --operation verify --set partition=test --set logSource=WIRELINE
 ```
 
-Two things are worth knowing here for OSDU flows:
+A flow's YAML `schedule:` block takes the same as `operation:` and `values:`.
 
-- **A drift pass is a schedule of its own.** `--operation` is carried by every fire of a schedule, so the nightly
-  `verify` sits next to the hourly `deliver` as a second schedule over the same flow rather than as a flag
-  somebody has to remember.
-- **Search answers from the ledger too.** A delivery key lands on each flow's record of that row; an OSDU id, a source key or a label
-  prefix lists the records that start with it, across every flow, from indexed columns.
+## Following runs
+
+```bash
+sqlflow runs list --kind delivery --status failed
+sqlflow runs show <runId> --json
+sqlflow runs trace <runId> --follow
+sqlflow pipelines list --repo welldb --kind cache
+```
+
+- `--kind` filters by flow kind. The kinds OSDU Delivery adds are `delivery`, `retrieval`, `cache`, `assertion`,
+  `dimension` and `inventory`, beside the `pre` and `ing` flows that feed them.
+- `runs show` prints SQLFlow's run header. The kind's own part of a run is in the `--json` form: `operation`,
+  `requestedBy`, `values`, `payload` (including the central configuration the control plane attached, as `references` and
+  `partitionReferences`) and `resultJson`, the result the kind recorded (for a delivery run, what it planned and
+  delivered; see [Running an OSDU flow](run.md)). What happened to each record is in the ledger:
+  [sqlflow records](records.md).
+
+## Compute tasks of the module
+
+A value check of a mapping across a scope and a removal of records from OSDU are queued as compute tasks, drained by the
+nodes. They appear in SQLFlow's task listing under their operation names:
+
+```bash
+sqlflow datasources tasks --operation delivery-check-values
+sqlflow datasources tasks --operation delivery-delete
+sqlflow datasources task <id>
+```
+
+## Search
+
+`sqlflow search` prints SQLFlow's categories (objects, columns, definitions, files, flows, flow columns, executed SQL).
+The control plane's combined search (`GET /api/v1/search/all`, the GUI's search box) also answers a `records` category from
+the ledger, but the CLI does not print it, with or without `--json`. To find a record from a terminal, use
+`sqlflow records list <flow.yaml> --search <term>` or `sqlflow records show <flow.yaml> --key <key>`, which read the
+ledger directly ([sqlflow records](records.md)).
+
+## Health
+
+The readiness probe of an OSDU Delivery control plane includes a `module-databases` check beside the catalog's. It stays
+unhealthy until the control plane has verified the `osdu` module database against its build, and holds the refusal when
+the database is missing, behind or ahead (the control plane then stops, logging
+`The control plane refuses to run: <reason>`). So `sqlflow health` reporting a failing `ready` under a passing `live`
+can mean the module database rather than the catalog. The probe's body says only `Unhealthy`; the control plane's log
+names the reason, and `sqlflow db status` says what to apply ([sqlflow db](db.md)).
 
 ## See also
 
-- [delivery.md](delivery.md): the OSDU verbs and the run options in full.
-- [../concepts/control-plane.md](../concepts/control-plane.md): the API these verbs call.
-- [../../environment-variables.md](../../environment-variables.md): `SQLFLOW_URL`, `SQLFLOW_TOKEN` and the
-  credentials file.
+- [Control-plane verbs](../../../../sqlflow/docs/reference/cli/control-plane.md): every remote verb, signing in, output and exit codes.
+- [Running an OSDU flow](run.md): operations, values, payload and result of an OSDU run.
+- [sqlflow config](config.md): the configuration a queued run carries.
+- [Partitions](../concepts/partitions.md): the `partition` run value.
+- [Control plane](../concepts/control-plane.md): the module's background services and settings on the control plane.
+- [The delivery API](../concepts/api.md): the `/api/v1/delivery` routes the GUI uses.

@@ -204,12 +204,12 @@ against the saved schema only: no row is read and nothing is rendered."
     }
 
     #[tool(
-        description = "Scaffold a mapping for a saved template: returns mapping YAML with an entry for each variable the \
-template needs (lookups prefilled from a partition's cached types when one is named), with the issues still to \
-resolve. This is how a new mapping starts; do not write one from scratch. A fresh scaffold is not valid yet: its \
-issues list what to fill in (source columns, lookups, fixtures). Edit it, run delivery_check_mapping until valid, \
-then propose it with propose_pipelines beside the flow that pins it. The template must be saved (delivery_templates). \
-Writes nothing."
+        description = "Scaffold a mapping for a saved template: returns mapping YAML holding the ACL and legal entries to \
+fill and, when a partition is named, a cache lookup for each single-valued reference its cached types can answer, \
+with the issues still to resolve. This is how a new mapping starts; do not write one from scratch. A fresh scaffold \
+is not valid yet: add the properties the template requires from the source's columns (delivery_templates lists \
+them), fill the ACL and legal lists, and finish the lookups. Run delivery_check_mapping until valid, then propose it \
+with propose_pipelines beside the flow that pins it. The template must be saved. Writes nothing."
     )]
     async fn delivery_scaffold_mapping(&self, Parameters(i): Parameters<ScaffoldMappingInput>) -> String {
         let required = [
@@ -257,7 +257,7 @@ Writes nothing."
                 "template": { "kind": i.kind.trim(), "version": i.version.trim() },
                 "partition": partition,
                 "nextSteps": [
-                    "Fill in what the issues name: the source columns, the lookups and the fixtures.",
+                    "Add the properties the template requires from the source's columns, fill the ACL and legal lists, and finish each lookup's findBy column.",
                     "Run delivery_check_mapping on the edited YAML until valid is true.",
                     "Propose it with propose_pipelines, beside the delivery flow that pins it as name@version."
                 ],

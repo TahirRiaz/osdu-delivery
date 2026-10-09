@@ -4,7 +4,7 @@
   "flowType": "delivery",
   "strictKeys": true,
   "includeEnvelope": true,
-  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "generatedFrom": "osdu/docs/reference/flow/delivery.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
   "keyCount": 487,
   "keys": [
@@ -631,7 +631,7 @@
       "path": "interfaces.<name>.protocolOptions.recordMethod",
       "type": "string",
       "required": false,
-      "description": "The HTTP method of the record write. Default `PUT` on the storage route and `POST` on the Wellbore DDMS; override it with `recordPath` for a facade such as petrodb-api. Set here, it overrides the source's value for this interface."
+      "description": "The HTTP method of the record write. Default `PUT` on the storage route and `POST` on the Wellbore DDMS; override it with `recordPath` for a facade service in front of the DDMS. Set here, it overrides the source's value for this interface."
     },
     {
       "path": "interfaces.<name>.protocolOptions.recordPath",
@@ -2857,7 +2857,7 @@
       "path": "target.protocolOptions.recordMethod",
       "type": "string",
       "required": false,
-      "description": "The HTTP method of the record write. Default `PUT` on the storage route and `POST` on the Wellbore DDMS; override it with `recordPath` for a facade such as petrodb-api."
+      "description": "The HTTP method of the record write. Default `PUT` on the storage route and `POST` on the Wellbore DDMS; override it with `recordPath` for a facade service in front of the DDMS."
     },
     {
       "path": "target.protocolOptions.recordPath",

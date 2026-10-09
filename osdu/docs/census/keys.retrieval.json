@@ -4,7 +4,7 @@
   "flowType": "retrieval",
   "strictKeys": true,
   "includeEnvelope": true,
-  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "generatedFrom": "osdu/docs/reference/flow/retrieval.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
   "keyCount": 76,
   "keys": [

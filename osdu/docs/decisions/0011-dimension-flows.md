@@ -1,3 +1,18 @@
+---
+id: delivery-decision-0011
+title: "Decision 0011: dimension flows read every distinct value by ranges and keep each key"
+type: decision
+summary: "Why dimensions page through every distinct value of a field by ranges instead of the search aggregation."
+keywords:
+  - "dimension"
+  - "distinct values"
+  - "aggregation limit"
+  - "ranges"
+  - "keys"
+related:
+  - delivery-flow-dimension
+  - delivery-guide-dimensions
+---
 # 0011: Dimension flows read every distinct value by ranges, and keep each key beside the value a person picks
 
 Status: proposed. Design reference: [dimension-plan.md](../dimension-plan.md).

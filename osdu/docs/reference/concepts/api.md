@@ -1,0 +1,342 @@
+---
+id: delivery-concept-api
+title: "The delivery API (/api/v1/delivery): every route, its scope, parameters and answer"
+type: concept
+summary: "Every HTTP route OSDU Delivery adds under /api/v1/delivery, by area: method, scope, query and body parameters, and what each answers or queues."
+keywords:
+  - api/v1/delivery
+  - rest api
+  - endpoints
+  - routes
+  - http api
+  - scopes
+  - x-osdu-partition
+  - "?interface="
+  - "?partition="
+  - compute task
+  - "202 accepted"
+  - problem details
+  - openapi
+related:
+  - concept-control-plane
+  - delivery-concept-control-plane
+  - delivery-concept-authentication-and-identity
+  - delivery-concept-ledger
+  - delivery-concept-explorer
+  - delivery-cli-run
+  - delivery-cli-records
+  - delivery-concept-gui
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DirectOperationRunner.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/WorkbenchPartition.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryArtifactEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryAssertionEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCacheStreams.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryConfigEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Dimension.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Element.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.References.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Validate.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryInventoryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryIssueEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryLedgerEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryPartitionEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryReversalEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliverySearchTermEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryValueCheckEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlanePolicies.cs
+  - sqlflow/src/SqlFlow.ControlPlane/Api/Contracts.cs
+---
+
+# The delivery API: every route under /api/v1/delivery
+
+OSDU Delivery adds one route group to SQLFlow's control plane, `/api/v1/delivery`. The GUI's OSDU pages, the OSDU verbs
+of `sqlflow` that talk to a control plane, and the `delivery_*` tools of the MCP server all call it. Everything else the
+control plane serves (runs, pipelines, repositories, schedules, lineage, search, users, nodes, the OpenAPI document at
+`/openapi/v1.json`) is SQLFlow's API, documented in
+[the control plane](../../../../sqlflow/docs/reference/concepts/control-plane.md). This page lists every route the
+module registers, grouped by area, with the policy it is mapped under, its parameters and what it answers.
+
+## How the routes behave
+
+**Policies.** The module registers no policy of its own: it maps its routes into SQLFlow's policy groups. `read`,
+`operate` and `author` are names only, each resolving to "a signed-in user", so any valid token, whatever scopes it
+carries, reaches every route of those three groups. Only `admin` checks the token, for the `admin` scope, on eight routes
+([authentication and identity](authentication-and-identity.md)). The Policy column says which group a route is in.
+
+**Addressing.** A flow's routes take the catalog's pipeline id (`/flows/{pipelineId}/...`). A record's routes take the
+ledger's flow id and the record's delivery key (`/records/{flowId}/{key}/...`), because the same row read by several
+flows is one record per flow; the flow id is on every record a listing returns.
+
+**Interfaces and partitions.** A route under `/flows/{pipelineId}` works on one interface of the flow. A flow in the single
+form, or a source of one interface, needs no name; for a source of several, `?interface=<name>` names it, and without it
+the answer is 400 `Interface required`, listing the interfaces (a name the flow does not declare is 404
+`No such interface`). A flow that names its partitions keeps a ledger per partition, so the same routes take
+`?partition=<name>`: 400 `Partition required` without it for a flow of several partitions, 400 `No such partition` for one
+it does not name. The counts (`stats`) and the interface listing cover every partition when none is named. Reads across
+flows (the record lookup, the audit trail, the boards) read the partition the request names, else the one the GUI sends
+in the `X-Osdu-Partition` header (the title bar's partition), else every partition.
+
+**What runs where.** Reads are answered from the ledger in the `osdu` schema. What a person asks of OSDU or the source and
+waits on (a probe, a read-back, a source read, a preview, a scope's values, every explorer read) runs in the control
+plane with the flow's own credentials and answers in the response; a failure is a problem saying which side failed: 502
+(OSDU or the ingestion tables refused or failed), 504 (no answer in time) or 422 (the flow cannot serve the request),
+every resolved secret redacted. A value check and a removal are compute tasks for a node: 202 with
+`/api/v1/compute/tasks/{taskId}` to poll. A redelivery, a sync, a verify, a reversal and a ledger deletion are runs: 202
+with `/api/v1/runs/{runId}` to follow. The control plane never delivers.
+
+**Paging.** `page`/`pageSize` lists use the platform's pages (50 by default, at most 200). Cursor lists take `after` and
+`limit` and answer `next`, the value to pass as `after`.
+
+## Flows and records
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /flows/{pipelineId}/stats` | read | `interface`, `partition` | Record counts by custody state, drift, the last 24 hours and the last submission; every interface (and partition) added up unless one is named. Counted from the ledger. |
+| `GET /flows/{pipelineId}/interfaces` | read | `partition` | The flow's interfaces in document order: ledger identity, route and why, mapping and kind, record table, `after`, the order a run takes them in, parameters with the scope column each binds, key columns, counts. |
+| `GET /flows/{pipelineId}/records` | read | `search`, `mode` (`contains`; prefix otherwise), `status`, `submissionId`, `deliveredBy`, `runId`, `drifted`, `issue`, `page`, `pageSize`, `interface`, `partition` | A filtered page of the interface's records. `status` is one of `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`, `reverted`, `waiting`. A page past the listing's count limit is 400 rather than a scan. |
+| `GET /records` | read | `search`, `status`, `flowId`, `partition`, `page`, `pageSize` | The record lookup across every flow: a delivery key, or the start of an OSDU id, source key, label, identity value or ingestion file name. Each hit names its flow, interface, partition, the values that matched and the file and row it came from. Without `search`, the newest records. |
+| `GET /records/flows` | read | `partition` | The ledger identities the lookup can be narrowed to (`flowId` for `GET /records`), one per interface that holds a record. |
+| `GET /flows/{pipelineId}/target` | read | `interface`, `partition` | Where the records live: endpoint as written, data partition, route, auth type, the path each removal scope calls, and on a DDMS route the collection serving the mapping's kind. No header other than the partition is reported. |
+| `GET /flows/{pipelineId}/submissions` | read | `max` (100, at most 1,000), `interface`, `partition` | The interface's submissions, newest first. |
+| `GET /flows/{pipelineId}/retrievals` | read | `max` (100, at most 1,000) | A retrieval flow's runs, newest first; 409 for another kind. |
+| `GET /records/{flowId}/{key}` | read | | One record: custody state, OSDU id and version, hashes, source key and label, last error, its pipeline, interface and partition, the record it waits for and those waiting for it. A record deleted from the ledger is 404 `Deleted from the ledger`, naming who deleted it and when. |
+| `GET /records/{flowId}/{key}/attempts` | read | `max` (100, at most 500) | Every delivery attempt with its outcome, steps and error. |
+| `GET /records/{flowId}/{key}/activities` | read | `max` (100, at most 500) | The interventions and runs that named the record. |
+| `GET /records/{flowId}/{key}/chain` | read | | The record's row through its ingestion table: when it arrived and every recorded change, each with the ingestion run and the landing of its file. |
+| `GET /records/{flowId}/{key}/cache` | read | | What the record read out of the partition cache when it was rendered. |
+| `GET /records/{flowId}/{key}/artifacts` | read | `max` (200, at most 1,000) | What deliveries of the record created in OSDU, with each artifact's state and undo. Answers for a record deleted from the ledger too; 404 for a key the ledger never held. |
+| `GET /flows/{pipelineId}/undos` | read | `page`, `pageSize`, `interface`, `partition` | Open undos counted for the source and each interface, with a page of the records that hold artifacts an undo may still take. |
+
+## Submissions and the audit trail
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /submissions/{submissionId}` | read | | One submission with its counts and the runs that worked on it. |
+| `GET /submissions/{submissionId}/attempts` | read | `max` (500, at most 5,000) | The submission's attempts. |
+| `GET /submissions/{submissionId}/batches` | read | `status`, `page`, `pageSize` | Its work batches. |
+| `GET /activities` | read | `pipelineId` or `flowId` (not both), `submissionId`, `runId`, `kind`, `actor`, `outcome`, `idle`, `since`, `until`, `page`, `pageSize`, `interface`, `partition` | The audit trail, newest first. `idle=false` leaves out runs that changed nothing, `idle=true` lists only them. |
+| `GET /activities/flows` | read | `partition` | The ledger identities the trail can be narrowed to, including ledgers whose flow is no longer synced. |
+| `GET /activities/{activityId}` | read | | One activity with its captured log, and the pipeline, interface and partition it is reached by. |
+
+## Interventions
+
+An intervention is recorded in the ledger under the caller's name: what the control plane marks itself (a release, the records a redelivery names) as `user:<subject>`, and what a queued run does under the run's requester.
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `POST /flows/{pipelineId}/release` | operate | body `keys`, `run` (false), `pool`; `interface`, `partition` | Releases the interface's blocked records (all, or `keys`). 200 with the count, or 202 with a deliver run under the last submission's parameter values when `run` is true. |
+| `POST /records/{flowId}/{key}/release` | operate | body `run` (false), `pool` | The same for one record. |
+| `POST /flows/{pipelineId}/issues/{issue}/release` | operate | body `run` (false), `pool`; `interface`, `partition` | Releases every record one issue keeps blocked, recorded with the issue and its pattern. |
+| `POST /flows/{pipelineId}/redeliver` | operate | body `scope` (the part: `all`, `record`, `files`, `bulk`, `workflow` as the route sends them), `keys` or `filter` with `expected`, `run` (true), `pool`; `interface`, `partition` | Sends records again whatever their hashes say: the named ones are marked here, every delivered record when none is named (marked by the run itself). 202 with the run, or 200 with the count when `run` is false. |
+| `POST /records/{flowId}/{key}/redeliver` | operate | body `scope`, `run` (true), `pool` | The same for one record. |
+| `POST /flows/{pipelineId}/rerender` | operate | body `keys` or `filter` with `expected`, `run` (true), `pool`; `interface`, `partition` | Brings records up to date: rendered again under today's rules and sent only where a hash moved. |
+| `POST /flows/{pipelineId}/rerender/preview` | operate | as `rerender` | 202 with a `plan` run that says what bringing the selection up to date would send, sending nothing. |
+| `POST /flows/{pipelineId}/sync` | operate | body `keys` or `filter` with `expected` (neither: every record); `interface`, `partition` | 202 with a sync run that reconciles the ledger with the ingestion tables. Sends nothing to OSDU. |
+| `POST /records/{flowId}/{key}/sync` | operate | | The same for one record. |
+| `POST /records/{flowId}/{key}/verify` | operate | | 202 with a verify run that compares what OSDU holds with the ledger and records drift. |
+| `POST /cache/tags/decide` | operate | body `tagIds`, `approve` | Approves or rejects cache changes. An approved change is carried to its records by the rollout ([the control plane](control-plane.md)). |
+
+A `filter` is the record listing's filter (`status`, `search`, `mode`, `submissionId`, `runId`, `drifted`,
+`deliveredBy`, `issue`). `expected` is the count the operator was shown; when the filter no longer resolves to it the
+request is refused with 409, so a set that changed underneath is never acted on.
+
+## Reading OSDU and the source
+
+Each runs in the control plane with the flow's credentials and answers JSON; nothing is written.
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `POST /flows/{pipelineId}/probe` | operate | `interface`, `partition` | Whether the target answers under the flow's credentials: reachable, status, the path asked. A refusal is an answer. |
+| `POST /records/{flowId}/{key}/read` | operate | body `version` | The OSDU record the ledger's record claimed, at its latest or at `version`, with its version list; a record that never queued a document has none to read. |
+| `POST /flows/{pipelineId}/osdu/read` | operate | body `targetId`; `interface`, `partition` | Any OSDU record by id through the flow's route, at its latest version. |
+| `POST /flows/{pipelineId}/osdu/validate` | operate | body `targetId`, `version`, `schema` (`osdu` or `saved`), `templateVersion`; `interface`, `partition` | One record checked against the schema of its kind. 409 for a route that keeps no record in storage (`dspdm`, `etp`). |
+| `POST /records/{flowId}/{key}/source` | operate | | The record's rows as the ingestion tables hold them now: the record row with its system columns, child datasets, origin file and row. |
+| `POST /records/{flowId}/{key}/preview` | operate | | The record rendered now from its current row, in the scope it was last planned under. |
+| `POST /flows/{pipelineId}/preview` | operate | body `key`, `values`; `interface`, `partition` | One record rendered as a delivery would render it: the scope's first, or the one `key` names. A key that names no row is an answer (`found` false). |
+| `POST /flows/{pipelineId}/scope-values` | operate | `interface`, `partition` | The values each scope parameter can take, read from the record table. |
+
+## Removing records and deleting the ledger
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `POST /flows/{pipelineId}/records/remove/preview` | operate | body as `remove`; `interface`, `partition` | What a removal would take away, and from which target. |
+| `POST /flows/{pipelineId}/records/remove` | operate | body `scope` (`record`, `previous`, `history`, `everything`), `keys` or `filter` with `expected`, `purgeLedger`; `interface`, `partition` | 202 with a compute task that removes the records from OSDU. `purgeLedger` (with `record` or `everything` only) also deletes from the ledger each record OSDU answered for. |
+| `POST /records/{flowId}/{key}/delete` | operate | body `scope`, `purgeLedger` | The same removal for one record. |
+| `POST /flows/{pipelineId}/records/purge` | operate | body `keys` or `filter` with `expected`, or neither; `interface`, `partition` | Deletes records already removed from OSDU from the ledger, asking nothing of OSDU; a record OSDU may still hold is counted as left. |
+| `POST /records/{flowId}/{key}/purge` | operate | | The same for one record; 409 for a record OSDU may still hold. |
+| `POST /flows/{pipelineId}/ledger/delete` | operate | body `confirm` (the partition the ledger is kept in), `pool`; `partition` | 202 with the run that removes every record of every interface from OSDU, then deletes each ledger. 400 without a matching `confirm`; 409 when no ledger exists or a deletion is already queued or running. |
+
+See [removal and reversal](removal-and-reversal.md) for what each scope does.
+
+## Issues and reversals
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /flows/{pipelineId}/issues` | read | `max` (100, at most 500), `interface`, `partition` | What keeps the interface's records blocked, grouped by issue, the most records first. |
+| `GET /flows/{pipelineId}/issues/{issue}` | read | `samples` (5, at most 20), `interface`, `partition` | One issue with the files its records came from and samples spread across it. 400 for an id that is not sixteen hexadecimal characters. |
+| `GET /flows/{pipelineId}/reversible` | read | `runId` or `submissionId`, `interface`, `partition` | Whether the run or submission has anything to reverse now, and why not. |
+| `GET /flows/{pipelineId}/reversals` | read | `max` (50, at most 200), `runId`, `submissionId`, `interface`, `partition` | The interface's reversals, newest first; with a run or submission, that source's reversal, counted. |
+| `GET /reversals/{reversalId}` | read | | One reversal, counted, with its pipeline, submissions and runs. |
+| `GET /reversals/{reversalId}/records` | read | `outcome` (`pending` for unsettled), `after`, `limit` (100, at most 1,000) | A page of its records in key order. |
+| `POST /flows/{pipelineId}/reverse/preview` | operate | body `runId` or `submissionId`; `interface`, `partition` | What reversing it would reach, deciding a sample as the run would; nothing is written. |
+| `POST /flows/{pipelineId}/reverse` | operate | body `runId` or `submissionId`, `expected`, `pool`; `interface`, `partition` | 202 with the reverse run. Asking again resumes a reversal that stopped. |
+
+## Mappings, templates and the mapping builder
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /mappings` | read | `repoId`, `status` | The mapping documents the repositories hold, as the last sync read them. |
+| `GET /mappings/{mappingId}` | read | | One mapping with its YAML. |
+| `GET /mappings/{mappingId}/flows` | read | | The interfaces of delivery flows that render with the mapping, in every partition. |
+| `POST /flows/{pipelineId}/check-values` | operate | body `targets` (template paths, at most 200), `values`, `maxRows` (10,000; 0 for the whole scope), `samples` (20), `skipSamples`, `mapping`; `interface`, `partition` | 202 with a compute task that finds the rows whose values the mapping's template will not take. |
+| `GET /templates` | read | | The saved template versions, with origin, who saved each and how many mappings pin it. |
+| `GET /templates/detail` | read | `kind`, `version`, `scope` | One saved version laid out variable by variable; with `scope`, the cached types each variable can read. |
+| `GET /templates/schema` | read | `kind`, `version` | The bundled schema of a saved version. |
+| `POST /templates/preview` | read | body `kind`, `schema`, `scope`, `release` | A bundled schema laid out without saving it. |
+| `POST /templates` | author | body `kind`, `schema`, `origin`, `release` | Saves a template version; `outcome` is `created` or `unchanged`. |
+| `DELETE /templates` | author | `kind`, `version` | Deletes a version; 409 `Template in use` while a synced mapping pins it. |
+| `GET /templates/osdu/releases` | read | | The releases of the OSDU data definitions, newest first, and which are in the local copy. |
+| `GET /templates/osdu/schemas` | read | `release` (newest when left out) | Every record kind a release publishes. |
+| `GET /templates/osdu/schema` | read | `release`, `kind` | One kind's schema from a release, bundled, with the template version it saves as. |
+| `GET /templates/osdu/compare` | read | `fromRelease`, `fromKind`, `toRelease`, `toKind` | Two versions of one kind compared: breaking, additive and wording changes, variable by variable. |
+| `POST /templates/osdu/sync` | operate | body `release` | Reads the release list again and downloads the release when it is not on disk. |
+| `GET /mapping-builder/repos` | read | | The repositories a mapping can be written for, with their delivery flows and the parameters each renders with. |
+| `GET /mapping-builder/caches` | read | | Every partition cache, its flows, current version and types. |
+| `POST /mapping-builder/draft` | read | body `scope`, `kind`, `version`, `name`, `mappingVersion`, `system` | A new mapping draft for a saved template. |
+| `POST /mapping-builder/compose` | read | body `scope`, `draft`, `parameters` | The draft as YAML, its issues, and whether it loads and passes the preflight. |
+| `POST /mapping-builder/parse` | read | body `yaml`, `path` | A mapping document as a draft the builder edits. |
+| `POST /mapping-builder/shape` | read | body `yaml`, `path`, `parameters` | The shape of the records the mapping renders, drawn against its template without a row or a cache. |
+| `POST /mapping-builder/coverage` | read | body `yaml`, `path` | What the mapping fills of its template and what it leaves required and empty. |
+
+A document that does not load, or pins a template that is not saved, is an answer with its issue on `shape` and
+`coverage`, not an HTTP error. See [templates](templates.md) and [preflight](preflight.md).
+
+## Caches
+
+Every cache route but `GET /caches` names one partition's cache with `scope` (or `partition` on `/cache/streams`).
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /caches` | read | `repoId` | Every partition cache: the cache flows filling it, the types they declare, the current version. |
+| `GET /cache/streams` | read | `partition` (required) | Where each cached type comes from (the flows upstream of its cache flow), which delivery flows read it, and its state. |
+| `GET /cache/items` | read | `scope`, `type`, `search`, `version`, `page`, `pageSize` | The cached records of one version (the current one by default). |
+| `GET /cache/versions` | read | `scope` | The versions, newest first, with the flow and run that wrote each. |
+| `GET /cache/history` | read | `scope`, `type` | Each version with how many records it changed, added and removed. |
+| `GET /cache/diff` | read | `scope`, `from`, `to`, `type`, `change`, `search`, `page`, `pageSize` | What changed between two versions (`to` defaults to the current one). |
+| `GET /cache/tags` | read | `status` (`pending`, `approved`, `rolling`, `rejected`, `applied`), `scope`, `page`, `pageSize` | The cache changes delivered records were built from, and what each reaches. |
+| `GET /cache/gaps` | read | `scope`, `type`, `empty`, `page`, `pageSize` | What delivered records were built without, most records first. |
+
+See [the partition cache](partition-cache.md).
+
+## Partitions and the central configuration
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /partitions` | read | | Every registered partition, and every partition something is still kept under. |
+| `POST /partitions` | admin | body `name`, `description`, `isDefault` | 201 with the partition; the first one registered becomes the default. |
+| `PUT /partitions/{name}` | admin | body `description` | Sets what a partition is for. |
+| `POST /partitions/{name}/default` | admin | | Makes it the partition a run that names none runs in. |
+| `DELETE /partitions/{name}` | admin | | 204; nothing kept under it is deleted. The default is refused while others are registered. |
+| `GET /config` | read | | Every property of every scope, values shown (a property never holds a secret). |
+| `PUT /config/{name}` | admin | body `value`, `description`; `repoId`, `partition` | Sets a property for the control plane, a repository or a partition. |
+| `DELETE /config/{name}` | admin | `repoId`, `partition` | 204, or 404 when it was not set there. |
+| `GET /config/effective/{repoId}` | read | `partition` | What a run of the repository's flows is given, flattened. |
+
+See [partitions](partitions.md), [sqlflow partition](../cli/partition.md) and [sqlflow config](../cli/config.md).
+
+## The explorer and search terms
+
+The explorer reads OSDU through a delivery flow's connection; the GUI names the partition with `partition` or the
+workbench header.
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /explorer/connection` | read | `partition` | Whether a delivery flow's connection reaches the partition, and which. |
+| `POST /explorer/types` | operate | body as `search`; `partition` | The kinds a search finds, each with its count. |
+| `POST /explorer/search` | operate | body `text`, `lucene`, `mentions`, `kind`, `filters`, `sort` (`relevance`, `modified`, `created`), `offset`, `limit` (100), `facet`, `columns`; `partition` | One page of the records a search finds. |
+| `POST /explorer/fields` | operate | body `kind`; `partition` | The properties a kind's records hold. |
+| `POST /explorer/read` | operate | body `targetId`, `version`; `partition` | One record from the storage service, with its version list. |
+| `POST /explorer/validate` | operate | body `targetId`, `version`, `schema`, `templateVersion`; `partition` | One record checked against its kind's schema. |
+| `POST /explorer/validate-list` | operate | body `search`, `max` (1 to 1,000), `schema`; `partition` | The records a search finds checked and counted by the rules they break. |
+| `POST /explorer/element-queries` | operate | body `kind`, `path`, `section`, `value`, `values` | The Lucene query finding records that hold an element, from the saved template alone. |
+| `POST /explorer/referenced-by` | operate | body `type`, `refresh`; `partition` | The types whose records name records of a type, from the partition's schemas. |
+| `GET /explorer/dimension/candidates` | operate | `kind` | The keys a kind's saved template suggests for a dimension. |
+| `POST /explorer/dimension/keys` | operate | body `kind`, `query`, `path`; `partition` | The commonest keys of a drafted dimension's path. |
+| `POST /explorer/dimension/compose` | operate | body `draft`, `example`; `partition` | A drafted dimension as YAML, checked; nothing is saved. |
+| `GET /search-terms` | read | `entityType`, `kind`, `orphans` | The search terms of an entity type, or of every one. |
+| `GET /search-terms/entity-types` | read | | The entity types with how many terms each has. |
+| `GET /search-terms/{termId}` | read | `entityType` | One term; 404 when unknown. |
+| `PUT /search-terms/{termId}` | author | `entityType`; body `name`, `excluded`, `route`, `note` | Refines a term. |
+| `DELETE /search-terms/{termId}/refinement` | author | | Removes what people made of the term. |
+| `POST /search-terms/delete` | author | body `terms`, `entityType` | Deletes terms from the search in one save. |
+| `POST /search-terms/restore` | author | body `terms`, `entityType` | Offers deleted terms again. |
+
+See [the explorer](explorer.md) and [search terms](search-terms.md).
+
+## Assertions, dimensions and inventories
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /assertions` | read | `partition` | The board of every active assertion flow. |
+| `GET /flows/{pipelineId}/assertions` | read | `partition` | One assertion flow's board; 409 for another kind. |
+| `GET /flows/{pipelineId}/assertion-runs` | read | `partition`, `max` (50, at most 500) | Its runs, newest first. |
+| `GET /flows/{pipelineId}/assertion-matrix` | read | `partition`, `runs` (30, at most 200) | Recent runs against every test. |
+| `GET /flows/{pipelineId}/assertions/{test}/history` | read | `partition`, `runs` (30, at most 200) | One test's results over its recent runs. |
+| `GET /assertion-runs/{assertionRunId}` | read | | One run with every test's result. |
+| `GET /assertion-runs/{assertionRunId}/report` | read | `format` (`json`, `md`, `html`, `junit`) | The run's report as a file; 400 for another format. |
+| `GET /dimensions` | read | `partition` | Every active dimension flow's dimensions. |
+| `GET /flows/{pipelineId}/dimensions` | read | `partition` | One dimension flow's dimensions; 409 for another kind. |
+| `GET /flows/{pipelineId}/dimensions/{name}/blueprint` | read | `partition` | How a dimension is built: its YAML beside what each line reads and makes. |
+| `GET /dimensions/{dimensionId}` | read | | One dimension, its pipeline and parameters. |
+| `GET /dimensions/{dimensionId}/table` | read | `search`, `attr`, `order`, `dir`, `offset`, `limit` (100, at most 1,000) | A page of the dimension's own table. |
+| `GET /dimensions/{dimensionId}/values` | read | `search`, `order`, `removed`, `attr`, `after`, `limit` | A page of its values. |
+| `GET /dimensions/{dimensionId}/values/{valueId}` | read | | One value with its keys, filter and history. |
+| `GET /dimensions/{dimensionId}/keys` | read | `search`, `value`, `leftOut`, `removed`, `attr`, `order`, `after`, `limit` | A page of its keys. |
+| `GET /dimensions/{dimensionId}/attributes/{name}` | read | `search`, `limit`, `attr`, `value` | The values an attribute holds among its keys. |
+| `GET /dimensions/{dimensionId}/builds` | read | `max` (30, at most 500) | Its builds, newest first. |
+| `GET /dimensions/{dimensionId}/changes` | read | `build`, `key`, `value`, `change`, `before`, `limit` | A page of its change log. |
+| `GET /dimensions/{dimensionId}/export` | read | `set` (`values`, `keys`, `table`), `format` (`csv`, `jsonl`) | The dimension as a file, written a page at a time. |
+| `GET /runs/{runId}/dimension-builds` | read | | The builds a platform run made. |
+| `POST /dimensions/{dimensionId}/filter` | read | body `valueIds`, `values` | The search filter of the values named. Reads only. |
+| `POST /dimensions/search` | read | body `picks`, `kind`, `within` | The OSDU search finding records that hold the picked values. Nothing is sent to OSDU. |
+| `DELETE /dimensions/{dimensionId}` | admin | | Removes a dimension its flow no longer declares, and everything kept of it. 409 for one the flow declares. |
+| `GET /inventories` | read | `partition` | The inventories of the partition, or of every partition. |
+| `GET /inventories/lookup` | read | `id`, `partition` | What every inventory of the partition holds of one OSDU id; 400 when no partition is named or sent. |
+| `GET /flows/{pipelineId}/inventories` | read | `partition` | An inventory flow's inventories; 409 for another kind. |
+| `GET /inventories/{partition}/{inventoryId}` | read | | One inventory with its counts by finding, owners and last runs. |
+| `GET /inventories/{partition}/{inventoryId}/records` | read | `finding`, `after`, `limit` (100, at most 1,000) | A page of its ids. |
+| `GET /inventories/{partition}/{inventoryId}/runs` | read | `limit` (30, at most 200) | Its builds and reconciles. |
+| `GET /inventories/{partition}/{inventoryId}/export` | read | `finding` | Its ids as CSV. |
+| `GET /inventories/{partition}/{inventoryId}/removals` | read | `limit` | Its removals, newest first. |
+| `GET /inventories/{partition}/removals/{removalId}` | read | | One removal. |
+| `GET /inventories/{partition}/removals/{removalId}/items` | read | `outcome`, `after`, `limit` | What the removal did to each id. |
+| `POST /inventories/{partition}/{inventoryId}/removals` | operate | body `finding`, `scope`, `expected`, `ids`, `confirm`, `pool` | 202 with the run that removes the ids of one finding from OSDU. |
+
+See [assertion flows](../flow/assertion.md), [dimension flows](../flow/dimension.md) and
+[inventory flows](../flow/inventory.md).
+
+## Retention
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `POST /ledger/prune` | admin | body `olderThanDays` (at least 1) | The retention pass at one cut-off: attempts aged out (the latest of every record kept), captured run logs of settled activities cleared, superseded assertion runs removed. No audit row is deleted. |
+
+## Running an OSDU flow, and search
+
+There is no delivery route for starting a run: an OSDU flow is run with SQLFlow's `POST /api/v1/runs`, whose body carries
+`operation`, `values` and `payload` as the kind defines them ([running an OSDU flow](../cli/run.md)). The module also adds
+a `records` category to SQLFlow's `GET /api/v1/search/all`, answered from the same ledger lookup as `GET /records`.
+
+## See also
+
+- [The control plane: what OSDU Delivery adds](control-plane.md)
+- [Authentication and identity](authentication-and-identity.md)
+- [The ledger](ledger.md)
+- [SQLFlow's control plane](../../../../sqlflow/docs/reference/concepts/control-plane.md)

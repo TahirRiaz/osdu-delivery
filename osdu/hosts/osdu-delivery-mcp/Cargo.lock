@@ -799,6 +799,7 @@ dependencies = [
  "serde_json",
  "sqlflow-mcp",
  "tokio",
+ "yaml-rust2",
 ]
 
 [[package]]

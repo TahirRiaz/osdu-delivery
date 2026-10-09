@@ -1,0 +1,534 @@
+---
+id: delivery-flow-delivery
+title: "Delivery flow (flowType: delivery): deliver ingestion table rows to OSDU through a pinned mapping"
+type: flow-reference
+summary: "The flowType: delivery document: source tables and keys, the pinned mapping, target endpoint and auth, partitions, reliability, stop rules and schedules."
+keywords:
+  - delivery flow
+  - "flowtype delivery"
+  - ingestion table
+  - silver table
+  - source.record
+  - primarykey
+  - render.mapping
+  - render.parameters
+  - target.endpoint
+  - oauth2clientcredentials
+  - reliability
+  - fan-out
+  - schedule values
+  - deliver to osdu
+yamlPath: "(root, flowType: delivery)"
+related:
+  - delivery-flow-interfaces
+  - delivery-flow-routes
+  - delivery-flow-mapping
+  - delivery-concept-change-detection
+  - delivery-concept-partitions
+  - delivery-concept-preflight
+  - flow-ing
+  - flow-schedule
+sourceRefs:
+  - osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
+  - osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs
+  - osdu/src/SqlFlow.Delivery/Documents/MappingCatalog.cs
+  - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Model/DeliveryDestination.cs
+  - osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs
+  - osdu/src/SqlFlow.Delivery/Source/IngestionConnection.cs
+  - osdu/src/SqlFlow.Delivery/Source/SourceBindings.cs
+  - osdu/src/SqlFlow.Delivery/Validation/PayloadLocations.cs
+  - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
+  - osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Worker/FailureGuard.cs
+  - osdu/src/SqlFlow.Delivery/Http/AuthResolver.cs
+  - osdu/src/SqlFlow.Delivery/Http/HttpClientBuilder.cs
+  - osdu/src/SqlFlow.Delivery/Http/UrlGuard.cs
+  - sqlflow/src/SqlFlow.Yaml/YamlDocumentLoader.cs
+---
+
+# Delivery flow (flowType: delivery): deliver ingestion table rows to OSDU through a pinned mapping
+
+A `flowType: delivery` document delivers records into an OSDU partition. It reads the keyed ingestion tables that
+SQLFlow's own pre-ingestion and ingestion flows load ([ing flows](../../../../sqlflow/docs/reference/flow/ing.md)),
+renders each record row with a pinned [mapping](mapping.md) into an OSDU record of the mapping's kind, sends what
+rendered differently from what OSDU holds, and records every step in the ledger. Use it once the source's rows sit in a
+keyed table: one row per record, a key that identifies it, and SQLFlow's system columns saying when it last changed.
+
+A delivery document comes in two forms. The single form, described here, delivers one OSDU kind. The interface form
+lists several kinds of one source under `interfaces`, sharing the connection, target and settings
+([a source with interfaces](interfaces.md)). Both load into one model and run on one engine; every key on this page
+means the same in both, with the differences named where they apply.
+
+The loader is strict: an unknown key, a misspelled key or a key written twice is a load error naming the line, unlike
+SQLFlow's own flow kinds, which ignore unknown keys. Run `sqlflow validate` after every edit; it loads the document
+offline, with no catalog, database or OSDU ([cli-validate](../../../../sqlflow/docs/reference/cli/validate.md)).
+
+## Minimal working example
+
+```yaml
+flowType: delivery
+name: welldb-wellbore-03-delivery
+batch: welldb
+
+partitions: [dev]
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.Wellbore
+    key: [wellbore_id]
+    primaryKey: RecId
+  work: ../.work/wellbore
+
+render:
+  mapping: Wellbore@1.0.0
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
+```
+
+```bash
+sqlflow validate flows/welldb-wellbore-03-delivery.yaml
+sqlflow check flows/welldb-wellbore-03-delivery.yaml
+sqlflow run flows/welldb-wellbore-03-delivery.yaml --operation plan
+sqlflow run flows/welldb-wellbore-03-delivery.yaml
+```
+
+`validate` prints `OK  'welldb-wellbore-03-delivery' is valid (delivery: OsduData.silver.Wellbore -> ${env:OSDU_URL}).`
+[`sqlflow check`](../cli/check.md) then resolves the mapping against its saved template and the partition's cache, and a
+`plan` run reports what a delivery would send without sending it ([running an OSDU flow](../cli/run.md)).
+
+## A fuller example
+
+A well log flow with a child table, a flow parameter that scopes the run, a business version column, a fan-out, a stop
+rule and a schedule:
+
+```yaml
+flowType: delivery
+name: welldb-welllog-03-delivery
+batch: welldb
+description: Well logs from the well database, one WellLog record per log, written through the storage service.
+
+partitions: [dev, test]
+
+parameters:
+  logSource:
+    required: true
+    description: The log source a run delivers (the log_source column).
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.WellLog
+    key: [log_id]
+    primaryKey: RecId
+    scope:
+      log_source: logSource
+  datasets:
+    curves:
+      object: OsduData.silver.WellLogCurve
+      join:
+        log_id: log_id
+      orderBy: [curve_id]
+  lastModified: update_date
+  work: ../.work/welllog/{logSource}
+
+render:
+  mapping: WellLog@1.0.0
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
+  validation:
+    mode: enforce
+
+reliability:
+  concurrency: 8
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  fanOut: 4
+
+failWhen:
+  failedPercent: 20
+
+schedule:
+  cron: "0 * * * *"
+  timezone: UTC
+  values:
+    partition: dev
+    logSource: WIRELINE
+```
+
+## Top-level keys
+
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `flowType` | string | yes | `delivery`. |
+| `name` | string | yes | The flow's pipeline in the catalog, its schedules and its run history. In the single form the ledger keeps the flow under this name, at most 200 characters ([ledger](../concepts/ledger.md)). |
+| `batch` | string | no | The platform batch the flow belongs to, read by SQLFlow ([flow overview](../../../../sqlflow/docs/reference/flow/overview.md)). |
+| `description` | string | no | Free text. |
+| `schedule`, `mode`, `lifecycle` | | no | SQLFlow's envelope keys, read by the platform ([schedule](../../../../sqlflow/docs/reference/flow/schedule.md), [flow overview](../../../../sqlflow/docs/reference/flow/overview.md)). See [Schedules](#schedules) for what a delivery flow adds. |
+| `parameters` | map | no | The flow's own run parameters. See [Parameters](#parameters). |
+| `partitions` | list | no | The OSDU data partitions the flow may deliver to. See [Partitions](#partitions). |
+| `keepLedger` | string | no | For a flow that serves every registered partition: the partition that keeps the ledger the flow kept before. See [Partitions](#partitions). |
+| `source` | map | yes | Where the records come from. See [source](#source). |
+| `render` | map | yes | The pinned mapping and what it renders with. See [render](#render). |
+| `change` | map | no | How a change is decided. See [change](#change). |
+| `target` | map | yes | The OSDU endpoint, its credentials and the route. See [target](#target). |
+| `reliability` | map | no | Concurrency, retries, timeouts, batches and fan-out. See [reliability](#reliability). |
+| `verify` | map | no | What a verify run does with drift. See [verify](#verify). |
+| `failWhen` | map | no | When record failures stop the run. See [failWhen](#failwhen). |
+| `interfaces` | map | no | The interface form. See [a source with interfaces](interfaces.md). |
+
+## source
+
+The flow reads the keyed ingestion tables SQLFlow loads, and nothing else: there is no drop folder, no manifest and no
+replica, and the flow never extracts from a database of its own. `source.connection` names the database; `record` is the
+table holding one row per record; each `datasets` entry is a child table joined to it by the record key; `payloads` say
+where each record's files are.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `connection` | string | required | The database holding the ingestion tables, as a `${env:NAME}` or `${keyvault:vault/secret}` reference, or a SQL Server connection string whose password is such a reference. Resolved on the node that runs the flow ([connections and secrets](../../../../sqlflow/docs/reference/concepts/connections-and-secrets.md)). |
+| `record.object` | string | required | The record table's three-part name, `[database].[schema].[table]` (`OsduData.silver.WellLog`). |
+| `record.key` | list | required | The key columns, in order: the ing flow's `load.keyColumns`. They must name the same columns, in the same order, as the mapping's `dataset.key`. |
+| `record.primaryKey` | string | none | The table's identity primary key (the ing flow's `target.identityColumn`, such as `RecId`). Required with `reliability.fanOut` above 0. See [The identity primary key](#the-identity-primary-key). |
+| `record.scope` | map | none | Column to parameter: each entry becomes a typed `[column] = @parameter` predicate, so a run reads only the rows of its parameter values. The value is bound, never substituted into SQL. |
+| `datasets.<name>.object` | string | required | A child table's three-part name. The mapping reads it under `<name>` (a `$forEach` over it, or `$dataset.<column>`). |
+| `datasets.<name>.join` | map | required | Child column to record key column. Every record key column must be joined. |
+| `datasets.<name>.orderBy` | list | none | The order of a record's child rows. |
+| `datasets.<name>.maxRowsPerRecord` | integer | 100000 | The most child rows one record may carry, 1 to 1000000. A record over it is held. |
+| `payloads.<name>.root` | string | required | The folder or storage prefix a record's files must sit under. Relative to the flow file; `{parameter}` tokens allowed. |
+| `payloads.<name>.locationColumn` | string | none | The record column holding the record's folder, relative to `root` or absolute under it. Required when the route sends the payload. |
+| `payloads.<name>.pattern` | string | `*` | A file name glob under the record's folder, without a path. |
+| `payloads.<name>.hashColumn` | string | none | The record column holding the payload's content hash. Required unless `change.payloadDetect` is `lastModified`. |
+| `payloads.<name>.chunkCountColumn` | string | none | The record column holding how many files the payload has, which spares a storage listing when planning. |
+| `lastModified` | string | none | A business version column: a `datetime`, or RFC 3339 / ISO 8601 text (read as UTC without an offset). A row older than the version the ledger holds is never sent ([change detection](../concepts/change-detection.md)). |
+| `systemColumns.updated` | string | `UpdatedDate_DW` | The column an incremental read windows on. Cannot be opted out of. |
+| `systemColumns.deleted` | string | `DeletedDate_DW` | The soft-delete stamp, used when the table carries it. A row marked deleted is held, never delivered. |
+| `systemColumns.inserted` | string | `InsertedDate_DW` | When the row first reached the table, used when the table carries it; dates the record's arrival on its history. |
+| `systemColumns.fileName` | string | `FileName_DW` | The file the row was landed from, traced on every attempt; a column wider than 800 characters is refused. |
+| `systemColumns.rowNumber` | string | `RowNumber_DW` | The row's position in that file. |
+| `incremental.overlapSeconds` | integer | 900 | How far below the last watermark the next run reads again, 0 to 86400. |
+| `incremental.pageSize` | integer | 1000 | Records per page, 1 to 100000. |
+| `incremental.isolation` | `snapshot` \| `readCommitted` | `snapshot` | How a page's record rows and child rows see the database. `snapshot` reads them as one moment and needs `ALLOW_SNAPSHOT_ISOLATION ON`. |
+| `incremental.commandTimeoutSeconds` | integer | 0 | Seconds a read may run; 0 is bounded by the run's cancellation alone. |
+| `work` | string | required | Where the intake writes its work batches (the rendered documents the drains read back): a folder or storage prefix every node can write, relative to the flow file, with `{parameter}` tokens. |
+
+`updated` has to exist, named or left at its default. `deleted` and `inserted` named explicitly have to exist; left at
+their defaults they are used only when the table carries them, and so are `fileName` and `rowNumber`, named or not. `~`
+opts a column out (`fileName: ~`), except `updated`. The [provenance columns](../../../../sqlflow/docs/reference/concepts/provenance-and-row-keys.md)
+are SQLFlow's; a delivery reads them as they are.
+
+```yaml
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.WellLog
+    key: [log_id]
+    primaryKey: RecId
+  payloads:
+    curves:
+      root: ../data/curves/{logSource}
+      locationColumn: curve_folder
+      pattern: "*.parquet"
+      hashColumn: payload_hash
+      chunkCountColumn: chunk_count
+  lastModified: update_date
+  systemColumns:
+    fileName: ~
+  incremental:
+    overlapSeconds: 900
+    pageSize: 1000
+    isolation: snapshot
+  work: ../.work/welllog/{logSource}
+```
+
+Which payload a route sends, and the names `files` and `bulk` a route that sends both reads, are the route's
+([routes](routes.md)). A record whose folder column is empty, climbs out with `..`, or points outside every root is held
+with the reason.
+
+### The identity primary key
+
+`record.primaryKey` names an integer identity column that is the record table's own single-column primary key. SQLFlow's
+ingestion creates it when the ing flow sets `target.identityColumn`. The record key still identifies a record, derives its
+delivery key and OSDU id, and joins the child tables; the primary key is how rows are paged and dealt out:
+
+- **Paging.** A read pages by the primary key; without one it pages by the record key.
+- **Fan-out.** A flow with `reliability.fanOut` above 0 must name it. The coordinating run counts the candidates per
+  range of primary key values and cuts them into contiguous slices, at most 1024, which its members plan
+  ([submissions](../concepts/submissions.md)).
+
+When a run opens the tables it refuses a declared column that is not an integer, not an identity column or not the
+table's single-column primary key, and a record key with no unique index without a filter (a record held by two rows
+could fall into two slices). The message gives the statement that adds the column:
+
+```text
+... An existing table needs it added once, which rewrites the table (drop a plain column of that name first):
+ALTER TABLE [OsduData].[silver].[WellLog] ADD [RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_WellLog] PRIMARY KEY CLUSTERED;
+(NONCLUSTERED when the table already has a clustered index).
+```
+
+Run it while nothing loads the table. SQLFlow adds `target.identityColumn` only when it creates a table; set on an
+existing one, it adds a plain nullable column, which a run refuses as not an identity column.
+
+### What a run checks against the tables
+
+Opening the source, a run (and `sqlflow check --connect`) reads the tables' columns and refuses, naming the key and the
+table: a table the node cannot see, a column the flow names that the table does not hold (the message lists the
+columns), a key column of a type that cannot be compared, an `updated` column that is not a date and time, a record row
+whose key column is null in the run's scope, and the primary key rules above. A database that refuses snapshot isolation
+fails the read with the statement that enables it, or `isolation: readCommitted`. Before it plans, a run also refuses a
+`source.record.key` that differs from the mapping's `dataset.key`, and scope, `lastModified` and payload columns the
+record table does not hold ([preflight](../concepts/preflight.md)).
+
+## render
+
+`render` is the only block that changes what a document is. Its values enter the render context recorded against every
+record, so changing one renders the records again; everything else changes only how a document gets there
+([change detection](../concepts/change-detection.md)).
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mapping` | string | required | The mapping, pinned as `Name@version` (`WellLog@1.0.0`). A floating reference is refused. |
+| `cacheVersion` | string | `current` | Which version of the target partition's cache the mapping renders with: `current` takes the version current when the run starts; a label (`20261001T010000Z`) pins one. Refused for a flow that names several partitions or serves the registry. |
+| `parameters` | map | none | Values for the parameters the mapping declares, as literals or `${env:...}` / `${keyvault:...}` references. |
+| `mappings` | string | none | The folder the mappings are read from, relative to the flow file. Left out, the nearest `mappings` folder walking up from the flow file. |
+
+A mapping `WellLog@1.0.0` is the file `WellLog@1.0.0.yaml` (or `WellLog/1.0.0.yaml`) in that folder, and the file must
+declare the same name and version. A flow reads the cache of the partition it delivers to and names no cache: a
+document that still declares `render.cache` is refused ([partition cache](../concepts/partition-cache.md)).
+
+The four parameters every OSDU record needs belong to the kind rather than to a flow. When the mapping declares one and
+the flow supplies no value, it takes a reference that resolves from the central configuration or the node's environment:
+
+| Mapping parameter | Default when the flow leaves it out |
+| --- | --- |
+| `dataPartition` | the partition the run is bound to, for a flow that works in partitions; otherwise `${env:OSDU_DATA_PARTITION}` |
+| `aclOwner` | `${env:OSDU_ACL_OWNER}` |
+| `aclViewer` | `${env:OSDU_ACL_VIEWER}` |
+| `legalTag` | `${env:OSDU_LEGAL_TAG}` |
+
+A value the flow supplies always wins, and references are resolved before the render context is built, so the context
+holds the value that reached the record. A flow that names its partitions, or serves the registry, may not set
+`dataPartition`: every run mints its ids in the partition it targets.
+
+## change
+
+| Key | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `detect` | `renderedHash` \| `always` | `renderedHash` | A document is sent when the hash of what it renders to differs from what the ledger holds; `always` sends every record read. |
+| `payloadDetect` | `contentHash` \| `lastModified` \| `always` | `contentHash` | A payload is sent when its hash column moves; `lastModified` takes its files' modified times as its watermark; `always` sends it every time. |
+| `onUnchanged` | `skip` \| `deliver` | `skip` | `deliver` sends a record read whose document and payload are unchanged. |
+| `useSourceVersions` | boolean | `true` | The tier-0 gate: an incremental run whose window holds no changed row, and no record waiting to be planned again, completes without reading a record. |
+
+`detect: lastModified` and `detect: contentHash` are refused (the business version column is `source.lastModified`), so
+is `payloadDetect: renderedHash`, and so is `payloadDetect: lastModified` on a route that sends no payload files. What
+each decision reads is on [change detection](../concepts/change-detection.md).
+
+## target
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `endpoint` | string | required | The OSDU platform root every service is reached under, usually `${env:OSDU_URL}` (a single-form flow on the ddms route may point at the DDMS itself; see [DDMSs](ddms.md#the-endpoint-the-platform-root-or-the-ddms-itself)). Changing it never redelivers a record by itself. |
+| `auth` | map | `type: none` | How every request authenticates. See below. |
+| `headers` | map | none | Extra headers on every request. `data-partition-id` here hard-codes the flow's one partition. |
+| `protocol` | string | required in the single form | The route the records go by: `storage`, `file`, `dataset`, `manifest`, `ddms`, `fileAndDdms`, `manifestAndDdms`, `workflow`, `dspdm` or `etp` ([routes](routes.md)). |
+| `protocolOptions` | map | none | The route's options ([routes](routes.md#options-every-route-reads)). |
+| `ddms`, `eds`, `dspdm`, `etp` | map | none | The DDMSs and services some routes deliver to ([DDMSs](ddms.md)). |
+| `workflow`, `airflow` | map | none | The workflow route's declaration ([routes](routes.md)). |
+| `verifyReferences` | `none` \| `storage` | `none` | `storage` asks OSDU's storage service, before a record is sent, about the ids it refers to that no record of the ledger holds, and holds a record naming one storage does not hold ([preflight](../concepts/preflight.md#references-checked-in-storage)). Refused on the `dspdm` route. |
+| `validation.mode` | `report` \| `enforce` | `report` | What the gate before a record is sent does with a record that breaks its schema: send it and record the verdict, or hold it ([preflight](../concepts/preflight.md#validation-before-a-record-is-sent)). |
+| `validation.unverified` | `send` \| `hold` | `send` | What it does with a record some part of which could not be checked. |
+
+The names the routes carried before (`osduRecord`, `osduWellLog`, `osduFile`, `osduManifest`, `osduDataset`,
+`osduFileAndDdms`, `osduManifestAndDdms`, `osduWorkflow`, `osduDspdm`, `osduEtp`) still load. In the interface form each
+interface's route follows from what it declares, so `target.protocol` is refused at the source level.
+
+### target.auth
+
+| Key | Meaning |
+| --- | --- |
+| `type` | `none`, `bearer`, `apiKeyHeader`, `basic` or `oauth2ClientCredentials`. |
+| `secretRef` | The token (`bearer`), the key (`apiKeyHeader`), the password (`basic`) or the client secret (`oauth2ClientCredentials`). Required for `bearer`, `apiKeyHeader` and `basic`. |
+| `secondarySecretRef` | The user name (`basic`) or the client id (`oauth2ClientCredentials`). |
+| `headerName` | The header an `apiKeyHeader` key goes in. Required for that type. |
+| `valuePrefix` | Text written before the value: `Bearer` and a space by default for `bearer`, nothing for `apiKeyHeader`. |
+| `token.url` | The token endpoint (`oauth2ClientCredentials`). |
+| `token.discoveryUrl` | An OIDC discovery document whose `token_endpoint` is used instead of `url`. |
+| `token.body` | Form fields of the token request (`scope`). `grant_type: client_credentials`, `client_id` and `client_secret` are added from the refs when the body leaves them out. |
+| `token.basicAuthClient` | `true` sends the client id and secret as a Basic header instead of in the body. Default `false`. |
+| `token.tokenPath` | Where the token is in the response. Default `access_token`. |
+| `token.applyPrefix` | Text written before the token in `Authorization`. Default `"Bearer "` (with its space). |
+
+`oauth2ClientCredentials` needs a `token` block. A token is reused until a minute before it expires (its `expires_in`, or
+30 minutes when the response gives none). Write every secret as a reference; the secret references the target declares
+are what the catalog lists as the flow's credential references.
+
+## Parameters
+
+A flow parameter is a run value supplied with `--set name=value`, a trigger's values or a schedule's `values`.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `parameters.<name>.required` | boolean | `false` | A run without a value fails with `parameter '<name>' is required. Supply it with --set <name>=value or the run's values.` |
+| `parameters.<name>.default` | string | none | The value a run without one takes. |
+| `parameters.<name>.description` | string | none | Free text. |
+
+`{name}` tokens are substituted in `source.work` and every payload `root`; a value carrying `/`, `\` or `..` is refused
+there, since these locations bound what a run reads and writes. `source.record.scope` binds a parameter to a column
+instead. A token or a scope naming an undeclared parameter is refused when the document loads, and a run supplying an
+undeclared one is refused when it starts. Each distinct set of values is a scope of its own, with its own watermark.
+
+Mapping parameters are different: they go under `render.parameters` ([render](#render)).
+
+## Partitions
+
+A flow says which partitions it delivers to along one of three paths ([partitions](../concepts/partitions.md)):
+
+| The flow declares | It delivers to |
+| --- | --- |
+| `partitions: [dev, test]` (or `{ name: dev, keepLedger: true }` entries) | the partitions it names; a run targets one of them |
+| `target.headers.data-partition-id: dev` | that one partition |
+| neither | every partition registered with the catalog (`sqlflow partition add`), the run's choice or the registry's default |
+
+A run names its partition with the run value `partition` (`--set partition=test`, a schedule's `values`); the
+module's own verbs take `--partition`. Each partition keeps a ledger of its own, named `<ledger>@<partition>`;
+`keepLedger` marks the one partition that keeps the ledger the flow kept before it served partitions (on the entry for a
+flow that names them, at the top level for one that serves the registry). A flow that works in partitions declares no
+`data-partition-id` header, no `render.parameters.dataPartition` and no parameter called `partition`.
+
+## reliability
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `concurrency` | integer | 8 | Records a worker delivers at once; verify and reverse runs work this many at once too. At least 1. |
+| `retry.attempts` | integer | 4 | The tries a request that is safe to repeat gets after a transport failure or a 408, 425, 429, 503 or 504; and the attempts a record gets before it is failed for good. At least 1. |
+| `retry.backoff` | `exponential` \| `fixed` | `exponential` | The wait between tries of a request. |
+| `retry.baseDelayMs`, `retry.maxDelayMs` | integer | 500, 30000 | The first and the longest wait between tries of a request. |
+| `retry.honorRetryAfter` | boolean | `true` | Never ask again sooner than a `Retry-After` header says; a wait longer than `maxDelayMs` is left to the record's next try. |
+| `retry.recordBaseDelayMinutes`, `retry.recordMaxDelayMinutes` | integer | 1, 60 | The wait before a record that failed gets another try, doubling per attempt up to the maximum. |
+| `skipStatusCodes` | list | none | More statuses that hold a record instead of trying it again (`HTTP <status> is not retryable`). 400, 403, 404, 405, 409, 413, 415 and 422 hold it whatever the list says. |
+| `timeoutSeconds` | integer | 100 | The timeout of one request. |
+| `rateLimitRps` | number | 0 | Requests per second; 0 is unlimited. |
+| `verifyTls` | boolean | `true` | `false` accepts any certificate, and only on a node that sets `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true`; elsewhere the run is refused. |
+| `urlAllowlist` | list | none | Hosts requests may reach; `*.example.com` matches the domain and its subdomains. Checked on every redirect, and a redirect from https to http is refused. |
+| `maxResponseBytes` | integer | 67108864 | The largest response read. |
+| `maxRequestBodyBytes` | integer | 0 | The target's request body ceiling; a bigger chunk holds the record before anything is sent. 0 declares none ([DDMSs](ddms.md)). |
+| `leaseSeconds` | integer | 300 | How long a worker's lease on a record lasts (at least 30 is used) before another node may take it. |
+| `batchSize` | integer | 50 | Records claimed from the ledger in one round trip. |
+| `batchRecords` | integer | 500 | Rendered documents per work batch file, 1 to 100000: one claim of a drain, one unit of progress. |
+| `fanOut` | integer | 0 | Member runs a large submission spreads over, 0 to 64. Needs `source.record.primaryKey`. |
+| `fanOutMinRecords` | integer | 1000 | Below this many candidates a submission never fans out. At least 1. |
+| `renderParallelism` | integer | 0 | Renderers on one node, 0 to 256; 0 is half the processors, at least one. |
+| `parallelInterfaces` | integer | 4 | The interface form only: how many interfaces of one wave run at once, 1 to 32 ([interfaces](interfaces.md#order)). |
+
+How a submission is planned, cut, leased and drained across nodes is on [submissions](../concepts/submissions.md); what
+happens to a record that fails, is held or waits is on [record lifecycle](../concepts/record-lifecycle.md).
+
+## verify
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `verify.reconcile` | boolean | `false` | A verify run compares OSDU's version of each delivered record with the ledger's; with `true` it also forgets what OSDU holds of each drifted or missing record, so the next plan that reads its row (a row change, a `replan`) sends it; to send them at once, redeliver them. |
+
+## failWhen
+
+A record with a data problem is held and the run goes on. `failWhen` says when the records' failures add up to a failure
+of the run itself, in a deliver, replan or drain run:
+
+| Key | The run stops when | Default |
+| --- | --- | --- |
+| `outageFailures` | this many records in a row could not reach the service (transport failure, timeout, HTTP 408, 429 or 5xx) or were refused by it (401 or 403), none delivered in between; 0 turns it off | 25 |
+| `consecutiveFailures` | this many records in a row failed with problems of one class (data, connection or permission) | not set |
+| `failedPercent` | held and failed records reach this share (above 0, at most 100) of the records settled, once `minRecords` have settled | not set |
+| `minRecords` | how many records settle before `failedPercent` is judged | 100 |
+
+A stopped run hands back the records it had not sent without charging them a try, closes its submission as failed
+(`stopped: <why>`) and ends failed; the next run sends what is left. In the interface form the same rules stop one
+interface ([when an interface stops](interfaces.md#when-an-interface-stops)).
+
+## Schedules
+
+The `schedule:` block is SQLFlow's ([schedule](../../../../sqlflow/docs/reference/flow/schedule.md)): a cron or an
+interval, a time zone, a scope, or a reference to a named schedule. A delivery flow uses two more keys of it:
+
+| Key | Meaning |
+| --- | --- |
+| `operation` | What every fire runs; `deliver` when left out. |
+| `values` | Run values every fire supplies: the flow's parameters, and `partition`. |
+
+A fire supplies nothing on its own, so a flow with a required parameter gives the schedule a value for it, or every fired
+run fails with `parameter '<name>' is required`. The schedule's operation is checked against the operations below when
+the document loads; its values are checked by each run, as a trigger's are.
+
+| Operation | What a run does |
+| --- | --- |
+| `deliver` | Plans the rows the ingestion tables changed and delivers what renders differently (the default). |
+| `plan` | Reports what a delivery would send, changing nothing. |
+| `intake` | Plans rows into work batches without delivering them: a fan-out member's share. |
+| `drain` | Delivers the work batches a submission already planned. |
+| `verify` | Compares what OSDU holds with what the ledger recorded. |
+| `replan` | Reads every row of the scope again and delivers what renders differently now. |
+| `sync` | Reads the ledger's records from the ingestion tables and consolidates the ledger; sends nothing. |
+| `reverse` | Puts OSDU back as it was before one run or submission. |
+| `undo` | Undoes what deliveries that did not complete left in OSDU. |
+| `delete-ledger` | Removes every record of the ledger from OSDU (reversibly), then deletes the ledger; the payload names the partition to confirm. |
+
+The payload each operation takes, the result and the exit codes are on [running an OSDU flow](../cli/run.md).
+
+## Validation errors
+
+Every message starts with the file. A sample of what `sqlflow validate` refuses:
+
+| Cause | Message |
+| --- | --- |
+| A floating mapping | `render.mapping 'WellLog' must be pinned as 'Name@version'; floating references are not allowed.` |
+| No route in the single form | `'target.protocol' is required.` |
+| An unknown key | `invalid YAML at line 28, column 3 - Property 'replica' not found on type 'SqlFlow.Delivery.Documents.FlowSourceYaml'.` |
+| A two-part table name | `source.record.object 'silver.WellLog' must be a three-part name [database].[schema].[table]: it has 2 part(s).` |
+| A child join missing a key column | `source.datasets.curves.join does not cover key column 'log_source' of the record table; every key column must be joined, or a child row could belong to several records.` |
+| A scope on an undeclared parameter | `source.record.scope binds column 'log_source' to parameter 'source', which is not declared under parameters.` |
+| An undeclared token | `source.work uses '{source}', which is not declared under parameters.` |
+| A literal password | `source.connection carries a literal password. A flow document holds references only: put the connection string, or its password, behind ${keyvault:vault/secret} or ${env:NAME}, or connect with Azure AD (Authentication=Active Directory Default).` |
+| A fan-out without a primary key | `reliability.fanOut spreads a submission over ranges of the record table's identity primary key, and source.record.primaryKey names none. ...` |
+| A header beside `partitions` | `target.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it targets. Remove the header.` |
+| A pinned cache version with several partitions | `render.cacheVersion pins version 20261001T010000Z, which is a version of one partition's cache, and the flow names 2 partitions, each rendering against its own partition's cache. ...` |
+| `render.cache` | `render.cache is not a setting any more: a flow reads the cache of the partition it delivers to (target.headers.data-partition-id), which every cache flow of that partition fills. Remove render.cache.` |
+| A missing hash column | `the flow decides payload changes by content hash, so source.payloads.curves.hashColumn must name the record column holding it; or take the files' modified times instead with change.payloadDetect: lastModified.` |
+| OAuth without a token block | `target.auth of type oauth2ClientCredentials needs a 'token' block with the token endpoint url and body.` |
+
+What validate cannot check (the mapping against its template, the cache, the tables, the order of interfaces) is checked
+by `sqlflow check` and by every run before anything is sent ([preflight](../concepts/preflight.md)).
+
+## See also
+
+- [A source with interfaces](interfaces.md): several kinds of one source in one document.
+- [Routes](routes.md) and [DDMSs](ddms.md): `target.protocol`, its options, and where DDMS records go.
+- [Mapping](mapping.md): what `render.mapping` pins.
+- [Change detection](../concepts/change-detection.md): what makes a record deliver again.
+- [Preflight](../concepts/preflight.md): the checks before anything is sent.
+- [Partitions](../concepts/partitions.md) and [submissions](../concepts/submissions.md).
+- [Ingestion flow](../../../../sqlflow/docs/reference/flow/ing.md): the flow that loads the tables a delivery reads.

@@ -1,3 +1,18 @@
+---
+id: delivery-decision-0007
+title: "Decision 0007: manifest datasets take ids derived from their record's id"
+type: decision
+summary: "Why the datasets a manifest delivery registers get ids derived from the record, so a redelivery can replace them."
+keywords:
+  - "manifest"
+  - "dataset id"
+  - "ingestion workflow"
+  - "redelivery"
+  - "file generic"
+related:
+  - delivery-flow-routes
+  - delivery-concept-protocols
+---
 # 0007: Manifest datasets take ids derived from their record's id
 
 Status: proposed. Design reference: sections 8.1 and 16.3.

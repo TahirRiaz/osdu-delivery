@@ -1,3 +1,18 @@
+---
+id: delivery-decision-0013
+title: "Decision 0013: inventory flows compare what OSDU serves with every ledger of the partition"
+type: decision
+summary: "Why finding orphans needs a read of what OSDU serves set against every ledger, and what an inventory compares."
+keywords:
+  - "inventory"
+  - "orphans"
+  - "stale ids"
+  - "forgotten ids"
+  - "ledger drift"
+related:
+  - delivery-flow-inventory
+  - delivery-guide-finding-orphans
+---
 # 0013: Inventory flows read what OSDU serves and compare it with every ledger of the partition
 
 Status: proposed. Design reference: [inventory-plan.md](../inventory-plan.md).
