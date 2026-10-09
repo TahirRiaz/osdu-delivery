@@ -1,12 +1,14 @@
 //! The key census: SQLFlow's machine-readable `.flow.yaml` model.
 //!
-//! Nine `keys*.json` files under `docs/reference/flow/` describe every
-//! attribute of every flow document kind. They are embedded here at compile
-//! time (`include_str!`) so the analysis engine ships as a single binary with
-//! no runtime file dependency. Each file is selected by the open document's
-//! `flowType`; the shared file (`keys.shared.json`) is always merged in because
-//! its blocks (`connections`, `servicePrincipals`, the invoke hooks) are reused
-//! across kinds.
+//! The `keys*.json` files under `docs/reference/flow/` describe every
+//! attribute of every flow document kind, and of the subscriber and schedule
+//! libraries. They are embedded here at compile time (`include_str!`) so the
+//! analysis engine ships as a single binary with no runtime file dependency.
+//! Each flow kind's file is selected by the open document's `flowType`; the
+//! shared file (`keys.shared.json`) is always merged in because its blocks
+//! (`connections`, `servicePrincipals`, the invoke hooks) are reused across
+//! kinds, and so are the envelope keys the document loader reads for every
+//! built-in kind (`schedule`, `mode`). A library is selected by its root key.
 //!
 //! A census `path` is a dot-path with three segment shapes:
 //!   * a plain key            `source.options.header`
@@ -218,12 +220,13 @@ impl Census {
 
     /// Build the census for a given `flowType` (None/"" selects the file flow),
     /// merging in the shared cross-cutting blocks.
-    /// The census for a parsed document. A subscriber library is not discriminated by `flowType`, so it
-    /// cannot be selected by [`Census::for_flow_type`]; analysing one against the file-flow census would
+    /// The census for a parsed document. A subscriber or schedule library is not discriminated by `flowType`,
+    /// so it cannot be selected by [`Census::for_flow_type`]; analysing one against the file-flow census would
     /// report every key it has as unknown.
     pub fn for_document(doc: &crate::document::FlowDocument) -> Census {
         match doc.kind {
             crate::document::DocumentKind::Subscribers => Census::for_subscribers(),
+            crate::document::DocumentKind::Schedules => Census::for_schedules(),
             crate::document::DocumentKind::Flow => Census::for_flow_type(doc.flow_type.as_deref()),
             crate::document::DocumentKind::Document => doc
                 .document_type
@@ -324,7 +327,24 @@ impl Census {
             .filter(|e| !have.contains(e.path.as_str()))
             .collect();
         entries.extend(extra);
+        // The document loader reads `schedule:` and `mode:` from the envelope of every built-in document, whatever
+        // its kind (YamlDocumentLoader's probe), so they are documented once, in the file-flow census, and merged
+        // into every built-in kind that does not carry its own entries. A batch is the exception: it projects no
+        // pipeline, so a schedule or a mode on it is parsed and then has no effect, and flagging them is right.
+        if ft != Some("batch") {
+            let have: std::collections::HashSet<String> = entries.iter().map(|e| e.path.clone()).collect();
+            entries.extend(Census::parse(FILE_FLOW).unwrap_or_default().into_iter().filter(|e| {
+                !have.contains(&e.path)
+                    && matches!(e.segs.first(), Some(Seg::Key(k)) if PROBED_ENVELOPE_KEYS.contains(&k.as_str()))
+            }));
+        }
         Census { entries, strict: false }
+    }
+
+    /// The schedule library census (`schedules.yaml`, `*.schedules.yaml`): the library's own keys. A library is not
+    /// a flow and takes none of the shared blocks.
+    pub fn for_schedules() -> Census {
+        Census { entries: Census::parse(SCHEDULES).unwrap_or_default(), strict: false }
     }
 
     /// Resolve an authored path to a census entry, container, or unknown.
@@ -471,6 +491,10 @@ pub struct ModuleCensus {
 /// The top-level keys of the platform envelope the host reads from every flow document, whatever its kind.
 const ENVELOPE_KEYS: &[&str] = &["name", "description", "batch", "schedule", "mode", "lifecycle"];
 
+/// The envelope keys the document loader reads for every built-in flow kind itself, rather than each kind's own
+/// loader: whatever a kind's census says, they are never ignored on it.
+const PROBED_ENVELOPE_KEYS: &[&str] = &["schedule", "mode"];
+
 /// The flow kinds SQLFlow compiles in; a module cannot register a census for one of them.
 pub const BUILT_IN_FLOW_TYPES: &[&str] =
     &["ing", "exp", "sp", "inv", "hc", "scm", "batch", "api", "cpy", "sftp", "cal", "trl"];
@@ -601,6 +625,7 @@ const CAL: &str = include_str!("../../../docs/reference/flow/keys.cal.json");
 const TRL: &str = include_str!("../../../docs/reference/flow/keys.trl.json");
 const SHARED: &str = include_str!("../../../docs/reference/flow/keys.shared.json");
 const SUBSCRIBERS: &str = include_str!("../../../docs/reference/flow/keys.subscribers.json");
+const SCHEDULES: &str = include_str!("../../../docs/reference/flow/keys.schedules.json");
 
 #[cfg(test)]
 mod tests {

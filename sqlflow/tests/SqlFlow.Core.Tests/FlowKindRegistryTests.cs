@@ -333,6 +333,7 @@ public sealed class FlowKindRegistryTests : IDisposable
         var declining = new RecordingExecutor(claims: false);
         var claiming = new RecordingExecutor(claims: true);
         using var provider = new ServiceCollection()
+            .AddSingleton(Loader())
             .AddSingleton<IFlowDocumentExecutor>(declining)
             .AddSingleton<IFlowDocumentExecutor>(claiming)
             .BuildServiceProvider();
@@ -350,7 +351,7 @@ public sealed class FlowKindRegistryTests : IDisposable
     [Fact]
     public async Task Execute_WithNoExecutorForTheKind_FailsNamingTheKind()
     {
-        using var provider = new ServiceCollection().BuildServiceProvider();
+        using var provider = new ServiceCollection().AddSingleton(Loader()).BuildServiceProvider();
         var document = Loader().Parse(ProbeFlow, "flows/wells.yaml");
 
         var ex = await Assert.ThrowsAsync<SqlFlowException>(
@@ -362,7 +363,10 @@ public sealed class FlowKindRegistryTests : IDisposable
     public async Task Execute_ANameTheDocumentDoesNotDeclare_IsRefusedBeforeAnyExecutorRuns()
     {
         var claiming = new RecordingExecutor(claims: true);
-        using var provider = new ServiceCollection().AddSingleton<IFlowDocumentExecutor>(claiming).BuildServiceProvider();
+        using var provider = new ServiceCollection()
+            .AddSingleton(Loader())
+            .AddSingleton<IFlowDocumentExecutor>(claiming)
+            .BuildServiceProvider();
         var document = Loader().Parse(ProbeFlow, "flows/wells.yaml");
 
         var ex = await Assert.ThrowsAsync<SqlFlowException>(
