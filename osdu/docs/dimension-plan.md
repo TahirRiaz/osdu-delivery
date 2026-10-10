@@ -473,6 +473,7 @@ LEFT JOIN [osdu].[dim_WellLog] AS j1
 | `views[].from` | required | The dimension whose rows the view's rows are. |
 | `views[].join[]` | none | `{ on, to, as }`: the column joined on, the dimension joined to, and the alias its columns are read by (the dimension's name unless given). At most 16. |
 | `views[].columns` | every column, as text | Each column under its name, in order: an expression, or `{ expression, dataType, description }`. At most 256. |
+| `views[].where` | every row | The condition a row of `from` is kept by, over the same columns, operators and functions as a column's expression (`element IS NOT NULL`). |
 
 ### What a view holds
 
@@ -482,7 +483,11 @@ LEFT JOIN [osdu].[dim_WellLog] AS j1
   `key_id` and `filter`, under the names the table gives them, then every column of each join the same way, prefixed by
   the join's alias and an underscore (`Unit_Name`), with the joined row's number as `<alias>_id`, all as text. The prefix
   is always given, so a dimension that gains an attribute adds a column and never renames or collides with another.
-- A row of `from` is a row of the view: every join is a left join, and no join meets more than one row.
+- A row of `from` is a row of the view, unless the view's `where` leaves it out: every join is a left join, and no join
+  meets more than one row. `where` is a condition compiled as an expression is, written into the view's `WHERE` clause
+  and into every statement its check reads it by, so the check counts the rows the view holds. A dimension with
+  `elements` keeps one row with no element for a key whose records hold none; `where: element IS NOT NULL` leaves it
+  out, as a table of the elements alone has it.
 - A column's name follows the rules of a view's name, unlike every other column of the view ignoring case, and is neither
   `partition` nor `id`.
 
@@ -953,6 +958,21 @@ samples README.
   - Lineage: a pipeline reading a view ordered after the dimension flow; a `target.connection` reaching another
     database refused by build and plan.
   - The API's views and their refusals; the GUI's build and lint.
+
+### Stage 16: a view's rows, and an element's long values
+
+- `views[].where`: a condition compiled as a column's expression is (`DimensionViewExpressions.CompileCondition`),
+  refused when it is a value alone or reads what a column may not; written into the view's `WHERE` clause and into each
+  statement of its check, kept on the view's record and shown by the API and the GUI. `element IS NOT NULL` leaves out the
+  one row a key of no element holds, so a view of elements has the rows a table of the elements alone has.
+- An element's field keeps up to 4,000 characters (`DimensionSpec.MaxElementValueLength`), an attribute still 256: no
+  index holds a field, while an attribute's value leads two. `DimensionElement.Value` is `nvarchar(4000)` (migration
+  `DimensionElementValues`, module version 1.37.0); the staging tables, a dimension table's field columns and a view's
+  type of them follow, and a table made before is widened by its next build through SQLFlow's schema evolution.
+- Tests: the condition's SQL in the view and in its check's statements, and its refusals; a view leaving out the row of
+  a key with no element on SQL Server, its check counting the rows it holds; a field of a thousand characters kept whole
+  in the ledger, the table and the view, after a table made at 256 is widened; the reader cutting at 4,000; the migration
+  keeping the values written before.
 
 ## Close-out
 

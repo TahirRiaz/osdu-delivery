@@ -3309,6 +3309,8 @@ export interface DeliveryDimensionView {
   description?: string | null;
   /** The dimension whose rows the view's rows are. */
   from: string;
+  /** The condition a row of `from` is kept by; null when the view keeps every row. */
+  where?: string | null;
   joins: DeliveryDimensionViewJoin[];
   /** The view's columns in order, its `partition` and `id` first. */
   columns: DeliveryDimensionViewColumn[];

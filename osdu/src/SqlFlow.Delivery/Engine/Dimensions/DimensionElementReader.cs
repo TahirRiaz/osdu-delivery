@@ -135,13 +135,13 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
         if (cut > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"{cut} element value(s) were longer than the {DimensionSpec.MaxAttributeValueLength} characters a dimension keeps and were cut."));
+                $"{cut} element value(s) were longer than the {DimensionSpec.MaxElementValueLength} characters a dimension keeps of a field and were cut."));
         }
 
         if (tooLong > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"{tooLong} element value(s) kept as a key or an id were longer than the {DimensionSpec.MaxAttributeValueLength} characters a dimension keeps, and are left out rather than cut, since a key cut joins to nothing."));
+                $"{tooLong} element value(s) kept as a key or an id were longer than the {DimensionSpec.MaxElementValueLength} characters a dimension keeps of a field, and are left out rather than cut, since a key cut joins to nothing."));
         }
 
         log.LogInformation(
@@ -253,12 +253,12 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
             }
 
             var joined = string.Join(DimensionElementField.Separator, kept);
-            if (joined.Length <= DimensionSpec.MaxAttributeValueLength)
+            if (joined.Length <= DimensionSpec.MaxElementValueLength)
             {
                 return (joined, false, false);
             }
 
-            return _field.Keep == DimensionValueKeep.Value ? (joined[..DimensionSpec.MaxAttributeValueLength], true, false) : (null, false, true);
+            return _field.Keep == DimensionValueKeep.Value ? (joined[..DimensionSpec.MaxElementValueLength], true, false) : (null, false, true);
         }
 
         private static string? Scalar(JsonValue value)

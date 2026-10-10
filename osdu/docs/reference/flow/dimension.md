@@ -300,8 +300,9 @@ LEFT JOIN osdu.dim_RefSamplingDomainType AS s    -- keyed by id; l.SamplingDomai
 ```
 
 `path` takes a path or a list of paths, exactly as the bare form does, and `keep` works on a collected attribute and an
-element's field too. A value longer than the 256 characters a dimension keeps is cut under `keep: value` and left out
-under `key` and `id`, since a key cut joins to nothing; the build's notes count them.
+element's field too. A value longer than a dimension keeps (256 characters for an attribute, 4,000 for an element's
+field) is cut under `keep: value` and left out under `key` and `id`, since a key cut joins to nothing; the build's notes
+count them.
 
 **Collected attributes.** `{ collect: <path> }` collects the values of the dimension's own records instead of reading
 the record a key names: `LoggingService: { collect: data.LoggingService }` on a dimension keyed by the well logs'
@@ -344,7 +345,9 @@ together:
 
 The table gains an `element` column: each key's objects numbered from 1, in the order of the records' ids and then of
 the objects in each record, so the same records number the same way build after build and a row keeps its `id`. A key
-whose records hold no object is one row with no element. A field reaching no value is null on its row; a number reads
+whose records hold no object is one row with no element; a view leaves such rows out with `where: element IS NOT NULL`.
+A field keeps up to 4,000 characters, where an attribute keeps 256: no index holds a field, so a curve's description or a
+list joined by `many: join` is kept whole. A field reaching no value is null on its row; a number reads
 as written (`203.149`), a boolean as `true` or `false`; a null in the array is no element.
 
 A build reads the elements in one pass over the dimension's records through the search cursor, asking only for the
@@ -457,12 +460,14 @@ views:
 | `views[].from` | required | The dimension of the flow whose rows the view's rows are. |
 | `views[].join[]` | none | `{ on, to, as }`: the column joined on (bare for a column of `from`, `alias.column` for one of an earlier join), the dimension of the flow joined, and the alias its columns are read by (the dimension's name unless given). At most 16. |
 | `views[].columns.<name>` | every column | An expression, or `{ expression, dataType, description }`. At most 256, beside `partition` and `id`. |
+| `views[].where` | every row | The condition a row of `from` is kept by: a T-SQL condition over the same columns, operators and functions as a column's expression, such as `element IS NOT NULL`. A value alone is refused. |
 
 **What a view holds.** Every view begins with `partition` and `id`, the number of the `from` row each of its rows stands
 for, which stays the same for as long as the dimension holds the row: a pipeline merges on it. Then its `columns`, in
 order. A view that lists none holds every column of `from` but its numbers, partition and filter, then every column of
 each join prefixed by its alias (`Unit_UnitCode`, `Unit_id`), as the tables hold them. Every join is a left join that
-meets at most one row, so a row of `from` is a row of the view.
+meets at most one row, so a row of `from` is a row of the view, unless its `where` leaves the row out. The check reads
+the rows the view holds, its `where` applied.
 
 **Joins**, refused where the document is read, naming the view and the join:
 

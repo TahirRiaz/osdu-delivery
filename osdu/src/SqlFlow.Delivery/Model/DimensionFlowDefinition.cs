@@ -350,6 +350,9 @@ public sealed record DimensionSpec
     /// <summary>The longest attribute value kept; a longer one is cut, with a note.</summary>
     public const int MaxAttributeValueLength = 256;
 
+    /// <summary>The longest value of an element's field kept; a longer one is cut, with a note. No index holds it, so it is longer than an attribute's.</summary>
+    public const int MaxElementValueLength = 4000;
+
     /// <summary>The attribute <paramref name="name"/> names, ignoring case; null when the dimension reads none of that name.</summary>
     public DimensionAttributeSpec? Attribute(string name)
         => Attributes.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));

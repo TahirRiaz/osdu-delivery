@@ -96,13 +96,13 @@ internal static class SqlServerDimensionStore
             [OriginalHash] binary(32) NOT NULL,
             [Seq] int NOT NULL,
             [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
-            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,
+            [Value] nvarchar(4000) COLLATE Latin1_General_100_BIN2 NULL,
             PRIMARY KEY ([OriginalHash], [Seq], [Name]));
         CREATE TABLE #DimElemKeyed (
             [ValueId] bigint NOT NULL,
             [Seq] int NOT NULL,
             [AttributeId] int NOT NULL,
-            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,
+            [Value] nvarchar(4000) COLLATE Latin1_General_100_BIN2 NULL,
             PRIMARY KEY ([ValueId], [Seq], [AttributeId]));
         """ + "\n" + NameStageSql;
 
@@ -174,7 +174,7 @@ internal static class SqlServerDimensionStore
             [Element] int NULL,
             [Key] nvarchar(1024) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
-            {Slots(slot => $"[{slot}] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,", "\n    ")}
+            {Slots(slot => $"[{slot}] nvarchar(4000) COLLATE Latin1_General_100_BIN2 NULL,", "\n    ")}
             [Records] bigint NOT NULL,
             [Filter] nvarchar(4000) COLLATE Latin1_General_100_BIN2 NULL,
             PRIMARY KEY ([ValueId], [Part]));
@@ -676,7 +676,7 @@ internal static class SqlServerDimensionStore
                 foreach (var value in match.Values.Distinct(StringComparer.Ordinal))
                 {
                     var name = string.Create(CultureInfo.InvariantCulture, $"@m{matched++}");
-                    parameters.Add(new SqlParameter(name, SqlDbType.NVarChar, DeliveryDimensionAttributeValue.MaxValueLength) { Value = value });
+                    parameters.Add(new SqlParameter(name, SqlDbType.NVarChar, DeliveryDimensionElement.MaxValueLength) { Value = value });
                     names.Add(name);
                 }
 
@@ -1520,7 +1520,7 @@ internal static class SqlServerDimensionStore
                 fields.Sort((left, right) => string.CompareOrdinal(left.Key, right.Key));
                 foreach (var (name, value) in fields)
                 {
-                    yield return [hash, element.Seq, name, OsduLedger.Truncate(value, DeliveryDimensionAttributeValue.MaxValueLength)];
+                    yield return [hash, element.Seq, name, OsduLedger.Truncate(value, DeliveryDimensionElement.MaxValueLength)];
                 }
             }
         }

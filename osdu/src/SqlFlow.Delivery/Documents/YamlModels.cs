@@ -1437,6 +1437,9 @@ internal sealed class DimensionViewYaml
 
     // Each column by its name: an expression, or { expression, dataType, description }; read by the mapper.
     public Dictionary<string, object?>? Columns { get; set; }
+
+    /// <summary>The condition a row of the view is kept by, over the same columns its expressions read.</summary>
+    public string? Where { get; set; }
 }
 
 internal sealed class DimensionViewJoinYaml

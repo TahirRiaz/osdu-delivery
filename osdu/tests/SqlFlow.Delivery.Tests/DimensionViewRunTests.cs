@@ -288,6 +288,40 @@ public sealed class DimensionViewRunTests : IDisposable
     }
 
     [Fact]
+    public async Task A_view_keeps_the_rows_its_where_holds_for_and_a_field_keeps_a_long_value_whole()
+    {
+        Logs();
+        var view = CurveView.ReplaceLineEndings("\n").Replace("  - name: TestCurveView\n", "  - name: TestCurveView\n    where: element IS NOT NULL\n", StringComparison.Ordinal);
+        var (runner, ledger, _) = await RunnerAsync(Flow(view));
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        // LOG-3 holds no curve: its table keeps the key's one row with no element, and the view leaves it out.
+        Assert.Equal(["LOG-1", "LOG-1", "LOG-2", "LOG-3"], await SqlAsync("SELECT [WellLogName] FROM [osdu].[dim_TestCurve] ORDER BY [WellLogName];"));
+        Assert.Equal(["LOG-1", "LOG-1", "LOG-2"], await SqlAsync("SELECT [Log] FROM [osdu].[dimv_TestCurveView] ORDER BY [Log];"));
+        var written = Assert.Single(outcome.Views);
+        Assert.Equal((DimensionViewWriteStatus.Written, DimensionViewCheckStatus.Passed, (long?)3L), (written.Status, written.Check, written.Rows));
+        Assert.Equal("element IS NOT NULL", (await ledger.GetDimensionViewAsync("TestCurveView"))!.View.Where);
+
+        // A table made when a field kept 256 characters is widened by the next build, and a field keeps a thousand
+        // characters whole, in the ledger, the table and the view.
+        await SqlAsync("ALTER TABLE [osdu].[dim_TestCurve] ALTER COLUMN [Mnemonic] nvarchar(256) NULL;");
+        var description = new string('d', 1000);
+        _platform.Add("dev:work-product-component--WellLog:4", WellLog, new JsonObject
+        {
+            ["Name"] = "LOG-4",
+            ["Curves"] = new JsonArray(new JsonObject { ["Mnemonic"] = description, ["CurveUnit"] = "dev:reference-data--UnitOfMeasure:m:" }),
+        });
+
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal(["8000"], await SqlAsync("SELECT [max_length] FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[dim_TestCurve]') AND [name] = N'Mnemonic';"));
+        Assert.Equal(["1000"], await SqlAsync("SELECT MAX(LEN([Value])) FROM [osdu].[DimensionElement];"));
+        Assert.Equal(["1000"], await SqlAsync("SELECT LEN([Mnemonic]) FROM [osdu].[dim_TestCurve] WHERE [WellLogName] = N'LOG-4';"));
+        Assert.Equal(["1000"], await SqlAsync("SELECT LEN([Curve]) FROM [osdu].[dimv_TestCurveView] WHERE [Log] = N'LOG-4';"));
+    }
+
+    [Fact]
     public async Task A_target_connection_that_reaches_another_database_than_the_module_s_is_refused_before_anything_is_built()
     {
         Logs();

@@ -240,6 +240,12 @@ export function ViewJoins({ view, verdicts, onOpenDimension }: {
         <span>A row for each row of</span>
         <DimensionName name={view.from} onOpen={onOpenDimension} />
         <span className="font-mono text-[11.5px]">{tableObject(view.tables[0] ?? `dim_${view.from}`)}</span>
+        {view.where ? (
+          <>
+            <span>where</span>
+            <span className="font-mono text-[11.5px]" data-testid="dimension-view-where">{view.where}</span>
+          </>
+        ) : null}
       </p>
       <DimensionGrid testId="dimension-view-joins-grid">
         <DataTable columns={columns} rows={view.joins} rowKey={(row) => row.alias} emptyMessage="The view joins nothing: it reads its from dimension alone." data-testid="dimension-view-joins" />

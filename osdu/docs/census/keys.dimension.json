@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/dimension.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 112,
+  "keyCount": 113,
   "keys": [
     {
       "path": "batch",
@@ -63,7 +63,7 @@
       "path": "dimensions[].elements",
       "type": "map",
       "required": false,
-      "description": "The objects of a nested array of each record, a row each in the dimension's table beside the key of the record holding them, each object's fields on its row: `elements: { path: data.Curves, fields: { Mnemonic: Mnemonic, CurveUnitID: { path: CurveUnit, keep: id } } }` on a dimension keyed by a log's `id` makes a row per curve. The table gains an `element` column numbering each key's objects from 1, in the order of the records' ids and then of the objects in each record; a key whose records hold none is one row with no element. Read in one pass over the records through the search cursor, at most 5,000,000 objects a build. Not with a collected attribute, since both make a row per value. Attributes and fields together are at most 20 columns."
+      "description": "The objects of a nested array of each record, a row each in the dimension's table beside the key of the record holding them, each object's fields on its row: `elements: { path: data.Curves, fields: { Mnemonic: Mnemonic, CurveUnitID: { path: CurveUnit, keep: id } } }` on a dimension keyed by a log's `id` makes a row per curve. The table gains an `element` column numbering each key's objects from 1, in the order of the records' ids and then of the objects in each record; a key whose records hold none is one row with no element, which a view leaves out with `where: element IS NOT NULL`. Read in one pass over the records through the search cursor, at most 5,000,000 objects a build. A field keeps at most 4,000 characters, where an attribute keeps 256. Not with a collected attribute, since both make a row per value. Attributes and fields together are at most 20 columns."
     },
     {
       "path": "dimensions[].elements.path",
@@ -90,7 +90,7 @@
       "required": false,
       "allowed": ["value", "key", "id"],
       "default": "value",
-      "description": "How the field's value is kept, as an attribute's `keep` says: `id` makes the column join to the dimension keyed by the id of the record it names."
+      "description": "How the field's value is kept, as an attribute's `keep` says: `id` makes the column join to the dimension keyed by the id of the record it names. A field keeps at most 4,000 characters: a longer value is cut under `value` and left out under `key` and `id`."
     },
     {
       "path": "dimensions[].elements.fields.<name>.up",
@@ -667,7 +667,7 @@
       "path": "views[]",
       "type": "object",
       "required": true,
-      "description": "One view: `name`, `from`, optional `description`, `join` and `columns`. Every view begins with `partition` and `id`, the number of the `from` row each of its rows stands for, which is its key."
+      "description": "One view: `name`, `from`, optional `description`, `join`, `columns` and `where`. Every view begins with `partition` and `id`, the number of the `from` row each of its rows stands for, which is its key."
     },
     {
       "path": "views[].name",
@@ -748,6 +748,12 @@
       "type": "string",
       "required": false,
       "description": "What the column holds, at most 1,000 characters, shown with the view."
+    },
+    {
+      "path": "views[].where",
+      "type": "string",
+      "required": false,
+      "description": "The condition a row of the view is kept by, a T-SQL condition over the same columns and with the same operators and functions as a column's expression, at most 4,000 characters: `element IS NOT NULL` keeps the rows of a dimension with `elements` that hold an element, leaving out the one row a key whose records hold none has; `Log.Source = 'SMDA'` keeps the rows whose joined log says so. A value alone (`element`) is refused: compare it. Left out, the view holds a row for every row of `from`. The check counts the rows the condition keeps."
     }
   ]
 }

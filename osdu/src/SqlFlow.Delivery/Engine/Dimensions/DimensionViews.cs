@@ -70,7 +70,7 @@ public static class DimensionViews
         }
 
         columns.AddRange(dimension.Attributes.Select(a => Text(a.Name, DeliveryDimensionAttributeValue.MaxValueLength)));
-        columns.AddRange((dimension.Elements?.Fields ?? []).Select(f => Text(f.Name, DeliveryDimensionAttributeValue.MaxValueLength)));
+        columns.AddRange((dimension.Elements?.Fields ?? []).Select(f => Text(f.Name, DeliveryDimensionElement.MaxValueLength)));
         return columns;
     }
 
@@ -218,24 +218,32 @@ public static class DimensionViews
 
     /// <summary>
     /// The statement that writes the view <paramref name="viewName"/> of flow <paramref name="flow"/>: its column list,
-    /// <c>partition</c> and <c>id</c> first, and its <c>SELECT</c> over <paramref name="fromSql"/>, never <c>*</c>.
+    /// <c>partition</c> and <c>id</c> first, and its <c>SELECT</c> over <paramref name="fromSql"/>, never <c>*</c>, keeping
+    /// the rows <paramref name="whereSql"/> holds for when the document gives a condition.
     /// </summary>
-    public static string CreateSql(string flow, string viewName, IReadOnlyList<DimensionViewColumnDefinition> columns, string fromSql)
+    public static string CreateSql(string flow, string viewName, IReadOnlyList<DimensionViewColumnDefinition> columns, string fromSql, string? whereSql)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(columns);
         var names = string.Join(", ", columns.Select(c => DimensionViewExpressions.Quoted(c.Name)));
         var select = string.Join(",\n    ", columns.Select(c => c.Sql));
         var who = new string(flow.Where(c => !char.IsControl(c)).ToArray());
+        var where = whereSql is null ? string.Empty : $"\nWHERE {whereSql}";
         return $"""
             CREATE OR ALTER VIEW {DimensionTables.Qualified(viewName)} ({names})
             AS
             -- Written by the builds of dimension flow '{who}' from its document; a change made here is undone by its next build.
             SELECT
                 {select}
-            {fromSql};
+            {fromSql}{where};
             """;
     }
+
+    /// <summary>The rows of a partition of the view, as its check reads them: the partition's, and those its condition keeps.</summary>
+    private static string Rows(DimensionViewDefinition view)
+        => view.WhereSql is null
+            ? $"WHERE [{FromSqlAlias}].[partition] = @partition"
+            : $"WHERE [{FromSqlAlias}].[partition] = @partition AND {view.WhereSql}";
 
     /// <summary>The hash a view's statement is known by: SHA-256 of its UTF-8 bytes, hex.</summary>
     public static string HashOf(string createSql)
@@ -270,7 +278,7 @@ public static class DimensionViews
             counts.Add($"COUNT_BIG({column.Sql})");
         }
 
-        return $"SELECT\n    {string.Join(",\n    ", counts)}\n{view.FromSql}\nWHERE [{FromSqlAlias}].[partition] = @partition\nOPTION (MAX_GRANT_PERCENT = 10);";
+        return $"SELECT\n    {string.Join(",\n    ", counts)}\n{view.FromSql}\n{Rows(view)}\nOPTION (MAX_GRANT_PERCENT = 10);";
     }
 
     /// <summary>The statement that computes one column of a partition of the view, to find which column a failing check failed on.</summary>
@@ -278,7 +286,7 @@ public static class DimensionViews
     {
         ArgumentNullException.ThrowIfNull(view);
         ArgumentNullException.ThrowIfNull(column);
-        return $"SELECT COUNT_BIG({column.Sql})\n{view.FromSql}\nWHERE [{FromSqlAlias}].[partition] = @partition\nOPTION (MAX_GRANT_PERCENT = 10);";
+        return $"SELECT COUNT_BIG({column.Sql})\n{view.FromSql}\n{Rows(view)}\nOPTION (MAX_GRANT_PERCENT = 10);";
     }
 
     /// <summary>The statement that reads up to three values of a partition a join found no row for, distinct, in order.</summary>
@@ -286,7 +294,7 @@ public static class DimensionViews
     {
         ArgumentNullException.ThrowIfNull(view);
         ArgumentNullException.ThrowIfNull(join);
-        return $"SELECT TOP (3) {join.OnSql}\n{view.FromSql}\nWHERE [{FromSqlAlias}].[partition] = @partition AND {join.OnSql} IS NOT NULL AND [{join.SqlAlias}].[id] IS NULL\nGROUP BY {join.OnSql}\nORDER BY {join.OnSql};";
+        return $"SELECT TOP (3) {join.OnSql}\n{view.FromSql}\n{Rows(view)} AND {join.OnSql} IS NOT NULL AND [{join.SqlAlias}].[id] IS NULL\nGROUP BY {join.OnSql}\nORDER BY {join.OnSql};";
     }
 
     /// <summary>The statement that reads up to three rows of a partition whose value a column's conversion could not read: the row's number and the value.</summary>
@@ -294,7 +302,7 @@ public static class DimensionViews
     {
         ArgumentNullException.ThrowIfNull(view);
         ArgumentNullException.ThrowIfNull(column);
-        return $"SELECT TOP (3) [{FromSqlAlias}].[id], LEFT(CONVERT(nvarchar(4000), {column.InputSql}), 256)\n{view.FromSql}\nWHERE [{FromSqlAlias}].[partition] = @partition AND {column.InputSql} IS NOT NULL AND {column.Sql} IS NULL\nORDER BY [{FromSqlAlias}].[id];";
+        return $"SELECT TOP (3) [{FromSqlAlias}].[id], LEFT(CONVERT(nvarchar(4000), {column.InputSql}), 256)\n{view.FromSql}\n{Rows(view)} AND {column.InputSql} IS NOT NULL AND {column.Sql} IS NULL\nORDER BY [{FromSqlAlias}].[id];";
     }
 
     /// <summary>

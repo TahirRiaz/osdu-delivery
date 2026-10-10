@@ -96,7 +96,8 @@ public sealed record DimensionViewState(
     Guid? WrittenRunId,
     string WrittenBy,
     DateTime WrittenUtc,
-    DateTime CreatedUtc);
+    DateTime CreatedUtc,
+    string? Where);
 
 /// <summary>What a check found of one join: the rows that found their row, those whose value found none, and some of those values.</summary>
 public sealed record DimensionViewJoinCheck(string Alias, string To, string On, long Matched, long Unmatched, IReadOnlyList<string> Examples);

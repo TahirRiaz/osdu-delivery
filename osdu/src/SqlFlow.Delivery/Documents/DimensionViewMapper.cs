@@ -178,6 +178,20 @@ internal static class DimensionViewMapper
             ? ListedColumns(listed, scope, where, source)
             : DefaultColumns(from, joinedTables, where, source);
 
+        string? whereSql = null;
+        var condition = v.Where?.Trim();
+        if (v.Where is not null)
+        {
+            try
+            {
+                whereSql = DimensionViewExpressions.CompileCondition(condition!, scope);
+            }
+            catch (ViewExpressionException ex)
+            {
+                throw new FlowValidationException($"{source}: {where}: where {Quoted(condition!)} {ex.Message}.", ex);
+            }
+        }
+
         var fromTable = DimensionTables.NameOf(from.Name);
         var fromSql = DimensionViews.FromSql(fromTable, joinSql, applies);
         var viewName = DimensionViewSpec.Prefix + name;
@@ -187,7 +201,7 @@ internal static class DimensionViewMapper
             new("id", "bigint", $"[{DimensionViews.FromSqlAlias}].[id]", null, null, $"The number of the row of {fromTable} the view's row stands for: the view's key.", null),
         };
         all.AddRange(columns);
-        var createSql = DimensionViews.CreateSql(flow, viewName, all, fromSql);
+        var createSql = DimensionViews.CreateSql(flow, viewName, all, fromSql, whereSql);
         var tables = new List<string> { fromTable };
         tables.AddRange(joinDefinitions.Select(j => j.Table).Where(t => !tables.Contains(t, StringComparer.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase));
         return new DimensionViewSpec
@@ -197,7 +211,8 @@ internal static class DimensionViewMapper
             From = from.Name,
             Joins = joins,
             Columns = specs,
-            Definition = new DimensionViewDefinition(viewName, tables, all, joinDefinitions, fromSql, createSql, DimensionViews.HashOf(createSql)),
+            Where = condition,
+            Definition = new DimensionViewDefinition(viewName, tables, all, joinDefinitions, fromSql, createSql, DimensionViews.HashOf(createSql), whereSql),
         };
     }
 

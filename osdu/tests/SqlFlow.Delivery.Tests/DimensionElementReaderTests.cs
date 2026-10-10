@@ -113,11 +113,16 @@ public class DimensionElementReaderTests
     [Fact]
     public void A_value_longer_than_a_row_keeps_is_cut_but_a_key_is_left_out_rather_than_cut()
     {
-        var longText = new string('x', DimensionSpec.MaxAttributeValueLength + 10);
+        var longText = new string('x', DimensionSpec.MaxElementValueLength + 10);
         var element = Assert.Single(Elements(JsonNode.Parse($$"""{ "data": { "Curves": [ { "Long": "{{longText}}" } ] } }""")!, "data.Curves"));
 
         var asValue = DimensionElementReader.FieldReader.Of(new DimensionElementField("L", "Long")).Read(element.Element, element.Ancestors);
-        Assert.Equal((DimensionSpec.MaxAttributeValueLength, true, false), (asValue.Value!.Length, asValue.Cut, asValue.TooLong));
+        Assert.Equal((DimensionSpec.MaxElementValueLength, true, false), (asValue.Value!.Length, asValue.Cut, asValue.TooLong));
+
+        // A field keeps more than an attribute does: a curve's description of a thousand characters is kept whole.
+        var description = new string('d', 1000);
+        var described = Assert.Single(Elements(JsonNode.Parse($$"""{ "data": { "Curves": [ { "Text": "{{description}}" } ] } }""")!, "data.Curves"));
+        Assert.Equal(description, DimensionElementReader.FieldReader.Of(new DimensionElementField("T", "Text")).Read(described.Element, described.Ancestors).Value);
 
         var asKey = DimensionElementReader.FieldReader.Of(new DimensionElementField("L", "Long", DimensionValueKeep.Key)).Read(element.Element, element.Ancestors);
         Assert.Equal(((string?)null, false, true), asKey);

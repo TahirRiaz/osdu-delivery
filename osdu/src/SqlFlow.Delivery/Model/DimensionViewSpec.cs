@@ -66,6 +66,9 @@ public sealed record DimensionViewSpec
     /// <summary>The columns the document lists, in its order; empty when it lists none and the view holds every column.</summary>
     public IReadOnlyList<DimensionViewColumnSpec> Columns { get; init; } = [];
 
+    /// <summary>The condition a row of the view is kept by, as the document writes it; null keeps every row of <see cref="From"/>.</summary>
+    public string? Where { get; init; }
+
     /// <summary>What the view is in the database: its name, the tables it reads, its columns and the SQL a build writes.</summary>
     public required DimensionViewDefinition Definition { get; init; }
 
@@ -85,6 +88,7 @@ public sealed record DimensionViewSpec
 /// <param name="FromSql">The view's <c>FROM</c> clause: the <c>from</c> table, its joins and the columns computed once each.</param>
 /// <param name="CreateSql">The statement that writes the view.</param>
 /// <param name="Hash">SHA-256 of <paramref name="CreateSql"/>, hex: the same view writes the same text and is not written again.</param>
+/// <param name="WhereSql">The SQL of the condition the view keeps its rows by; null when it keeps every row.</param>
 public sealed record DimensionViewDefinition(
     string ViewName,
     IReadOnlyList<string> Tables,
@@ -92,7 +96,8 @@ public sealed record DimensionViewDefinition(
     IReadOnlyList<DimensionViewJoinDefinition> Joins,
     string FromSql,
     string CreateSql,
-    string Hash);
+    string Hash,
+    string? WhereSql);
 
 /// <summary>One column of a view as a build writes it.</summary>
 /// <param name="Name">The column's name in the view.</param>

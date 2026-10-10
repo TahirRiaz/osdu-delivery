@@ -192,7 +192,7 @@ internal static class SqlServerDimensionViewStore
 
             var declaration = JsonSerializer.Serialize(
                 new ViewDeclaration(view.From, view.Joins.Select(j => new DimensionViewJoinState(j.As, j.To, j.On, DimensionTables.NameOf(j.To))).ToList(),
-                    view.Columns.Count == 0 ? null : view.Columns),
+                    view.Columns.Count == 0 ? null : view.Columns, view.Where),
                 Json);
             var columns = JsonSerializer.Serialize(
                 definition.Columns.Select(c => new DimensionViewColumnState(c.Name, c.Type, c.Expression, c.DataType, c.Description)).ToList(), Json);
@@ -243,7 +243,7 @@ internal static class SqlServerDimensionViewStore
     }
 
     /// <summary>What a view's record keeps of its declaration.</summary>
-    private sealed record ViewDeclaration(string From, IReadOnlyList<DimensionViewJoinState> Joins, IReadOnlyList<DimensionViewColumnSpec>? Columns);
+    private sealed record ViewDeclaration(string From, IReadOnlyList<DimensionViewJoinState> Joins, IReadOnlyList<DimensionViewColumnSpec>? Columns, string? Where = null);
 
     /// <summary>
     /// Reads the view's rows of the partition (docs/dimension-plan.md, Views, The check) and keeps what it found: the rows,
@@ -693,7 +693,7 @@ internal static class SqlServerDimensionViewStore
 
         return new DimensionViewState(
             row.ViewId, row.Name, row.ViewName, row.FlowName, row.LedgerId, row.Description, declaration?.From ?? string.Empty, declaration?.Joins ?? [], columns,
-            TablesOf(row.TablesJson), row.Sql, row.SqlHash is not null, row.Note, row.WrittenRunId, row.WrittenBy, row.WrittenUtc, row.CreatedUtc);
+            TablesOf(row.TablesJson), row.Sql, row.SqlHash is not null, row.Note, row.WrittenRunId, row.WrittenBy, row.WrittenUtc, row.CreatedUtc, declaration?.Where);
     }
 
     private static DimensionViewCheckState ToState(DeliveryDimensionViewCheck row, string partition)

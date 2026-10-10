@@ -2242,6 +2242,9 @@ public sealed class DeliveryDimensionAttributeValue
 /// </summary>
 public sealed class DeliveryDimensionElement
 {
+    /// <summary>The longest value of a field kept; a longer one is cut by the build, with a note. No index holds it, so it is longer than an attribute's.</summary>
+    public const int MaxValueLength = 4000;
+
     public short PartitionId { get; set; }
 
     /// <summary>The row's own number, which the table is stored in the order of.</summary>
@@ -3368,7 +3371,7 @@ public static class DeliveryModel
             e.ToTable("DimensionElement", SchemaName);
             e.HasKey(x => new { x.PartitionId, x.ElementValueId });
             e.Property(x => x.ElementValueId).ValueGeneratedOnAdd();
-            OptionalOsduId(e.Property(x => x.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength);
+            OptionalOsduId(e.Property(x => x.Value)).HasMaxLength(DeliveryDimensionElement.MaxValueLength);
             e.HasIndex(x => x.ElementValueId).IsUnique();
             // A key's objects in their order, each field once: what a build matches its rows by and its table is laid out from.
             e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.ValueId, x.Seq, x.AttributeId }).IsUnique();

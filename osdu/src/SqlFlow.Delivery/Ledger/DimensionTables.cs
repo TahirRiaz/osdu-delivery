@@ -150,7 +150,12 @@ public static class DimensionTables
             columns.Add(new SqlColumn { Name = DimensionElementsSpec.Column, DataType = Type("int"), IsNullable = true });
         }
 
-        columns.AddRange(table.Columns.Select(c => new SqlColumn { Name = c.Name, DataType = Text(DeliveryDimensionAttributeValue.MaxValueLength), IsNullable = true }));
+        columns.AddRange(table.Columns.Select(c => new SqlColumn
+        {
+            Name = c.Name,
+            DataType = Text(c.Element ? DeliveryDimensionElement.MaxValueLength : DeliveryDimensionAttributeValue.MaxValueLength),
+            IsNullable = true,
+        }));
         return columns;
     }
 

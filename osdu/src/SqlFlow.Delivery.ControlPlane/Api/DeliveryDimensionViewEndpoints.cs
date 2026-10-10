@@ -49,7 +49,7 @@ public sealed record DeliveryDimensionViewCheckDto(
 public sealed record DeliveryDimensionViewDto(
     string Name, string ViewName, string FlowName, Guid? PipelineId, bool Declared, bool Recorded, bool Written, bool Changed, string? Description,
     string From, IReadOnlyList<DeliveryDimensionViewJoinDto> Joins, IReadOnlyList<DeliveryDimensionViewColumnDto> Columns, IReadOnlyList<string> Tables,
-    string? Note, Guid? WrittenRunId, string? WrittenBy, DateTime? WrittenUtc, DeliveryDimensionViewCheckDto? LastCheck);
+    string? Note, Guid? WrittenRunId, string? WrittenBy, DateTime? WrittenUtc, DeliveryDimensionViewCheckDto? LastCheck, string? Where);
 
 /// <summary>
 /// A view with its newest checks, newest first, the statement a build last wrote it with (<c>Sql</c>), the one its flow's
@@ -365,7 +365,8 @@ public static class DeliveryDimensionViewEndpoints
             state?.WrittenRunId,
             state?.WrittenBy,
             state?.WrittenUtc,
-            detail?.Checks.Count > 0 ? ToDto(detail.Checks[0]) : null);
+            detail?.Checks.Count > 0 ? ToDto(detail.Checks[0]) : null,
+            declared is not null ? declared.Where : state?.Where);
     }
 
     private static DeliveryDimensionViewCheckDto ToDto(DimensionViewCheckState c) => new(

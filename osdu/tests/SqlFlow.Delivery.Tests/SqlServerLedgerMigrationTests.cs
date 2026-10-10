@@ -63,6 +63,9 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before search terms were keyed by their source table: they were keyed by the mapping's source system.</summary>
     private const string BeforeSearchTermSources = "20261008170839_SearchTerms";
 
+    /// <summary>The migration before an element's field kept up to 4,000 characters: it kept 256, as an attribute does.</summary>
+    private const string BeforeElementValues = "20261009204033_DimensionViews";
+
     /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
 
@@ -1051,6 +1054,39 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(2L, await database.ScalarAsync(Columns));
         Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[SearchTermRefinement];"));
         await database.MigrateAsync(null);
+    }
+
+    [Fact]
+    public async Task An_elements_field_keeps_up_to_4000_characters_and_the_values_kept_before_stay()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeElementValues);
+        var before = new string('d', 256);
+        await database.ExecuteAsync($"""
+            INSERT INTO [osdu].[DimensionElement] ([PartitionId], [DimensionId], [ValueId], [Seq], [AttributeId], [Value])
+            VALUES (1, 1, 1, 1, 1, N'{before}');
+            """);
+
+        await database.MigrateAsync(null);
+
+        const string Type = """
+            SELECT COUNT_BIG(*)
+            FROM sys.columns AS c JOIN sys.types AS t ON t.[user_type_id] = c.[user_type_id]
+            WHERE c.[object_id] = OBJECT_ID(N'[osdu].[DimensionElement]') AND c.[name] = N'Value'
+              AND t.[name] = N'nvarchar' AND c.[max_length] = 8000 AND c.[collation_name] = N'Latin1_General_100_BIN2' AND c.[is_nullable] = 1;
+            """;
+        Assert.Equal(1L, await database.ScalarAsync(Type));
+        Assert.Equal(256L, await database.ScalarAsync("SELECT CAST(LEN([Value]) AS bigint) FROM [osdu].[DimensionElement] WHERE [ValueId] = 1;"));
+        var longest = new string('e', DeliveryDimensionElement.MaxValueLength);
+        await database.ExecuteAsync($"""
+            INSERT INTO [osdu].[DimensionElement] ([PartitionId], [DimensionId], [ValueId], [Seq], [AttributeId], [Value])
+            VALUES (1, 1, 2, 1, 1, N'{longest}');
+            """);
+        Assert.Equal((long)DeliveryDimensionElement.MaxValueLength, await database.ScalarAsync("SELECT CAST(LEN([Value]) AS bigint) FROM [osdu].[DimensionElement] WHERE [ValueId] = 2;"));
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ["DimensionElement"]), await database.IndexesAsync(["DimensionElement"]));
+        }
     }
 
     /// <summary>

@@ -199,6 +199,56 @@ public static class DimensionViewExpressions
             : compiled;
     }
 
+    /// <summary>
+    /// Compiles <paramref name="text"/>, the condition a view keeps its rows by (its <c>where</c>), over the tables
+    /// <paramref name="scope"/> reads, with the operators, functions and rules a column's expression has.
+    /// </summary>
+    /// <returns>The SQL the view's <c>WHERE</c> clause is written with.</returns>
+    /// <exception cref="ViewExpressionException">The text is not a condition a view may use; the message says why.</exception>
+    public static string CompileCondition(string text, ViewScope scope)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(scope);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new ViewExpressionException("is empty; give the condition a row is kept by, such as element IS NOT NULL");
+        }
+
+        if (text.Length > MaxLength)
+        {
+            throw new ViewExpressionException(string.Create(CultureInfo.InvariantCulture, $"is {text.Length} characters; a condition is at most {MaxLength}"));
+        }
+
+        var parser = new TSql160Parser(initialQuotedIdentifiers: true);
+        BooleanExpression? parsed;
+        IList<ParseError> errors;
+        using (var reader = new StringReader(text))
+        {
+            parsed = parser.ParseBooleanExpression(reader, out errors);
+        }
+
+        if (errors.Count > 0 || parsed is null)
+        {
+            using var again = new StringReader(text);
+            var value = parser.ParseExpression(again, out var valueErrors);
+            if (valueErrors.Count == 0 && value is not null)
+            {
+                throw new ViewExpressionException("is a value, and a row is kept by a condition; compare it (element IS NOT NULL, Source = 'SMDA')");
+            }
+
+            var first = errors.FirstOrDefault();
+            throw new ViewExpressionException(first is null
+                ? "does not parse as a T-SQL condition"
+                : string.Create(CultureInfo.InvariantCulture, $"does not parse as a T-SQL condition: {first.Message} (column {first.Column})"));
+        }
+
+        var sql = new Compiler(scope).Boolean(parsed, 0);
+        return sql.Length > MaxSqlLength
+            ? throw new ViewExpressionException(string.Create(CultureInfo.InvariantCulture,
+                $"would be written as {sql.Length} characters of SQL with its guards and conversions, and a condition is at most {MaxSqlLength}"))
+            : sql;
+    }
+
     /// <summary>An identifier in brackets, a closing bracket inside it doubled.</summary>
     public static string Quoted(string identifier)
     {
@@ -614,8 +664,8 @@ public static class DimensionViewExpressions
             }
         }
 
-        /// <summary>A condition, as CASE, IIF and nothing else in a view's expression take one.</summary>
-        private string Boolean(BooleanExpression node, int depth)
+        /// <summary>A condition, as CASE, IIF and a view's <c>where</c> take one.</summary>
+        public string Boolean(BooleanExpression node, int depth)
         {
             if (depth > MaxDepth)
             {

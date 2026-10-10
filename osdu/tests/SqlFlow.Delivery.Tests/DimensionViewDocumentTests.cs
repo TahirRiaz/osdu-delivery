@@ -122,7 +122,7 @@ public class DimensionViewDocumentTests
             ["partition", "id", "WellLogID", "Log", "Curve", "Unit", "Domain", "Wellbore", "TopDepth", "BaseDepth", "Interval", "Created"],
             definition.Columns.Select(c => c.Name));
         Assert.Equal(
-            ["nvarchar(256)", "bigint", "nvarchar(1024)", "nvarchar(256)", "nvarchar(256)", "nvarchar(256)", "nvarchar(256)", "nvarchar(256)", "float", "float", "decimal(18, 3)", "datetime2(0)"],
+            ["nvarchar(256)", "bigint", "nvarchar(1024)", "nvarchar(256)", "nvarchar(4000)", "nvarchar(256)", "nvarchar(256)", "nvarchar(256)", "float", "float", "decimal(18, 3)", "datetime2(0)"],
             definition.Columns.Select(c => c.Type));
         Assert.Equal("When the log was made, in UTC.", definition.Columns[^1].Description);
 
@@ -173,13 +173,43 @@ public class DimensionViewDocumentTests
         Assert.Equal(LineageNodeKind.View, objects[^1].Kind);
 
         // Without a target, a flow declares no table: nothing tells which connection a reader would name.
-        var plain = Parse(Head.Replace("target:\n  connection: ${env:WELLDB_OSDU_DB}\n", string.Empty, StringComparison.Ordinal));
+        var plain = Parse(Head.ReplaceLineEndings("\n").Replace("target:\n  connection: ${env:WELLDB_OSDU_DB}\n", string.Empty, StringComparison.Ordinal));
         Assert.Empty(DimensionLineage.Describe(plain).Objects);
     }
 
     [Fact]
     public void The_target_connection_is_a_credential_reference_of_the_flow()
         => Assert.Contains(new KeyValuePair<string, string>("target.connection", "${env:WELLDB_OSDU_DB}"), Parse(Head + Curve).CredentialReferences());
+
+    [Fact]
+    public void A_view_keeps_the_rows_its_where_holds_for_in_its_statement_and_in_every_statement_its_check_reads()
+    {
+        var view = Parse(View("      Curve: Mnemonic\n") + "    where: element IS NOT NULL AND WellLog.LogName <> 'TEST'\n").Views[0];
+
+        Assert.Equal("element IS NOT NULL AND WellLog.LogName <> 'TEST'", view.Where);
+        const string Kept = "(([b].[element] IS NOT NULL) AND ([j1].[LogName] <> N'TEST'))";
+        Assert.Equal(Kept, view.Definition.WhereSql);
+        Assert.EndsWith($"\nWHERE {Kept};", view.Definition.CreateSql.TrimEnd(), StringComparison.Ordinal);
+        Assert.Contains($"WHERE [b].[partition] = @partition AND {Kept}", DimensionViews.CheckSql(view.Definition), StringComparison.Ordinal);
+        Assert.Contains($"WHERE [b].[partition] = @partition AND {Kept}", DimensionViews.ColumnSql(view.Definition, view.Definition.Columns[^1]), StringComparison.Ordinal);
+        Assert.Contains($"WHERE [b].[partition] = @partition AND {Kept} AND", DimensionViews.UnmatchedSql(view.Definition, view.Definition.Joins[0]), StringComparison.Ordinal);
+
+        // A view without one keeps every row, and its statement is the one it was before views took a where.
+        var every = Parse(View("      Curve: Mnemonic\n")).Views[0];
+        Assert.Null(every.Where);
+        Assert.Null(every.Definition.WhereSql);
+        Assert.DoesNotContain("\nWHERE ", every.Definition.CreateSql, StringComparison.Ordinal);
+        Assert.NotEqual(every.Definition.Hash, view.Definition.Hash);
+    }
+
+    [Theory]
+    [InlineData("element", "where 'element' is a value, and a row is kept by a condition")]
+    [InlineData("''", "where '' is empty")]
+    [InlineData("Nope IS NULL", "where 'Nope IS NULL' names Nope, and the table of LogCurve")]
+    [InlineData("TopDepth > 3", "where 'TopDepth > 3' ")]
+    [InlineData("EXISTS (SELECT 1)", "where 'EXISTS (SELECT 1)' tests")]
+    public void A_where_is_a_condition_over_the_view_s_tables_and_nothing_else(string condition, string reason)
+        => Assert.Contains(reason, Refused(View("      Curve: Mnemonic\n") + $"    where: {condition}\n"), StringComparison.Ordinal);
 
     [Theory]
     [InlineData("connection: 'Server=db;Database=osdu;User ID=x;Password=hunter2'", "literal password")]
@@ -191,7 +221,7 @@ public class DimensionViewDocumentTests
     public void Views_need_the_target_connection()
         => Assert.Contains(
             "views needs target.connection",
-            Refused(Head.Replace("target:\n  connection: ${env:WELLDB_OSDU_DB}\n", string.Empty, StringComparison.Ordinal) + Curve),
+            Refused(Head.ReplaceLineEndings("\n").Replace("target:\n  connection: ${env:WELLDB_OSDU_DB}\n", string.Empty, StringComparison.Ordinal) + Curve),
             StringComparison.Ordinal);
 
     [Theory]
@@ -275,7 +305,7 @@ public class DimensionViewDocumentTests
     [Fact]
     public void A_view_s_yaml_is_located_line_by_line()
     {
-        var yaml = Head + Curve;
+        var yaml = (Head + Curve).ReplaceLineEndings("\n");
 
         var block = DimensionYamlSource.LocateView(yaml, "curve")!;
 
