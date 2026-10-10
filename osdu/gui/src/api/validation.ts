@@ -36,6 +36,45 @@ export interface ValidationReferences {
   missingIds: ValidationMissingReference[];
 }
 
+/** The value an assertion of a mapping judges: the one the record carries, or the one the row gives the node. */
+export type AssertionStage = "record" | "incoming";
+
+/** What a record that fails an assertion of its mapping does: held before it is sent, sent with the failure recorded, or sent without the value. */
+export type AssertionAction = "hold" | "report" | "omit";
+
+/** One value that broke an assertion of its mapping (osdu/docs/reference/flow/mapping-assertions.md). */
+export interface AssertionFailure {
+  /** The property every record shares: `data.Curves[].Mnemonic`. */
+  at: string;
+  /** Where the value was: in the record (`data.Curves[3].Mnemonic`), or for the incoming stage in the row (`dataset.curves[3].curve_id`). */
+  path: string;
+  /** What the assertion is called: its name, or the label read off its condition. */
+  assertion: string;
+  stage: AssertionStage;
+  onFail: AssertionAction;
+  /** Why the value fails it. */
+  message: string;
+  /** The value, as text, clipped and redacted. */
+  value: string;
+}
+
+/**
+ * What a mapping's assertions found of one record: the judgements made, those that failed by what their failure does, and
+ * the failures, listed up to a bound and counted whole.
+ */
+export interface AssertionFindings {
+  /** The mapping whose assertions were judged, as `Name@version`. */
+  mapping: string;
+  checked: number;
+  failed: number;
+  held: number;
+  reported: number;
+  omitted: number;
+  failures: AssertionFailure[];
+  /** Whether the failures were shortened to fit an attempt's result; the counts are whole. */
+  shortened?: boolean;
+}
+
 export interface ValidationVerdict {
   outcome: ValidationOutcome;
   /** The schema checked against; absent when none could be had. `source` is `template` (a saved one) or `schema-service`. */
@@ -55,6 +94,11 @@ export interface ValidationVerdict {
   checkedUtc: string;
   /** Whether the listings were shortened to fit an attempt's result; the counts are whole. */
   shortened?: boolean;
+  /**
+   * What the assertions of the record's mapping found (osdu/docs/reference/flow/mapping-assertions.md); absent when its
+   * mapping states none, or when no mapping was asked to judge it. A failure that holds holds the record whatever the outcome.
+   */
+  assertions?: AssertionFindings;
 }
 
 /**
@@ -193,16 +237,16 @@ export function verdictOf(resultJson: string | null | undefined): ValidationVerd
 
   try {
     const parsed: unknown = JSON.parse(resultJson);
-    if (typeof parsed !== "object" || parsed === null) {
-      return null;
-    }
-
-    const validation = (parsed as { validation?: unknown }).validation;
-    return isVerdict(validation) ? validation : null;
+    return typeof parsed === "object" && parsed !== null ? verdictIn((parsed as { validation?: unknown }).validation) : null;
   } catch {
     // A result that is not JSON is not the shape anything wrote; it carries no verdict.
     return null;
   }
+}
+
+/** A verdict as an attempt's parsed result carries it under `validation`, or null for anything else. */
+export function verdictIn(validation: unknown): ValidationVerdict | null {
+  return isVerdict(validation) ? validation : null;
 }
 
 function isVerdict(value: unknown): value is ValidationVerdict {

@@ -21,6 +21,9 @@ import {
   SAMPLES_ALL,
   SAMPLES_ONE,
   SAMPLES_PAGE,
+  assertedOf,
+  assertionRowsLine,
+  countOf,
   failingOf,
   findingKey,
   flowKey,
@@ -30,8 +33,17 @@ import {
   type OutcomeKey,
 } from "./valueCheck";
 
-/** Which variables the tree narrows to after a check: any that fails, or those failing one way. */
-export type FailingFilter = "any" | "held" | "invalid" | "empty";
+/** Which variables the tree narrows to after a check: any that fails (an assertion included), or those failing one way. */
+export type FailingFilter = "any" | "held" | "invalid" | "empty" | "asserted";
+
+/** What each narrowing reads in a variable's rows and findings. */
+const FILTER_KINDS: Record<FailingFilter, readonly OutcomeKey[]> = {
+  any: ["held", "invalid", "empty", "asserted"],
+  held: ["held"],
+  invalid: ["invalid"],
+  empty: ["empty"],
+  asserted: ["asserted"],
+};
 
 /** What a check was run against and what it read, which every result it answered with carries. */
 export interface CheckMeta {
@@ -159,11 +171,13 @@ function taken(store: Store, task: PendingTask, settled: ComputeTask | undefined
   }
 
   const rows = check.rows;
+  const asked = task.targets === null ? [] : check.variables.filter((variable) => task.targets!.includes(variable.target));
+  const asserted = asked.reduce((sum, variable) => sum + assertedOf(variable.rows), 0);
+  const assertedRows = assertionRowsLine(rows);
   const text = task.targets === null
-    ? `Checked ${formatCount(rows.checked)} rows of ${flowLabel(task.flow)}: ${formatCount(rows.withHeld)} held, ${formatCount(rows.withInvalid)} with an invalid value, ${formatCount(rows.withEmpty)} leaving an attribute out.`
-    : `Checked ${task.targets.join(", ")} over ${formatCount(rows.checked)} rows: ${formatCount(check.variables
-      .filter((variable) => task.targets!.includes(variable.target))
-      .reduce((sum, variable) => sum + failingOf(variable.rows), 0))} rows will not give it an expected value.`;
+    ? `Checked ${formatCount(rows.checked)} rows of ${flowLabel(task.flow)}: ${formatCount(rows.withHeld)} held, ${formatCount(rows.withInvalid)} with an invalid value, ${formatCount(rows.withEmpty)} leaving an attribute out${assertedRows === null ? "" : `; ${assertedRows}`}.`
+    : `Checked ${task.targets.join(", ")} over ${formatCount(rows.checked)} rows: ${formatCount(asked
+      .reduce((sum, variable) => sum + failingOf(variable.rows), 0))} rows will not give it an expected value${asserted > 0 ? `, ${formatCount(asserted)} fail an assertion of the mapping` : ""}.`;
   return {
     ...store,
     variables,
@@ -412,11 +426,11 @@ export function useValueCheckSession(mappingId: string, reference: string): Valu
     .filter((result) => result.variable.target !== path && within(result.variable.target, path)), [checked]);
 
   const fails = useCallback((path: string, how: FailingFilter) => {
-    const kinds: OutcomeKey[] = how === "any" ? ["held", "invalid", "empty"] : [how];
+    const kinds = FILTER_KINDS[how];
     const own = store.variables.get(path);
-    return (own !== undefined && kinds.some((kind) => own.variable.rows[kind] > 0))
+    return (own !== undefined && kinds.some((kind) => countOf(own.variable.rows, kind) > 0))
       || checked.some((result) => result.variable.target !== path
-        && result.variable.findings.some((finding) => finding.at === path && (kinds as string[]).includes(finding.outcome)));
+        && result.variable.findings.some((finding) => finding.at === path && kinds.includes(finding.outcome)));
   }, [store.variables, checked]);
 
   const isChecking = useCallback((path: string) => tasks.some((task) => task.page === null

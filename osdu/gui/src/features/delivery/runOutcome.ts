@@ -136,7 +136,11 @@ export interface PlanSample {
   payload: boolean;
 }
 
-/** What a plan run said a delivery would do: how many it read, would send (the record, its payload), leave, hold, and the first it would send. */
+/**
+ * What a plan run said a delivery would do: how many it read, would send (the record, its payload), leave, hold, and the
+ * first it would send; and of those it would send, how many fail an assertion of the mapping and how many of them the
+ * check before sending would hold.
+ */
 export interface PlanPreview {
   records: number;
   deliveries: number;
@@ -146,6 +150,10 @@ export interface PlanPreview {
   held: number;
   blocked: number;
   other: number;
+  /** Of the deliveries, those whose document fails an assertion of the mapping (osdu/docs/reference/flow/mapping-assertions.md). */
+  failingAssertions: number;
+  /** Of those, the ones the check before sending would hold, their documents kept. */
+  heldByAssertions: number;
   sample: PlanSample[];
 }
 
@@ -175,6 +183,8 @@ export function planPreview(run: RunDetail): PlanPreview | null {
     held: number("holds"),
     blocked: number("blocked"),
     other: number("awaitingApproval") + number("stale") + number("untracked"),
+    failingAssertions: number("failingAssertions"),
+    heldByAssertions: number("heldByAssertions"),
     sample,
   };
 }

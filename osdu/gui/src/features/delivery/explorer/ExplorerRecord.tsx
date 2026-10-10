@@ -224,6 +224,7 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
             notFound: (missing) => <NearIds partition={partition} id={missing} onOpen={onOpenId} />,
             validation: (checked, shownVersion, openPath) => (
               <ExplorerValidationView
+                pickMapping
                 source={{ key: ["partition", partition], validate: (asked) => explorerApi.validate(partition, asked) }}
                 id={checked}
                 version={shownVersion}

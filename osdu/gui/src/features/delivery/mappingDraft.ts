@@ -124,6 +124,7 @@ export function emptyEntry(target: string, input: MappingDraftInput): MappingDra
     properties: [],
     static: null,
     description: null,
+    assertions: [],
     prefilled: false,
   };
 }
@@ -691,7 +692,10 @@ export function lookupText(entry: MappingDraftEntry): string {
   return groups.map((group) => `${group.fields.join("/")} = ${group.operand}`).join(" or ");
 }
 
-/** The dataset columns and child datasets a draft already names: its key, label, entries, lookups and findBy lines. */
+/**
+ * The dataset columns and child datasets a draft already names: its key, label, entries, lookups, findBy lines, and the
+ * conditions of the assertions that judge the row's value.
+ */
 export function knownColumns(draft: MappingDraft): { columns: string[]; children: string[] } {
   const columns = new Set<string>(draft.key);
   const children = new Set<string>();
@@ -713,6 +717,13 @@ export function knownColumns(draft: MappingDraft): { columns: string[]; children
 
     if (entry.findAll !== null && (entry.findAll.column ?? "") !== "") {
       columns.add(entry.findAll.column ?? "");
+    }
+
+    // An assertion judging the row's value reads columns in its conditions, named as an entry names them.
+    for (const filter of (entry.assertions ?? []).filter((assertion) => assertion.stage === "incoming").flatMap((assertion) => assertion.where)) {
+      if (filter.reads === "column" && filter.path.trim() !== "") {
+        columns.add(filter.path.trim());
+      }
     }
   }
 

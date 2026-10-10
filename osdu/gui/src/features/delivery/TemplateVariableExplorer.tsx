@@ -595,7 +595,7 @@ const LENS_HELP = [
   "Filled: what the mapping fills, and every required attribute a check names. The view an author reads first.",
   "Missing: what this record requires and the mapping does not fill on every row, which is whether the mapping satisfies the schema. A delivery is stopped only by a required property of data that nothing fills; the other findings are warnings, and the record is sent for OSDU to judge.",
   "Unfilled: every attribute of the template nothing fills, which is what the mapping could carry and does not.",
-  "Failing: once a data check has run, the attributes it found rows for that will not give an expected value.",
+  "Failing: once a data check has run, the attributes it found rows for that will not give an expected value, or whose values fail an assertion of the mapping.",
   "All: the whole template.",
   "A row is marked only where something asks for attention: a red or amber sign for a finding, a half circle for an attribute filled on some rows only, an open circle for one nothing fills, and a count for the rows a data check found failing.",
 ].join("\n\n");
@@ -654,7 +654,7 @@ function LensBar({ lens, counts, failing, failingLabel, onChoose }: {
     { lens: "unfilled", label: "Unfilled", count: counts.unfilled, testId: "templates-view-show-gaps", alarm: false, hint: "Every attribute nothing fills" },
     ...(failing === null
       ? []
-      : [{ lens: "failing" as const, label: failingLabel, count: failing, testId: "templates-view-show-failing", alarm: failing > 0, hint: "The attributes a data check found rows for that will not give an expected value" }]),
+      : [{ lens: "failing" as const, label: failingLabel, count: failing, testId: "templates-view-show-failing", alarm: failing > 0, hint: "The attributes a data check found rows for that will not give an expected value, or whose values fail an assertion of the mapping" }]),
     { lens: "all", label: "All", count: counts.all, testId: "templates-view-show-everything", alarm: false, hint: "The whole template" },
   ];
   return (

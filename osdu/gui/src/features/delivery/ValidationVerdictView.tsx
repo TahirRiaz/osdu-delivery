@@ -6,6 +6,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { schemaSourceName, whereOf, type FindingGuide, type ValidationFinding, type ValidationGuidance, type ValidationVerdict, type ValueExpectation } from "../../api/validation";
+import { AssertionFindingsView } from "./AssertionFindingsView";
 import { FindingGuideLines, GuidanceSource } from "./ValidationGuideView";
 import { ValidationBadge } from "./ValidationMark";
 import { outcomeWord, referenceLine } from "./validationModel";
@@ -78,9 +79,10 @@ function Section({ title, count, listed, children, testId }: { title: string; co
 
 /**
  * What a check of a record against its schema came to (osdu/docs/validation-plan.md, The verdict): the outcome and the schema
- * it was checked against, how much it checked, the records it refers to, then the problems, the parts it could not check and
- * the references not found, each where it is in the record. What the schema states that no check asserts is in the tooltip
- * of the summary, as explanations are on these pages.
+ * it was checked against, how much it checked, the records it refers to, then the problems, what the assertions of the
+ * record's mapping found (osdu/docs/reference/flow/mapping-assertions.md), the parts it could not check and the references
+ * not found, each where it is in the record. What the schema states that no check asserts is in the tooltip of the summary,
+ * as explanations are on these pages.
  */
 export function ValidationVerdictView({ verdict, guidance = null, onOpenPath, className }: {
   verdict: ValidationVerdict;
@@ -111,6 +113,11 @@ export function ValidationVerdictView({ verdict, guidance = null, onOpenPath, cl
         )}
         {verdict.outcome === "invalid" && <span className="text-muted-foreground">{`${verdict.problemCount.toLocaleString("en-US")} problem${verdict.problemCount === 1 ? "" : "s"}`}</span>}
         {verdict.unverifiedCount > 0 && <span className="text-muted-foreground">{`${verdict.unverifiedCount.toLocaleString("en-US")} not checked`}</span>}
+        {verdict.assertions !== undefined && verdict.assertions.failed > 0 && (
+          <span className="text-muted-foreground" data-testid="validation-assertions-failed">
+            {`${verdict.assertions.failed.toLocaleString("en-US")} assertion failure${verdict.assertions.failed === 1 ? "" : "s"}${verdict.assertions.held > 0 ? ", holding the record" : ""}`}
+          </span>
+        )}
         {verdict.accepted && <Badge variant="outline" className="text-[11px] font-normal" data-testid="validation-accepted">sent as a release accepted it</Badge>}
         <RichTooltip title={`Why the record is ${outcomeWord(verdict.outcome)}`} body={explained.join("\n\n")}>
           <Info className="size-3.5 text-muted-foreground" aria-label="How the record was checked" data-testid="validation-explained" />
@@ -137,6 +144,7 @@ export function ValidationVerdictView({ verdict, guidance = null, onOpenPath, cl
           </div>
         </Section>
       )}
+      {verdict.assertions !== undefined && <AssertionFindingsView findings={verdict.assertions} onOpenPath={onOpenPath} />}
       {verdict.unverified.length > 0 && (
         <Section title="Not checked" count={verdict.unverifiedCount} listed={verdict.unverified.length} testId="validation-unverified">
           <div className={findingColumns}>

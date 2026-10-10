@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Loader2, RefreshCcw, Send } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, Loader2, RefreshCcw, Send } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -15,6 +15,7 @@ import { isApiError } from "@/api/client";
 import { runApi } from "@/api/endpoints";
 import type { RunDetail } from "@/api/types";
 import { CorrelationError } from "@/components/CorrelationError";
+import { RichTooltip } from "@/components/RichTooltip";
 import {
   deliveryApi, deliveryRecordRoute, type DeliveryFlowScope, type DeliveryManyRecords, type DeliveryRecordFilter,
 } from "../../api/delivery";
@@ -354,10 +355,20 @@ function share(part: number, whole: number): string {
   return percent < 1 ? "under 1%" : `${Math.round(percent)}%`;
 }
 
+/** What the plan's count of the records failing an assertion of the mapping counts, for its tooltip. */
+const ASSERTIONS_HINT = [
+  "Records that would be sent whose document fails an assertion the mapping states ($assert).",
+  "They are counted among those that would be sent, as the plan renders them as a delivery would. An assertion whose",
+  "failure holds keeps the record at the check before sending, its document kept, until its source or the mapping",
+  "changes or a release accepts it; one that reports sends the record and records the failure, and one that omits",
+  "sends it without the value.",
+].join(" ");
+
 /**
  * What the plan run found, laid out for a selection of any size: of the records it checked (all of a small selection, a
- * sample of a large one), how many would be sent and with which part, how many render the same, how many would be held,
- * and, for a sample, what that comes to for the whole selection. Records are named only as a few examples, on request.
+ * sample of a large one), how many would be sent and with which part, how many of those fail an assertion of the mapping
+ * and would be held before they are sent, how many render the same, how many would be held, and, for a sample, what that
+ * comes to for the whole selection. Records are named only as a few examples, on request.
  */
 function PreviewPanel({ loading, error, accepted, run, flowId }: {
   loading: boolean;
@@ -412,11 +423,18 @@ function PreviewPanel({ loading, error, accepted, run, flowId }: {
   const read = Math.max(outcome.records, 1);
   const held = outcome.held + outcome.blocked;
   const both = Math.max(0, outcome.metadata + outcome.payload - outcome.deliveries);
-  const rows: { label: string; value: number; sub?: boolean; testId: string }[] = [
+  // A row under another is a part of it (level 1), or a part of that part (level 2); only a whole row takes a share.
+  const rows: { label: string; value: number; level?: 1 | 2; hint?: string; testId: string }[] = [
     { label: "Would be sent", value: outcome.deliveries, testId: "redeliver-preview-sends" },
-    ...(outcome.deliveries > 0 && outcome.metadata - both > 0 ? [{ label: "a new document", value: outcome.metadata - both, sub: true, testId: "redeliver-preview-document" }] : []),
-    ...(outcome.deliveries > 0 && outcome.payload - both > 0 ? [{ label: "a new payload", value: outcome.payload - both, sub: true, testId: "redeliver-preview-payload" }] : []),
-    ...(both > 0 ? [{ label: "a new document and payload", value: both, sub: true, testId: "redeliver-preview-both" }] : []),
+    ...(outcome.deliveries > 0 && outcome.metadata - both > 0 ? [{ label: "with a new document", value: outcome.metadata - both, level: 1 as const, testId: "redeliver-preview-document" }] : []),
+    ...(outcome.deliveries > 0 && outcome.payload - both > 0 ? [{ label: "with a new payload", value: outcome.payload - both, level: 1 as const, testId: "redeliver-preview-payload" }] : []),
+    ...(both > 0 ? [{ label: "with a new document and payload", value: both, level: 1 as const, testId: "redeliver-preview-both" }] : []),
+    ...(outcome.failingAssertions > 0
+      ? [{ label: "failing an assertion of the mapping", value: outcome.failingAssertions, level: 1 as const, hint: ASSERTIONS_HINT, testId: "redeliver-preview-asserted" }]
+      : []),
+    ...(outcome.heldByAssertions > 0
+      ? [{ label: "to be held before they are sent", value: outcome.heldByAssertions, level: 2 as const, testId: "redeliver-preview-asserted-held" }]
+      : []),
     { label: "Render the same, left as they are", value: outcome.unchanged, testId: "redeliver-preview-unchanged" },
     ...(held > 0 ? [{ label: "Would be held", value: held, testId: "redeliver-preview-held" }] : []),
     ...(outcome.other > 0 ? [{ label: "Waiting for approval, or older than OSDU holds", value: outcome.other, testId: "redeliver-preview-other" }] : []),
@@ -431,9 +449,16 @@ function PreviewPanel({ loading, error, accepted, run, flowId }: {
       <dl className="grid grid-cols-[1fr_auto_auto] items-baseline gap-x-4 gap-y-1">
         {rows.map((row) => (
           <div key={row.testId} className="contents" data-testid={row.testId}>
-            <dt className={cn(row.sub ? "pl-4 text-muted-foreground" : "font-medium")}>{row.sub ? `with ${row.label}` : row.label}</dt>
+            <dt className={cn(row.level === undefined ? "font-medium" : "text-muted-foreground", row.level === 1 && "pl-4", row.level === 2 && "pl-8")}>
+              {row.label}
+              {row.hint !== undefined && (
+                <RichTooltip title={row.label} body={row.hint}>
+                  <Info className="ml-1 inline size-3.5 align-[-2px] text-muted-foreground" aria-label="What this counts" data-testid={`${row.testId}-hint`} />
+                </RichTooltip>
+              )}
+            </dt>
             <dd className={cn("text-right tabular-nums", row.value === 0 && "text-muted-foreground")}>{row.value.toLocaleString()}</dd>
-            <dd className="w-16 text-right tabular-nums text-muted-foreground">{row.sub ? "" : share(row.value, read)}</dd>
+            <dd className="w-16 text-right tabular-nums text-muted-foreground">{row.level === undefined ? share(row.value, read) : ""}</dd>
           </div>
         ))}
       </dl>

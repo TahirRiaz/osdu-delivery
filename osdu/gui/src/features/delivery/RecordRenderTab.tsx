@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import type { DeliveryOsduRead, DeliveryPreviewInputs, DeliveryRecord, DeliveryRecordPreview } from "../../api/delivery";
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { canonicalText, differences, envelopeFirst, withoutOsduFields, type DifferenceKind } from "./osduDocument";
-import { PreviewActionBadge, PreviewChoices, PreviewSearches } from "./RecordPreviewView";
+import { PreviewActionBadge, PreviewAssertions, PreviewChoices, PreviewHolds, PreviewSearches } from "./RecordPreviewView";
 import type { Settled } from "./answers";
 
 /**
@@ -138,9 +138,10 @@ function InputsGrid({ delivered, now, removed }: { delivered: RenderInputs | nul
 /**
  * The record rendered now, beside what OSDU holds: what its route does with the manifest (the DDMS it reaches, the values
  * it adds or carries forward, which explain a difference the comparison alone cannot), what the next run would do with
- * it, why a delivery would hold it, and the document itself, compared with OSDU's copy or whole. OSDU's own fields (its
- * version, who changed it and when) are set aside, keys are compared in order, and a value the platform gives when the
- * record is sent (a dataset id the File service mints) is counted as such rather than as a change.
+ * it, why a delivery would hold it, what the mapping's assertions found of it, and the document itself, compared with
+ * OSDU's copy or whole. OSDU's own fields (its version, who changed it and when) are set aside, keys are compared in
+ * order, and a value the platform gives when the record is sent (a dataset id the File service mints) is counted as such
+ * rather than as a change.
  */
 function RenderResult({ results }: { results: RenderResults }) {
   const [view, setView] = useState<"beside" | "document">("beside");
@@ -214,15 +215,7 @@ function RenderResult({ results }: { results: RenderResults }) {
         </FactGrid>
       )}
 
-      {document !== null && document.holds.length > 0 && (
-        <Alert variant="destructive" data-testid="record-render-holds">
-          <CircleAlert />
-          <AlertTitle>A delivery would hold this record</AlertTitle>
-          <AlertDescription>
-            <ul className="list-disc pl-5">{document.holds.map((hold) => <li key={hold}>{hold}</li>)}</ul>
-          </AlertDescription>
-        </Alert>
-      )}
+      {document !== null && <PreviewHolds document={document} testId="record-render-holds" />}
       {result !== null && result.issues.length > 0 && (
         <Alert data-testid="record-render-issues">
           <Info />
@@ -233,6 +226,7 @@ function RenderResult({ results }: { results: RenderResults }) {
         </Alert>
       )}
       {document?.omitted && <Alert data-testid="record-render-omitted"><Info /><AlertDescription>{document.omitted}</AlertDescription></Alert>}
+      {document !== null && <PreviewAssertions document={document} testId="record-render-assertions" />}
 
       {rendered !== null && (noTarget || absent) && (
         <Alert data-testid={noTarget ? "record-render-no-target" : "record-render-absent"}>

@@ -11,10 +11,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import type {
-  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftEntry, MappingDraftFindAll, MappingDraftInput, MappingDraftIssue,
-  MappingDraftModifier,
+  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftAssertion, MappingDraftEntry, MappingDraftFindAll, MappingDraftInput,
+  MappingDraftIssue, MappingDraftModifier,
 } from "../../api/delivery";
+import { MappingAssertionsSection } from "./MappingAssertionEditor";
 import { ChoiceOrText, FindByLinesEditor, IconAction, ModifierListEditor, Section, type ChoiceOption } from "./MappingEditorParts";
+import { assertionsOf, noAssertionsReason, recordFieldOf, takesAssertions, type AssertionPart } from "./mappingAssertions";
 import {
   ACCESS_TARGETS, alternativeText, bareColumn, emptyEntry, entryText, findLinesOf, findsOf, ID_MODIFIER_KINDS, inputsFor, KEY_NAME, knownColumns,
   MODIFIER_KINDS, moveItem, parseJson, putEntry, repeaterOf, staticModeFor, withinItem, type FindLine, type StaticMode,
@@ -179,6 +181,12 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
   const isAlternative = nested?.kind === "alternative";
   const isItem = nested?.kind === "item";
   const isProperty = nested?.kind === "property";
+  const part: AssertionPart = nested?.kind ?? "entry";
+  // The record paths a condition of an assertion may read: those the template has that a mapping or the engine writes.
+  const recordFields = useMemo(
+    () => [...new Set(variables.filter((candidate) => candidate.role !== "Osdu").map((candidate) => recordFieldOf(candidate.path)))],
+    [variables],
+  );
   // An item of a list of objects is one object: a group of properties each filled on its own, or a fixed object.
   const objectItem = isItem && variable.shape === "GroupList";
   // An item of a list of values is one value of the list's items, so a fixed item is edited as one value of that type.
@@ -244,6 +252,7 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
   const [alternatives, setAlternatives] = useState<MappingDraftEntry[]>(entry?.alternatives ?? []);
   const [items, setItems] = useState<MappingDraftEntry[]>(entry?.items ?? []);
   const [properties, setProperties] = useState<MappingDraftEntry[]>(entry?.properties ?? []);
+  const [assertions, setAssertions] = useState<MappingDraftAssertion[]>(() => assertionsOf(entry));
   const [editing, setEditing] = useState<EditedPart | null>(null);
   const [openings, setOpenings] = useState(0);
   const [jsonMode, setJsonMode] = useState(() => typedMode === "json" || staticModeFor(valueVariable, initialStatic) === "json");
@@ -336,7 +345,8 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
    * The entry the form holds for an input, as Save writes it. An alternative keeps nothing only the whole entry decides, a
    * coalesce entry carries its alternatives and a list its items under its own target, a group its properties under
    * theirs, and a list, a group and an item of a list of objects have no settings of their own, since each is written as
-   * what it holds alone.
+   * what it holds alone. Assertions go only on a node with a value of its own to judge: never on a fixed value, a list, a
+   * group, an alternative or an item, so the alternatives and items it carries hold none.
    */
   const build = (kind: MappingDraftInput): MappingDraftEntry => {
     const looks = kind === "Cache" || kind === "Search";
@@ -363,11 +373,12 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
       required: kind === "Static" || kind === "List" || kind === "Group" || isAlternative || objectItem ? true : required,
       ignoreSeparators: kind === "Cache" && !all && ignoreSeparators,
       unverified: (kind === "Dataset" || kind === "Expression") && buildsId && unverified,
-      alternatives: kind === "Coalesce" ? alternatives.map((alternative) => ({ ...alternative, target: newTarget })) : [],
-      items: kind === "List" ? items.map((item) => ({ ...item, target: newTarget })) : [],
+      alternatives: kind === "Coalesce" ? alternatives.map((alternative) => ({ ...alternative, target: newTarget, assertions: [] })) : [],
+      items: kind === "List" ? items.map((item) => ({ ...item, target: newTarget, assertions: [] })) : [],
       properties: kind === "Group" ? properties : [],
       static: kind === "Static" ? staticResult.json : null,
       description: own && description.trim() !== "" ? description.trim() : null,
+      assertions: takesAssertions(kind, part) ? assertions : [],
       prefilled: false,
     };
   };
@@ -390,9 +401,10 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
     const reads = previous !== "None" && previous !== "Repeat" && previous !== "Coalesce" && previous !== "List" && previous !== "Group";
     setChoice(next);
     if (next === "Coalesce") {
-      // What the form already reads becomes the first alternative, so turning an entry into a coalesce keeps it.
+      // What the form already reads becomes the first alternative, so turning an entry into a coalesce keeps it; its
+      // assertions stay the entry's, which judge whichever alternative gives the value.
       if (alternatives.length === 0 && reads) {
-        setAlternatives([{ ...build(previous), when: null, required: true, description: null }]);
+        setAlternatives([{ ...build(previous), when: null, required: true, description: null, assertions: [] }]);
       }
 
       return;
@@ -400,13 +412,14 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
 
     if (next === "List") {
       // What the form already holds becomes the list's first items: each value of a static list an item of its own, and
-      // any other value one item, so turning an entry into a list of values keeps it.
+      // any other value one item, so turning an entry into a list of values keeps it. An item takes no assertions, since
+      // it gives one value of the list.
       if (items.length === 0 && reads) {
         const parsed = previous === "Static" ? parseJson(staticResult.json) : null;
         if (parsed !== null && parsed.ok && Array.isArray(parsed.value)) {
           setItems(parsed.value.map((value: unknown) => ({ ...emptyEntry(newTarget, "Static"), static: JSON.stringify(value) })));
         } else {
-          setItems([build(previous)]);
+          setItems([{ ...build(previous), assertions: [] }]);
         }
       }
 
@@ -657,6 +670,11 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
                   <span className={cn("min-w-0 flex-1 break-all font-mono text-[12px]", filled === null && "text-muted-foreground")}>
                     {filled === null ? "Not filled" : entryText(filled)}
                   </span>
+                  {assertionsOf(filled).length > 0 && (
+                    <span className="shrink-0 text-[11px] text-muted-foreground" data-testid={`mapping-builder-entry-property-assertions-${name}`}>
+                      {assertionsOf(filled).length === 1 ? "1 assertion" : `${assertionsOf(filled).length} assertions`}
+                    </span>
+                  )}
                   <IconAction
                     label={filled === null ? "Fill this property" : "Edit this property"}
                     onClick={() => openProperty(property, filled)}
@@ -1121,6 +1139,29 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
           </Section>
         )}
 
+        {choice !== "None" && takesAssertions(choice, part) && (
+          <MappingAssertionsSection
+            assertions={assertions}
+            onChange={setAssertions}
+            node={{
+              target: newTarget,
+              input: choice,
+              required,
+              templateRequired: keyHolder === null && variable.required,
+              severalValues: variable.shape === "ValueList" || variable.shape === "GroupList" || newTarget.includes("[]") || findsAll,
+            }}
+            columns={known.columns}
+            columnPlaceholder={columnPlaceholder}
+            fields={recordFields}
+          />
+        )}
+        {choice !== "None" && !takesAssertions(choice, part) && assertions.length > 0 && (
+          <p className="flex items-start gap-1.5 text-xs text-muted-foreground" data-testid="mapping-builder-entry-assertions-dropped">
+            <TriangleAlert className="mt-px size-3.5 shrink-0 text-warning" aria-hidden />
+            {`${assertions.length === 1 ? "Its assertion is" : `Its ${assertions.length} assertions are`} left out when it is saved: ${noAssertionsReason(choice, part)}.`}
+          </p>
+        )}
+
         {choice !== "None" && choice !== "List" && choice !== "Group" && !isAlternative && !objectItem && (
           <Section title="Description">
             <Input
@@ -1219,8 +1260,8 @@ interface MappingEntryEditorProps {
 /**
  * The entry editor: where one variable's value comes from (a dataset column, a child dataset's rows, a cached record, a
  * lookup's record, a search, a static value, the first of several alternatives, a list of values or a list of objects), with its modifiers,
- * condition, requiredness and description. It edits a copy, and Save puts the entry into the draft, so Cancel leaves the
- * draft as it was.
+ * condition, requiredness, assertions and description. It edits a copy, and Save puts the entry into the draft, so Cancel
+ * leaves the draft as it was.
  */
 export function MappingEntryEditor({ target, draft, variables, cacheTypes, issues, onSave, onClose }: MappingEntryEditorProps) {
   // The sheet slides out showing what it showed, so the last target stays rendered while it closes.

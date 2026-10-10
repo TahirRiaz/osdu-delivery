@@ -10,29 +10,41 @@ import { ProblemView } from "./TemplateSheet";
 import { ScopeParameterFields } from "./ScopeParameterFields";
 import { splitPath } from "./templateFormat";
 import { flowScope, type FailingFilter, type ValueCheckSession } from "./useValueCheck";
-import { ROW_BUDGETS, flowKey, flowLabel, formatCount, outcomeVisual, percent } from "./valueCheck";
+import { ROW_BUDGETS, assertionRows, assertionRowsLine, flowKey, flowLabel, formatCount, outcomeVisual, percent } from "./valueCheck";
 
 const HOW_IT_WORKS = [
   "A data check reads the rows of a flow that renders with this mapping, on a node, and renders each of them as a",
   "delivery would: the same columns, expressions, lookups, cache and searches. Every value written is then held to what the",
   "template says of its attribute (type, format, pattern, allowed values, lengths, ranges, what a reference may point to).",
+  "Where the mapping states assertions ($assert), each value they judge is held to them as well.",
   "\n\nThe answer counts the rows held (not delivered), the rows writing a value the template does not accept, and the",
-  "rows leaving an attribute out. Pick one of them to narrow the tree to the attributes behind it; select an attribute",
+  "rows leaving an attribute out; apart from them, the rows failing an assertion, and how many of those a failure would",
+  "hold before they are sent. Pick one of them to narrow the tree to the attributes behind it; select an attribute",
   "and open its Data tab for the reasons, the values behind them and the records. Nothing is written anywhere.",
 ].join(" ");
 
-/** The outcomes the summary counts, each narrowing the tree to the attributes it is found for. */
-const COUNTED: readonly { filter: Exclude<FailingFilter, "any">; label: string; rows: (session: NonNullable<ValueCheckSession["summary"]>) => number }[] = [
+/**
+ * The outcomes the summary counts, each narrowing the tree to the attributes it is found for. A failed assertion is
+ * counted apart (its rows are also held, invalid, left out or clean by the template) and said only when a row failed
+ * one: a mapping may state no assertion at all.
+ */
+const COUNTED: readonly {
+  filter: Exclude<FailingFilter, "any">;
+  label: string;
+  rows: (summary: NonNullable<ValueCheckSession["summary"]>) => number;
+  apart?: boolean;
+}[] = [
   { filter: "held", label: "Held", rows: (last) => last.rows.withHeld },
   { filter: "invalid", label: "Invalid", rows: (last) => last.rows.withInvalid },
   { filter: "empty", label: "Left out", rows: (last) => last.rows.withEmpty },
+  { filter: "asserted", label: "Assertion failed", rows: (last) => assertionRows(last.rows).failed, apart: true },
 ];
 
 /**
  * The data check on one line: which rows (the flow, its scope's values, how many), and the check of every attribute. Under
- * it, once a check has run, one line sums it up: how many rows, then how many are held, write an invalid value or leave
- * an attribute out, each a button narrowing the tree to the attributes behind it, and how many are clean. Whatever the
- * check cannot do yet, or failed at, is said in that line's place.
+ * it, once a check has run, one line sums it up: how many rows, then how many are held, write an invalid value, leave an
+ * attribute out or fail an assertion of the mapping, each a button narrowing the tree to the attributes behind it, and
+ * how many are clean. Whatever the check cannot do yet, or failed at, is said in that line's place.
  */
 export function ValueCheckBar({ session }: { session: ValueCheckSession }) {
   const last = session.summary;
@@ -151,6 +163,7 @@ function StatusLine({ session, last, narrow }: {
   }
 
   const rows = last.rows;
+  const assertions = assertionRows(rows);
   return (
     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px]" data-testid="value-check-summary">
       <span className="mr-1 text-muted-foreground">
@@ -160,19 +173,26 @@ function StatusLine({ session, last, narrow }: {
         {" · "}
         <RelativeTime value={last.checkedUtc} />
       </span>
-      {COUNTED.map(({ filter, label, rows: count }) => {
+      {COUNTED.map(({ filter, label, rows: count, apart = false }) => {
         const visual = outcomeVisual(filter);
         const Icon = visual.icon;
         const n = count(last);
         const active = session.filter === filter;
+        if (apart && n === 0 && !active) {
+          return null;
+        }
+
+        // A failed assertion says first how many rows failed one and how many of them it would hold.
+        const held = filter === "asserted" ? assertions.held : 0;
+        const said = filter === "asserted" ? `${assertionRowsLine(rows) ?? ""}. ` : "";
         return (
           <button
             key={filter}
             type="button"
-            disabled={n === 0}
+            disabled={n === 0 && !active}
             onClick={() => narrow(filter)}
             aria-pressed={active}
-            title={n === 0 ? `No row is ${label.toLowerCase()}` : `${visual.meaning} Show the attributes it is found for.`}
+            title={n === 0 ? `No row is ${label.toLowerCase()}` : `${said}${visual.meaning} Show the attributes it is found for.`}
             className={cn(
               "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50",
               n === 0 ? "border-transparent text-muted-foreground" : "hover:bg-accent/60",
@@ -183,12 +203,13 @@ function StatusLine({ session, last, narrow }: {
             <Icon className={cn("size-3.5", n === 0 ? "opacity-50" : visual.textClass)} />
             {label}
             <span className="font-mono tabular-nums">{formatCount(n)}</span>
+            {held > 0 && <span className="text-muted-foreground" data-testid="value-check-summary-asserted-held">{`· ${formatCount(held)} to be held`}</span>}
           </button>
         );
       })}
       <span
         className={cn("inline-flex items-center gap-1 px-2 py-0.5", rows.clean > 0 ? "text-success" : "text-muted-foreground")}
-        title="Rows every attribute checked gives a value the template accepts, or one the mapping means it not to have"
+        title={`Rows every attribute checked gives a value the template accepts, or one the mapping means it not to have${assertions.failed > 0 ? ", and that fail no assertion of the mapping" : ""}`}
         data-testid="value-check-summary-clean"
       >
         Clean

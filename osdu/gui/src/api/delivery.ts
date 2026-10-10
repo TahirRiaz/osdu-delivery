@@ -6,6 +6,7 @@
 import { del, get, getText, post, put, type QueryParams } from "@/api/client";
 import type { ComputeTaskAccepted, PagedResult, RunStatus } from "@/api/types";
 import type { PageQuery } from "@/api/endpoints";
+import type { AssertionAction, AssertionFindings, AssertionStage } from "./validation";
 
 /**
  * A record's custody state. `waiting` holds a rendered document that refers to a record another record of the ledger
@@ -325,6 +326,11 @@ export interface DeliveryAttemptResult {
   detail?: string;
   /** For an undo (outcome `undone`, phase `undo`): why it ran and what became of each artifact it took. */
   undo?: DeliveryUndoResult;
+  /**
+   * What the check before sending found of the document (osdu/docs/validation-plan.md, The verdict), what the mapping's
+   * assertions found among it; read it with `verdictIn`, which answers null for a result that carries none.
+   */
+  validation?: unknown;
 }
 
 /**
@@ -1211,6 +1217,12 @@ export interface DeliveryPreviewDocument {
   choices: DeliveryPreviewChoice[];
   /** References the document carries that name no record the cache holds, written because the mapping says $unverified. */
   unverified: string[];
+  /**
+   * What the mapping's assertions found of the document (osdu/docs/reference/flow/mapping-assertions.md); absent when it
+   * states none. A failure that holds would hold the record at the check before sending, its document kept; a value a
+   * failure leaves out is already out of the rendered document.
+   */
+  assertions?: AssertionFindings | null;
 }
 
 /** The alternative of a $coalesce node that gave the value it wrote. */
@@ -1336,8 +1348,11 @@ export interface DeliveryValueCheckRequest {
   mapping?: string | null;
 }
 
-/** What a variable came to in a row that did not give it a value the template accepts, or that the mapping means no value for. */
-export type ValueCheckOutcome = "held" | "invalid" | "empty" | "notApplicable";
+/**
+ * What a variable came to in a row that did not give it a value the template accepts, that the mapping means no value for,
+ * or (`asserted`) whose value fails an assertion of the mapping.
+ */
+export type ValueCheckOutcome = "held" | "invalid" | "empty" | "notApplicable" | "asserted";
 
 /** A variable's rows (or items) by what they came to. */
 export interface DeliveryValueCheckCounts {
@@ -1346,6 +1361,11 @@ export interface DeliveryValueCheckCounts {
   empty: number;
   notApplicable: number;
   held: number;
+  /**
+   * Rows (or items) whose value failed an assertion of the mapping, counted apart from the others: a value that fails an
+   * assertion is still one the template accepts, or not.
+   */
+  asserted: number;
   total: number;
 }
 
@@ -1373,8 +1393,10 @@ export interface DeliveryValueCheckFinding {
   outcome: ValueCheckOutcome;
   /** The variable the reason is about: the one checked, or a property inside the value written there. */
   at: string;
-  /** For an invalid value, the rule of the template it breaks. */
+  /** For an invalid value, the rule of the template it breaks; for an asserted one, the assertion it fails. */
   rule?: string | null;
+  /** For an asserted value, what a failure of the assertion does. */
+  onFail?: AssertionAction | null;
   message: string;
   /** Occurrences: once per row, or once per item of a repeated array. */
   count: number;
@@ -1417,6 +1439,10 @@ export interface DeliveryValueCheckRows {
   withHeld: number;
   withInvalid: number;
   withEmpty: number;
+  /** Rows whose record fails an assertion of the mapping on a variable checked, whatever the failure does. */
+  withFailedAssertion: number;
+  /** Of those, the rows whose record a failed assertion would hold at the check before sending. */
+  heldByAssertion: number;
 }
 
 /**
@@ -2121,8 +2147,46 @@ export interface MappingDraftEntry {
   /** Static: the value as JSON text, such as "[\"a\"]", "\"MD\"", "5" or "true". */
   static: string | null;
   description: string | null;
+  /**
+   * The entry's assertions ($assert, osdu/docs/reference/flow/mapping-assertions.md), in the order they are written. A
+   * coalesce entry's are the entry's, never an alternative's; a fixed value, a list and an item of a list of values take none.
+   */
+  assertions?: MappingDraftAssertion[];
   /** True when the builder proposed the entry from the cache, until someone edits it. */
   prefilled: boolean;
+}
+
+/**
+ * One assertion of an entry as the builder edits it: the condition's operator and its operand as the document writes it
+ * after the operator (`[0, 250]`, `'GR'`, `{ atLeast: 1 }`), the value it judges, what a record that fails it does, how it
+ * reads several values, the conditions it is judged under, its name and its description.
+ */
+export interface MappingDraftAssertion {
+  operator: string;
+  /** One line of YAML, as it follows the operator. */
+  operand: string;
+  stage: AssertionStage;
+  onFail: AssertionAction;
+  /** For a property holding several values: true when one of them has to meet it, false when every one does. */
+  anyValue: boolean;
+  ignoreCase: boolean;
+  tolerance: number | null;
+  where: MappingDraftAssertionFilter[];
+  name: string | null;
+  description: string | null;
+}
+
+/**
+ * One condition an assertion is judged under: what it reads (`field`, a path into the record, for the record stage;
+ * `column`, a column as the draft names one, for the incoming stage), its operator and its operand.
+ */
+export interface MappingDraftAssertionFilter {
+  reads: "field" | "column";
+  path: string;
+  operator: string;
+  operand: string;
+  ignoreCase: boolean;
+  tolerance: number | null;
 }
 
 /**

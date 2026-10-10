@@ -5,7 +5,7 @@
 
 import { get, post } from "@/api/client";
 import { flowPath, type DeliveryDimension, type DeliveryDimensionAttribute, type DeliveryDimensionYaml, type DeliveryFlowScope, type DeliveryOsduRead, type DimensionBlueprint } from "./delivery";
-import { guidanceOf, type ValidationGuidance, type ValidationVerdict } from "./validation";
+import { guidanceOf, type AssertionAction, type AssertionStage, type ValidationGuidance, type ValidationVerdict } from "./validation";
 
 /** How the explorer reaches a partition: through which flow's connection, or why nothing does. */
 export interface ExplorerConnection {
@@ -333,6 +333,8 @@ export interface ExplorerValidateRequest {
   schema?: ExplorerSchemaChoice;
   /** With `saved`, the template version; the kind's newest when left out. */
   templateVersion?: string;
+  /** The synced mapping (its id) whose assertions are judged on the record; none when left out. */
+  mapping?: string;
 }
 
 /** The schema a record was checked against, where it came from, and what reading it could not resolve. */
@@ -365,6 +367,8 @@ export interface ExplorerValidateListRequest {
   /** The most records read and checked, 1 to 1,000. */
   max?: number;
   schema?: ExplorerSchemaChoice;
+  /** The synced mapping (its id) whose assertions are judged on the records of the entity type it renders; none when left out. */
+  mapping?: string;
 }
 
 /** A rule the records of a list break: how many records, how many times, and one example. */
@@ -391,6 +395,22 @@ export interface ExplorerRecordVerdict {
   unverified: number;
   /** The first problem (or part not checked), where and why. */
   first: string | null;
+  /** How many judgements of the mapping's assertions failed on the record; absent when none were judged. */
+  assertionFailures?: number | null;
+}
+
+/** An assertion of a mapping the records of a list fail: how many records, how many times, and one example. */
+export interface ExplorerAssertionCount {
+  at: string;
+  assertion: string;
+  stage: AssertionStage;
+  onFail: AssertionAction;
+  records: number;
+  failures: number;
+  exampleId: string;
+  examplePath: string;
+  exampleMessage: string;
+  exampleValue: string;
 }
 
 /** The records a search finds checked against their schemas, up to a bound, counted by outcome and rule. */
@@ -412,6 +432,14 @@ export interface ExplorerListValidation {
   unavailable: { kind: string; why: string; records: number }[];
   cut: boolean;
   notes: string[];
+  /** The mapping whose assertions were judged, as `Name@version`; absent when none was asked for or could be read. */
+  mapping?: string | null;
+  /** The records the mapping's assertions were judged on: those of the entity type it renders. */
+  asserted?: number;
+  /** Of those, the records that failed one or more of them. */
+  failingAssertions?: number;
+  /** The assertions the records fail, the most records first. */
+  assertions?: ExplorerAssertionCount[];
 }
 
 /** The most records one check of a search reads. */

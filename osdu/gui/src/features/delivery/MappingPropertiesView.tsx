@@ -11,6 +11,9 @@ import { GlyphRef } from "@/components/GlyphRef";
 import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { useClipped } from "@/components/useClipped";
+import type { MappingDraftAssertion, MappingDraftEntry } from "../../api/delivery";
+import { AssertionActionBadge } from "./AssertionFindingsView";
+import { assertionLabel, assertionText } from "./mappingAssertionText";
 import { EntryDetail } from "./MappingEntryDetail";
 import { propertyRow, type PropertyRow } from "./mappingDraft";
 import { useParsedMapping } from "./useParsedMapping";
@@ -29,7 +32,48 @@ function FormulaLine({ text, title, children }: { text: string; title: string; c
   return clipped ? <RichTooltip body={text} title={title} mono>{line}</RichTooltip> : line;
 }
 
-const columns: Column<PropertyRow>[] = [
+/** An assertion of a property, with the property it is written on: the row's own, or one of its list's object items'. */
+interface PropertyAssertion {
+  target: string;
+  assertion: MappingDraftAssertion;
+}
+
+/** A property's row, with the assertions it states (osdu/docs/reference/flow/mapping-assertions.md). */
+type AssertedRow = PropertyRow & { assertions: PropertyAssertion[] };
+
+/** The assertions an entry states, then those the properties of its list's object items state, in the order they are written. */
+function assertionsOf(entry: MappingDraftEntry): PropertyAssertion[] {
+  const own = (entry.assertions ?? []).map((assertion) => ({ target: entry.target, assertion }));
+  const items = entry.items.flatMap((item) => item.properties.flatMap(assertionsOf));
+  return [...own, ...items];
+}
+
+/** One assertion on one line: what it is called, what it asserts when that differs, and the value it judges when not the record's. */
+function assertionLine({ target, assertion }: PropertyAssertion, row: PropertyRow): string {
+  const label = assertionLabel(assertion);
+  const text = assertionText(assertion);
+  const where = target === row.target ? "" : `${target}: `;
+  const stage = assertion.stage === "incoming" ? ", on the value the row gives" : "";
+  return `${where}${label}${label === text ? "" : ` (${text})`}${stage}, ${assertion.onFail}`;
+}
+
+/** How many assertions a property states, as a quiet chip whose tooltip lists them. */
+function AssertionChip({ row }: { row: AssertedRow }) {
+  if (row.assertions.length === 0) {
+    return null;
+  }
+
+  const count = row.assertions.length;
+  return (
+    <RichTooltip title={`${count} assertion${count === 1 ? "" : "s"}`} body={row.assertions.map((a) => assertionLine(a, row)).join("\n")}>
+      <Badge variant="outline" className="shrink-0 text-[10px] font-normal" data-testid="delivery-mapping-property-assertions">
+        {`${count} assertion${count === 1 ? "" : "s"}`}
+      </Badge>
+    </RichTooltip>
+  );
+}
+
+const columns: Column<AssertedRow>[] = [
   {
     id: "mapping",
     header: "From, to the property it fills",
@@ -54,6 +98,7 @@ const columns: Column<PropertyRow>[] = [
             {row.condition !== null && <span className="text-muted-foreground">{` when ${row.condition}`}</span>}
           </FormulaLine>
           {!row.required && <Badge variant="outline" className="shrink-0 text-[10px]">optional</Badge>}
+          <AssertionChip row={row} />
           {row.description !== null && row.description !== "" && <GlyphRef icon={Info} title="Description" body={row.description} />}
         </span>
       );
@@ -61,10 +106,10 @@ const columns: Column<PropertyRow>[] = [
   },
 ];
 
-/** One property as the pipeline that fills it, in a dialog: the row's own detail, under the property it fills. */
-function PropertyDialog({ row, onClose }: { row: PropertyRow | null; onClose: () => void }) {
+/** One property as the pipeline that fills it, in a dialog: the row's own detail, under the property it fills, then its assertions. */
+function PropertyDialog({ row, onClose }: { row: AssertedRow | null; onClose: () => void }) {
   // The dialog fades out showing what it showed, so the last property stays rendered while it closes.
-  const [shown, setShown] = useState<PropertyRow | null>(row);
+  const [shown, setShown] = useState<AssertedRow | null>(row);
   if (row !== null && row !== shown) {
     setShown(row);
   }
@@ -90,6 +135,22 @@ function PropertyDialog({ row, onClose }: { row: PropertyRow | null; onClose: ()
             </DialogHeader>
 
             <EntryDetail row={shown} />
+            {shown.assertions.length > 0 && (
+              <section className="flex flex-col gap-1.5" data-testid="delivery-mapping-property-assertion-list">
+                <h3 className="text-[12px] font-medium">Assertions</h3>
+                {shown.assertions.map(({ target, assertion }, index) => (
+                  <div key={`${target}:${index}`} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px]" data-testid="delivery-mapping-property-assertion">
+                    <AssertionActionBadge action={assertion.onFail} className="text-[11px]" />
+                    {target !== shown.target && <span className="font-mono text-[11px] text-muted-foreground">{target}</span>}
+                    <span className="min-w-0 break-words font-mono text-[11px]">{assertionText(assertion)}</span>
+                    {assertion.name !== null && assertion.name.trim() !== "" && <span className="text-muted-foreground">{assertion.name}</span>}
+                    {assertion.stage === "incoming" && <span className="text-muted-foreground">on the value the row gives</span>}
+                    {assertion.anyValue && <span className="text-muted-foreground">one of its values</span>}
+                    {assertion.description !== null && assertion.description.trim() !== "" && <GlyphRef icon={Info} title="Description" body={assertion.description} />}
+                  </div>
+                ))}
+              </section>
+            )}
           </>
         )}
       </DialogContent>
@@ -109,8 +170,8 @@ interface MappingPropertiesViewProps {
 /**
  * What the mapping fills the template's properties with, read from the document by the same parse the mapping builder
  * opens it with: one row per property, reading from the value's origin to the target it lands on, with a lookup and
- * modifiers where there are any, and the whole of a property behind its row. Nothing is rendered and no data is read;
- * this is the document as written.
+ * modifiers where there are any, how many assertions it states, and the whole of a property behind its row. Nothing is
+ * rendered and no data is read; this is the document as written.
  */
 export function MappingPropertiesView({ yaml, path, contentHash }: MappingPropertiesViewProps) {
   const [filter, setFilter] = useState("");
@@ -119,11 +180,15 @@ export function MappingPropertiesView({ yaml, path, contentHash }: MappingProper
   const parsed = useParsedMapping(yaml, path, contentHash);
 
   const draft = parsed.data?.draft ?? null;
-  const rows = useMemo(() => (draft === null ? [] : draft.entries.map(propertyRow)), [draft]);
+  const rows = useMemo<AssertedRow[]>(
+    () => (draft === null ? [] : draft.entries.map((entry) => ({ ...propertyRow(entry), assertions: assertionsOf(entry) }))),
+    [draft],
+  );
 
   const term = filter.trim().toLowerCase();
   const shown = rows.filter(
-    (row) => (!onlyDerived || row.lookup !== "" || row.modifiers.length > 0) && (term === "" || row.search.includes(term)),
+    (row) => (!onlyDerived || row.lookup !== "" || row.modifiers.length > 0)
+      && (term === "" || row.search.includes(term) || row.assertions.some((a) => assertionLine(a, row).toLowerCase().includes(term))),
   );
 
   return (
@@ -146,7 +211,7 @@ export function MappingPropertiesView({ yaml, path, contentHash }: MappingProper
         <SearchInput
           value={filter}
           onChange={setFilter}
-          placeholder="Property, source, lookup or modifier"
+          placeholder="Property, source, lookup, modifier or assertion"
           label="Filter the properties"
           testId="delivery-mapping-properties-filter"
         />

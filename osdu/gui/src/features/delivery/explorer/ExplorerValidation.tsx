@@ -12,12 +12,14 @@ import {
   type ExplorerValidateRequest, type ExplorerValidation,
 } from "../../../api/explorer";
 import { whereOf } from "../../../api/validation";
+import { AssertionActionBadge, AssertionActionGlyph } from "../AssertionFindingsView";
 import { idParts } from "../osduRecordModel";
 import type { InspectorField } from "../OsduRecordInspector";
 import { TaskProgress } from "../TemplateSheet";
 import { ValidationCount, ValidationGlyph } from "../ValidationMark";
 import { ValidationVerdictView } from "../ValidationVerdictView";
-import { problemsAt } from "../validationModel";
+import { assertionActionWord, assertionFailuresAt, problemsAt } from "../validationModel";
+import { ExplorerMappingPicker } from "./ExplorerMappingPicker";
 import { ExplorerProblem } from "./ExplorerProblem";
 import { counted, kindParts, useExplorerRead } from "./explorerModel";
 
@@ -71,21 +73,25 @@ export interface ValidationSource {
  * A record OSDU holds checked against the schema of its kind (osdu/docs/reference/concepts/explorer.md, Validate), in
  * the explorer or on a record page's OSDU tab: by default what the partition's Schema service holds, which is what OSDU
  * expects of the record; or a template saved in OSDU Delivery. The problems open their element in the record. What was
- * read to make the schema, and what could not be resolved, is in the tooltip beside the schema. The answer is handed
- * up, so the record's fields can carry its marks.
+ * read to make the schema, and what could not be resolved, is in the tooltip beside the schema. In the explorer a mapping
+ * can be picked whose assertions are judged on the record too (osdu/docs/reference/flow/mapping-assertions.md); a record
+ * page's check judges those of the flow's own mapping. The answer is handed up, so the record's fields can carry its marks.
  */
-export function ExplorerValidationView({ source, id, version, onOpenPath, onResult }: {
+export function ExplorerValidationView({ source, id, version, onOpenPath, onResult, pickMapping = false }: {
   source: ValidationSource;
   id: string;
   /** The version in view; null for the latest. */
   version: number | null;
   onOpenPath: (path: string) => void;
   onResult?: (result: ExplorerValidation | null) => void;
+  /** Whether the check offers a mapping whose assertions it judges; where it does not, the source decides which, if any. */
+  pickMapping?: boolean;
 }) {
   const [choice, setChoice] = useState<SchemaChoice>({ schema: "osdu" });
+  const [mapping, setMapping] = useState<string | null>(null);
   const read = useExplorerRead<ExplorerValidation>(
-    ["validate", ...source.key, id, version, choice.schema, choice.templateVersion ?? null],
-    () => source.validate({ targetId: id, version: version ?? undefined, schema: choice.schema, templateVersion: choice.templateVersion }),
+    ["validate", ...source.key, id, version, choice.schema, choice.templateVersion ?? null, mapping],
+    () => source.validate({ targetId: id, version: version ?? undefined, schema: choice.schema, templateVersion: choice.templateVersion, mapping: mapping ?? undefined }),
   );
   const answer = read.data?.answer;
   useEffect(() => onResult?.(answer ?? null), [answer, onResult]);
@@ -108,6 +114,12 @@ export function ExplorerValidationView({ source, id, version, onOpenPath, onResu
           <RichTooltip title="The schema" body={schemaNotes.join("\n\n")}>
             <Info className="size-3.5 text-muted-foreground" aria-label="The schema" data-testid="explorer-validate-schema-info" />
           </RichTooltip>
+        )}
+        {pickMapping && (
+          <>
+            <span className="font-medium">and</span>
+            <ExplorerMappingPicker kind={answer?.kind ?? null} value={mapping} onChoose={setMapping} />
+          </>
         )}
         <IconAction
           label="Check again"
@@ -141,9 +153,10 @@ export function ExplorerValidationView({ source, id, version, onOpenPath, onResu
 }
 
 /**
- * The mark a field of the record `id` carries when the last check of it found a problem at the field, or inside it for a
- * section: the glyph, and what is wrong in its tooltip. Only the version the check read carries marks, since another
- * version in view holds other values.
+ * The mark a field of the record `id` carries when the last check of it found a problem at the field, or a value there
+ * that fails an assertion of the mapping judged, or either inside it for a section: the glyph (a problem's before an
+ * assertion's, a hold before a report), and what is wrong in its tooltip. Only the version the check read carries marks,
+ * since another version in view holds other values.
  */
 export function ValidationFieldMark({ result, id, field }: { result: ExplorerValidation | null; id: string; field: InspectorField }) {
   if (field.level !== 0 || result === null || result.targetId !== id) {
@@ -158,8 +171,22 @@ export function ValidationFieldMark({ result, id, field }: { result: ExplorerVal
   const section = field.node.kind === "object" || field.node.kind === "array";
   const problems = result.verdict?.problems ?? [];
   const found = problemsAt(problems, field.node.path, section);
-  if (found.length === 0) {
+  const failed = assertionFailuresAt(result.verdict?.assertions?.failures ?? [], field.node.path, section);
+  if (found.length === 0 && failed.length === 0) {
     return null;
+  }
+
+  if (found.length === 0) {
+    const strongest = failed.find((f) => f.onFail === "hold") ?? failed.find((f) => f.onFail === "report") ?? failed[0];
+    const lines = failed.slice(0, 8).map((f) => `${f.path} fails "${f.assertion}" (${assertionActionWord(f.onFail)}): ${f.message}`).join("\n\n")
+      + (failed.length > 8 ? `\n\nand ${failed.length - 8} more` : "");
+    return (
+      <RichTooltip title={`${failed.length} assertion failure${failed.length === 1 ? "" : "s"} here`} body={lines}>
+        <span className="inline-flex size-5 items-center justify-center" data-testid="explorer-assertion-mark">
+          <AssertionActionGlyph action={strongest.onFail} />
+        </span>
+      </RichTooltip>
+    );
   }
 
   // Each problem with how to fix it, where the check said; the guidance lists one guide per problem, in the verdict's order.
@@ -168,7 +195,8 @@ export function ValidationFieldMark({ result, id, field }: { result: ExplorerVal
     return guide !== undefined && guide.path === problem.path && guide.advice !== null ? `\nFix: ${guide.advice}` : "";
   };
   const body = found.slice(0, 8).map((p) => `${whereOf(p)} (${p.rule}): ${p.message}${advice(p)}`).join("\n\n")
-    + (found.length > 8 ? `\n\nand ${found.length - 8} more` : "");
+    + (found.length > 8 ? `\n\nand ${found.length - 8} more` : "")
+    + (failed.length > 0 ? `\n\nand ${failed.length} assertion failure${failed.length === 1 ? "" : "s"} of ${result.verdict?.assertions?.mapping ?? "the mapping"}` : "");
   return (
     <RichTooltip title={`${found.length} problem${found.length === 1 ? "" : "s"} the schema finds here`} body={body}>
       <span className="inline-flex size-5 items-center justify-center" data-testid="explorer-validation-mark">
@@ -181,8 +209,10 @@ export function ValidationFieldMark({ result, id, field }: { result: ExplorerVal
 /**
  * The records a search finds checked against their schemas, up to 1,000 (osdu/docs/reference/concepts/explorer.md,
  * Validate): how many came to each outcome, the rules broken most often with the records that break them and an example
- * of each, and each record with its first problem; a record opens in the explorer. A search matching more records than
- * are read says so: the counts are of the first ones, and a whole kind is an assertion flow's conforms test.
+ * of each, and each record with its first problem; a record opens in the explorer. With a mapping picked, its assertions
+ * are judged on the records of the entity type it renders, and the assertions failed most often are counted the same way.
+ * A search matching more records than are read says so: the counts are of the first ones, and a whole kind is an
+ * assertion flow's conforms test (or its mapping test, for a mapping's assertions).
  */
 export function ExplorerValidateDialog({ partition, request, open, onOpenChange, onOpenRecord }: {
   partition: string | null;
@@ -192,10 +222,11 @@ export function ExplorerValidateDialog({ partition, request, open, onOpenChange,
   onOpenRecord: (id: string) => void;
 }) {
   const [schema, setSchema] = useState<ExplorerSchemaChoice>("osdu");
+  const [mapping, setMapping] = useState<string | null>(null);
   const search = useMemo(() => ({ ...request, offset: undefined, limit: undefined, facet: undefined }), [request]);
   const read = useExplorerRead<ExplorerListValidation>(
-    ["validate-list", partition, search, schema],
-    open ? () => explorerApi.validateList(partition, { search, max: EXPLORER_MAX_CHECKED, schema }) : null,
+    ["validate-list", partition, search, schema, mapping],
+    open ? () => explorerApi.validateList(partition, { search, max: EXPLORER_MAX_CHECKED, schema, mapping: mapping ?? undefined }) : null,
   );
   const answer = read.data?.answer;
 
@@ -211,6 +242,8 @@ export function ExplorerValidateDialog({ partition, request, open, onOpenChange,
         <div className="flex flex-wrap items-center gap-2 text-[12px]">
           <span className="font-medium">Checked against</span>
           <SchemaPicker choice={{ schema }} saved={[]} onChoose={(choice) => setSchema(choice.schema)} />
+          <span className="font-medium">and</span>
+          <ExplorerMappingPicker kind={request.kind ?? null} value={mapping} onChoose={setMapping} />
           <IconAction label="Check again" icon={<RefreshCw className={read.isFetching ? "animate-spin" : undefined} />} variant="ghost" className="ml-auto size-7" disabled={read.isFetching} onClick={() => void read.refetch()} data-testid="explorer-validate-list-again" />
         </div>
         {read.isPending && <TaskProgress label="Reading the records from OSDU and checking them" testId="explorer-validate-list-progress" />}
@@ -226,10 +259,17 @@ export function ExplorerValidateDialog({ partition, request, open, onOpenChange,
               <ValidationCount outcome="invalid" count={answer.invalid} />
               <ValidationCount outcome="unverified" count={answer.unverified} />
               {answer.notChecked > 0 && <ValidationCount outcome="notValidated" count={answer.notChecked} />}
+              {answer.mapping != null && (
+                <span className={(answer.failingAssertions ?? 0) === 0 ? "text-[12px] opacity-60" : "text-[12px]"} data-testid="explorer-validate-list-asserted">
+                  <span className="font-mono tabular-nums">{(answer.failingAssertions ?? 0).toLocaleString("en-US")}</span>
+                  <span className="text-muted-foreground">{` of ${counted(answer.asserted ?? 0, "record")} failing an assertion of `}</span>
+                  <span className="font-mono text-[11px]">{answer.mapping}</span>
+                </span>
+              )}
             </div>
             {answer.cut && (
               <p className="text-[12px] text-muted-foreground" data-testid="explorer-validate-list-cut">
-                The search finds more records than a check reads, so these counts are of the first ones. Narrow the search, or check a whole kind with an assertion flow's conforms test.
+                The search finds more records than a check reads, so these counts are of the first ones. Narrow the search, or check a whole kind with an assertion flow: its conforms test for the schema, its mapping test for a mapping's assertions.
               </p>
             )}
             {[...answer.notes, ...answer.unavailable.map((u) => `${counted(u.records, "record")} of ${u.kind} not checked: ${u.why}`), ...(answer.notFound.length > 0 ? [`${counted(answer.notFound.length, "record")} the search found, storage did not return.`] : [])].map((note) => (
@@ -269,6 +309,29 @@ export function ExplorerValidateDialog({ partition, request, open, onOpenChange,
                 </div>
               </section>
             )}
+            {(answer.assertions ?? []).length > 0 && (
+              <section className="rounded-md border" data-testid="explorer-validate-list-assertions">
+                <header className="border-b px-3 py-1.5 text-[12px] font-medium">Assertions failed most often</header>
+                <div className="grid grid-cols-[minmax(0,1.4fr)_auto_auto_minmax(0,2.4fr)]">
+                  {(answer.assertions ?? []).map((failed) => (
+                    <div key={`${failed.at}:${failed.assertion}`} className="col-span-full grid min-w-0 grid-cols-subgrid items-start gap-3 border-b px-3 py-1.5 text-[12px] last:border-b-0" data-testid="explorer-validate-list-assertion">
+                      <span className="min-w-0 truncate font-mono text-[11px]" title={failed.at}>{failed.at}</span>
+                      <span className="flex min-w-0 flex-wrap items-center gap-1">
+                        <span className="max-w-[220px] truncate font-mono text-[11px] text-muted-foreground" title={failed.assertion}>{failed.assertion}</span>
+                        <AssertionActionBadge action={failed.onFail} className="text-[11px]" />
+                      </span>
+                      <span className="whitespace-nowrap text-right font-mono tabular-nums" title={`${failed.failures.toLocaleString("en-US")} failure(s) in all`}>{counted(failed.records, "record")}</span>
+                      <span className="min-w-0">
+                        <span className="break-words">{failed.exampleMessage}</span>
+                        <button type="button" className="ml-2 text-primary hover:underline" onClick={() => onOpenRecord(failed.exampleId)} title={`${failed.exampleId} at ${failed.examplePath}`} data-testid="explorer-validate-list-assertion-example">
+                          {idParts(failed.exampleId).unique}
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             <section className="rounded-md border" data-testid="explorer-validate-list-records">
               <header className="border-b px-3 py-1.5 text-[12px] font-medium">Records</header>
               {answer.records.map((record) => (
@@ -283,7 +346,15 @@ export function ExplorerValidateDialog({ partition, request, open, onOpenChange,
                   <ValidationGlyph outcome={record.outcome} />
                   <span className="min-w-0 truncate text-primary">{idParts(record.id).unique}</span>
                   <span className="min-w-0 truncate text-muted-foreground">{record.kind === null ? "" : kindParts(record.kind).type}</span>
-                  <span className="min-w-0 truncate text-muted-foreground">{record.first ?? ""}</span>
+                  <span className="min-w-0 truncate text-muted-foreground">
+                    {(record.assertionFailures ?? 0) > 0 && (
+                      <span className="text-foreground" data-testid="explorer-validate-list-record-asserted">
+                        {`${(record.assertionFailures ?? 0).toLocaleString("en-US")} assertion failure${record.assertionFailures === 1 ? "" : "s"}`}
+                        {record.first != null && "; "}
+                      </span>
+                    )}
+                    {record.first ?? ""}
+                  </span>
                 </button>
               ))}
             </section>

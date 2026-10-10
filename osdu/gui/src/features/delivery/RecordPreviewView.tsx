@@ -18,6 +18,7 @@ import {
   type DeliveryPreviewAction,
   type DeliveryPreviewChoice,
   type DeliveryPreviewDecision,
+  type DeliveryPreviewDocument,
   type DeliveryPreviewFile,
   type DeliveryPreviewPayloadPart,
   type DeliveryPreviewReference,
@@ -25,6 +26,7 @@ import {
   type DeliveryPreviewStep,
   type DeliveryRecordPreview,
 } from "../../api/delivery";
+import { AssertionFindingsView } from "./AssertionFindingsView";
 import { RecordStatusBadge } from "./DeliveryBadges";
 import { RecordName } from "./RecordName";
 import { downloadJson, envelopeFirst, fileNameOf, formatBytes } from "./osduDocument";
@@ -64,6 +66,69 @@ export function PreviewActionBadge({ decision }: { decision: DeliveryPreviewDeci
     <Badge variant="secondary" className={ACTION_TONES[decision.action]} title={decision.reason} data-testid="preview-action">
       {label}
     </Badge>
+  );
+}
+
+/** Whether a failed assertion of the mapping would hold the record at the check before sending. */
+function heldByAssertion(document: DeliveryPreviewDocument): boolean {
+  return (document.assertions?.held ?? 0) > 0;
+}
+
+/**
+ * The failed assertion that would hold the record, in a line of a preview's holds: the first that holds and where its
+ * value is, and how many more do. After the render's own holds it is said as one more reason, as the record is held at
+ * render then and never reaches the check before sending.
+ */
+function assertionHoldText(document: DeliveryPreviewDocument): string {
+  const findings = document.assertions;
+  const held = findings?.held ?? 0;
+  const first = findings?.failures.find((failure) => failure.onFail === "hold") ?? null;
+  const more = first === null ? held : held - 1;
+  const which = first === null
+    ? `${held.toLocaleString()} ${held === 1 ? "failure" : "failures"} of an assertion that holds`
+    : `"${first.assertion}" fails at ${first.path !== "" ? first.path : first.at}${more > 0 ? `, and ${more.toLocaleString()} more ${more === 1 ? "failure holds" : "failures hold"}` : ""}`;
+  return document.holds.length === 0
+    ? `The check before sending would hold it, its document kept: ${which}.`
+    : `An assertion of the mapping holds it as well: ${which}.`;
+}
+
+/**
+ * Why a delivery would hold the record, as a preview says it: the render's own holds, then a failed assertion of the
+ * mapping whose failure holds it at the check before sending, its document kept. Nothing when neither would.
+ */
+export function PreviewHolds({ document, testId }: { document: DeliveryPreviewDocument; testId: string }) {
+  const asserted = heldByAssertion(document);
+  if (document.holds.length === 0 && !asserted) {
+    return null;
+  }
+
+  return (
+    <Alert variant="destructive" data-testid={testId}>
+      <CircleAlert />
+      <AlertTitle>A delivery would hold this record</AlertTitle>
+      <AlertDescription>
+        <ul className="list-disc pl-5">
+          {document.holds.map((hold) => <li key={hold}>{hold}</li>)}
+          {asserted && <li data-testid={`${testId}-assertion`}>{assertionHoldText(document)}</li>}
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * What the mapping's assertions found of the rendered document, kept to a height of its own so a long list scrolls in
+ * place above the document. Nothing for a mapping that states none.
+ */
+export function PreviewAssertions({ document, testId }: { document: DeliveryPreviewDocument; testId: string }) {
+  if (document.assertions === null || document.assertions === undefined) {
+    return null;
+  }
+
+  return (
+    <div className="max-h-64 overflow-y-auto" data-testid={testId}>
+      <AssertionFindingsView findings={document.assertions} />
+    </div>
   );
 }
 
@@ -219,8 +284,9 @@ function Step({ step }: { step: DeliveryPreviewStep }) {
 
 /**
  * A record preview as the Preview tab shows it: which row it is and how it was picked, what the next run would do with it,
- * the document as the route sends it (or as rendered), the requests the route would make, the files it would upload, what
- * it refers to, and its rows as the ingestion tables hold them. A preview that found no row says why.
+ * the document as the route sends it (or as rendered) with what the mapping's assertions found of it, the requests the
+ * route would make, the files it would upload, what it refers to, and its rows as the ingestion tables hold them. A
+ * preview that found no row says why.
  */
 export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview }) {
   const [form, setForm] = useState<"sent" | "rendered">("sent");
@@ -268,7 +334,16 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="min-w-0 break-words text-base font-semibold" data-testid="preview-title">{source.label ?? source.sourceKey}</h2>
           <PreviewActionBadge decision={decision} />
-          {document?.held && <Badge variant="secondary" className="bg-warning/15 text-warning" data-testid="preview-held">held</Badge>}
+          {document !== null && (document.held || heldByAssertion(document)) && (
+            <Badge
+              variant="secondary"
+              className="bg-warning/15 text-warning"
+              title={document.held ? undefined : "The check before sending would hold it for a failed assertion of the mapping, its document kept"}
+              data-testid="preview-held"
+            >
+              held
+            </Badge>
+          )}
           {ledger?.sameDocument === true && <Badge variant="outline" data-testid="preview-same">same document as delivered</Badge>}
           {ledger?.sameDocument === false && <Badge variant="outline" className="border-info/40 text-info" data-testid="preview-differs">differs from what was delivered</Badge>}
           <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -351,15 +426,7 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
           </AlertDescription>
         </Alert>
       )}
-      {document !== null && document.holds.length > 0 && (
-        <Alert variant="destructive" data-testid="preview-holds">
-          <CircleAlert />
-          <AlertTitle>A delivery would hold this record</AlertTitle>
-          <AlertDescription>
-            <ul className="list-disc pl-5">{document.holds.map((hold) => <li key={hold}>{hold}</li>)}</ul>
-          </AlertDescription>
-        </Alert>
-      )}
+      {document !== null && <PreviewHolds document={document} testId="preview-holds" />}
       {document === null && preview.noDocument && (
         <Alert data-testid="preview-no-document">
           <FileWarning />
@@ -402,6 +469,7 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
                 <span className="font-mono" title="The hash of the rendered document, which the ledger compares to decide what is sent">{`hash ${document.metadataHash.slice(0, 16)}`}</span>
                 {document.cacheValues > 0 && <span>{`${document.cacheValues.toLocaleString()} values read from the cache`}</span>}
               </div>
+              <PreviewAssertions document={document} testId="preview-assertions" />
               {document.omitted
                 ? <Alert data-testid="preview-document-omitted"><Info /><AlertDescription>{document.omitted}</AlertDescription></Alert>
                 : shown !== null && <CodeView value={JSON.stringify(envelopeFirst(shown), null, 2)} language="json" height={520} data-testid="preview-document" />}

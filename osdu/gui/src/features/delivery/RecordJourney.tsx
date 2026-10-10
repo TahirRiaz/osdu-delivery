@@ -21,11 +21,14 @@ import type {
   DeliveryActivity, DeliveryAttempt, DeliveryAttemptStep, DeliveryChainLanding, DeliveryChainRun, DeliveryRecord,
   DeliveryRecordChain, DeliverySourceChange, DeliverySourceChangeKind, DeliveryUndoArtifact,
 } from "../../api/delivery";
+import { verdictIn, type ValidationVerdict } from "../../api/validation";
 import { UndoOutcomeBadge } from "./ArtifactMarks";
 import { RunRef, SubmissionRef } from "./DeliveryRefs";
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { prettyJson } from "./prettyJson";
 import { RecordName } from "./RecordName";
+import { ValidationVerdictView } from "./ValidationVerdictView";
+import { outcomeWord } from "./validationModel";
 import { NoteMark } from "./RecordArtifacts";
 
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
@@ -734,8 +737,20 @@ function errorShape(error: string | null): string {
   return (error ?? "").replace(/\(correlation-id [^)]*\)/g, "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * What the check before sending found, in a few words: the outcome, and how many judgements of the mapping's assertions
+ * failed when any did.
+ */
+function verdictFact(verdict: ValidationVerdict): string {
+  const failed = verdict.assertions?.failed ?? 0;
+  return failed > 0
+    ? `checked ${outcomeWord(verdict.outcome)}, ${failed.toLocaleString("en-US")} assertion failure${failed === 1 ? "" : "s"}`
+    : `checked ${outcomeWord(verdict.outcome)}`;
+}
+
 function attemptEntry(attempt: DeliveryAttempt): Entry {
   const steps = attempt.result?.steps ?? [];
+  const verdict = verdictIn(attempt.result?.validation);
   const correlationId = attempt.result?.correlationId;
   const undo = attempt.outcome === "undone" ? attempt.result?.undo : undefined;
   // An undo's error lists what it could not take back, and a wait's names what it waits for; neither is a request OSDU refused.
@@ -765,6 +780,7 @@ function attemptEntry(attempt: DeliveryAttempt): Entry {
       ]
       : [
         attempt.sourceFileName !== null && <Origin key="o" file={attempt.sourceFileName} row={attempt.sourceRowNumber} />,
+        verdict !== null && verdictFact(verdict),
         <RunRef key="r" runId={attempt.runId} />,
         <SubmissionRef key="s" submissionId={attempt.submissionId} />,
       ],
@@ -775,6 +791,7 @@ function attemptEntry(attempt: DeliveryAttempt): Entry {
       <div className="flex flex-col gap-2.5">
         {steps.length > 0 && <StepList steps={steps} />}
         {undo?.artifacts !== undefined && undo.artifacts.length > 0 && <UndoList artifacts={undo.artifacts} keptRecord={undo.keptRecord === true} />}
+        {verdict !== null && <ValidationVerdictView verdict={verdict} />}
         <FactGrid>
           {refusal?.url != null && <Fact label="Request" wide><Mono>{`${refusal.method ?? ""} ${refusal.url}`}</Mono></Fact>}
           {attempt.error !== null && <Fact label="Error" wide><span className="text-destructive">{attempt.error}</span></Fact>}
