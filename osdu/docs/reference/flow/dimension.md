@@ -458,7 +458,7 @@ views:
 | `views[].name` | required | A letter, then letters, digits and underscores, at most 64; unique among the views of a database, ignoring case. |
 | `views[].description` | none | What the view holds, shown with it. |
 | `views[].from` | required | The dimension of the flow whose rows the view's rows are. |
-| `views[].join[]` | none | `{ on, to, as }`: the column joined on (bare for a column of `from`, `alias.column` for one of an earlier join), the dimension of the flow joined, and the alias its columns are read by (the dimension's name unless given). At most 16. |
+| `views[].join[]` | none | `{ on, to, as }`: the column joined on (bare for a column of `from`, `alias.column` for one of an earlier join), the dimension of the flow joined, and the alias its columns are read by (the dimension's name unless given). At most 32. |
 | `views[].columns.<name>` | every column | An expression, or `{ expression, dataType, description }`. At most 256, beside `partition` and `id`. |
 | `views[].where` | every row | The condition a row of `from` is kept by: a T-SQL condition over the same columns, operators and functions as a column's expression, such as `element IS NOT NULL`. A value alone is refused. |
 

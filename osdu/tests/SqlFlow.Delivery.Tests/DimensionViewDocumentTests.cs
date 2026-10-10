@@ -178,6 +178,18 @@ public class DimensionViewDocumentTests
     }
 
     [Fact]
+    public void A_view_makes_at_most_32_joins()
+    {
+        static string Joins(int count) => string.Join("\n", Enumerable.Range(1, count).Select(i => $"      - {{ on: CurveUnitID, to: Unit, as: U{i} }}"));
+
+        var view = Parse(View("      Curve: Mnemonic\n", Joins(DimensionViewSpec.MaxJoins))).Views[0];
+        Assert.Equal(32, view.Joins.Count);
+        Assert.Equal("j32", view.Definition.Joins[^1].SqlAlias);
+
+        Assert.Contains("join lists 33 joins; a view makes at most 32", Refused(View("      Curve: Mnemonic\n", Joins(33))), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_target_connection_is_a_credential_reference_of_the_flow()
         => Assert.Contains(new KeyValuePair<string, string>("target.connection", "${env:WELLDB_OSDU_DB}"), Parse(Head + Curve).CredentialReferences());
 

@@ -471,7 +471,7 @@ LEFT JOIN [osdu].[dim_WellLog] AS j1
 | `views[].name` | required | The view's name: a letter, then letters, digits and underscores, at most 64; unique among the views of a database, ignoring case. The view is `osdu.v_dim_<name>`. |
 | `views[].description` | none | What the view holds, shown with it. |
 | `views[].from` | required | The dimension whose rows the view's rows are. |
-| `views[].join[]` | none | `{ on, to, as }`: the column joined on, the dimension joined to, and the alias its columns are read by (the dimension's name unless given). At most 16. |
+| `views[].join[]` | none | `{ on, to, as }`: the column joined on, the dimension joined to, and the alias its columns are read by (the dimension's name unless given). At most 32. |
 | `views[].columns` | every column, as text | Each column under its name, in order: an expression, or `{ expression, dataType, description }`. At most 256. |
 | `views[].where` | every row | The condition a row of `from` is kept by, over the same columns, operators and functions as a column's expression (`element IS NOT NULL`). |
 

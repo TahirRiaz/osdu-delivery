@@ -691,7 +691,7 @@
       "path": "views[].join",
       "type": "list",
       "required": false,
-      "description": "The joins, at most 16, read in order, so one can follow another and none comes back on itself: `{ on: <column>, to: <dimension>, as: <alias> }`. Each compares the partition and the key exactly (the key's hash, then the text under a binary collation), so ids that differ only in case never meet."
+      "description": "The joins, at most 32, read in order, so one can follow another and none comes back on itself: `{ on: <column>, to: <dimension>, as: <alias> }`. Each compares the partition and the key exactly (the key's hash, then the text under a binary collation), so ids that differ only in case never meet."
     },
     {
       "path": "views[].join[]",

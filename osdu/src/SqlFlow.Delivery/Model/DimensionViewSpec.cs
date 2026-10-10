@@ -38,7 +38,7 @@ public sealed record DimensionViewSpec
     public const int MaxViews = 50;
 
     /// <summary>The most joins one view makes.</summary>
-    public const int MaxJoins = 16;
+    public const int MaxJoins = 32;
 
     /// <summary>The most columns one view lists, beside its <c>partition</c> and <c>id</c>.</summary>
     public const int MaxColumns = 256;
