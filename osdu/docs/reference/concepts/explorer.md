@@ -24,6 +24,7 @@ related:
   - delivery-concept-templates
   - delivery-concept-preflight
   - delivery-flow-assertion
+  - delivery-flow-mapping-assertions
   - delivery-flow-dimension
   - delivery-flow-inventory
   - delivery-concept-partitions
@@ -41,6 +42,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Search/RecordExplorer.Via.cs
   - osdu/src/SqlFlow.Delivery/Engine/Search/OsduSearch.cs
   - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerChecks.cs
+  - osdu/src/SqlFlow.Delivery/Engine/SyncedMappings.cs
+  - osdu/src/SqlFlow.Delivery/Validation/MappingAssertionJudge.cs
   - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerReferences.cs
   - osdu/src/SqlFlow.Delivery/Engine/Search/PartitionSchemaIndex.cs
   - osdu/src/SqlFlow.Delivery/Engine/Search/SchemaServiceReader.cs
@@ -298,6 +301,28 @@ first problem. When the search matches more than a check reads, it says so; a wh
 A record page's OSDU tab offers the same Validation for the record it shows, read through that record's own flow and
 partition.
 
+**A mapping's assertions.** A check can also hold the records to the business rules a mapping states
+([mapping assertions](../flow/mapping-assertions.md)): the request names a synced mapping by its id (`mapping`, as
+`GET /api/v1/delivery/mappings` lists it), and the mapping's record-stage assertions are judged on each record, as a
+delivery judges the documents it renders. A record page's check judges the assertions of the record's own flow's mapping
+unless the request names another.
+
+- **Validate** adds `assertions` to the verdict: how many judgements were made and failed, and each failure with the
+  property, where it was found, the assertion, its stage and `onFail`, why it fails and the value. A record no schema
+  can be had for is still judged: the answer says why it was not checked (`problem`), and its verdict is `notValidated`
+  with the assertions' findings.
+- **Validate these records** counts the records of the entity type the mapping renders (`asserted`), those failing one
+  of its assertions (`failingAssertions`) and, most records first, each assertion they fail with one example (at most
+  50); each record's line carries how many judgements failed on it.
+- **What is not judged is said** among the notes: the incoming assertions, which judge the rows records were rendered
+  from and so not what OSDU holds; a record of another entity type than the mapping renders (one of another version of
+  the same type is judged on what it holds at the same properties, and the note says so); and a mapping that cannot be
+  read (`No assertions were judged: no mapping is synced under <id>; its repository may no longer declare it.`).
+
+Nothing is held or left out of a record OSDU already holds: every failure is reported, whatever its `onFail`. A whole
+kind is held to a mapping's assertions by an [assertion flow](../flow/assertion.md#holding-records-to-a-mappings-assertions)'s
+`mapping` test.
+
 ## Referenced by
 
 **Referenced by**, in the place line when one type or one of its kinds is picked, lists the types whose schemas name
@@ -351,9 +376,9 @@ the workbench's partition, else the registry's default, is read.
 | `POST /api/v1/delivery/explorer/search` | operate | One page of records: `text`, `lucene` or `mentions`, `kind`, `filters` (at most 12; a filter may name a search `term`), `sort`, `offset` and `limit` (1 to 200, inside the first 10,000), `facet`, `columns` (at most 8). |
 | `POST /api/v1/delivery/explorer/fields` | operate | The properties the records of a `kind` hold. |
 | `POST /api/v1/delivery/explorer/read` | operate | One record from storage by `targetId`, at its latest or at `version`, with its version list. |
-| `POST /api/v1/delivery/explorer/validate` | operate | One record checked against its kind's schema (`schema`: `osdu` or `saved`). |
-| `POST /api/v1/delivery/explorer/validate-list` | operate | The records a search finds checked (`max` 1 to 1,000). |
-| `POST /api/v1/delivery/flows/{pipelineId}/osdu/validate` | operate | The same check of one record through a flow's own route; 409 for a `dspdm` or `etp` flow. |
+| `POST /api/v1/delivery/explorer/validate` | operate | One record checked against its kind's schema (`schema`: `osdu` or `saved`), and against the assertions of the synced mapping `mapping` names. |
+| `POST /api/v1/delivery/explorer/validate-list` | operate | The records a search finds checked (`max` 1 to 1,000), with `mapping` as above. |
+| `POST /api/v1/delivery/flows/{pipelineId}/osdu/validate` | operate | The same check of one record through a flow's own route, judging the flow's own mapping's assertions unless `mapping` names another; 409 for a `dspdm` or `etp` flow. |
 | `POST /api/v1/delivery/explorer/referenced-by` | operate | The types whose schemas name records of a `type`; `refresh` reads the schemas again. |
 | `POST /api/v1/delivery/explorer/element-queries` | operate | The query that finds an element of a record, from the saved templates alone. |
 | `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys a kind's saved template suggests for a dimension. |

@@ -26,12 +26,14 @@ related:
   - delivery-concept-partitions
   - delivery-cli-records
   - delivery-concept-architecture
+  - delivery-flow-mapping-assertions
   - concept-provenance-and-row-keys
 sourceRefs:
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduDbContext.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduSchema.cs
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20260928064320_LedgerPartitions.cs
+  - osdu/src/SqlFlow.Delivery.Data/Migrations/20261010205917_RecordAssertions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Purges.cs
@@ -144,6 +146,7 @@ same row always lands on the same record.
 | `AttemptCount`, `NextAttemptUtc`, `LastError` | The pending work's tries, when the next is due, and the last error or hold reason, redacted (at most 2,000 characters). |
 | `LeaseOwner`, `WaitingFor`, `PlanRequestedUtc` | The lease delivering it now; the OSDU id a waiting record waits for; the moment the ledger asked for it to be planned again. |
 | `ValidationOutcome`, `ValidationProblems`, `ValidatedUtc`, `AcceptedMetadataHash` | What the last check of its document against the template came to, and the document a release accepted as it is ([Preflight](preflight.md)). |
+| `AssertionFailures` | How many judgements of the mapping's assertions failed on the last document the check before sending read, whether they held it, were reported or left a value out: `0` when every one was met, null when the mapping states no assertion or no check has reached the record. A try that sends the payload alone keeps the last count. Added by migration `RecordAssertions` (module version 1.39.0), with the same column on `osdu.RecordEvent`, through which a worker writes it with the rest of the verdict ([Mapping assertions](../flow/mapping-assertions.md#what-the-ledger-keeps)). |
 | `LastDeliveredUtc`, `LastVerifiedUtc`, `LastVerifyOutcome` | Custody times, and the last verify outcome: `match`, `drifted`, `missing` or `error`. |
 | `CreatedUtc`, `UpdatedUtc` | When the row was created and last changed. |
 
@@ -161,7 +164,7 @@ found. The record's history is its attempts.
 | `MetadataHash`, `PayloadHash`, `TargetVersion` | The hashes the try established and the OSDU version it returned. |
 | `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc`, `SourceDeletedUtc` | The ingestion row the try's document was built from. Kept here because the record's own origin moves on with later versions. |
 | `Error` | The redacted error of a held or failed try (at most 2,000 characters). |
-| `ResultJson` | Every step the route took (name, start, duration, status, what the target returned, whether an earlier try completed it), the `correlationId` every OSDU request of the try carried, the version OSDU held before (`replaced`), the verdict of the check before sending (`validation`), the unit of work (`unit`) and a note (`detail`) for a try that did not fail. |
+| `ResultJson` | Every step the route took (name, start, duration, status, what the target returned, whether an earlier try completed it), the `correlationId` every OSDU request of the try carried, the version OSDU held before (`replaced`), the verdict of the check before sending (`validation`, with what the mapping's assertions found under `assertions`), the unit of work (`unit`) and a note (`detail`) for a try that did not fail. |
 
 The `correlationId` is the id each OSDU request of the try sent in its `correlation-id` header, so an attempt can be followed
 into the OSDU services' own logs.
@@ -237,6 +240,7 @@ Every question about a delivered record is answered from the ledger:
 | Which source file and row did it come from? | `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc` on the record for the version OSDU holds, and on each attempt for the version that try sent. `GET /records/{flowId}/{key}/chain` follows every change of the row back to the ingestion run that stamped it and the landing run that brought its file in, naming a run only when the catalog proves it. |
 | Which mapping, template and cache rendered it? | `RenderContext`: the mapping reference and fingerprint, the template version, the cache partition and version, and the mapping parameters. `CacheSetId` names the cached values the render read (`GET /records/{flowId}/{key}/cache`). |
 | Every try and its outcome | The record's attempts, newest first: outcome, phase, error, steps, correlation id, the ingestion row it was built from. |
+| Did it meet its schema and its mapping's assertions? | Each attempt's `validation`: the verdict against the template, and under `assertions` every assertion its document failed, with the value and why. The record keeps the last outcome and `AssertionFailures`. |
 | Which OSDU id and version did it land as? | `TargetId`, `TargetVersion`, `TargetStateJson`; each delivered attempt's `TargetVersion` and the version it replaced. |
 | Who released, redelivered, removed or reversed it, and when? | The record's activities: its own and those naming it in `osdu.ActivityRecord`. |
 | What did its deliveries create in OSDU? | Its artifacts. |
@@ -308,6 +312,7 @@ Every key and every index that serves a listing leads with `PartitionId`. The on
 | `(PartitionId, DeliveryKey)`, `(PartitionId, TargetId)`, `(PartitionId, SourceKey)`, `(PartitionId, Label)`, `(PartitionId, SourceFileName)` | Lookups across the flows of a partition. |
 | `(PartitionId, FlowId, ProblemHash, UpdatedUtc)` filtered to blocked records | A flow's issues, an issue's records, the release of an issue. |
 | `(PartitionId, FlowId, PlanRequestedUtc)` filtered | The records asked to be planned again, which each run pages. |
+| `(PartitionId, FlowId, AssertionFailures, UpdatedUtc)` filtered to `AssertionFailures > 0` | A flow's records whose last checked document failed an assertion of its mapping. |
 | `(PartitionId, WaitingFor)` filtered | Waiting records, released when the record they wait for lands. |
 | `(ClaimedTargetId)` unique, filtered, binary collation | One OSDU id, one record: the database refuses a second claim. |
 

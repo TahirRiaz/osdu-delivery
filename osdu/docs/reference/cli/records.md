@@ -26,11 +26,13 @@ related:
   - delivery-guide-operations-runbook
   - delivery-cli-run
   - delivery-cli-preview
+  - delivery-flow-mapping-assertions
   - delivery-cli-db
   - concept-cli-conventions
 sourceRefs:
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryRecordVerbs.cs
+  - osdu/src/SqlFlow.Delivery.Cli/FindingLines.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryReversalVerbs.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryArtifactVerbs.cs
   - osdu/src/SqlFlow.Delivery.Cli/CliPartitions.cs
@@ -118,7 +120,9 @@ stages nothing.`
 
 `--json`: `flow`, `flowId` and `records`, each with `deliveryKey`, `sourceKey`, `label`, `status`, `targetId`,
 `targetVersion`, `waitingFor`, `mapping`, `attemptCount`, `lastDeliveredUtc`, `lastVerifiedUtc`,
-`lastVerifyOutcome`, `lastError`, `sourceFileName`, `sourceRowNumber` and `issue`.
+`lastVerifyOutcome`, `lastError`, `sourceFileName`, `sourceRowNumber`, `issue`, and what the last check before sending
+found: `validationOutcome`, `validatedUtc` and `assertionFailures` (how many judgements of the mapping's assertions
+failed; null when the mapping states none).
 
 ## records show
 
@@ -136,20 +140,29 @@ welldb-wellbore-03-delivery: welldb:WB-0002
   delivered  <time>
   verified   <time> <Match | Drifted | Missing | Error>
   error      <the last error, on one line>
+  checked    <valid | invalid | unverified>[, <n> assertion failure(s)] at <time>
   <n> attempt(s) shown, <n> on the work pending now; newest first:
     <completed>  <outcome>  <phase>  <seconds>s  <worker>
         version <n>
         <step> <HTTP status> <returned values>
+        checked <the verdict of the check before sending>
+          <where> fails "<assertion>" (<stage>, <onFail>): <why>
         <the attempt's error>
 ```
 
+The record's `checked` line is what the last check before sending found: the outcome against the template and, when its
+mapping states assertions, how many judgements of them failed ([mapping assertions](../flow/mapping-assertions.md)).
+An attempt's `checked` line is its verdict
+(`valid against osdu:wks:work-product-component--WellLog:1.4.0: 12 rule(s) met; 1 of 12 assertion judgement(s) of WellLog@1.4.0 failed (1 holding), first data.VerticalMeasurement.VerticalMeasurement "reference-elevation"`),
+followed by each assertion failure it lists, at most ten, and `and <n> more failure(s)`; a try that checked nothing
+prints none. A record held for an assertion has the hold as its error, starting `assertion:`.
 An undo's attempt also lists every artifact it took and what became of it. A key that names no record fails with
 `<flow> has no record for '<key>'.`; a source key matching several records fails with
 `'<key>' matches <n> records of <flow> (<source keys>); name one by its delivery key.`
 
 `--json`: `flow`, `flowId` and `record` (the keys `records list` gives, and `attempts`, each with `attemptId`,
 `startedUtc`, `completedUtc`, `outcome`, `phase`, `worker`, `submissionId`, `runId`, `targetVersion`, `error` and
-`result`, the attempt's recorded result as JSON).
+`result`, the attempt's recorded result as JSON, whose `validation.assertions` holds the findings).
 
 ## records issues
 

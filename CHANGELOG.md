@@ -13,6 +13,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A mapping states business rules beside a property, and a delivery holds, reports or leaves out what breaks them.**
+  `$assert` beside a node lists up to 20 assertions in the assertion flows' own words (one condition, `equals` to
+  `length`, with `ignoreCase` and `tolerance`), read by the one condition reader the assertion flows use. Each judges the
+  value the record carries (`stage: record`, the default) or the value the row gives the node before its modifiers
+  (`stage: incoming`), every value of a repeated array or list or one of them (`values: any`), under up to 10 `where`
+  conditions, and says what a record that breaks it does: `hold` (the default) holds it at the check before sending with
+  its document kept until a release sends it, `report` sends it and records the failure, and `omit` leaves the value out.
+  The preflight checks each condition against its property's type. What a record's assertions found travels with its
+  document to the check before sending and joins its verdict on every attempt (`assertions`: 50 failures listed, every
+  one counted); the records one assertion holds share one issue, and the record keeps how many judgements failed
+  (`osdu.Record.AssertionFailures` and `osdu.RecordEvent.AssertionFailures`, with a filtered index; migration
+  `RecordAssertions`, module version 1.39.0). A plan, `sqlflow preview`, Check values (`sqlflow values`, an `asserted`
+  outcome), the run trace and `sqlflow records show` say what the assertions find. The explorer's Validate and Validate
+  these records judge a synced mapping's assertions on what OSDU holds (`mapping`; a record page judges its flow's own),
+  and an assertion flow's new `mapping: Name@version` subject holds every record a test reads to them. The mapping
+  builder keeps, writes and checks each property's assertions
+  ([flow/mapping-assertions.md](osdu/docs/reference/flow/mapping-assertions.md)).
 - **A dimension flow loads incrementally.** An `incremental` block names a record's unique key (`keyColumns: [id]`) and
   when a record last changed (`dateColumns`, `[modifyTime, createTime]` by default, since OSDU sets `modifyTime` only
   from a record's second version on). After a first full load, each build reads the records that changed in its window

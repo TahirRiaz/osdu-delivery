@@ -21,6 +21,7 @@ related:
   - delivery-cli-preview
   - delivery-cli-check
   - delivery-flow-mapping-values
+  - delivery-flow-mapping-assertions
   - delivery-concept-preflight
   - delivery-guide-writing-a-mapping
   - delivery-concept-templates
@@ -110,6 +111,7 @@ modifier. For each property checked, each row (and each item of a repeated array
 | `empty` | An optional entry gives no value, and the record goes without the property. The reason says why it gave none. | no |
 | `notApplicable` | The mapping means no value for the row: the entry's `$when` does not hold, or an item entry meets a row with no child row. | no |
 | `valid` | Written with a value the template accepts. | no |
+| `asserted` | A value fails an assertion of the mapping; counted beside the outcome above, which the template decides. | when the assertion holds the record (`onFail: hold`) |
 
 The template rules a value is held to are the JSON Schema rules the template states on the property and on everything
 inside a value written whole: `type`, `format` (RFC 3339 `date-time`, `date` and `time`, `uri`, `uri-reference`,
@@ -121,7 +123,17 @@ it is at (`osdu.data.NameAliases[].AliasNameTypeID`).
 
 For each property, a row counts once, by the worst it came to: held, then invalid, then empty, then valid. As a record,
 a row counts among the rows with a held property, with an invalid value, and leaving a property out, for each that
-applies (one row can be in more than one), and as clean when it is in none. A row the ingestion table marks deleted, or
+applies (one row can be in more than one), and as clean when it is in none.
+
+**The mapping's assertions** ([mapping assertions](../flow/mapping-assertions.md)) are judged on every row as a delivery
+judges them, and counted apart from the template's rules, since a value can meet the template and break a rule of the
+mapping. A value that fails one is an `asserted` finding on the property the assertion is written beside, its rule the
+assertion's name and its message what the failure does (`fails "reference-elevation" (record); the record is held before it is sent`,
+`...; the record is sent and the failure recorded`, `...; the value is left out`); each example record says why its own
+value fails. A property counts the rows a value of it failed an assertion in. As a record, a row counts among the rows
+failing an assertion and among those an assertion would hold, and is not clean when it fails one. A value a record-stage
+`omit` would leave out is shown as written; one an incoming `omit` leaves out is `empty`, its reason naming the
+assertion. Checking one property (`--target`) also evaluates the properties its assertions' `where` conditions read. A row the ingestion table marks deleted, or
 one the source cannot give whole, is passed over, as a delivery passes it over; a row with an empty key part is counted
 as keyless, since its record cannot be tracked.
 
@@ -129,15 +141,16 @@ as keyless, since its record cannot be tracked.
 
 The text answer, one block per interface checked (an interface's block names it as `<flow>/<interface>`, as a run names
 it).
-The first line starts with `OK` when no row is held, invalid or keyless, and with `!!` when one is:
+The first line starts with `OK` when no row is held, invalid, held by an assertion or keyless, and with `!!` when one is:
 
 ```text
 !!  welldb-wellbore-03-delivery: Wellbore@1.0.0 on osdu:wks:master-data--Wellbore:1.3.0
     rows        10,000 checked of 10,000 read (the scope holds about <n>)
     outcome     <n> clean, <n> held, <n> with an invalid value, <n> leaving a variable out
+    asserted    <n> failing an assertion of the mapping, <n> of them to be held before they are sent
     keyless     <n> rows have an empty key part, so their records cannot be tracked
     passed over <n>: the ingestion table marks the row deleted, and a deleted row is never delivered
-    osdu.data.FacilityName: <n> held, <n> invalid, <n> empty, <n> valid, <n> not applicable
+    osdu.data.FacilityName: <n> held, <n> invalid, <n> empty, <n> valid, <n> not applicable[; <n> failing an assertion]
       <outcome>  <count>[ at <path inside>]  <reason>
                values  '<value>' x<n>, ...
                e.g.    welldb:WB-0001 (<file> row <n>)
@@ -149,9 +162,10 @@ The first line starts with `OK` when no row is held, invalid or keyless, and wit
 | --- | --- |
 | `rows` | Rows checked of rows read, and `the whole scope` or how many the scope holds. |
 | `outcome` | The rows as records: clean, held, with an invalid value, leaving a property out. |
+| `asserted` | Only when a row fails an assertion of the mapping: those rows, and how many of them an assertion would hold. |
 | `keyless`, `passed over` | Rows with an empty key part; rows a delivery never renders, by reason. |
-| `<property>:` | Only for a property some row fails: its rows by outcome. |
-| finding lines | Each reason, with its outcome, count and where inside the property it is; the five most frequent values behind it; the first three example records with their file, row and item. |
+| `<property>:` | Only for a property some row fails: its rows by outcome, and the rows failing an assertion. |
+| finding lines | Each reason, with its outcome (`held`, `invalid`, `empty` or `asserted`), count and where inside the property it is; the five most frequent values behind it; the first three example records with their file, row and item. |
 | `... more occurrences under reasons not listed` | Occurrences of findings past the 50 a property lists. |
 
 ### --json and --out
@@ -159,10 +173,14 @@ The first line starts with `OK` when no row is held, invalid or keyless, and wit
 The JSON is the check, camelCase, properties without a value left out: `flow`, `interface`, `flowId`, `inputs`
 (`mapping`, `kind`, `templateVersion`, `cachePartition`, `cacheVersion`), `asked` (`targets`, `maxRows`, `samples`,
 `skipSamples`, `values`), `rows` (`scopeRecords`, `read`, `checked`, `complete`, `passedOver`, `passedOverWhy`,
-`keyless`, `keylessSamples`, `clean`, `withHeld`, `withInvalid`, `withEmpty`), `variables`, `issues`, `notes`,
-`startedUtc` and `checkedUtc`. Each variable has `target`, `entry`, `required`, `repeater`, `rows` and `items` (each
-`valid`, `invalid`, `empty`, `notApplicable`, `held`, `total`), `values`, `distinctValues`, `moreValues`, `findings`
-and `unlisted`; each finding has `outcome`, `at`, `rule`, `message`, `count`, `rows`, `values`, `otherValues`,
+`keyless`, `keylessSamples`, `clean`, `withHeld`, `withInvalid`, `withEmpty`, `withFailedAssertion`, `heldByAssertion`),
+`variables`, `issues`, `notes`, `startedUtc` and `checkedUtc`. Each variable has `target`, `entry`, `required`,
+`repeater`, `rows` and `items` (each `valid`, `invalid`, `empty`, `notApplicable`, `held`, `asserted`, `total`;
+`asserted` counts each row, or each item of a repeated array, a value failed an assertion in, once however many failed,
+and `total` leaves it out, since those rows and items count under another outcome too; a failure of a repeated array's
+values together, `values: any`, counts its row and no item), `values`, `distinctValues`, `moreValues`, `findings` and
+`unlisted`; each finding has `outcome`, `at`, `rule`, `onFail` (for an `asserted` finding, what a failure of the
+assertion does: `hold`, `report` or `omit`), `message`, `count`, `rows`, `values`, `otherValues`,
 `samples` (`sourceKey`, `label`, `deliveryKey`, `file`, `row`, `item`, `value`, `message`) and `samplesFrom`. A source
 checked one interface at a time gives an array of these.
 
@@ -176,16 +194,16 @@ rows are passed over, and the samples `--samples` asks for. Rows are inspected 2
 ### The --rows file
 
 UTF-8 CSV (RFC 4180 quoting), a header line, then one line per row, or per item of a repeated array, that a property is
-held, invalid or empty for, written as the check meets it:
+held, invalid or empty for, or whose value fails an assertion of the mapping, written as the check meets it:
 
 | Column | Holds |
 | --- | --- |
 | `flow` | The flow; for an interface of a source, `<flow>/<interface>`. |
 | `variable` | The property checked. |
 | `at` | Where the reason is: the property, or a property inside the value written there. |
-| `outcome` | `held`, `invalid` or `empty`. |
-| `rule` | For an invalid value, the template rule it breaks. |
-| `reason` | The reason, as this row states it. |
+| `outcome` | `held`, `invalid`, `empty` or `asserted`. |
+| `rule` | For an invalid value, the template rule it breaks; for an asserted one, the assertion it fails. |
+| `reason` | The reason, as this row states it: for an asserted value, why it fails the assertion. |
 | `value` | The value written or the value that caused the reason, clipped. |
 | `source_key`, `label`, `delivery_key` | The record. |
 | `file`, `row` | The file the row was landed from, and its row in that file. |
@@ -218,8 +236,8 @@ sqlflow values flows/welldb-wellbore-03-delivery.yaml --partition dev --samples 
 
 | Exit code | Condition |
 | --- | --- |
-| 0 | No row checked is held, writes a value the template does not accept, or has an empty key part. A row that leaves an optional property out is reported without failing the check. |
-| 1 | A row is held, invalid or keyless; a usage error; the flow could not render; or `--rows` or `--out` could not be written. Errors print one `ERROR  <message>` line on stderr, credentials redacted. |
+| 0 | No row checked is held, writes a value the template does not accept, fails an assertion that would hold it, or has an empty key part. A row that leaves an optional property out, and one failing an assertion that only reports or leaves a value out, are reported without failing the check. |
+| 1 | A row is held, invalid, held by an assertion or keyless; a usage error; the flow could not render; or `--rows` or `--out` could not be written. Errors print one `ERROR  <message>` line on stderr, credentials redacted. |
 | 130 | Interrupted with Ctrl+C. |
 
 ## See also
@@ -227,6 +245,7 @@ sqlflow values flows/welldb-wellbore-03-delivery.yaml --partition dev --samples 
 - [sqlflow preview](preview.md): one record rendered whole.
 - [sqlflow check](check.md): the mapping against its template and cache, without reading a row.
 - [Mapping values](../flow/mapping-values.md): the value nodes a check evaluates.
+- [Mapping assertions](../flow/mapping-assertions.md): the rules a check counts as `asserted`.
 - [Templates](../concepts/templates.md): the schemas the values are held to.
 - [Writing a mapping](../guides/writing-a-mapping.md): checking values as one step of getting a mapping right.
 - [CLI conventions](../../../../sqlflow/docs/reference/concepts/cli-conventions.md): options, streams and exit codes shared by every command.

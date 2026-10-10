@@ -24,12 +24,14 @@ related:
   - delivery-cli-records
   - delivery-concept-change-detection
   - delivery-flow-routes
+  - delivery-flow-mapping-assertions
   - delivery-guide-writing-a-mapping
   - delivery-cli-db
   - concept-cli-conventions
 sourceRefs:
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryPreviewVerbs.cs
+  - osdu/src/SqlFlow.Delivery.Cli/FindingLines.cs
   - osdu/src/SqlFlow.Delivery.Cli/CliPartitions.cs
   - osdu/src/SqlFlow.Delivery/Engine/Preview/RecordPreviewer.cs
   - osdu/src/SqlFlow.Delivery/Engine/Preview/RecordPreview.cs
@@ -134,7 +136,8 @@ only the platform gives (on the file and manifest routes, `<dataset id the File 
 dataset id the File service mints). The route's requests follow in order, with the paths the flow's options give
 ([Routes](../flow/routes.md)). Then come the payload files the record would upload, part by part, with each parquet
 file's rows and columns read from its footer; the records the document refers to, each with the ledger record that
-holds it; the searches the render made; and the preflight's warnings, which do not stop a run.
+holds it; the searches the render made; and the preflight's warnings, which do not stop a run. When the mapping states
+assertions, the preview says what they found of the record and whether the check before sending would hold it.
 
 ## Bounds
 
@@ -179,6 +182,7 @@ OK  welldb-wellbore-03-delivery: welldb:WB-0001 [<label>]
 | `ledger` | The ledger's status of the record, its OSDU version, and whether the document is the one it holds. |
 | `document` | The OSDU id, size and hash of the document; or `none: <why>` when the row renders no document. |
 | `held` | Why a delivery would hold the record instead of sending it. |
+| `asserted` | What the mapping's assertions found of the document (`<n> of <m> assertion judgement(s) of <mapping> failed (...)`, or that every one was met), with `; the check before sending would hold the record, its document kept` when a failure holds it; then each failure, at most ten, as `<where> fails "<assertion>" (<stage>, <onFail>): <why>`. The document shown is already without what `omit` left out ([mapping assertions](../flow/mapping-assertions.md)). |
 | `coalesce` | Which alternative of each `$coalesce` node gave the value written. |
 | `unverified` | A reference the mapping writes with `$unverified` that names no record the cache holds. |
 | `refers to` | Each OSDU id the document refers to, the property it is in, and the ledger record holding it. |
@@ -197,7 +201,7 @@ The JSON is the preview record, camelCase, properties without a value left out: 
 `originUpdatedUtc`, `fingerprint`, `deletedUtc`, `hold`, `row`, `datasets`, `omitted`), `decision` (`action`,
 `skipTier`, `reason`, `deliverMetadata`, `deliverPayload`, `ledger`), `document` (`targetId`, `kind`, `metadataHash`,
 `characters`, `held`, `holds`, `rendered`, `sent`, `placeholders`, `omitted`, `searches`, `cacheValues`, `choices`,
-`unverified`), `noDocument`, `references`, `referenceCount`, `payload`, `steps` (`order`, `service`, `request`, `what`,
+`unverified`, `assertions`: the findings a verdict carries), `noDocument`, `references`, `referenceCount`, `payload`, `steps` (`order`, `service`, `request`, `what`,
 `returns`, `repeats`, `body`), `notes`, `issues` and `previewedUtc`. A source previewed one interface at a time gives
 an array of these.
 

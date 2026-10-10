@@ -19,10 +19,13 @@ keywords:
   - indexsettleseconds
   - test report
   - bulk.columns
+  - mapping assertions
+  - "mapping: name@version"
 yamlPath: "(root, flowType: assertion)"
 related:
   - delivery-guide-data-quality-tests
   - delivery-cli-assertions
+  - delivery-flow-mapping-assertions
   - delivery-flow-delivery
   - delivery-concept-templates
   - delivery-concept-partitions
@@ -48,6 +51,9 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/WellboreBulk.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/TestResult.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionReport.cs
+  - osdu/src/SqlFlow.Delivery/Engine/SyncedMappings.cs
+  - osdu/src/SqlFlow.Delivery/Validation/MappingAssertionJudge.cs
+  - osdu/src/SqlFlow.Delivery/Documents/ConditionReader.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Assertions.cs
@@ -303,6 +309,7 @@ take fails validation: `<test>: assert[<n>] is a <subject> assertion, which does
 | `groupBy: <path>` | `groups`, `mode`, `absent`, `groupCount` | The search's groups of the path's values (`aggregateBy`): each group under `groups` has a count that compares true (`mode: exact` allows no other group; `includes`, the default, does), no group under `absent` is there, and the number of groups compares true with `groupCount`. Reads no record. Not with `ids`. |
 | `recordSet: { columns, rows, mode }` | | The records projected onto `columns` (1 to 20 paths) match `rows` (at most 1,000): `exact` (the same rows in any order, the default), `ordered` (in the test's `sort` order), `includes` or `excludes`. |
 | `conforms: true` | | Every record read meets the schema of its kind as the template states it (required properties, types, formats, patterns, enumerations), and is of the test's kind. Needs `read: storage`. |
+| `mapping: <Name@version>` | | Every record read meets what that mapping asserts of the values a record carries (its `$assert` on the record stage). Needs `read: storage`. See [Holding records to a mapping's assertions](#holding-records-to-a-mappings-assertions). |
 | `indexed: true` | | No record the test matches has an index status of 201 or above (`index.statusCode:[201 TO *]`): the indexer mapped every record whole. Not with `ids`. |
 | `legal: valid` | | Every record read carries a legal tag, and every tag is valid now, as Legal's `POST /legaltags:validate` answers. |
 | `delivered: <delivery flow>` | `interface`, `exact` | Every record that flow's ledger holds as delivered in the partition is among what the test matches; with `exact: true`, nothing else is. |
@@ -311,11 +318,11 @@ take fails validation: `<test>: assert[<n>] is a <subject> assertion, which does
 | `column: <name>` | one condition, `for`, `optional`, `where`, `ignoreCase`, `tolerance` | The condition holds of the column's values in each record's bulk data, for the share of its rows `for` asks. |
 | `monotonic: increasing, decreasing, strictlyIncreasing, strictlyDecreasing` | `column` | The column's values only go that way, row after row, in each record's bulk data. Absent values are passed over. |
 
-An assertion with no subject fails with `names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, indexed, legal, delivered, rowCount, columns or monotonic.`;
+An assertion with no subject fails with `names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic.`;
 one with two fails with `names <a> and <b>; an assertion has one subject. Write one assertion for each.`
 
 When there is nothing to check (no record matched, or none had a value), `field`, `column`, `resolves`, `unique`,
-`conforms`, `legal` and the bulk assertions fail, except a `field` or `column` assertion with `for: none`. An `aggregate`
+`conforms`, `mapping`, `legal` and the bulk assertions fail, except a `field` or `column` assertion with `for: none`. An `aggregate`
 compares what it found (`count`, `distinct` and `missing` come to 0; `sum`, `avg`, `min` and `max` fail with no number),
 and so do `recordSet` (an `exact` set with no rows asserts that no record matches) and `delivered`.
 
@@ -434,10 +441,54 @@ refused when the flow loads. The example's `log-curves` test, given a fifth asse
 Other DDMSs, and the files behind dataset records, are not read by a test; their storage records are tested like any
 other record.
 
+## Holding records to a mapping's assertions
+
+The `mapping` subject holds every record a test reads to the business rules a delivery's mapping states beside its
+properties ([mapping assertions](mapping-assertions.md)): the mapping's record-stage assertions, judged on each record as
+storage holds it by the code a delivery judges the documents it renders with.
+
+```yaml
+  - name: log-rules
+    description: Each delivered log meets what its mapping asserts.
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    assert:
+      - mapping: WellLog@1.4.0
+```
+
+- **Which mapping.** `mapping` is `Name@version`, as a delivery flow's `render.mapping` names it, without `/`, `\`, `..`
+  or whitespace. A run reads it once, when it starts, from the mappings the repository sync keeps in the module's
+  database. Two repositories that declare the reference with the same document are read as one.
+- **What it needs.** Records as storage holds them, so `read: index` is refused. The test's `kind` is the kind the
+  mapping renders, the mapping states at least one record-stage assertion, and each of those fits the template the test
+  is checked against: its property is one of the kind's, and its condition suits the property's type. The incoming
+  assertions are not judged, since OSDU does not hold the rows the records were rendered from.
+- **What it counts.** A record meets it when none of the mapping's assertions fails on it, whatever each assertion's
+  `onFail`, and every record read has to (it takes no `for`). The result says how many records meet it, how many
+  judgements were made, and the five assertions failed by the most records
+  (`3 of 5 record(s) meet it; 31 judgement(s) made; failed most: data.Curves[].Mnemonic "a depth curve is among the curves" (2)`);
+  each example names its record's first failure and how many more it has
+  (`data.VerticalMeasurement.VerticalMeasurement fails "reference-elevation": is 312, outside 0 to 250 (and 1 more)`).
+
+A mapping that cannot be read, or does not fit the test, leaves the test `errored` with why, and nothing is evaluated.
+Left without a `name`, the assertion is called `meets what mapping <Name@version> asserts`:
+
+```text
+'meets what mapping WellLog@1.4.0 asserts': no mapping WellLog@1.4.0 is synced; sync the repository that declares it, then run again.
+'meets what mapping WellLog@1.4.0 asserts': mapping WellLog@1.4.0 is synced from 2 repositories whose documents differ (mappings/WellLog@1.4.0.yaml, mappings/WellLog@1.4.0.yaml), so there is no one mapping to read; give each its own version.
+'meets what mapping WellLog@1.4.0 asserts': mapping WellLog@1.4.0 renders osdu:wks:work-product-component--WellLog:1.4.0, and the test reads osdu:wks:work-product-component--WellLog:1.5.0; a test holds the records of the kind a mapping renders to its assertions.
+'meets what mapping WellLog@1.4.0 asserts': mapping WellLog@1.4.0 asserts nothing of the values a record carries (stage: record), so there is nothing to hold the records to; its incoming assertions judge the rows records were rendered from, which OSDU does not hold.
+```
+
+A mapping the sync recorded as not loading is answered with
+`mapping <Name@version> (<file>) does not load: <why>`. A delivery judges the same assertions on the documents it renders,
+before they are sent; a test judges what OSDU holds afterwards, records delivered before the assertions were written
+included.
+
 ## Checked against the template
 
-Before a test that reads fields (a field condition, a field aggregate, `unique`, `groupBy`, `recordSet`, `conforms`, a
-`sort` or a `spatial` filter) reads anything, it is checked against the template of its kind (see
+Before a test that reads fields (a field condition, a field aggregate, `unique`, `groupBy`, `recordSet`, `conforms`,
+`mapping`, a `sort` or a `spatial` filter) reads anything, it is checked against the template of its kind (see
 [Templates](../concepts/templates.md)): every path has to be a property of the schema, every operator has to suit the
 property's type, and every value compared with has to be one the property can hold (its type, date format and pattern).
 A test that does not fit is reported `errored` with each problem, and is not evaluated:
@@ -574,6 +625,8 @@ Past one of the last four, the assertion does not pass, and its result says why.
 | `<test>: assert[<n>] names atLeast and atMost; a condition has one operator. Write between for a range, or one assertion for each.` | Two operators. |
 | `<test>: assert[<n>].field '<path>' starts at '<root>', which is not a property of an OSDU record; ...` | A path that does not start at a record root. |
 | `<test>: assert[<n>] asserts that every record meets its template, which needs each record as storage holds it; ... Take read: index out.` | `conforms` with `read: index`. |
+| `<test>: assert[<n>].mapping '<value>' names the mapping whose assertions the records are held to as Name@version, such as mapping: WellLog@1.4.0.` | A `mapping` that is not `Name@version`. |
+| `<test>: assert[<n>] holds every record to what mapping <Name@version> asserts, which needs each record as storage holds it; the test reads the index (read: index), which holds only what it indexed. Take read: index out.` | `mapping` with `read: index`. |
 | `<test>: assert[<n>] compares the records in order, and the test names no sort; ... Give the test a sort.` | `recordSet` `mode: ordered` without `sort`. |
 | `source.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it tests. Remove the header.` | Both ways of naming the partition. |
 | `partitions[<i>] '<name>' is not a data-partition-id: letters, digits, underscore, hyphen and dot, at most 200 characters.` | A partition such as `*`. |
@@ -584,4 +637,5 @@ Past one of the last four, the assertion does not pass, and its result says why.
 - [Testing what OSDU holds](../guides/data-quality-tests.md): writing, running and scheduling tests, step by step.
 - [sqlflow assertions](../cli/assertions.md): reading the reports from a terminal or a CI job.
 - [Delivery flow](delivery.md): what the tests check.
+- [Mapping assertions](mapping-assertions.md): the rules a mapping states, which the `mapping` subject holds records to.
 - [Templates](../concepts/templates.md): saving the template a test is checked against.

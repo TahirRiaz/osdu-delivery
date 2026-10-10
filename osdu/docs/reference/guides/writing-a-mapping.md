@@ -22,6 +22,7 @@ related:
   - delivery-flow-mapping-values
   - delivery-flow-mapping-lookups
   - delivery-flow-mapping-modifiers
+  - delivery-flow-mapping-assertions
   - delivery-cli-check
   - delivery-cli-values
   - delivery-cli-preview
@@ -213,6 +214,33 @@ record:
   ([modifiers](../flow/mapping-modifiers.md)).
 - **The curves** are one item per child row of the `curves` dataset, which the delivery flow joins to the record.
 
+### State the rules the values must meet
+
+The template decides what OSDU accepts; what the values must be for a record to be right is the mapping's to say, beside
+the property, with `$assert` ([mapping assertions](../flow/mapping-assertions.md)). Here every log must carry a depth
+curve, and a log with fewer than two curves is sent with the failure recorded:
+
+```yaml
+    Curves:
+      $forEach: curves
+      $assert:
+        - name: index-and-one-curve
+          length: { atLeast: 2 }
+          onFail: report
+      $item:
+        Mnemonic:
+          $from: curve_mnemonic
+          $assert:
+            - name: a depth curve is among the curves
+              in: [MD, DEPT]
+              values: any
+```
+
+A log that fails the first assertion of `Mnemonic` is held before it is sent, its document kept until a release sends
+it; `onFail: report` sends it and records the failure, and `onFail: omit` leaves a failing value out. `check` holds each
+assertion against the template, and `values` and `preview` (steps 7 and 8) say which rows fail which assertion before a
+run does.
+
 ## 4. Validate the document
 
 ```bash
@@ -305,8 +333,9 @@ values behind them and example records ([sqlflow values](../cli/values.md)). It 
 ```
 
 Here two spellings of a unit are missing from the unit table, so their curves would reference a unit the partition
-does not hold. `values` exits 1 while any row is held or writes an invalid value; a variable an optional node leaves out
-is reported without failing it. `--target osdu.data.Curves[].CurveUnit` checks one variable, and `--rows failing.csv`
+does not hold. `values` exits 1 while any row is held, writes an invalid value or fails an assertion that would hold
+it; a variable an optional node leaves out, and an assertion that only reports or leaves a value out, are reported
+without failing it. A row failing an assertion adds an `asserted` line, and an `asserted` finding under its property. `--target osdu.data.Curves[].CurveUnit` checks one variable, and `--rows failing.csv`
 writes every failing row.
 
 ## 8. Look at one record: sqlflow preview
@@ -316,8 +345,9 @@ sqlflow preview welldb-welllog-03-delivery.yaml --key LOG-0123
 ```
 
 `preview` renders one record as a delivery would and sends nothing: the scope's first record, or the one `--key` names.
-It says what the next run would do with it and why, why it would be held, which `$coalesce` alternative gave each value,
-the records the document refers to and the requests the route would make, and then the document itself
+It says what the next run would do with it and why, why it would be held, what the mapping's assertions found of it,
+which `$coalesce` alternative gave each value, the records the document refers to and the requests the route would
+make, and then the document itself
 ([sqlflow preview](../cli/preview.md)). Read the document against the template: the names, the units, the references.
 
 ## 9. Fix and repeat
@@ -334,6 +364,8 @@ the records the document refers to and the requests the route would make, and th
 | A held reason naming a value the cache does not know | `values`, `preview` | A `replace` for the spelling, a row in the lookup table, or the reference data in the cache. |
 | A held reason for an empty column | `values`, `preview` | The source, or `$required: false` where the template allows the property to be absent. |
 | A value the template does not accept | `values` | A modifier (`date`, `number`, `split`) or the source. |
+| `<property>.$assert[<n>]: '<path>' is a number in ...; matches compares text.` | `check` | A condition that suits the property's type ([mapping assertions](../flow/mapping-assertions.md#the-preflight)). |
+| An `asserted` finding, `fails "<assertion>" (record); the record is held before it is sent` | `values`, `preview` | The source rows, or the rule, if the rule is wrong; `onFail: report` to send such records and record the failure. |
 
 Each change is a new round: `validate`, `check`, `values`, `preview`. A mapping is ready when `check` answers `OK`,
 `values` answers `OK` over the whole scope (`--max-rows 0`), and the previewed documents read right.

@@ -27,6 +27,7 @@ related:
   - delivery-guide-operations-runbook
   - delivery-cli-records
   - delivery-flow-delivery
+  - delivery-flow-mapping-assertions
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
@@ -41,6 +42,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Planning/ChangeDetector.cs
   - osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Worker/ValidationGate.cs
+  - osdu/src/SqlFlow.Delivery/Validation/AssertionFindings.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/FailureGuard.cs
   - osdu/src/SqlFlow.Delivery/Http/RetryPolicy.cs
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
@@ -158,7 +161,7 @@ worker, which settles the record:
 | --- | --- | --- |
 | Every call answered 2xx | `delivered`; the pending work becomes what OSDU holds | `delivered` |
 | HTTP 400, 403, 404, 405, 409, 413, 415 or 422, or a status listed in `reliability.skipStatusCodes` | `held`, blocked | `held`: `HTTP <status> is not retryable: <message>` |
-| A hold the route or the check before sending raised (a payload over `reliability.maxRequestBodyBytes`, a document the template refuses under `target.validation`, a reference storage does not hold under `target.verifyReferences: storage`) | `held`, blocked; the rendered document is kept | `held`, with the route's reason |
+| A hold the route or the check before sending raised (a payload over `reliability.maxRequestBodyBytes`, a document the template refuses under `target.validation`, a document that fails an assertion of its mapping whose `onFail` is `hold`, a reference storage does not hold under `target.verifyReferences: storage`) | `held`, blocked; the rendered document is kept | `held`, with the route's reason |
 | Any other HTTP status (401, 408, 429, 5xx, ...), a transport failure, a timeout, a read or parse failure | `pending`, due again after the record backoff, completed steps kept for the resume | `failed` with the message |
 | The same, when the record has already been tried `reliability.retry.attempts` times | `failed`, blocked | `failed`: `failed after <n> attempt(s): <message>` |
 | Anything unexpected | `failed`, blocked | `failed`: `unexpected failure: <type>: <message>` |
@@ -203,7 +206,7 @@ record of the flow, or every record one issue keeps blocked ([below](#issues)). 
 
 | The record | After the release |
 | --- | --- |
-| Blocked and still holding its rendered document (held or failed by a try, held by the check before sending) | `pending` again in its submission, its tries counted from zero; the document is accepted as it is, so the check before sending sends it whatever its verdict says. |
+| Blocked and still holding its rendered document (held or failed by a try, held by the check before sending) | `pending` again in its submission, its tries counted from zero; the document is accepted as it is, so the check before sending sends it whatever its verdict and its mapping's assertions say. |
 | Blocked with no rendered document (held at render, deleted by a reversal) | Unblocked and asked to be planned again (`PlanRequestedUtc`), with the note `released; the flow's next run plans it again from its ingestion rows`. |
 | `reverted` | `delivered` again, asked to be planned again; the next plan sends only what renders differently from what OSDU now holds. |
 | `waiting`, named by key | `pending` without its references: sent without waiting ("Send without waiting" on the record's page). A release of the whole flow leaves waiting records to their wait. |
@@ -218,6 +221,13 @@ A release records a `release` activity under who asked, and names every record i
 sqlflow records release flows/welldb-wellbore-03-delivery.yaml --partition dev --key 6f1c2a9e-4b7d-4c1e-9a3f-2d8e5b7c1a40
 sqlflow records release flows/welldb-wellbore-03-delivery.yaml --partition dev --issue 3fa1c09b5d2e7a44
 ```
+
+**A record held for an assertion of its mapping** (`onFail: hold`, [mapping assertions](../flow/mapping-assertions.md))
+is held by the check before sending with its document kept, under an error that starts `assertion:` and names the
+property, the assertion and the value. The records one assertion holds share one issue whatever values they hold, since
+the error quotes the values. A release sends the kept document as it is: its verdict is marked accepted and still lists
+what the assertions found. The record stays held while only the mapping changes; correcting the row plans it again, and
+so does a redelivery, under the mapping the flow pins then.
 
 ## Issues
 

@@ -23,6 +23,7 @@ related:
   - delivery-flow-mapping-expressions
   - delivery-flow-mapping-lookups
   - delivery-flow-mapping-modifiers
+  - delivery-flow-mapping-assertions
   - delivery-concept-templates
   - delivery-concept-preflight
   - delivery-flow-delivery
@@ -33,6 +34,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.Record.cs
+  - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.Assertions.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingCatalog.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingFingerprint.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs
@@ -71,7 +73,8 @@ You write a mapping once per kind and source: one for the wellbores of the well 
 so reading the mapping top to bottom reads the record top to bottom. This page covers the document as a whole: the
 header, the OSDU id, the record tree and what a render writes. The value nodes are in
 [mapping values](mapping-values.md), the expression language in [mapping expressions](mapping-expressions.md), cache and
-platform lookups in [mapping lookups](mapping-lookups.md), and modifiers in [mapping modifiers](mapping-modifiers.md).
+platform lookups in [mapping lookups](mapping-lookups.md), modifiers in [mapping modifiers](mapping-modifiers.md), and
+the business rules a property's value must meet in [mapping assertions](mapping-assertions.md).
 
 ## A complete mapping
 
@@ -409,6 +412,29 @@ A held record is never sent; the ledger records why, and the record waits for it
 release ([record lifecycle](../concepts/record-lifecycle.md)). Every rendered record is also judged against its template
 before it is sent ([preflight](../concepts/preflight.md)).
 
+## Assertions: the rules a value must meet
+
+A template says what OSDU accepts; a mapping can also say what a property's value must be for the record to be right.
+`$assert` beside a node lists such rules in the assertion flows' words, each judged on every record the mapping renders,
+on the value the record carries or on the value the row gives the node:
+
+```yaml
+    VerticalMeasurement:
+      VerticalMeasurement:
+        $from: elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 1 }
+        $assert:
+          - name: reference-elevation
+            between: [0, 250]
+```
+
+A record whose elevation lies outside the range is held at the check before sending, its document kept until a release
+sends it; an assertion can instead send the record and record the failure (`onFail: report`), or leave the value out
+(`onFail: omit`). What each record's assertions found joins its verdict on every attempt, and the record keeps how many
+failed. [Mapping assertions](mapping-assertions.md) has every word, where an assertion may be written, how each value is
+judged, and where the findings are shown.
+
 ## The record shape
 
 The record shape is what the records a mapping renders look like, drawn without a source row or a cache: the GUI's
@@ -420,7 +446,9 @@ envelope, the nesting, the arrays and the types are the ones a render writes:
   value comes from, with its modifiers, `optional` and its condition;
 - a literal shows as it renders, and a parameter without a value shows as its `{$param.name}` token;
 - a `$forEach` array has one item, and a note says it takes one item per row of its child dataset and which rows its
-  `$where` keeps.
+  `$where` keeps;
+- each assertion is a note on its property, saying what it asserts of which value and what a record that fails it does
+  ([mapping assertions](mapping-assertions.md)).
 
 Drawn for the mapping above with `dataPartition` set to `dev`, the shape reads in part:
 
@@ -464,8 +492,10 @@ value (a `description` included) moves it, and a comment, a blank line or a reor
 
 When a scope was last planned under other rules, its next run reads every row in scope again rather than only the
 changed rows, and each record's own document hash decides what is sent: a record whose document did not change is not
-sent again ([change detection](../concepts/change-detection.md)). A `plan` run shows what a mapping change would send
-before anything is sent ([running an OSDU flow](../cli/run.md)). Give a mapping a new version when its records should be
+sent again ([change detection](../concepts/change-detection.md)). An assertion added or changed moves the fingerprint
+too, and is judged on the records whose document then changes; a record whose document is the one OSDU holds is not sent
+or judged again ([mapping assertions](mapping-assertions.md#a-document-that-does-not-change-is-not-judged-again)). A
+`plan` run shows what a mapping change would send before anything is sent ([running an OSDU flow](../cli/run.md)). Give a mapping a new version when its records should be
 traceable to the change; the ledger records the mapping version and the cache version that rendered every document
 ([ledger](../concepts/ledger.md)).
 
@@ -514,6 +544,7 @@ The node, condition and expression messages are on [mapping values](mapping-valu
 - [Mapping values](mapping-values.md): every node of the record tree, `$required`, lists and open objects.
 - [Mapping expressions](mapping-expressions.md): `$expr`, `$when` and `$where`.
 - [Mapping lookups](mapping-lookups.md) and [mapping modifiers](mapping-modifiers.md).
+- [Mapping assertions](mapping-assertions.md): `$assert`, the rules a property's value must meet.
 - [Templates](../concepts/templates.md): where `template.version` comes from.
 - [Delivery flow](delivery.md): `render.mapping`, `render.parameters`, `source.record` and `source.datasets`.
 - [Writing a mapping](../guides/writing-a-mapping.md): from a template to a mapping that passes the preflight.

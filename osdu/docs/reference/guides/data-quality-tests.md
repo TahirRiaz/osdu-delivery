@@ -20,6 +20,7 @@ keywords:
 related:
   - delivery-flow-assertion
   - delivery-cli-assertions
+  - delivery-flow-mapping-assertions
   - delivery-flow-delivery
   - delivery-concept-templates
   - delivery-guide-getting-started
@@ -251,6 +252,35 @@ A test reads at most `maxRecords` records (10,000 by default, at most 1,000,000)
 assertions over the records are not evaluated and the test errors, saying so; narrow the query, raise `maxRecords`, or
 set `sample: true` to judge the first ones and mark the result as a sample.
 
+### A rule in the mapping, or a test
+
+A rule about one record's own values can be stated in two places, and each has its use:
+
+| | A mapping's `$assert` | An assertion flow's test |
+| --- | --- | --- |
+| Judges | Each record as the delivery renders it, before it is sent, and the value the row gives as well as the value the record carries | What OSDU holds after the delivery, as search, storage, legal and the DDMS answer |
+| A record that breaks it | Held with its document kept, sent and recorded, or sent without the value, as the rule says | Reported; nothing is held or changed |
+| Records it reaches | The records a run renders and sends; a record whose document does not change is not judged again | Every record the test's query finds, whoever delivered it and when |
+| Rules across records | No | Counts, `unique`, aggregates, groups, the ledger (`delivered`), references (`resolves`), legal tags, bulk data |
+
+State the rule in the mapping when a record that breaks it must not reach OSDU, or must not reach it with that value
+([mapping assertions](../flow/mapping-assertions.md)). Test it in an assertion flow when it is about the set of records,
+about what other systems wrote, or about records already delivered. One rule can serve both: once the delivery's mapping
+states assertions, a test's `mapping` subject holds every record it reads to the mapping's record-stage assertions
+([assertion flow](../flow/assertion.md#holding-records-to-a-mappings-assertions)):
+
+```yaml
+  - name: log-rules
+    description: Each delivered log meets what its mapping asserts.
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'data.Source:"{system}"'
+    assert:
+      - mapping: WellLog@1.0.0
+```
+
+The mapping is read from the mappings the repository sync keeps, so the test judges records delivered before the
+mapping stated its rules too.
+
 ## 6. Check the curve data in the Wellbore DDMS
 
 A test with a `bulk` block reads each record's bulk data from the Wellbore DDMS (under `source.ddmsRoot`, by default
@@ -353,10 +383,14 @@ warned passes with its warnings in its output. See [sqlflow assertions](../cli/a
 | `errored`, `Reading OSDU failed: <error>` | A search, storage, legal or DDMS request failed. The error says which, redacted. |
 | `skipped`, `The search index may not list every change to <type> yet: ...` | The index has not settled after a delivery. The next run after the time it names judges the test. |
 | `skipped`, `The test runs in <partitions>, not in '<p>'.` | The test's own `partitions` leave this partition out. |
+| `errored`, `'<label>': no mapping <Name@version> is synced; ...` | A `mapping` assertion names a mapping no repository syncs. Check the reference, and sync the repository that declares it. |
+| `errored`, `'<label>': mapping <Name@version> is synced from <n> repositories whose documents differ (...)` | Two repositories declare the reference with different documents. Give each its own version. |
+| `failed`, `<path> fails "<assertion>": <why>` | A record OSDU holds breaks a rule its mapping states; each example names the record's first failure. |
 
 ## See also
 
 - [Assertion flow](../flow/assertion.md): every key, subject, condition and outcome.
+- [Mapping assertions](../flow/mapping-assertions.md): rules a mapping states and a delivery judges before it sends.
 - [sqlflow assertions](../cli/assertions.md): the reports from a terminal or a CI job.
 - [Running OSDU flows](../cli/run.md): operations, values and payloads.
 - [Failure notifications](notifications.md): being told when a run fails.

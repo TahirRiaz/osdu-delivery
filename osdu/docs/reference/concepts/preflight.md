@@ -22,6 +22,7 @@ related:
   - delivery-cli-values
   - delivery-cli-preview
   - delivery-flow-mapping
+  - delivery-flow-mapping-assertions
   - delivery-flow-delivery
   - delivery-concept-templates
   - delivery-concept-record-lifecycle
@@ -36,6 +37,9 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Validation/ValidationVerdict.cs
   - osdu/src/SqlFlow.Delivery/Validation/ReferenceResolver.cs
   - osdu/src/SqlFlow.Delivery/Validation/ValidationTally.cs
+  - osdu/src/SqlFlow.Delivery/Validation/AssertionFindings.cs
+  - osdu/src/SqlFlow.Delivery/Validation/MappingAssertionJudge.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionTemplates.cs
   - osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs
   - osdu/src/SqlFlow.Delivery/Engine/RouteChecks.cs
   - osdu/src/SqlFlow.Delivery/Engine/SourceRuntime.cs
@@ -86,6 +90,9 @@ refuses:
   not, since the legal service checks them before a run, for every record alike:
   `record.legal.legaltags reads values with record.legal.legaltags[0], and the legal tags are a literal list: the legal service checks them before a run, for every record alike.`
 - a modifier out of place, such as `id` or `ref` anywhere but last;
+- an assertion (`$assert`) where a node takes none, or one that cannot mean what it says, such as `omit` on a required
+  node or the incoming stage on a value the cache gives
+  ([mapping assertions](../flow/mapping-assertions.md#errors-when-the-mapping-is-read));
 - a search or a lookup that is read and not declared, or declared and not read:
   `search 'Wellbore' is declared and nothing reads it; a search costs a call to the platform for every value it is asked about, so one nothing reads is a mistake rather than spare capacity.`
 
@@ -138,7 +145,14 @@ Then the gate checks, collecting every finding:
    flow supplies no value.`), the flow supplies none the mapping does not declare, and every `{$param.<name>}` token and
    `$param.<name>` an expression reads has a value.
 10. **Columns.** When the flow's tables are known (a run that reads them), every column and child dataset the mapping
-    reads exists in them, the key's, the label's and the expressions' included.
+    reads exists in them, the key's, the label's, the expressions' and the columns its assertions' conditions read
+    included.
+11. **Assertions.** Each record-stage condition of a node's `$assert` suits the type of the value its property carries
+    (a list judged value by value, a list of objects only by `exists`, `empty` and `length`, an object only by `exists`
+    and `empty`), compares with values the property can hold, and every `where` field is a property of the template
+    whose condition suits it:
+    `<file>: record.data.SamplingStart.$assert[0]: 'data.SamplingStart' is a number in osdu:wks:work-product-component--WellLog:1.4.0 (template 26a3c3441882db4f); matches compares text.`
+    See [mapping assertions](../flow/mapping-assertions.md#the-preflight).
 
 When the tables are open a run also checks the flow against them: `source.record.key` names the mapping's `dataset.key`
 columns in the same order, the scope, `lastModified` and payload columns exist, and the mapping writes nothing under a
@@ -193,6 +207,11 @@ whose shape, pattern or entity type is wrong, a child dataset over its row ceili
 share one issue ([record lifecycle](record-lifecycle.md)). `sqlflow values` renders every row of a scope and reports
 these, variable by variable, before a run does ([sqlflow values](../cli/values.md)).
 
+The render also judges the mapping's assertions ([mapping assertions](../flow/mapping-assertions.md)): an incoming one
+as its node reads the row, a record-stage one on the assembled record. A failure whose action is `omit` leaves its value
+out of the document there; what the others found travels with the document to the check before sending, which holds the
+record for a failure whose action is `hold`. A render never holds a record for an assertion.
+
 ## Validation before a record is sent
 
 Immediately before a try writes a record's document, the gate checks the document against the template of its kind at
@@ -233,6 +252,25 @@ sends a record (the dataset list of a route that registers files or datasets, th
 fills, the data keys an update carries over from OSDU, and the bulk link a DDMS manages) is not judged as it was rendered.
 A run's trace counts the verdicts by template and names the rules broken most often, rather than writing a line per
 record. In the interface form, an interface's `validation` block lays its keys over `target.validation`.
+
+### A mapping's assertions
+
+What the mapping's assertions found of the document when it was rendered joins the verdict as `assertions`: how many
+judgements were made, how many failed, held, were reported and left out, and the failures (at most 50 listed, every one
+counted). They are judged beside the schema, not by it, so the verdict's outcome still says what the schema check came
+to. A failure whose action is `hold` holds the record with its document kept whatever `target.validation` says, under an
+error that names the property, the assertion and the value; when the policy holds the record for its schema too, the
+error says both:
+
+```text
+assertion: the record fails what its mapping WellLog@1.4.0 asserts: data.VerticalMeasurement.VerticalMeasurement fails "reference-elevation" with '312'. Its mapping holds a record that fails them (onFail: hold), so it is held; release it to send this document as it is, or correct the source or the mapping.
+```
+
+A release accepts the document as it is, whatever its assertions found. A try that sends the payload alone judges no
+assertion, and a document queued before mappings could assert carries no findings. The record keeps how many judgements
+failed on the last document checked (`AssertionFailures`, [ledger](ledger.md)), and the run's trace adds per template how
+many documents failed an assertion and the assertions failed most. See
+[mapping assertions](../flow/mapping-assertions.md#the-check-before-sending).
 
 ### References checked in storage
 

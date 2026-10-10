@@ -23,6 +23,7 @@ related:
   - delivery-flow-mapping-expressions
   - delivery-flow-mapping-lookups
   - delivery-flow-mapping-modifiers
+  - delivery-flow-mapping-assertions
   - delivery-concept-preflight
   - delivery-flow-delivery
   - delivery-guide-writing-a-mapping
@@ -137,10 +138,11 @@ and takes its settings beside it:
 | `$findAll` | Every cached row that matches, read as a list. | `$cache` |
 | `$ignoreSeparators` | A last attempt at matching with punctuation and spacing folded away. | `$cache` |
 | `$unverified` | Write an id an `id` or `ref` modifier builds even when the cache does not hold its record. See [mapping modifiers](mapping-modifiers.md). | `$from`, `$expr` with `id` or `ref` |
+| `$assert` | Business rules the value must meet, each holding, reporting or leaving out a record that breaks it. See [mapping assertions](mapping-assertions.md). | every node but `$value`, an alternative of `$coalesce` and an item of a list of values |
 
-A `$value` takes only `$when` and `$description`; a `$lookup` takes only `$when`, `$required` and `$description`; a
-`$coalesce` takes `$when`, `$required` and `$description` beside its list; a `$forEach` takes `$item`, `$where`,
-`$when`, `$required` and `$description`. Anything else is refused by name, such as
+A `$value` takes only `$when` and `$description`; a `$lookup` takes only `$when`, `$required`, `$assert` and
+`$description`; a `$coalesce` takes `$when`, `$required`, `$assert` and `$description` beside its list; a `$forEach`
+takes `$item`, `$where`, `$when`, `$required`, `$assert` and `$description`. Anything else is refused by name, such as
 `record.data.Description: a literal $value takes only $when and $description beside it; $findBy, $findAll, $modifiers, $required, $ignoreSeparators and $unverified belong to a node that reads the dataset, the cache or a search.`
 
 ## Reading a column: $from
@@ -280,8 +282,8 @@ Name:
   alternative never stands in for it.
 - **A search not asked yet stops the node** until the answer is in, so a later alternative never stands in for an
   earlier one the platform has not been asked.
-- **`$when`, `$required` and `$description` go beside `$coalesce`** and decide for all the alternatives; written in an
-  alternative they are refused. When none gives a value, `$required` decides, and a held record names why each gave
+- **`$when`, `$required`, `$assert` and `$description` go beside `$coalesce`** and decide for all the alternatives;
+  written in an alternative they are refused. An assertion judges the value whichever alternative gave it. When none gives a value, `$required` decides, and a held record names why each gave
   nothing (`none of the 3 alternatives of $coalesce gives a value, and the entry is required: 1. ...; 2. ...; 3. ...`).
 - **An alternative reads one value**: it is not a `$forEach` or a `$coalesce` of its own, and a literal (`$value`) can
   only be the last, so a `$coalesce` ending in one fills its property on every row.
@@ -463,4 +465,5 @@ be left out) and against the ingestion tables and the cache are the [preflight's
 - [Mapping](mapping.md): the document, the header and what a rendered record contains.
 - [Mapping expressions](mapping-expressions.md): what `$expr`, `$when` and `$where` can say.
 - [Mapping lookups](mapping-lookups.md) and [mapping modifiers](mapping-modifiers.md).
+- [Mapping assertions](mapping-assertions.md): `$assert`, the rules a property's value must meet.
 - [Writing a mapping](../guides/writing-a-mapping.md): the mapping builder, `sqlflow values` and `sqlflow preview`.

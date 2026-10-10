@@ -19,13 +19,13 @@ migration.
 
 | Stage | State |
 | --- | --- |
-| 1. The word and the shared conditions | In progress |
-| 2. Judging a record | Not started |
-| 3. The check before sending and the ledger | Not started |
-| 4. Where people look | Not started |
-| 5. What OSDU holds | Not started |
-| 6. The mapping builder | Not started |
-| 7. Documentation, census and editor | Not started |
+| 1. The word and the shared conditions | Done |
+| 2. Judging a record | Done |
+| 3. The check before sending and the ledger | Done |
+| 4. Where people look | Done |
+| 5. What OSDU holds | Done |
+| 6. The mapping builder | Done |
+| 7. Documentation, census and editor | Done |
 
 ## What an author writes
 
@@ -81,7 +81,7 @@ check and the flow's `target.verifyReferences`.
 | --- | --- | --- |
 | `$from`, `$expr` | yes | yes |
 | `$cache`, `$search`, `$lookup`, `$coalesce` | yes | no: the value comes from the cache or the platform, not from the row |
-| `$forEach` | yes: the array as a whole (`length`, `empty`, `exists`) | no |
+| `$forEach` | yes: the array as a whole (the preflight takes `length`, `empty` and `exists` there) | no |
 | A property of an item of a list of objects | yes | yes, as its node allows |
 | `$value`, a literal | no: the value is the same for every record | no |
 | An alternative of `$coalesce`, an item of a list of values | no: `$assert` goes beside `$coalesce`; a list of values has no node of its own | no |
@@ -90,15 +90,18 @@ check and the flow's `target.verifyReferences`.
 
 - **What is judged.** A property's value once (a single value), or each value it holds (an item of a repeated array, a
   value of a list). On a list, `length`, `contains`, `notContains` and `empty` judge the list as a whole. A property the
-  record does not carry (no value, a `$when` that does not hold) is judged only by `exists` and `empty`: whether it must
-  be there is `$required`'s and the schema's to say.
+  record does not carry (no value, a `$when` that does not hold) is judged only by `exists` and `empty`, on the record
+  stage too: `exists: true` fails on a property a `$when` left out, so a rule meant only where the property is written
+  says so with `where`. Whether it must be there otherwise is `$required`'s and the schema's to say.
 - **Incoming.** Judged as the node reads its value, for the row (or the child row) it reads, only when its `$when` holds.
   A blank value is no value.
 - **Record.** Judged once the record is assembled, on the record as it will be sent, so the same assertion gives the same
   answer for a document rendered here and for the record OSDU stores.
 - **Values compare** as assertion flows compare them (`ValueComparer`): numbers as numbers, ISO 8601 dates as instants,
-  text ordinally or ignoring case, text holding a number against a number. A value an assertion cannot judge (a pattern
-  match that runs out of its second) fails it.
+  text ordinally or ignoring case, text holding a number against a number; `length` counts UTF-16 code units, as an
+  assertion flow's does. A value an assertion cannot judge (a pattern match that runs out of its second) fails it.
+- **`where`.** A condition reads a field (record stage) or a column (incoming stage). A field the record does not carry
+  holds only for `exists: false` and `empty: true`, so such a condition selects the values where the field is absent.
 - **`omit`.** The value that fails is left out: the property, or the property of that item; an object left with nothing
   is left out with it, and a list the mapping defines is written empty. It needs `$required: false`, since the record may
   then go without the property, and is not taken with `values: any`.
@@ -117,8 +120,10 @@ The findings travel with the document they judge: the work batch line holds them
   assertion (values single-quoted, so the records broken by one assertion are one issue). A release sets the record's
   accepted hash to that document, and the next try sends it, the verdict marked accepted. `target.verifyReferences:
   storage` still holds a record whatever a release accepted, as it always did.
-- `osdu.Record.AssertionFailures` keeps the failures of the last document checked (null when it judged none), written
-  with the verdict through the record's events, and indexed for the counts by flow (migration `RecordAssertions`).
+- `osdu.Record.AssertionFailures` keeps how many judgements failed on the last document checked (null when it judged
+  none; eight failing curves count eight), written with the verdict through the record's events, under a filtered index
+  by flow as `ValidationOutcome` has one (migration `RecordAssertions`). The failures themselves are in each attempt's
+  `result.validation.assertions`.
 - The run trace counts failures by action, and each drain's line per template names the assertions failed most.
 - A record whose document is the one OSDU already holds is not sent again, so a new or changed assertion is judged as
   records next change. What OSDU holds is judged by the explorer and an assertion flow (stage 5).
@@ -187,13 +192,13 @@ The findings travel with the document they judge: the work batch line holds them
 | `omit` on a property the schema requires | Refused: `omit` needs `$required: false`, which the preflight refuses on a required property |
 | `omit` leaving an item or an object empty | The item or object is left out; a list the mapping defines stays, empty |
 | Several assertions on one value | Each judged on its own; each failure recorded; any `hold` holds the record |
-| A `where` field the record does not carry | Selects nothing, so the assertion is not judged for that value |
+| A `where` field the record does not carry | Holds only for `exists: false` and `empty: true`; any other condition selects nothing, so the assertion is not judged for that value |
 | A queued document from before this change | Carries no findings: judged by its schema alone, as before |
 | A held record whose mapping then changes | Keeps the document and the findings it was held for; a release sends it as it is; a redeliver plans it again under the new mapping |
 | The same document as the one delivered | Not sent again and not judged again; judge what OSDU holds with the explorer or an assertion flow |
 | A thousand curves failing one assertion | 50 listed, all counted; the hold names the first three |
 | A pattern that backtracks | One second per value; a timeout fails the assertion, never hangs a render |
-| A defect in the judge | Caught per document, recorded as an assertion that could not be judged, which fails under its action |
+| A defect in the judge | Caught per document, recorded as an assertion that could not be judged, which fails under its action; an `omit` that could not be judged is reported, since nothing is left out of a value no one judged |
 | Unicode text | Compared ordinally as UTF-16, `length` counts as the assertion flows count |
 | A secret-looking value | Every value and message redacted before it is stored or shown |
 

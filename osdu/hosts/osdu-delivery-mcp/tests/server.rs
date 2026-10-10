@@ -522,6 +522,7 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("which route should a delivery flow use", &["delivery-flow-routes", "delivery-guide-pattern-catalog"]),
     ("run payload recordKeys redeliver", &["delivery-cli-run"]),
     ("mapping expression when condition", &["delivery-flow-mapping-expressions", "delivery-flow-mapping-values"]),
+    ("hold a record whose value breaks a business rule in the mapping", &["delivery-flow-mapping-assertions"]),
     ("search the platform for a wellbore in a mapping", &["delivery-flow-mapping-lookups"]),
     ("what changed since the last run, why did a record deliver again", &["delivery-concept-change-detection"]),
     ("retrieve osdu records into a table", &["delivery-guide-retrieving-records", "delivery-flow-retrieval"]),
