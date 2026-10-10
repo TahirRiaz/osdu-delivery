@@ -221,9 +221,55 @@ public sealed record MappingDraftEntry
 
     public string? Description { get; init; }
 
+    /// <summary>
+    /// The node's assertions (<c>$assert</c>, osdu/docs/reference/flow/mapping-assertions.md), in the order they are written.
+    /// A <c>$coalesce</c> node's are the node's, never an alternative's; a list, an item of a list of values and a literal
+    /// take none.
+    /// </summary>
+    public IReadOnlyList<MappingDraftAssertion> Assertions { get; init; } = [];
+
     /// <summary>True when the builder proposed the entry from the cache, so the page can say so until someone edits it.</summary>
     public bool Prefilled { get; init; }
 }
+
+/// <summary>
+/// One assertion of a node as the builder edits it (osdu/docs/reference/flow/mapping-assertions.md): the condition's
+/// operator and its operand as the document writes it after the operator (<c>[0, 250]</c>, <c>'GR'</c>,
+/// <c>{ atLeast: 1 }</c>), the value it judges, what a record that fails it does, and how it reads several values, the
+/// conditions it is judged under, its name and its description.
+/// </summary>
+public sealed record MappingDraftAssertion
+{
+    public string Operator { get; init; } = "equals";
+
+    /// <summary>The operand, one line of YAML as it follows the operator.</summary>
+    public string Operand { get; init; } = string.Empty;
+
+    /// <summary><c>record</c> (the default) or <c>incoming</c>.</summary>
+    public string Stage { get; init; } = AssertionWords.Record;
+
+    /// <summary><c>hold</c> (the default), <c>report</c> or <c>omit</c>.</summary>
+    public string OnFail { get; init; } = AssertionWords.Hold;
+
+    /// <summary>For a property holding several values: true when one of them has to meet it, false when every one does.</summary>
+    public bool AnyValue { get; init; }
+
+    public bool IgnoreCase { get; init; }
+
+    public double? Tolerance { get; init; }
+
+    public IReadOnlyList<MappingDraftAssertionFilter> Where { get; init; } = [];
+
+    public string? Name { get; init; }
+
+    public string? Description { get; init; }
+}
+
+/// <summary>
+/// One condition an assertion is judged under: what it reads (<c>field</c>, a path into the record, for the record stage;
+/// <c>column</c>, a column as the draft names one, for the incoming stage), its operator and its operand.
+/// </summary>
+public sealed record MappingDraftAssertionFilter(string Reads, string Path, string Operator, string Operand, bool IgnoreCase = false, double? Tolerance = null);
 
 /// <summary>One findBy line: the cached field, and the column (<c>column</c> or <c>child.column</c>) or literal it must equal.</summary>
 public sealed record MappingDraftFind(string Field, string? Column, string? Literal);
@@ -335,6 +381,125 @@ public static partial class MappingBuilder
             .ToList();
     }
 
+
+    /// <summary>
+    /// What an entry's assertions lack before they can be written, as the loader would refuse them: a node that has a value
+    /// of its own to judge, a condition the assertion flows know with its operand on one line, the words a stage and an
+    /// action take, the incoming stage only where the row gives the value, <c>omit</c> only where the property may be left
+    /// out and each value is judged on its own, a name of its own, and for each condition what it reads. Whether an operand
+    /// suits the operator and the property is judged when the composed mapping is read and checked, as any mapping's is.
+    /// </summary>
+    private static IEnumerable<string> AssertionProblems(MappingDraftEntry entry)
+    {
+        if (entry.Assertions.Count == 0)
+        {
+            yield break;
+        }
+
+        if (entry.Input is MappingDraftInput.Static or MappingDraftInput.List or MappingDraftInput.Group)
+        {
+            yield return entry.Input == MappingDraftInput.Static
+                ? "an assertion judges the value a record is given, and a fixed value gives every record the same one; remove its assertions, or read the value from the row."
+                : "an assertion judges the value of one property, and a list has no value of its own to judge; give the assertions to the properties its items read.";
+            yield break;
+        }
+
+        if (entry.Assertions.Count > MappingMapper.MaxNodeAssertions)
+        {
+            yield return string.Create(
+                CultureInfo.InvariantCulture,
+                $"it states {entry.Assertions.Count} assertions, and a property states at most {MappingMapper.MaxNodeAssertions}.");
+        }
+
+        var readsRow = entry.Input is MappingDraftInput.Dataset or MappingDraftInput.Expression;
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < entry.Assertions.Count; i++)
+        {
+            var assertion = entry.Assertions[i];
+            var at = string.Create(CultureInfo.InvariantCulture, $"assertion {i + 1}");
+            if (OperandProblem(assertion.Operator, assertion.Operand) is { } operand)
+            {
+                yield return $"{at}: {operand}";
+            }
+
+            var stage = string.IsNullOrWhiteSpace(assertion.Stage) ? AssertionWords.Record : assertion.Stage.Trim();
+            var onFail = string.IsNullOrWhiteSpace(assertion.OnFail) ? AssertionWords.Hold : assertion.OnFail.Trim();
+            if (!MappingMapper.AssertionStages.Contains(stage, StringComparer.Ordinal))
+            {
+                yield return $"{at}: its stage is record or incoming.";
+            }
+
+            if (!MappingMapper.AssertionActions.Contains(onFail, StringComparer.Ordinal))
+            {
+                yield return $"{at}: what a failure does is hold, report or omit.";
+            }
+
+            var incoming = stage == AssertionWords.Incoming;
+            if (incoming && !readsRow)
+            {
+                yield return $"{at}: the incoming stage judges the value the row gives, which a dataset column or an expression reads; this property's value comes from elsewhere, so judge the value the record carries (stage: record).";
+            }
+
+            if (incoming && assertion.AnyValue)
+            {
+                yield return $"{at}: the incoming stage judges the one value the row gives, so it judges no set of values; judge every value.";
+            }
+
+            if (onFail == AssertionWords.Omit && entry.Required)
+            {
+                yield return $"{at}: omit leaves the value out of the record, and the property is required; make it not required, or hold or report the record.";
+            }
+
+            if (onFail == AssertionWords.Omit && assertion.AnyValue)
+            {
+                yield return $"{at}: omit leaves out each value that fails, and judging whether one of several values meets it judges them together; judge every value, or hold or report the record.";
+            }
+
+            if (!string.IsNullOrWhiteSpace(assertion.Name))
+            {
+                var name = assertion.Name.Trim();
+                if (name.Length > NodeAssertion.MaxLabel)
+                {
+                    yield return string.Create(CultureInfo.InvariantCulture, $"{at}: its name is 1 to {NodeAssertion.MaxLabel} characters.");
+                }
+                else if (!names.Add(name))
+                {
+                    yield return $"{at}: another assertion of this property is named '{name}'; each has a name of its own, since what it finds is recorded under it.";
+                }
+            }
+
+            if (assertion.Where.Count > MappingMapper.MaxAssertionConditions)
+            {
+                yield return string.Create(CultureInfo.InvariantCulture, $"{at}: it is judged under at most {MappingMapper.MaxAssertionConditions} conditions.");
+            }
+
+            var reads = incoming ? MappingMapper.ColumnSetting : MappingMapper.FieldSetting;
+            foreach (var filter in assertion.Where)
+            {
+                if (!string.Equals(filter.Reads?.Trim(), reads, StringComparison.Ordinal) || string.IsNullOrWhiteSpace(filter.Path))
+                {
+                    yield return incoming
+                        ? $"{at}: each of its conditions reads a column of the row, since it is judged before the record is written; name the column."
+                        : $"{at}: each of its conditions reads a field of the record, such as data.Name; name the field.";
+                }
+
+                if (OperandProblem(filter.Operator, filter.Operand) is { } condition)
+                {
+                    yield return $"{at}, a condition: {condition}";
+                }
+            }
+        }
+    }
+
+    /// <summary>Why an operator and its operand cannot be written as one condition, or null when they can.</summary>
+    private static string? OperandProblem(string? op, string? operand)
+        => !ConditionReader.Operators.Contains(op?.Trim() ?? string.Empty, StringComparer.Ordinal) || op!.Trim() == "resolves"
+            ? $"'{op}' is not a condition; use one of {string.Join(", ", ConditionReader.Operators.Where(o => o != "resolves"))}."
+            : string.IsNullOrWhiteSpace(operand)
+                ? $"give {op.Trim()} what it compares with, such as {(op.Trim() == "between" ? "[0, 250]" : op.Trim() is "exists" or "empty" ? "true" : "'GR'")}."
+                : operand.Any(char.IsControl)
+                    ? $"write what {op.Trim()} compares with on one line, as a list in brackets or a map in braces."
+                    : null;
 
     /// <summary>What the draft still lacks before it can be written as a mapping that loads, entry by entry.</summary>
     public static IReadOnlyList<MappingDraftIssue> Incomplete(MappingDraft draft)
@@ -458,6 +623,11 @@ public static partial class MappingBuilder
                 default:
                     ValueIssues(draft, entry, target, target, scope, Error);
                     break;
+            }
+
+            foreach (var problem in AssertionProblems(entry))
+            {
+                Error($"{target}: {problem}", target);
             }
 
             // A repeat's own condition decides for the whole array, so it reads the row the array is in; its $where reads each child row.
@@ -639,6 +809,11 @@ public static partial class MappingBuilder
                 ValueIssues(draft, item, name, target, scope, error);
             }
 
+            if (item.Assertions.Count > 0)
+            {
+                error($"{name}: an assertion judges the value of a property, and an item gives one of the values of the list, which has no value of its own to judge; a list of values takes no assertions.", target);
+            }
+
             if (!string.IsNullOrWhiteSpace(item.When) && MappingMapper.ReadCondition(item.When.Trim(), MappingMapper.WhenKey, scope, out var whenProblem) is null)
             {
                 error($"{name}: {whenProblem}", target);
@@ -749,6 +924,11 @@ public static partial class MappingBuilder
                     break;
             }
 
+            foreach (var problem in AssertionProblems(property))
+            {
+                error($"{at}: {problem}", target);
+            }
+
             if (!string.IsNullOrWhiteSpace(property.When) && MappingMapper.ReadCondition(property.When.Trim(), MappingMapper.WhenKey, scope, out var whenProblem) is null)
             {
                 error($"{at}: {whenProblem}", target);
@@ -842,6 +1022,11 @@ public static partial class MappingBuilder
             if (i > 0 && entry.Alternatives[i - 1].Input == MappingDraftInput.Static)
             {
                 error($"{name} is never tried: the fixed value before it always gives a value. Make the fixed value the last alternative.", target);
+            }
+
+            if (alternative.Assertions.Count > 0)
+            {
+                error($"{name}: an assertion decides for the whole {MappingMapper.CoalesceKey} entry, whichever alternative gives its value; give it to the entry, not to one of its alternatives.", target);
             }
 
             ValueIssues(draft, alternative, name, target, scope, error);
@@ -1229,11 +1414,12 @@ public static partial class MappingBuilder
                 Target = entry.Target.Text,
                 Input = MappingDraftInput.Coalesce,
                 Alternatives = entry.ValueNodes
-                    .Select(node => DraftNode(node with { Alternatives = [], AppliesWhen = null, Required = true, Description = null }))
+                    .Select(node => DraftNode(node with { Alternatives = [], AppliesWhen = null, Required = true, Description = null, Assertions = [] }))
                     .ToList(),
                 When = entry.AppliesWhen?.Text,
                 Required = entry.Required,
                 Description = entry.Description,
+                Assertions = entry.Assertions.Select(DraftAssertion).ToList(),
             };
         }
 
@@ -1277,6 +1463,7 @@ public static partial class MappingBuilder
                 When = entry.AppliesWhen?.Text,
                 Required = entry.Required,
                 Description = entry.Description,
+                Assertions = entry.Assertions.Select(DraftAssertion).ToList(),
             };
         }
 
@@ -1317,8 +1504,32 @@ public static partial class MappingBuilder
             Unverified = entry.Unverified,
             Static = entry.Static?.ToJsonString(),
             Description = entry.Description,
+            Assertions = entry.Assertions.Select(DraftAssertion).ToList(),
         };
     }
+
+    /// <summary>An assertion as the draft holds it: each condition written back as the document writes it.</summary>
+    private static MappingDraftAssertion DraftAssertion(NodeAssertion assertion) => new()
+    {
+        Operator = AssertionText.Of(assertion.Condition.Operator),
+        Operand = ConditionReader.Written(assertion.Condition),
+        Stage = AssertionWords.Of(assertion.Stage),
+        OnFail = AssertionWords.Of(assertion.OnFail),
+        AnyValue = assertion.AnyValue,
+        IgnoreCase = assertion.Condition.IgnoreCase,
+        Tolerance = assertion.Condition.Tolerance,
+        Where = assertion.Where
+            .Select(filter => new MappingDraftAssertionFilter(
+                filter.Field is null ? MappingMapper.ColumnSetting : MappingMapper.FieldSetting,
+                filter.Field ?? ColumnText(filter.Column!),
+                AssertionText.Of(filter.Condition.Operator),
+                ConditionReader.Written(filter.Condition),
+                filter.Condition.IgnoreCase,
+                filter.Condition.Tolerance))
+            .ToList(),
+        Name = assertion.Named ? assertion.Label : null,
+        Description = assertion.Description,
+    };
 
     private static MappingDraftFind DraftFind(FindBy find) => new(find.Field, find.Column is null ? null : ColumnText(find.Column), find.Literal);
 
@@ -1500,7 +1711,7 @@ public static partial class MappingBuilder
                 line(inner + MappingMapper.WhereKey + ": " + ExpressionScalar(entry.Where.Trim()));
             }
 
-            WriteSettings(entry, inner, line);
+            WriteSettings(entry, inner, line, scope);
             if (slot.Properties is { Count: > 0 } items)
             {
                 line(inner + MappingMapper.ItemKey + ":");
@@ -1524,7 +1735,7 @@ public static partial class MappingBuilder
                 WriteAlternative(alternative, indent + 4, scope, line);
             }
 
-            WriteSettings(entry, inner, line);
+            WriteSettings(entry, inner, line, scope);
             return;
         }
 
@@ -1534,7 +1745,7 @@ public static partial class MappingBuilder
             line(key + ":");
             line(inner + MappingMapper.ExprKey + ": " + ExpressionScalar(entry.Expression?.Trim() ?? string.Empty));
             WriteModifiers(entry.Modifiers, inner, line);
-            WriteSettings(entry, inner, line);
+            WriteSettings(entry, inner, line, scope);
             return;
         }
 
@@ -1567,7 +1778,7 @@ public static partial class MappingBuilder
         {
             // How the record is found is the lookup's to say, so the node holds the field it reads and its own settings alone.
             var field = $"{entry.Lookup?.Trim()}.{entry.CacheField?.Trim()}";
-            if (string.IsNullOrWhiteSpace(entry.When) && entry.Required && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description))
+            if (string.IsNullOrWhiteSpace(entry.When) && entry.Required && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description) && entry.Assertions.Count == 0)
             {
                 line(key + ": { " + MappingMapper.LookupKey + ": " + FlowScalar(field) + " }");
                 return;
@@ -1575,7 +1786,7 @@ public static partial class MappingBuilder
 
             line(key + ":");
             line(inner + MappingMapper.LookupKey + ": " + Scalar(field));
-            WriteSettings(entry, inner, line);
+            WriteSettings(entry, inner, line, scope);
             return;
         }
 
@@ -1588,7 +1799,8 @@ public static partial class MappingBuilder
 
         var findAll = entry.Input == MappingDraftInput.Cache ? entry.FindAll : null;
         var bare = entry.FindBy.Count == 0 && findAll is null && entry.Modifiers.Count == 0 && string.IsNullOrWhiteSpace(entry.When) && entry.Required
-            && !(entry.Input == MappingDraftInput.Cache && entry.IgnoreSeparators) && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description);
+            && !(entry.Input == MappingDraftInput.Cache && entry.IgnoreSeparators) && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description)
+            && entry.Assertions.Count == 0;
         if (bare)
         {
             line(key + ": { " + sourceKey + ": " + FlowScalar(read) + " }");
@@ -1607,7 +1819,7 @@ public static partial class MappingBuilder
         }
 
         WriteModifiers(entry.Modifiers, inner, line);
-        WriteSettings(entry, inner, line);
+        WriteSettings(entry, inner, line, scope);
     }
 
     /// <summary>
@@ -1719,7 +1931,7 @@ public static partial class MappingBuilder
             node = JsonValue.Create(item.Static ?? string.Empty);
         }
 
-        var settled = string.IsNullOrWhiteSpace(item.When) && string.IsNullOrWhiteSpace(item.Description);
+        var settled = string.IsNullOrWhiteSpace(item.When) && string.IsNullOrWhiteSpace(item.Description) && item.Assertions.Count == 0;
         if (!valueNode && settled && node is JsonValue bareValue)
         {
             line(new string(' ', indent) + "- " + ValueText(bareValue, flow: false));
@@ -1840,8 +2052,12 @@ public static partial class MappingBuilder
         }
     }
 
-    /// <summary>The settings a node writes after its value: its condition, whether it may be left out, and its description.</summary>
-    private static void WriteSettings(MappingDraftEntry entry, string inner, Action<string> line)
+    /// <summary>
+    /// The settings a node writes after its value: its condition, whether it may be left out, its assertions, and its
+    /// description. <paramref name="scope"/> is the child dataset whose rows the node reads, which the columns of an incoming
+    /// assertion's conditions are written in.
+    /// </summary>
+    private static void WriteSettings(MappingDraftEntry entry, string inner, Action<string> line, string? scope = null)
     {
         if (!string.IsNullOrWhiteSpace(entry.When))
         {
@@ -1863,9 +2079,85 @@ public static partial class MappingBuilder
             line(inner + MappingMapper.UnverifiedKey + ": true");
         }
 
+        if (entry.Assertions.Count > 0)
+        {
+            line(inner + MappingMapper.AssertKey + ":");
+            foreach (var assertion in entry.Assertions)
+            {
+                WriteAssertion(assertion, inner + "  ", scope, line);
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(entry.Description))
         {
             line(inner + MappingMapper.DescriptionKey + ": " + Scalar(entry.Description.Trim()));
+        }
+    }
+
+    /// <summary>
+    /// One assertion, as an item of <c>$assert</c>: its condition first, then the settings that differ from their defaults,
+    /// its conditions and its description.
+    /// </summary>
+    private static void WriteAssertion(MappingDraftAssertion assertion, string indent, string? scope, Action<string> line)
+    {
+        var more = indent + "  ";
+        line(indent + "- " + OneLine(assertion.Operator) + ": " + OneLine(assertion.Operand));
+        if (!string.IsNullOrWhiteSpace(assertion.Name))
+        {
+            line(more + MappingMapper.NameSetting + ": " + Scalar(assertion.Name.Trim()));
+        }
+
+        if (!string.Equals(assertion.Stage?.Trim(), AssertionWords.Record, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(assertion.Stage))
+        {
+            line(more + MappingMapper.StageSetting + ": " + assertion.Stage.Trim());
+        }
+
+        if (!string.Equals(assertion.OnFail?.Trim(), AssertionWords.Hold, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(assertion.OnFail))
+        {
+            line(more + MappingMapper.OnFailSetting + ": " + assertion.OnFail.Trim());
+        }
+
+        if (assertion.AnyValue)
+        {
+            line(more + MappingMapper.ValuesSetting + ": any");
+        }
+
+        WriteConditionSettings(assertion.IgnoreCase, assertion.Tolerance, more, line);
+        if (assertion.Where.Count > 0)
+        {
+            line(more + MappingMapper.WhereSetting + ":");
+            foreach (var filter in assertion.Where)
+            {
+                var reads = OneLine(filter.Reads);
+                var path = reads == MappingMapper.ColumnSetting ? ScopedColumn(filter.Path ?? string.Empty, scope) : (filter.Path ?? string.Empty).Trim();
+                line(more + "  - " + reads + ": " + Scalar(path));
+                line(more + "    " + OneLine(filter.Operator) + ": " + OneLine(filter.Operand));
+                WriteConditionSettings(filter.IgnoreCase, filter.Tolerance, more + "    ", line);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(assertion.Description))
+        {
+            line(more + "description: " + Scalar(assertion.Description.Trim()));
+        }
+    }
+
+    /// <summary>
+    /// A word or an operand of an assertion as one line of YAML: what the draft lacks is reported as an issue, and the YAML
+    /// written beside the issues keeps its shape.
+    /// </summary>
+    private static string OneLine(string? text) => Comment(text ?? string.Empty).Trim();
+
+    private static void WriteConditionSettings(bool ignoreCase, double? tolerance, string indent, Action<string> line)
+    {
+        if (ignoreCase)
+        {
+            line(indent + "ignoreCase: true");
+        }
+
+        if (tolerance is { } value)
+        {
+            line(indent + "tolerance: " + value.ToString("R", CultureInfo.InvariantCulture));
         }
     }
 
@@ -1887,7 +2179,7 @@ public static partial class MappingBuilder
         }
 
         var inner = new string(' ', indent + 2);
-        var settled = string.IsNullOrWhiteSpace(entry.When) && string.IsNullOrWhiteSpace(entry.Description);
+        var settled = string.IsNullOrWhiteSpace(entry.When) && string.IsNullOrWhiteSpace(entry.Description) && entry.Assertions.Count == 0;
         switch (node)
         {
             case null:
@@ -1927,7 +2219,7 @@ public static partial class MappingBuilder
                 break;
         }
 
-        WriteSettings(entry, inner, line);
+        WriteSettings(entry, inner, line, scope);
     }
 
     /// <summary>

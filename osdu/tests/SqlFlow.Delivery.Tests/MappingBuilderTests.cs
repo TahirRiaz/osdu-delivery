@@ -607,7 +607,7 @@ public class MappingBuilderTests
     private static string ExpressionText(string text)
         => "\"" + text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
 
-    private static MappingDraft BaseDraft() => new()
+    internal static MappingDraft BaseDraft() => new()
     {
         Name = "Thing",
         Version = "1.0.0",

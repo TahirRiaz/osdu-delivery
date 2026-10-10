@@ -243,7 +243,11 @@ internal sealed partial class ValueTally
             : problems;
     }
 
-    /// <param name="said">What the record states of its own value, when it differs from the finding's message (why one value fails an assertion).</param>
+    /// <summary>
+    /// Notes one occurrence of a finding on a variable, with the record it is in. The record's message is
+    /// <paramref name="said"/> when given (why this one value fails an assertion), else the finding's message. Each
+    /// occurrence is also passed to the listing of failing rows, except a value the mapping means to leave empty.
+    /// </summary>
     private void Note(VariableTally variable, string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample sample, string? said = null)
     {
         var record = sample with { Value = value, Message = said ?? message };

@@ -333,6 +333,55 @@ internal static partial class ConditionReader
         return path;
     }
 
+    /// <summary>
+    /// The operand of <paramref name="condition"/> as a document writes it after its operator, one line that
+    /// <see cref="Read"/> reads back as the same condition: text quoted (so <c>'5'</c> stays text), numbers and true or
+    /// false as they are, a list of values and a range in brackets, a comparison of a count as a map.
+    /// </summary>
+    public static string Written(ValueCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return condition.Operator switch
+        {
+            ValueOperator.In or ValueOperator.NotIn or ValueOperator.Between => "[" + string.Join(", ", condition.Operands.Select(Written)) + "]",
+            ValueOperator.Matches or ValueOperator.NotMatches or ValueOperator.StartsWith or ValueOperator.EndsWith => QuotedText(condition.Operands[0].Text),
+            ValueOperator.Exists or ValueOperator.Empty => condition.Flag ? "true" : "false",
+            ValueOperator.Type => AssertionText.Of(condition.JsonType ?? JsonValueType.Text),
+            ValueOperator.Length => Written(condition.Length!),
+            ValueOperator.Resolves => condition.EntityType ?? "true",
+            _ => Written(condition.Operands[0]),
+        };
+    }
+
+    /// <summary>A value a condition compares with, as a document writes it.</summary>
+    public static string Written(ExpectedValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value.Kind switch
+        {
+            ExpectedValueKind.Number or ExpectedValueKind.Boolean => value.Text,
+            ExpectedValueKind.Null => "~",
+            _ => QuotedText(value.Text),
+        };
+    }
+
+    /// <summary>A comparison of a count as a document writes it: the number alone for equals, else a map of its terms.</summary>
+    public static string Written(Comparison comparison)
+    {
+        ArgumentNullException.ThrowIfNull(comparison);
+        return comparison.Terms is [{ Operator: ComparisonOperator.EqualTo } only]
+            ? only.Value.Text
+            : "{ " + string.Join(", ", comparison.Terms.Select(t => AssertionText.Of(t.Operator) + ": "
+                + (t.Operator == ComparisonOperator.Between ? $"[{t.Value.Text}, {t.Upper!.Text}]" : t.Value.Text))) + " }";
+    }
+
+    /// <summary>
+    /// Text as YAML quotes it so it reads back as the same text: single-quoted, a quote inside doubled; text holding a
+    /// control character double-quoted with JSON's escapes, which YAML reads the same way.
+    /// </summary>
+    private static string QuotedText(string text)
+        => text.Any(char.IsControl) ? System.Text.Json.JsonSerializer.Serialize(text) : "'" + text.Replace("'", "''", StringComparison.Ordinal) + "'";
+
     /// <summary>The JSON type a <c>type</c> condition names, by JSON Schema's word for it.</summary>
     private static JsonValueType JsonTypeOf(string word, string at, string source) => word switch
     {
