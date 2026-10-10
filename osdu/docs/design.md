@@ -1147,6 +1147,9 @@ listed in the manifest rather than silently dropped.
 An incremental flow names a record timestamp field (`modifyTime` by default) and a lag.
 A run covers the half-open window from the last completed run's upper bound (or the
 declared start) to now minus the lag, expressed as a range clause appended to the query.
+On `modifyTime` a record never modified is read by its `createTime`: OSDU sets
+`modifyTime` only from a record's second version on, so a range on it alone would never
+read a record created and not changed since.
 The lag keeps records the indexer has not caught up with for the next run instead of
 losing them. The upper bound is recorded on the run's ledger row when it completes, and
 only a completed run advances the chain: a failed run leaves the watermark where it was.

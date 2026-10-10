@@ -83,7 +83,9 @@ public sealed class RetrievalWindowTests : IDisposable
         var next = await retrieval.Runner.RunAsync(Guid.NewGuid(), "tester", force: false, CancellationToken.None);
 
         Assert.Equal((At(13, 0), At(13, 55)), (next.Window!.From, next.Window.To));
-        Assert.Equal("modifyTime:[2026-09-07T13:00:00.000Z TO 2026-09-07T13:55:00.000Z}", retrieval.LastQuery);
+        Assert.Equal(
+            "(modifyTime:[2026-09-07T13:00:00.000Z TO 2026-09-07T13:55:00.000Z} OR (createTime:[2026-09-07T13:00:00.000Z TO 2026-09-07T13:55:00.000Z} AND NOT _exists_:modifyTime))",
+            retrieval.LastQuery);
     }
 
     [Fact]

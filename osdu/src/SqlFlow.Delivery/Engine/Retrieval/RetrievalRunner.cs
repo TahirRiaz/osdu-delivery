@@ -130,7 +130,10 @@ public sealed class RetrievalRunner
         return new RetrievalWindow(incremental.Field, from, from is { } start && to < start ? start : to);
     }
 
-    /// <summary>The flow's query with its tokens substituted, narrowed to the window when there is one.</summary>
+    /// <summary>
+    /// The flow's query with its tokens substituted, narrowed to the window when there is one: on <c>modifyTime</c>, a record
+    /// never modified is read by its <c>createTime</c> (<see cref="RecordChanges"/>).
+    /// </summary>
     public string? ComposeQuery(RetrievalWindow? window)
     {
         var query = string.IsNullOrWhiteSpace(_flow.Source.Query) ? null : FlowParameters.Substitute(_flow.Source.Query, _values).Trim();
@@ -139,7 +142,7 @@ public sealed class RetrievalRunner
             return query;
         }
 
-        var range = window.Field + ":[" + OsduSearch.LuceneTime(window.From) + " TO " + OsduSearch.LuceneTime(window.To) + "}";
+        var range = RecordChanges.Within(window.Field, window.From, window.To);
         return query is null ? range : "(" + query + ") AND " + range;
     }
 

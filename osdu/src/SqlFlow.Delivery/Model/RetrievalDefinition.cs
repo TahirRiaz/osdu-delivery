@@ -121,7 +121,8 @@ public sealed record RetrievalSource
 /// <summary>
 /// The watermark of an incremental retrieval: a run takes the records whose <see cref="Field"/> falls in
 /// <c>[last run's upper bound, now minus the lag)</c>; the lag keeps records the indexer has not caught up with
-/// for the next run instead of losing them.
+/// for the next run instead of losing them. On <c>modifyTime</c> a record never modified, which OSDU gives no
+/// <c>modifyTime</c>, is read by its <c>createTime</c> (<see cref="Engine.Search.RecordChanges"/>).
 /// </summary>
 public sealed record RetrievalIncremental
 {

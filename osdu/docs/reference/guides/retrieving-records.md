@@ -103,8 +103,9 @@ schedule:
 ```
 
 - `source.headers.data-partition-id` is required: it is the partition the flow reads and keeps its runs under.
-- `incremental` makes each run take the records whose `modifyTime` falls after the last completed run's window, up to
-  five minutes ago (`lagMinutes`), starting from `since` the first time.
+- `incremental` makes each run take the records that changed after the last completed run's window, up to five minutes
+  ago (`lagMinutes`), starting from `since` the first time: those whose `modifyTime` falls in the window, and those never
+  modified (OSDU gives a record `modifyTime` only from its second version on) whose `createTime` does.
 - `target.location` is the root; each run writes a directory of its own beneath it.
 - The schedule is published under a name so the file flow in step 6 can join it.
 
@@ -123,7 +124,7 @@ sqlflow run flows/welldb-retrieval-01-wellbores.yaml --operation plan
 ```
 
 A plan asks the search for the exact count of what each kind's query matches in the window, and writes nothing. The run
-log says, per kind, `plan osdu:wks:master-data--Wellbore:1.*.*: 48210 matching record(s) (query: modifyTime:[2026-01-01T00:00:00.000Z TO 2026-10-09T02:55:00.000Z})`,
+log says, per kind, `plan osdu:wks:master-data--Wellbore:1.*.*: 48210 matching record(s) (query: (modifyTime:[2026-01-01T00:00:00.000Z TO 2026-10-09T02:55:00.000Z} OR (createTime:[2026-01-01T00:00:00.000Z TO 2026-10-09T02:55:00.000Z} AND NOT _exists_:modifyTime)))`,
 then `plan: 48210 record(s) would be retrieved into <directory>`. The result has the window and `kinds[].totalCount`.
 
 ## 4. Retrieve

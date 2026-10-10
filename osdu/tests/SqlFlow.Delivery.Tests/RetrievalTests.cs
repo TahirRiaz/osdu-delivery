@@ -204,7 +204,9 @@ public sealed class RetrievalTests : IDisposable
             Assert.Equal(Wellbore, page1["kind"]!.GetValue<string>());
             Assert.Equal(2, page1["limit"]!.GetValue<int>());
             Assert.True(page1["trackTotalCount"]!.GetValue<bool>());
-            Assert.Equal("(data.Region:\"north\") AND modifyTime:[2026-01-01T00:00:00.000Z TO 2026-09-07T11:55:00.000Z}", page1["query"]!.GetValue<string>());
+            Assert.Equal(
+                "(data.Region:\"north\") AND (modifyTime:[2026-01-01T00:00:00.000Z TO 2026-09-07T11:55:00.000Z} OR (createTime:[2026-01-01T00:00:00.000Z TO 2026-09-07T11:55:00.000Z} AND NOT _exists_:modifyTime))",
+                page1["query"]!.GetValue<string>());
             var page2 = JsonNode.Parse(handler.Calls[1].Body!)!.AsObject();
             Assert.Equal("c1", page2["cursor"]!.GetValue<string>());
             Assert.Null(page2["trackTotalCount"]);
@@ -216,7 +218,9 @@ public sealed class RetrievalTests : IDisposable
             var next = await runner.RunAsync(Guid.NewGuid(), "tester", force: false, CancellationToken.None);
             Assert.Equal(0, next.Records);
             Assert.Equal(0, next.Files);
-            Assert.Contains("modifyTime:[2026-09-07T11:55:00.000Z TO 2026-09-07T12:05:00.000Z}", JsonNode.Parse(handler.Calls[3].Body!)!["query"]!.GetValue<string>(), StringComparison.Ordinal);
+            Assert.Contains(
+                "(modifyTime:[2026-09-07T11:55:00.000Z TO 2026-09-07T12:05:00.000Z} OR (createTime:[2026-09-07T11:55:00.000Z TO 2026-09-07T12:05:00.000Z} AND NOT _exists_:modifyTime))",
+                JsonNode.Parse(handler.Calls[3].Body!)!["query"]!.GetValue<string>(), StringComparison.Ordinal);
             Assert.Equal(5, handler.Calls.Count);
 
             // A forced run goes back to the declared start; a run with nothing new in the window does nothing at all.

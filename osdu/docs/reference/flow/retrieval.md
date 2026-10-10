@@ -190,7 +190,7 @@ There is no `partitions` key: a retrieval reads the one partition its `source.he
 | `returnedFields` | list | `[]` | Project each hit onto these fields; empty returns whole hits. `id` is always added, since a read knows its records by id. |
 | `pageSize` | int | `1000` | Records per search page, 1 to 1000 (the search service's limit on `limit`). |
 | `incremental` | map | none | The watermark (see [The incremental window](#the-incremental-window)). Without it every run takes everything the query matches. |
-| `incremental.field` | string | `modifyTime` | The record field the window is taken on. No whitespace. |
+| `incremental.field` | string | `modifyTime` | The record field the window is taken on. No whitespace. On `modifyTime`, a record never modified is taken by its `createTime` (see [The incremental window](#the-incremental-window)). |
 | `incremental.since` | string | none | Where the first run, and a forced run, starts: an RFC 3339 date and time such as `2026-01-01T00:00:00Z`. Left out, from the beginning. |
 | `incremental.lagMinutes` | int | `5` | How far behind now the window ends, so records the indexer has not caught up with are left for the next run. Not negative. |
 | `fetchRecords` | bool | `false` | Read every hit back from storage and write the record as storage holds it (see [Search hits or whole records](#search-hits-or-whole-records)). |
@@ -241,6 +241,11 @@ With `source.incremental`, a run covers `[from, to)` on `field`:
   is later. Only a completed run moves it: a failed or cancelled run leaves it where it was.
 - The window is appended to the query as `(<query>) AND <field>:[<from> TO <to>}` (with `*` for an open `from`), times
   written as `yyyy-MM-ddTHH:mm:ss.fffZ` in UTC.
+- On `modifyTime` the window is `(modifyTime:[<from> TO <to>} OR (createTime:[<from> TO <to>} AND NOT _exists_:modifyTime))`.
+  OSDU writes `createTime` alone when it creates a record and `modifyTime` only from the record's second version on (or
+  when its ACL, legal tags or tags are patched), and the indexer indexes `modifyTime` only when storage holds one, so a
+  range on `modifyTime` alone would never take a record created and not changed since. Each record is taken by the time
+  it last changed, in the one window that time falls in.
 - Consecutive runs cover adjacent windows: the next run starts where the last one ended, so windows never leave a gap
   and do not overlap.
 - A run whose window is empty (`from` is not before its start minus the lag: a `since` still in the future, or a lag
