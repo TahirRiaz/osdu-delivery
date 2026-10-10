@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
@@ -247,6 +248,38 @@ public sealed class SyncedMappingTests : IDisposable
         var broken = await SyncAsync(Guid.NewGuid(), $"Thing@{version}", "documentType: mapping", "invalid", "name is required");
         Assert.Contains("does not load: name is required", (await SyncedMappings.ByIdAsync(Context(), broken.Id, CancellationToken.None)).Problem, StringComparison.Ordinal);
         Assert.Contains("is synced under", (await SyncedMappings.ByIdAsync(Context(), Guid.NewGuid(), CancellationToken.None)).Problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_sync_counts_a_mappings_assertions_in_its_summary_so_a_picker_can_say_which_state_any()
+    {
+        var version = "9." + Guid.NewGuid().ToString("N")[..8] + ".0";
+        var root = Samples.NewTempDirectory();
+        var repoId = Guid.NewGuid();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "mappings"));
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "mappings", $"Thing@{version}.yaml"),
+                Document(version, "Count: { $from: count, $assert: [ { atLeast: 0 }, { atMost: 250, onFail: report } ] }"));
+
+            await using (var db = _db.CreateDbContext())
+            {
+                await new Catalog.DeliveryCatalogSync(new DeliveryDocumentLoader())
+                    .ReconcileAsync(db, repoId, root, DateTime.UtcNow, new List<string>(), CancellationToken.None);
+            }
+
+            await using (var db = _db.CreateDbContext())
+            {
+                var row = await db.DeliveryMappings.AsNoTracking().SingleAsync(m => m.RepoId == repoId);
+                Assert.Equal("valid", row.Status);
+                Assert.Equal(2, JsonNode.Parse(row.SummaryJson)!["assertions"]!.GetValue<int>());
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     public void Dispose()

@@ -34,7 +34,7 @@ namespace SqlFlow.Delivery.Data.Migrations
                 schema: "osdu",
                 table: "Record",
                 columns: new[] { "PartitionId", "FlowId", "AssertionFailures", "UpdatedUtc" },
-                filter: "[AssertionFailures] > 0");
+                filter: "[AssertionFailures]>(0)");
         }
 
         /// <inheritdoc />

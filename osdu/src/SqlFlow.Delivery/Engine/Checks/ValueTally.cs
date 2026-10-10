@@ -135,8 +135,8 @@ internal sealed partial class ValueTally
         {
             if (_variables.TryGetValue($"{TemplatePath.Prefix}.{failure.At}", out var asserted))
             {
-                Note(asserted, "asserted", asserted.Target, failure.Assertion, Fails(failure), Clip(failure.Value, _limits.MaxValueChars), row, basis, failure.Message);
-                asserted.CountAsserted(row);
+                Note(asserted, "asserted", asserted.Target, failure.Assertion, Fails(failure), Clip(failure.Value, _limits.MaxValueChars), row, basis, failure.Message, failure.OnFail);
+                asserted.CountAsserted(row, failure.Path);
             }
         }
 
@@ -246,12 +246,14 @@ internal sealed partial class ValueTally
     /// <summary>
     /// Notes one occurrence of a finding on a variable, with the record it is in. The record's message is
     /// <paramref name="said"/> when given (why this one value fails an assertion), else the finding's message. Each
-    /// occurrence is also passed to the listing of failing rows, except a value the mapping means to leave empty.
+    /// occurrence is also passed to the listing of failing rows, except a value the mapping means to leave empty. A finding
+    /// of an assertion carries what its failure does, <paramref name="onFail"/>.
     /// </summary>
-    private void Note(VariableTally variable, string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample sample, string? said = null)
+    private void Note(
+        VariableTally variable, string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample sample, string? said = null, string? onFail = null)
     {
         var record = sample with { Value = value, Message = said ?? message };
-        variable.Note(outcome, at, rule, message, value, row, record, _request);
+        variable.Note(outcome, at, rule, message, value, row, record, _request, onFail);
 
         // What the mapping means no value for is no failure, so a listing of the failing rows leaves it out.
         if (_each is not null && outcome != "notApplicable")
@@ -336,6 +338,10 @@ internal sealed partial class ValueTally
     [GeneratedRegex(@"\d+", RegexOptions.CultureInvariant)]
     private static partial Regex Digits();
 
+    /// <summary>The item a value is in, as a failure's path names it: <c>data.Curves[3]</c> of <c>data.Curves[3].Mnemonic</c>.</summary>
+    [GeneratedRegex(@"^[^\[]*\[\d+\]", RegexOptions.CultureInvariant)]
+    private static partial Regex ItemOfPath();
+
     /// <summary>One variable's counts, values and findings.</summary>
     private sealed class VariableTally(string target, MappingEntry? entry, string? repeater, ValueCheckLimits limits)
     {
@@ -347,6 +353,8 @@ internal sealed partial class ValueTally
         private long _unlisted;
         private long _asserted;
         private long _lastAsserted = -1;
+        private long _assertedItems;
+        private readonly HashSet<string> _assertedInRow = new(StringComparer.Ordinal);
 
         public string Target => target;
 
@@ -356,13 +364,23 @@ internal sealed partial class ValueTally
 
         public void CountItem(Standing standing) => _items[standing] = _items.GetValueOrDefault(standing) + 1;
 
-        /// <summary>Counts a row a value of the variable failed an assertion in, once however many failed.</summary>
-        public void CountAsserted(long row)
+        /// <summary>
+        /// Counts a row a value of the variable failed an assertion in, once however many failed, and for a variable of a
+        /// repeated item each item the failure at <paramref name="path"/> is in, once however many of its assertions it
+        /// fails. A failure of the values together (<c>values: any</c>) names no one item, so it counts the row alone.
+        /// </summary>
+        public void CountAsserted(long row, string path)
         {
             if (row != _lastAsserted)
             {
                 _asserted++;
                 _lastAsserted = row;
+                _assertedInRow.Clear();
+            }
+
+            if (repeater is not null && ItemOfPath().Match(path) is { Success: true } item && _assertedInRow.Add(item.Value))
+            {
+                _assertedItems++;
             }
         }
 
@@ -382,7 +400,7 @@ internal sealed partial class ValueTally
             }
         }
 
-        public void Note(string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample record, ValueCheckRequest request)
+        public void Note(string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample record, ValueCheckRequest request, string? onFail)
         {
             var key = (outcome, at, Shape(message));
             if (!_findings.TryGetValue(key, out var finding))
@@ -393,7 +411,7 @@ internal sealed partial class ValueTally
                     return;
                 }
 
-                finding = new FindingTally(outcome, at, rule, message);
+                finding = new FindingTally(outcome, at, rule, message, onFail);
                 _findings[key] = finding;
             }
 
@@ -407,7 +425,8 @@ internal sealed partial class ValueTally
             Required = entry?.Required ?? true,
             Repeater = repeater,
             Rows = Counts(_rows) with { Asserted = _asserted },
-            Items = repeater is null ? null : Counts(_items),
+            // An item failing assertions of both stages is named by the row and by the record, so the count is held to the items.
+            Items = repeater is null ? null : Counts(_items) with { Asserted = Math.Min(_assertedItems, _items.Values.Sum()) },
             Values = _values
                 .OrderByDescending(v => v.Value)
                 .ThenBy(v => v.Key, StringComparer.Ordinal)
@@ -434,7 +453,7 @@ internal sealed partial class ValueTally
     }
 
     /// <summary>One finding's occurrences, the rows they are in, the values behind them and the example records kept.</summary>
-    private sealed class FindingTally(string outcome, string at, string? rule, string message)
+    private sealed class FindingTally(string outcome, string at, string? rule, string message, string? onFail)
     {
         private readonly Dictionary<string, long> _values = new(StringComparer.Ordinal);
         private readonly List<ValueCheckSample> _samples = [];
@@ -491,6 +510,7 @@ internal sealed partial class ValueTally
                 Outcome = outcome,
                 At = at,
                 Rule = rule,
+                OnFail = onFail,
                 Message = message,
                 Count = _count,
                 Rows = _rows,

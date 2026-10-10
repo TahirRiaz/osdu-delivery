@@ -254,6 +254,9 @@ public sealed record ValueCheckFinding
     /// <summary>For an invalid value, the rule of the template it breaks; for an asserted one, the assertion it fails.</summary>
     public string? Rule { get; init; }
 
+    /// <summary>For an asserted value, what a failure of the assertion does: <c>hold</c>, <c>report</c> or <c>omit</c>.</summary>
+    public string? OnFail { get; init; }
+
     /// <summary>The reason, as the first occurrence states it.</summary>
     public required string Message { get; init; }
 

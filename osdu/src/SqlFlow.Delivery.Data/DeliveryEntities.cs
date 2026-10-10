@@ -2991,7 +2991,7 @@ public static class DeliveryModel
             // A flow's records whose last checked document failed an assertion of its mapping: counted for the flow's page and
             // listed. The filter leaves out the records that met every assertion, or whose mapping states none.
             e.HasIndex(r => new { r.PartitionId, r.FlowId, r.AssertionFailures, r.UpdatedUtc })
-                .HasFilter("[AssertionFailures] > 0");
+                .HasFilter("[AssertionFailures]>(0)");
         });
 
         modelBuilder.Entity<DeliveryRecordIdentity>(e =>

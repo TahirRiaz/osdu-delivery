@@ -234,7 +234,9 @@ public sealed class ExplorerChecks
         var (schema, described, why) = await SchemaAsync(kind, source, templateVersion, ct).ConfigureAwait(false);
         if (schema is null)
         {
-            return new ExplorerValidation { TargetId = targetId, Version = read, Found = true, Kind = kind, Problem = why, SavedVersions = saved };
+            // Nothing to check the record against, but a mapping's assertions need no schema: they are judged, as a list's are.
+            var judged = assertions?.Mapping is null ? null : Asserted(ValidationVerdict.NotChecked(why!, _time.GetUtcNow().UtcDateTime), record, assertions);
+            return new ExplorerValidation { TargetId = targetId, Version = read, Found = true, Kind = kind, Problem = why, SavedVersions = saved, Verdict = judged?.ToJson() };
         }
 
         var rules = SchemaRules.Of(schema);

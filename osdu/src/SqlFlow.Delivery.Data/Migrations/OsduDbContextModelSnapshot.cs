@@ -2849,7 +2849,7 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.HasIndex("PartitionId", "Status", "UpdatedUtc");
 
                     b.HasIndex("PartitionId", "FlowId", "AssertionFailures", "UpdatedUtc")
-                        .HasFilter("[AssertionFailures] > 0");
+                        .HasFilter("[AssertionFailures]>(0)");
 
                     b.HasIndex("PartitionId", "FlowId", "LastSubmissionId", "UpdatedUtc");
 

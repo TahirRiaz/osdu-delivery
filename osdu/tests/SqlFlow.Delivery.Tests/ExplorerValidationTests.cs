@@ -505,6 +505,23 @@ public sealed class ExplorerValidationTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_no_schema_can_be_had_for_is_still_held_to_a_mappings_assertions()
+    {
+        var id = Stored();
+
+        var answer = await Checks(new SavedTemplates()).RecordAsync(id, null, ExplorerSchemaSource.Saved, null, new ExplorerAssertions(Asserting(), null));
+
+        Assert.NotNull(answer.Problem);
+        var verdict = VerdictOf(answer);
+        Assert.Equal(ValidationOutcome.NotValidated, verdict.Outcome);
+        Assert.Contains(answer.Problem, verdict.Notes);
+        Assert.Equal((2L, 1L), (verdict.Assertions!.Failed, verdict.Assertions.Held));
+
+        // Without a mapping asked for, nothing was checked and there is no verdict.
+        Assert.Null((await Checks(new SavedTemplates()).RecordAsync(id, null, ExplorerSchemaSource.Saved, null)).Verdict);
+    }
+
+    [Fact]
     public async Task A_mapping_that_could_not_be_read_is_said_and_the_schemas_verdict_stands()
     {
         var id = Stored();

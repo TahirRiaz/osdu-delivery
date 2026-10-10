@@ -26,17 +26,24 @@ public sealed class MappingAssertionReportTests : IDisposable
 
     private static int LogCount => SampleEstate.Logs().Count;
 
-    /// <summary>The sample flow over a copy of its mapping whose <c>data.Name</c> node states <paramref name="assertion"/>.</summary>
-    private async Task<(EngineContext Engine, FlowDefinition Flow)> EstateAsync(string assertion)
+    /// <summary>The sample mapping's <c>data.Name</c> node, which the tests give assertions by default.</summary>
+    private const string NameNode = "    Name:\n      $from: log_source\n      $modifiers: [trim]\n";
+
+    /// <summary>
+    /// The sample flow over a copy of its mapping whose <paramref name="node"/>, as the sample writes it, is written as
+    /// <paramref name="block"/> (itself when null) and states <paramref name="assertion"/>.
+    /// </summary>
+    private async Task<(EngineContext Engine, FlowDefinition Flow)> EstateAsync(string assertion, string node = NameNode, string? block = null)
     {
         var mappings = Path.Combine(_root, "asserting-mappings");
         Directory.CreateDirectory(mappings);
         var sample = (await File.ReadAllTextAsync(Path.Combine(Samples.Mappings, "WellLog@1.4.0.yaml"))).ReplaceLineEndings("\n");
-        const string Name = "    Name:\n      $from: log_source\n      $modifiers: [trim]\n";
-        Assert.Contains(Name, sample, StringComparison.Ordinal);
-        var asserted = Name + "      $assert:\n"
-            + string.Concat(assertion.ReplaceLineEndings("\n").Split('\n').Where(l => l.Length > 0).Select(l => "        " + l + "\n"));
-        await File.WriteAllTextAsync(Path.Combine(mappings, "WellLog@1.4.0.yaml"), sample.Replace(Name, asserted, StringComparison.Ordinal));
+        Assert.Contains(node, sample, StringComparison.Ordinal);
+        block ??= node;
+        var indent = new string(' ', block.TakeWhile(c => c == ' ').Count() + 2);
+        var asserted = block + indent + "$assert:\n"
+            + string.Concat(assertion.ReplaceLineEndings("\n").Split('\n').Where(l => l.Length > 0).Select(l => indent + "  " + l + "\n"));
+        await File.WriteAllTextAsync(Path.Combine(mappings, "WellLog@1.4.0.yaml"), sample.Replace(node, asserted, StringComparison.Ordinal));
 
         var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime.AddMinutes(-5), time: _clock);
         var engine = Samples.Engine(ledger: null, _clock, sources: tables, searches: FixedRecordSearchFactory.SampleWellbores());
@@ -85,6 +92,8 @@ public sealed class MappingAssertionReportTests : IDisposable
         Assert.Equal(LogCount, name.Rows.Asserted);
         var held = Assert.Single(name.Findings, f => f.Outcome == "asserted" && f.Rule == "log-name-known");
         Assert.Equal("fails \"log-name-known\" (record); the record is held before it is sent", held.Message);
+        Assert.Equal("hold", held.OnFail);
+        Assert.Contains(name.Findings, f => f.Outcome == "asserted" && f.OnFail == "report");
         Assert.Equal(LogCount, held.Count);
         Assert.NotEmpty(held.Values);
         Assert.All(held.Samples, s => Assert.StartsWith("is ", s.Message, StringComparison.Ordinal));
@@ -96,6 +105,30 @@ public sealed class MappingAssertionReportTests : IDisposable
         Assert.Contains($"    asserted    {LogCount} failing an assertion of the mapping, {LogCount} of them to be held before they are sent", written, StringComparison.Ordinal);
         Assert.Contains($"; {LogCount} failing an assertion", written, StringComparison.Ordinal);
         Assert.Contains("asserted", written, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Check_values_counts_each_item_of_a_repeated_array_failing_an_assertion_once()
+    {
+        var (engine, flow) = await EstateAsync(
+            """
+            - equals: no curve is named this
+              onFail: report
+            - notEquals: also never
+              name: never-fails
+            """,
+            node: "        Mnemonic: { $from: curve_id }\n",
+            block: "        Mnemonic:\n          $from: curve_id\n");
+        using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        var check = await new ValueChecker(runtime).CheckAsync(new ValueCheckRequest { Targets = ["osdu.data.Curves[].Mnemonic"] });
+
+        var mnemonic = Assert.Single(check.Variables, v => v.Target == "osdu.data.Curves[].Mnemonic");
+        Assert.True(mnemonic.Items!.Total > mnemonic.Rows.Asserted, "a log holds several curves");
+        Assert.Equal(mnemonic.Items.Total, mnemonic.Items.Asserted);
+        Assert.Equal(LogCount, mnemonic.Rows.Asserted);
+        var reported = Assert.Single(mnemonic.Findings, f => f.Outcome == "asserted");
+        Assert.Equal(("report", mnemonic.Items.Total), (reported.OnFail, reported.Count));
+        Assert.Equal((LogCount, 0L), (check.Rows.WithFailedAssertion, check.Rows.HeldByAssertion));
     }
 
     [Fact]
