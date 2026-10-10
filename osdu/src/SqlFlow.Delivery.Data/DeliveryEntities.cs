@@ -2283,7 +2283,7 @@ public sealed class DeliveryDimensionView
     /// <summary>The view's name as the document gives it, unique ignoring case among the views of the database.</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>The view's name in the module's schema (<c>dimv_&lt;name&gt;</c>).</summary>
+    /// <summary>The view's name in the module's schema (<c>v_dim_&lt;name&gt;</c>).</summary>
     public string ViewName { get; set; } = string.Empty;
 
     /// <summary>The dimension flow that declares the view, by its name.</summary>

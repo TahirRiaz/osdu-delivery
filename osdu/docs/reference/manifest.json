@@ -2750,7 +2750,7 @@
         "views",
         "join dimension tables",
         "typed columns",
-        "osdu.dimv_",
+        "osdu.v_dim_",
         "target.connection",
         "datatype",
         "key_hash"

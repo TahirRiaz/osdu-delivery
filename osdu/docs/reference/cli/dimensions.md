@@ -332,14 +332,14 @@ for whoever holds the module database's credentials.
 
 ## views
 
-The flow's [views](../flow/dimension.md#views): each it declares, as `osdu.dimv_<view>`, with its `from` dimension, its
+The flow's [views](../flow/dimension.md#views): each it declares, as `osdu.v_dim_<view>`, with its `from` dimension, its
 joins, whether a build wrote it as the file declares it (`written as declared`, `changed: the next build writes it
 again`, `not written yet`, or why a build dropped it), and its last check (the partition, the rows, what each join found
 and each conversion could not read); then each view a build of the flow wrote that the file no longer declares.
 
 ```text
 welldb-welllog-07-metadata-dimensions: 1 view(s)
-  Curve  osdu.dimv_Curve  from LogCurve joining WellLog as Log, RefUnitOfMeasure as Unit  written as declared
+  Curve  osdu.v_dim_Curve  from LogCurve joining WellLog as Log, RefUnitOfMeasure as Unit  written as declared
       last check passed in 'dev' at 2026-10-09 21:14:02Z: 88310 row(s)
       CurveUnitID: 1,204 of 88,310 rows name no row of RefUnitOfMeasure, for example 'dev:reference-data--UnitOfMeasure:ft%2Fs'.
 ```
@@ -369,7 +369,7 @@ flow, which drops it) and for one another flow wrote. It is recorded as a `remov
 `cli:<user>@<machine>`.
 
 ```text
-View Curve of welldb-welllog-07-metadata-dimensions removed: osdu.dimv_Curve dropped, 12 check(s) taken with its record.
+View Curve of welldb-welllog-07-metadata-dimensions removed: osdu.v_dim_Curve dropped, 12 check(s) taken with its record.
 ```
 
 ## Exit codes and errors

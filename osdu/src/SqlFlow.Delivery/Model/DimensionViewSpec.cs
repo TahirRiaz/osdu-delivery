@@ -27,12 +27,12 @@ public sealed record DimensionViewColumnSpec(string Name, string Expression, str
 /// <summary>
 /// A view a dimension flow declares (docs/dimension-plan.md, Views): the dimensions of the flow side by side at the grain of
 /// one of them, joined on the keys they share, with the columns the document lists, each an expression converted to a data
-/// type. A build writes it as <c>osdu.dimv_&lt;name&gt;</c>, from <see cref="Definition"/>, which the document alone settles.
+/// type. A build writes it as <c>osdu.v_dim_&lt;name&gt;</c>, from <see cref="Definition"/>, which the document alone settles.
 /// </summary>
 public sealed record DimensionViewSpec
 {
     /// <summary>What every view's name begins with, so a view of the module's is told from a dimension's table at a glance.</summary>
-    public const string Prefix = "dimv_";
+    public const string Prefix = "v_dim_";
 
     /// <summary>The most views one flow declares.</summary>
     public const int MaxViews = 50;
@@ -72,7 +72,7 @@ public sealed record DimensionViewSpec
     /// <summary>What the view is in the database: its name, the tables it reads, its columns and the SQL a build writes.</summary>
     public required DimensionViewDefinition Definition { get; init; }
 
-    /// <summary>The view's name in the module's schema: <c>dimv_&lt;name&gt;</c>.</summary>
+    /// <summary>The view's name in the module's schema: <c>v_dim_&lt;name&gt;</c>.</summary>
     public string ViewName => Prefix + Name;
 
     /// <summary>Whether <paramref name="name"/> names a view, a view's column or an alias: a letter, then letters, digits and underscores.</summary>
@@ -81,7 +81,7 @@ public sealed record DimensionViewSpec
 }
 
 /// <summary>A view as a build writes it, settled from its document alone.</summary>
-/// <param name="ViewName">The view's name in the module's schema, without the schema (<c>dimv_Curve</c>).</param>
+/// <param name="ViewName">The view's name in the module's schema, without the schema (<c>v_dim_Curve</c>).</param>
 /// <param name="Tables">The dimension tables the view reads, its <c>from</c> table first, each once.</param>
 /// <param name="Columns">The view's columns in order, its <c>partition</c> and <c>id</c> first.</param>
 /// <param name="Joins">The joins, in order.</param>

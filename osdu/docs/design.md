@@ -1211,7 +1211,7 @@ dimension flow
 after the flows that write the kinds it reads, and a cache flow holding a dimension after the dimension flow.
 
 A dimension flow can also declare views over its tables ([dimension-plan.md](dimension-plan.md), Views): the dimensions
-of the flow side by side at the grain of one of them, as `osdu.dimv_<view>`, so a pipeline reads one table. Joins are
+of the flow side by side at the grain of one of them, as `osdu.v_dim_<view>`, so a pipeline reads one table. Joins are
 declared and checked where the document is read, never inferred; each compares the partition, a SHA-256 of the key that
 every dimension table keeps and indexes, and the key's text under a binary collation. A column is a T-SQL expression read
 by SQL Server's own parser and written back from a listed set of operators and functions, converted by the module's own

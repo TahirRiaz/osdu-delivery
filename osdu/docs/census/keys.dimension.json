@@ -649,7 +649,7 @@
       "path": "target",
       "type": "object",
       "required": false,
-      "description": "Where the pipelines that read the flow's dimension tables and views find them: the module's database, named by the connection those pipelines name it by. With it, the flow's lineage declares that it writes every `osdu.dim_<dimension>` table and every `osdu.dimv_<view>` view, so a pipeline reading one is ordered after the flow. Required when the flow declares `views`."
+      "description": "Where the pipelines that read the flow's dimension tables and views find them: the module's database, named by the connection those pipelines name it by. With it, the flow's lineage declares that it writes every `osdu.dim_<dimension>` table and every `osdu.v_dim_<view>` view, so a pipeline reading one is ordered after the flow. Required when the flow declares `views`."
     },
     {
       "path": "target.connection",
@@ -661,7 +661,7 @@
       "path": "views",
       "type": "list",
       "required": false,
-      "description": "Views over the flow's dimension tables, at most 50, names unique ignoring case. Each puts dimensions of this flow side by side at the grain of one of them (`from`), joined on the keys they share (`join`), with the columns the document lists (`columns`), each an expression converted to a data type. A build writes each as `osdu.dimv_<name>` after the flow's dimensions, checks it in the run's partition, and drops a view the flow no longer declares. Needs `target.connection`."
+      "description": "Views over the flow's dimension tables, at most 50, names unique ignoring case. Each puts dimensions of this flow side by side at the grain of one of them (`from`), joined on the keys they share (`join`), with the columns the document lists (`columns`), each an expression converted to a data type. A build writes each as `osdu.v_dim_<name>` after the flow's dimensions, checks it in the run's partition, and drops a view the flow no longer declares. Needs `target.connection`."
     },
     {
       "path": "views[]",
@@ -673,7 +673,7 @@
       "path": "views[].name",
       "type": "string",
       "required": true,
-      "description": "The view's name: a letter, then letters, digits and underscores, at most 64, unique among the views of a database ignoring case. The view is `osdu.dimv_<name>`. A name another flow's view holds, or an object no build made, is refused when the build writes it."
+      "description": "The view's name: a letter, then letters, digits and underscores, at most 64, unique among the views of a database ignoring case. The view is `osdu.v_dim_<name>`. A name another flow's view holds, or an object no build made, is refused when the build writes it."
     },
     {
       "path": "views[].description",

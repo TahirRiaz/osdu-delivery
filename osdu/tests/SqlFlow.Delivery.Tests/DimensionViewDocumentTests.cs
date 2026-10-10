@@ -109,7 +109,7 @@ public class DimensionViewDocumentTests
 
         var view = Assert.Single(flow.Views);
         Assert.Equal("Curve", view.Name);
-        Assert.Equal("dimv_Curve", view.ViewName);
+        Assert.Equal("v_dim_Curve", view.ViewName);
         Assert.Equal("LogCurve", view.From);
         Assert.Equal(["${env:WELLDB_OSDU_DB}"], new[] { flow.Target!.Connection });
         Assert.Equal(
@@ -128,7 +128,7 @@ public class DimensionViewDocumentTests
 
         // Every join compares the partition, the key's hash and the key's text exactly; a joined dimension is joined left.
         var create = definition.CreateSql;
-        Assert.StartsWith("CREATE OR ALTER VIEW [osdu].[dimv_Curve] ([partition], [id], [WellLogID], [Log]", create, StringComparison.Ordinal);
+        Assert.StartsWith("CREATE OR ALTER VIEW [osdu].[v_dim_Curve] ([partition], [id], [WellLogID], [Log]", create, StringComparison.Ordinal);
         Assert.Contains("FROM [osdu].[dim_LogCurve] AS [b]", create, StringComparison.Ordinal);
         Assert.Contains("LEFT JOIN [osdu].[dim_Domain] AS [j2]", create, StringComparison.Ordinal);
         Assert.Contains("AND [j2].[key_hash] = CAST(HASHBYTES('SHA2_256', [j1].[SamplingDomainTypeID]) AS binary(32))", create, StringComparison.Ordinal);
@@ -168,7 +168,7 @@ public class DimensionViewDocumentTests
 
         Assert.All(objects, o => Assert.Equal((LineageRelation.Writes, "${env:WELLDB_OSDU_DB}", "osdu"), (o.Relation, o.ConnectionReference, o.Schema)));
         Assert.Equal(
-            ["dim_LogCurve", "dim_WellLog", "dim_Unit", "dim_Domain", "dim_Wellbore", "dim_WellboreSource", "dimv_Curve"],
+            ["dim_LogCurve", "dim_WellLog", "dim_Unit", "dim_Domain", "dim_Wellbore", "dim_WellboreSource", "v_dim_Curve"],
             objects.Select(o => o.Name));
         Assert.Equal(LineageNodeKind.View, objects[^1].Kind);
 

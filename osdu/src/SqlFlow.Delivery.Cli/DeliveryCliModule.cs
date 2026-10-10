@@ -281,7 +281,7 @@ public sealed class DeliveryCliModule : ICliModule
                 "                                   it in the partition, for good: refused for one the flow declares or a",
                 "                                   cache flow captures; recorded as an activity of the flow (needs --db)",
                 "sqlflow dimensions views <flow.yaml> [--view <name> | --suggest <dimension>] [--partition <id>]",
-                "                                   The flow's views, osdu.dimv_<view>: each with its from dimension, its",
+                "                                   The flow's views, osdu.v_dim_<view>: each with its from dimension, its",
                 "                                   joins, whether a build wrote it as the flow declares it, and its last",
                 "                                   check; --view shows one with its columns, its checks and its SQL;",
                 "                                   --suggest offers the joins a view of that dimension could make, from",

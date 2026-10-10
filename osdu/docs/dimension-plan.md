@@ -41,7 +41,7 @@ cascading selects read. The live check listed under Close-out has not been run.
 | What cannot be a key | Values search cannot match exactly | A text value longer than 256 characters is not in the `keyword` sub-field at all (`ignore_above: 256`), and a null text is indexed there as the text `null` (`null_value`) [25 IC/util/TypeMapper.java:262-268]. Neither can be filtered on exactly, so both are counted and reported, never stored as keys. |
 | Operation names | `build` (the default) and `plan` | `plan` reads templates and counts, as every kind's plan does, and writes nothing. |
 | Views | Declared in the flow, joins and columns alike, and checked against the saved templates; never inferred | A view is what a pipeline reads: it changes only when its document does, the same on every host and in every partition, whichever templates are saved. |
-| Where a view lives | `osdu.dimv_<view>`, beside the dimension tables it reads, the second exception to "only migration-owned objects in `osdu`" | It reads nothing but dimension tables and comes and goes with them; a schema of its own would be one the module makes at run time, outside its migrations. |
+| Where a view lives | `osdu.v_dim_<view>`, beside the dimension tables it reads, the second exception to "only migration-owned objects in `osdu`" | It reads nothing but dimension tables and comes and goes with them; a schema of its own would be one the module makes at run time, outside its migrations. |
 | A view's columns | A T-SQL scalar expression and a data type each, read by SQL Server's own parser and written back by the module from a listed set of operators and functions | SQL Server is the module's only provider, so a person writes what they know; a view written from the parsed tree reads the dimensions it joins and nothing else, which text passed through could not promise. |
 | How a join compares keys | The partition, a SHA-256 of the key (`key_hash`), and the text under `Latin1_General_100_BIN2` | A key is up to 1,024 characters, over SQL Server's 1,700-byte index key, and the database's collation may equate ids that differ only in case, which OSDU holds as different records. |
 | What orders a pipeline reading a view | `target.connection`, the module's database as the pipeline names it, required with views and checked against the module's own connection | SQLFlow identifies a server by its reference as written, and the module's connection is configured per host, so only a reference the flow declares meets the pipeline's. |
@@ -416,7 +416,7 @@ any more, an admin removes it for good (`DELETE /dimensions/{dimensionId}`, the 
 A view puts dimensions of one flow side by side at the grain of one of them, so a pipeline, a report or a person reads
 one table instead of writing the joins: each curve with its log, the log's sampling domain and the curve's unit. A flow
 declares its views by name, with their joins and their columns, each column an expression converted to a data type. A
-build writes each as `osdu.dimv_<view>` and keeps it in step with the tables it reads.
+build writes each as `osdu.v_dim_<view>` and keeps it in step with the tables it reads.
 
 ```yaml
 # The flow's dimensions, abridged (the reference's Elements example, with a BaseDepth field):
@@ -428,7 +428,7 @@ build writes each as `osdu.dimv_<view>` and keeps it in step with the tables it 
 target:
   connection: ${env:WELLDB_OSDU_DB}       # the module's database, named as the pipelines reading the views name it
 views:
-  - name: Curve                           # osdu.dimv_Curve
+  - name: Curve                           # osdu.v_dim_Curve
     description: Every curve of every well log, with its log, the log's sampling domain and the curve's unit.
     from: LogCurve                        # the grain: a row of the view for each row of dim_LogCurve
     join:
@@ -453,7 +453,7 @@ views:
 A build writes it as (abridged to the first join and two columns):
 
 ```sql
-CREATE OR ALTER VIEW [osdu].[dimv_Curve] (
+CREATE OR ALTER VIEW [osdu].[v_dim_Curve] (
     [partition], [id], [WellLogID], [WellLog], ..., [Created]) AS
 SELECT b.[partition], b.[id], b.[WellLogID], j1.[WellLogName], ...,
        CAST(SWITCHOFFSET(TRY_CAST(j1.[CreationDateTime] AS datetimeoffset(7)), '+00:00') AS datetime2(3))
@@ -468,7 +468,7 @@ LEFT JOIN [osdu].[dim_WellLog] AS j1
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `target.connection` | none | The module's database, written as a delivery flow's `source.connection` is: a `${env:...}` or `${keyvault:...}` reference, or a SQL Server connection string whose password is one. Required when the flow declares views. |
-| `views[].name` | required | The view's name: a letter, then letters, digits and underscores, at most 64; unique among the views of a database, ignoring case. The view is `osdu.dimv_<name>`. |
+| `views[].name` | required | The view's name: a letter, then letters, digits and underscores, at most 64; unique among the views of a database, ignoring case. The view is `osdu.v_dim_<name>`. |
 | `views[].description` | none | What the view holds, shown with it. |
 | `views[].from` | required | The dimension whose rows the view's rows are. |
 | `views[].join[]` | none | `{ on, to, as }`: the column joined on, the dimension joined to, and the alias its columns are read by (the dimension's name unless given). At most 16. |
@@ -697,7 +697,7 @@ is on numbers, never on a text.
 | `dim_<dimension>` | key and value it collects | The dimension as one table (The table, above): made and widened by builds, not by migrations. |
 | `DimensionView` | view | The flow, the declaration as last written and its hash, the tables it reads, its columns with their types, the SQL, and the run that wrote it. Keyed by an identity and unique by name: a view spans every partition, so it belongs to no ledger partition. |
 | `DimensionViewCheck` | view, partition and build | The rows, what each join found, and the values each conversion could not read, with examples. |
-| `dimv_<view>` | row of the view's `from` dimension | A view over the dimension tables (Views, above): written by builds, not by migrations. |
+| `v_dim_<view>` | row of the view's `from` dimension | A view over the dimension tables (Views, above): written by builds, not by migrations. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
 mark removed, give each attribute its number, and bring the dimension's own table to what was kept. The attribute values
@@ -969,6 +969,8 @@ samples README.
   index holds a field, while an attribute's value leads two. `DimensionElement.Value` is `nvarchar(4000)` (migration
   `DimensionElementValues`, module version 1.37.0); the staging tables, a dimension table's field columns and a view's
   type of them follow, and a table made before is widened by its next build through SQLFlow's schema evolution.
+- A view is `osdu.v_dim_<name>`, read beside the `dim_` tables it joins; a view a build wrote under the former `dimv_`
+  is dropped and written under its name now by the flow's next build, in one transaction, and its record follows.
 - Tests: the condition's SQL in the view and in its check's statements, and its refusals; a view leaving out the row of
   a key with no element on SQL Server, its check counting the rows it holds; a field of a thousand characters kept whole
   in the ledger, the table and the view, after a table made at 256 is widened; the reader cutting at 4,000; the migration

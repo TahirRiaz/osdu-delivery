@@ -47,7 +47,7 @@ internal static class SqlServerDimensionViewStore
     /// <summary>The application lock a view is written, dropped and renamed under, whichever build or removal holds it.</summary>
     internal static string LockResource(string name) => "osdu-dimension-view:" + name.ToUpperInvariant();
 
-    /// <summary>The view's name as a statement names it: <c>[osdu].[dimv_...]</c>.</summary>
+    /// <summary>The view's name as a statement names it: <c>[osdu].[v_dim_...]</c>.</summary>
     private static string Qualified(string viewName) => DimensionTables.Qualified(viewName);
 
     /// <summary>
@@ -121,7 +121,7 @@ internal static class SqlServerDimensionViewStore
 
     // The view's record, and the object of its name the schema holds now, with its type.
     private const string RecordSql = """
-        SELECT v.[ViewId], v.[Name], v.[FlowName], v.[SqlHash]
+        SELECT v.[ViewId], v.[Name], v.[FlowName], v.[SqlHash], v.[ViewName]
         FROM [osdu].[DimensionView] AS v
         WHERE UPPER(v.[Name]) = UPPER(@name);
 
@@ -141,6 +141,7 @@ internal static class SqlServerDimensionViewStore
             int? recordId = null;
             string? recordFlow = null;
             string? recordHash = null;
+            string? recordViewName = null;
             string? objectType = null;
             await using (var read = Command(connection, transaction, RecordSql))
             {
@@ -152,6 +153,7 @@ internal static class SqlServerDimensionViewStore
                     recordId = reader.GetInt32(0);
                     recordFlow = reader.GetString(2);
                     recordHash = await reader.IsDBNullAsync(3, ct).ConfigureAwait(false) ? null : reader.GetString(3);
+                    recordViewName = reader.GetString(4);
                 }
 
                 await reader.NextResultAsync(ct).ConfigureAwait(false);
@@ -186,6 +188,14 @@ internal static class SqlServerDimensionViewStore
 
             if (writes)
             {
+                // A view a build wrote under the module's former name for views moves to its name now, in the same transaction.
+                if (recordViewName is not null && !string.Equals(recordViewName, view.ViewName, StringComparison.OrdinalIgnoreCase))
+                {
+                    var former = Qualified(recordViewName);
+                    await using var drop = Command(connection, transaction, $"IF OBJECT_ID(N'{former.Replace("'", "''", StringComparison.Ordinal)}', N'V') IS NOT NULL DROP VIEW {former};");
+                    await drop.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+
                 await using var create = Command(connection, transaction, definition.CreateSql);
                 await create.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
@@ -207,7 +217,7 @@ internal static class SqlServerDimensionViewStore
                 END
                 ELSE
                 BEGIN
-                    UPDATE [osdu].[DimensionView] SET [Name] = @name, [FlowName] = @flow, [LedgerId] = @ledger, [Description] = @description, [DeclarationJson] = @declaration,
+                    UPDATE [osdu].[DimensionView] SET [Name] = @name, [ViewName] = @viewName, [FlowName] = @flow, [LedgerId] = @ledger, [Description] = @description, [DeclarationJson] = @declaration,
                         [Sql] = @sql, [SqlHash] = @hash, [TablesJson] = @tables, [ColumnsJson] = @columns, [Note] = NULL,
                         [WrittenRunId] = CASE WHEN @writes = 1 THEN @run ELSE [WrittenRunId] END,
                         [WrittenBy] = CASE WHEN @writes = 1 THEN @actor ELSE [WrittenBy] END,

@@ -123,7 +123,7 @@ public sealed class DeliveryDimensionViewApiTests
             foreach (var path in new[] { "/api/v1/delivery/dimensions/views", $"/api/v1/delivery/flows/{pipelineId}/dimensions/views" })
             {
                 var listed = (await JsonAsync(client, token, path)).EnumerateArray().Single(v => v.GetProperty("name").GetString() == viewName);
-                Assert.Equal("dimv_" + viewName, listed.GetProperty("viewName").GetString());
+                Assert.Equal("v_dim_" + viewName, listed.GetProperty("viewName").GetString());
                 Assert.Equal(flowName, listed.GetProperty("flowName").GetString());
                 Assert.Equal(pipelineId, listed.GetProperty("pipelineId").GetGuid());
                 Assert.True(listed.GetProperty("declared").GetBoolean());
@@ -138,7 +138,7 @@ public sealed class DeliveryDimensionViewApiTests
             // One view: its SQL as written is the one its document declares, its YAML with where each part is written.
             var detail = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/views/{viewName.ToUpperInvariant()}");
             Assert.Equal(detail.GetProperty("declaredSql").GetString(), detail.GetProperty("sql").GetString());
-            Assert.StartsWith($"CREATE OR ALTER VIEW [osdu].[dimv_{viewName}]", detail.GetProperty("sql").GetString(), StringComparison.Ordinal);
+            Assert.StartsWith($"CREATE OR ALTER VIEW [osdu].[v_dim_{viewName}]", detail.GetProperty("sql").GetString(), StringComparison.Ordinal);
             Assert.Single(detail.GetProperty("checks").EnumerateArray());
             var yamlBlock = detail.GetProperty("yaml");
             Assert.Equal($"  - name: {viewName}", yamlBlock.GetProperty("lines")[0].GetString());
@@ -183,7 +183,7 @@ public sealed class DeliveryDimensionViewApiTests
 
             await using (var osdu = SampleEstate.Context(cs))
             {
-                Assert.Equal(0, await osdu.Database.SqlQuery<int>($"SELECT COUNT(*) AS [Value] FROM sys.views WHERE [name] = {"dimv_" + viewName}").SingleAsync());
+                Assert.Equal(0, await osdu.Database.SqlQuery<int>($"SELECT COUNT(*) AS [Value] FROM sys.views WHERE [name] = {"v_dim_" + viewName}").SingleAsync());
                 Assert.Equal(1, await osdu.DeliveryActivities.CountAsync(a => a.FlowId == flow.LedgerId && a.Kind == DimensionViewRemoval.ActivityKind && a.Outcome == "completed"));
             }
         }
@@ -191,7 +191,7 @@ public sealed class DeliveryDimensionViewApiTests
         {
             await using (var osdu = SampleEstate.Context(cs))
             {
-                await osdu.Database.ExecuteSqlRawAsync("DROP VIEW IF EXISTS " + DimensionTables.Qualified("dimv_" + viewName) + ";");
+                await osdu.Database.ExecuteSqlRawAsync("DROP VIEW IF EXISTS " + DimensionTables.Qualified("v_dim_" + viewName) + ";");
                 foreach (var table in new[] { DimensionTables.NameOf(log), DimensionTables.NameOf(unit) })
                 {
                     await osdu.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS " + DimensionTables.Qualified(table) + ";");

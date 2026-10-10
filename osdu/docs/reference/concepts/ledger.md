@@ -119,7 +119,7 @@ Other tables of the schema are documented with what they serve:
   [Assertion flow](../flow/assertion.md).
 - `osdu.Dimension` and its tables, and each `osdu.dim_<dimension>`: in [Dimension flow](../flow/dimension.md).
 - `osdu.DimensionView` (each view a dimension flow made, with the statement it was written by), `osdu.DimensionViewCheck`
-  (what each build's check of a view found in a partition, the newest 50 of each kept) and each `osdu.dimv_<view>`: in
+  (what each build's check of a view found in a partition, the newest 50 of each kept) and each `osdu.v_dim_<view>`: in
   [Dimension flow, Views](../flow/dimension.md#views).
   `osdu.Inventory` and its tables: in [Inventory flow](../flow/inventory.md).
 - `osdu.SearchTerm`, `osdu.SearchTermRefinement`: in [Search terms](search-terms.md).

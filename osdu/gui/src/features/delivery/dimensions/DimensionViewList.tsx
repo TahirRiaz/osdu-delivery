@@ -15,7 +15,7 @@ import { viewHref, viewObject } from "./dimensionViewFormat";
 const REFRESH_MS = 15000;
 
 /** What a view is, as hovering the section's heading says it. */
-const VIEWS_PURPOSE = "A view puts dimensions of the flow side by side at the grain of one of them, so a pipeline, a report or a person reads one table instead of writing the joins. Each build of the flow writes every view it declares as osdu.dimv_<name>, after its dimensions, and checks it in the run's partition: its rows, what each join found, and the values a conversion could not read.";
+const VIEWS_PURPOSE = "A view puts dimensions of the flow side by side at the grain of one of them, so a pipeline, a report or a person reads one table instead of writing the joins. Each build of the flow writes every view it declares as osdu.v_dim_<name>, after its dimensions, and checks it in the run's partition: its rows, what each join found, and the values a conversion could not read.";
 
 /** A view's joins in a line: each joined dimension, by its alias where the view gives it one. */
 function joinsText(view: DeliveryDimensionView): string {

@@ -20,7 +20,7 @@ keywords:
   - views
   - join dimension tables
   - typed columns
-  - "osdu.dimv_"
+  - "osdu.v_dim_"
   - target.connection
   - datatype
   - key_hash
@@ -424,14 +424,14 @@ value's column, `id`).
 ## Views
 
 A view puts dimensions of one flow side by side at the grain of one of them, so a pipeline, a report or a person reads
-one table instead of writing the joins. A build writes each as `osdu.dimv_<name>` after the flow's dimensions, checks it,
+one table instead of writing the joins. A build writes each as `osdu.v_dim_<name>` after the flow's dimensions, checks it,
 and drops a view the flow no longer declares.
 
 ```yaml
 target:
   connection: ${env:SQLFLOW_OSDU_DB}      # the module's database, named as the pipelines reading the views name it
 views:
-  - name: Curve                           # osdu.dimv_Curve
+  - name: Curve                           # osdu.v_dim_Curve
     description: Every curve of every well log, with its log and the curve's unit.
     from: LogCurve                        # a row of the view for each row of dim_LogCurve
     join:
@@ -524,7 +524,7 @@ the run writes them again at its end. A dimension a view reads is not removed un
 the view without it.
 
 **Lineage.** With `target.connection`, the flow declares that it writes each `osdu.dim_<dimension>` table and each
-`osdu.dimv_<view>` view on that connection, so a pipeline reading them through the same reference is ordered after it.
+`osdu.v_dim_<view>` view on that connection, so a pipeline reading them through the same reference is ordered after it.
 SQLFlow tells servers apart by the reference as written, so the two name it alike. A build and a plan ask the server
 which database the reference reaches and refuse one other than the module's own, naming the reference and never what it
 resolves to. A table of facts for analytical queries is an ingestion flow reading the view (keyed by `partition` and
@@ -538,7 +538,7 @@ connections:
   warehouse: ${env:WAREHOUSE_DB}
 source:
   server: osduDelivery
-  object: OsduDelivery.osdu.dimv_Curve
+  object: OsduDelivery.osdu.v_dim_Curve
 target:
   server: warehouse
   object: Warehouse.arc.Curve
@@ -675,6 +675,6 @@ A view the flow no longer declares is dropped by its next build. One whose flow 
 | `Dimension <name> could not read dictionary <dictionary>: ...` | Add or fix `dictionaries/<name>.yaml`. |
 | `The dimension's table osdu.dim_<name> has a column <name> already ... Drop that column, or name the <role>'s column otherwise in the flow: columns: { <role>: <name> }.` | A rename would take a name another column holds. |
 | `Dimension flow '<flow>': target.connection ${env:<NAME>} reaches another database than this host's module database, ... Point it at the module's database.` | Point the reference at the module's database. Nothing was built. |
-| `View <name> is declared by dimension flow '<other>' as well, and a view's name is unique among the flows of a database, so osdu.dimv_<name> was not written. ...` | Rename one of the views, or remove the other flow's. |
-| `osdu.dimv_<name> is in the database, and no build of a dimension flow made it, so it is not written over. ...` | Drop the object, or name the view otherwise. |
+| `View <name> is declared by dimension flow '<other>' as well, and a view's name is unique among the flows of a database, so osdu.v_dim_<name> was not written. ...` | Rename one of the views, or remove the other flow's. |
+| `osdu.v_dim_<name> is in the database, and no build of a dimension flow made it, so it is not written over. ...` | Drop the object, or name the view otherwise. |
 | `Column <column> of view <name> could not be computed for every row of partition '<partition>': Arithmetic overflow ...` | Write the expression around the value. |

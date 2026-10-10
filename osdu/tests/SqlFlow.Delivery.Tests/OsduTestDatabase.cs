@@ -427,7 +427,7 @@ public sealed class OsduTestDatabase : IDisposable
 
     /// <summary>
     /// Empties every table of the module's schema but its migration history, and drops the tables and the views dimension
-    /// builds made there (<c>dim_...</c>, <c>dimv_...</c>), which are no objects of the model; a view a test made by hand
+    /// builds made there (<c>dim_...</c>, <c>v_dim_...</c>), which are no objects of the model; a view a test made by hand
     /// goes with them. The schema has no foreign keys, so each table of the model is truncated, which also starts its
     /// identity column from its seed again.
     /// </summary>

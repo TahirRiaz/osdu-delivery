@@ -3297,7 +3297,7 @@ export interface DeliveryDimensionViewCheck {
  */
 export interface DeliveryDimensionView {
   name: string;
-  /** The view's name in the module's schema, without the schema (`dimv_Curve`). */
+  /** The view's name in the module's schema, without the schema (`v_dim_Curve`). */
   viewName: string;
   flowName: string;
   /** Null when the catalog holds no pipeline of the flow's name. */
