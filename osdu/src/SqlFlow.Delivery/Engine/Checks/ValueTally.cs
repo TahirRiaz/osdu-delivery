@@ -135,8 +135,7 @@ internal sealed partial class ValueTally
         {
             if (_variables.TryGetValue($"{TemplatePath.Prefix}.{failure.At}", out var asserted))
             {
-                var sample = basis with { Message = failure.Message };
-                Note(asserted, "asserted", asserted.Target, failure.Assertion, Fails(failure), Clip(failure.Value, _limits.MaxValueChars), row, sample);
+                Note(asserted, "asserted", asserted.Target, failure.Assertion, Fails(failure), Clip(failure.Value, _limits.MaxValueChars), row, basis, failure.Message);
                 asserted.CountAsserted(row);
             }
         }
@@ -244,15 +243,16 @@ internal sealed partial class ValueTally
             : problems;
     }
 
-    private void Note(VariableTally variable, string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample sample)
+    /// <param name="said">What the record states of its own value, when it differs from the finding's message (why one value fails an assertion).</param>
+    private void Note(VariableTally variable, string outcome, string at, string? rule, string message, string? value, long row, ValueCheckSample sample, string? said = null)
     {
-        var record = sample with { Value = value, Message = message };
+        var record = sample with { Value = value, Message = said ?? message };
         variable.Note(outcome, at, rule, message, value, row, record, _request);
 
         // What the mapping means no value for is no failure, so a listing of the failing rows leaves it out.
         if (_each is not null && outcome != "notApplicable")
         {
-            _each(new ValueCheckOccurrence { Target = variable.Target, At = at, Outcome = outcome, Rule = rule, Message = message, Value = value, Record = record });
+            _each(new ValueCheckOccurrence { Target = variable.Target, At = at, Outcome = outcome, Rule = rule, Message = said ?? message, Value = value, Record = record });
         }
     }
 

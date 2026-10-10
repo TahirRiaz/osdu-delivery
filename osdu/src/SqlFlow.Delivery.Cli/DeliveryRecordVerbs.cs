@@ -213,16 +213,9 @@ internal static class DeliveryRecordVerbs
                 context.Out.WriteLine("        " + step);
             }
 
-            if (Validation.ValidationVerdict.FromJson(ResultNode(attempt)?["validation"]) is { Outcome: not Validation.ValidationOutcome.NotValidated } verdict)
+            foreach (var line in VerdictLines(attempt))
             {
-                context.Out.WriteLine("        checked " + One(verdict.Summary()));
-                if (verdict.Assertions is { Failed: > 0 } findings)
-                {
-                    foreach (var line in FindingLines.Of(findings))
-                    {
-                        context.Out.WriteLine("          " + One(line));
-                    }
-                }
+                context.Out.WriteLine("        " + line);
             }
 
             if (attempt.Error is { Length: > 0 } error)
@@ -413,6 +406,29 @@ internal static class DeliveryRecordVerbs
     /// What a try's result records, one line each: the steps it took with what the target answered, for an undo what became
     /// of each artifact, and what a try that sent nothing had to say.
     /// </summary>
+    /// <summary>
+    /// What an attempt's verdict says, as the terminal shows it under the attempt: one line for the check of its document,
+    /// then each failure of the mapping's assertions it lists (osdu/docs/reference/flow/mapping-assertions.md); nothing for a
+    /// try that checked nothing.
+    /// </summary>
+    internal static IEnumerable<string> VerdictLines(AttemptRecord attempt)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        if (Validation.ValidationVerdict.FromJson(ResultNode(attempt)?["validation"]) is not { Outcome: not Validation.ValidationOutcome.NotValidated } verdict)
+        {
+            yield break;
+        }
+
+        yield return "checked " + One(verdict.Summary());
+        if (verdict.Assertions is { Failed: > 0 } findings)
+        {
+            foreach (var line in FindingLines.Of(findings))
+            {
+                yield return "  " + One(line);
+            }
+        }
+    }
+
     /// <summary>An attempt's result as JSON, or null when it holds none or holds text that is not JSON.</summary>
     private static JsonNode? ResultNode(AttemptRecord attempt)
     {
