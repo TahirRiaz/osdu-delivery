@@ -45,6 +45,7 @@ internal static partial class MappingMapper
     internal const string UnverifiedKey = "$unverified";
     internal const string LookupKey = "$lookup";
     internal const string FindAllKey = "$findAll";
+    internal const string AssertKey = "$assert";
 
     /// <summary>How a <c>$findAll</c> operand reads a path of the record a lookup finds: <c>$lookup.wellbore.GeoContexts.FieldID</c>.</summary>
     internal const string LookupReference = Marker + MappingLookup.Prefix;
@@ -59,23 +60,23 @@ internal static partial class MappingMapper
     internal static readonly IReadOnlyList<string> SourceKeys = [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, LookupKey, CoalesceKey];
 
     /// <summary>The settings a value node takes beside the key it reads its value with.</summary>
-    internal static readonly IReadOnlyList<string> ValueSettings = [FindByKey, FindAllKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
+    internal static readonly IReadOnlyList<string> ValueSettings = [FindByKey, FindAllKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, AssertKey, DescriptionKey];
 
     /// <summary>The settings a <c>$lookup</c> node takes beside it: the lookup says how its record is found.</summary>
-    internal static readonly IReadOnlyList<string> LookupSettings = [WhenKey, RequiredKey, DescriptionKey];
+    internal static readonly IReadOnlyList<string> LookupSettings = [WhenKey, RequiredKey, AssertKey, DescriptionKey];
 
     /// <summary>The keys a lookup of the <c>lookups</c> block is written with.</summary>
     internal static readonly IReadOnlyList<string> LookupKeys = [CacheKey, FindByKey, ModifiersKey, IgnoreSeparatorsKey, DescriptionKey];
 
     /// <summary>The settings a <c>$coalesce</c> node takes beside its alternatives: those that decide for all of them.</summary>
-    internal static readonly IReadOnlyList<string> CoalesceSettings = [WhenKey, RequiredKey, DescriptionKey];
+    internal static readonly IReadOnlyList<string> CoalesceSettings = [WhenKey, RequiredKey, AssertKey, DescriptionKey];
 
     /// <summary>The settings a <c>$forEach</c> node takes beside the child dataset it repeats.</summary>
-    internal static readonly IReadOnlyList<string> RepeatSettings = [ItemKey, WhereKey, WhenKey, RequiredKey, DescriptionKey];
+    internal static readonly IReadOnlyList<string> RepeatSettings = [ItemKey, WhereKey, WhenKey, RequiredKey, AssertKey, DescriptionKey];
 
     /// <summary>Every word of the mapping language a key of the record tree can be.</summary>
     internal static readonly IReadOnlyList<string> NodeKeys =
-        [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, LookupKey, CoalesceKey, ForEachKey, ItemKey, WhereKey, FindByKey, FindAllKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
+        [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, LookupKey, CoalesceKey, ForEachKey, ItemKey, WhereKey, FindByKey, FindAllKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, AssertKey, DescriptionKey];
 
     /// <summary>The value keys, as a message lists them.</summary>
     private static string SourceList => string.Join(", ", SourceKeys.Take(SourceKeys.Count - 1)) + " or " + SourceKeys[^1];
@@ -333,6 +334,12 @@ internal static partial class MappingMapper
                             $"{itemAt} takes the first of its alternatives with {CoalesceKey}, and an item of a list gives what it reads; write each alternative as an item of its own, since the list keeps every value its items give.");
                     }
 
+                    if (Has(map, AssertKey))
+                    {
+                        throw new FlowValidationException(
+                            $"{itemAt}: {AssertKey} judges the value of a property, and this item gives one of the values of the list at {location}, which has no node of its own to assert on; a list of values takes no assertions.");
+                    }
+
                     var part = Value(map, path, itemLocation, scope, index, source);
                     if (part.IsPlainLiteral)
                     {
@@ -487,6 +494,7 @@ internal static partial class MappingMapper
                 $"{at}: {ForEachKey} names the child dataset whose rows become the array's items, as the flow declares it under source.datasets, such as {ForEachKey}: curves; '{child}' is not one.");
         }
 
+        var repeatRequired = Flag(map, RequiredKey, at) ?? true;
         entries.Add(new MappingEntry
         {
             Index = entries.Count,
@@ -495,7 +503,8 @@ internal static partial class MappingMapper
             Source = new MappingSource { Kind = MappingSourceKind.DatasetRows, Child = child },
             AppliesWhen = Has(map, WhenKey) ? Condition(Get(map, WhenKey), WhenKey, scope, at) : null,
             RowFilter = Has(map, WhereKey) ? Condition(Get(map, WhereKey), WhereKey, scope with { Child = child }, at) : null,
-            Required = Flag(map, RequiredKey, at) ?? true,
+            Required = repeatRequired,
+            Assertions = Assertions(map, $"a {ForEachKey} node writes an array of the rows of {child}", scope, repeatRequired, location, source),
             Description = Text(map, DescriptionKey, at),
         });
 
@@ -556,6 +565,12 @@ internal static partial class MappingMapper
 
         if (named[0] == ValueKey)
         {
+            if (Has(map, AssertKey))
+            {
+                throw new FlowValidationException(
+                    $"{at}: {AssertKey} judges the value a record is given, and a literal {ValueKey} gives every record the same one; remove {AssertKey}, or read the value from the row with {FromKey} or {ExprKey}.");
+            }
+
             if (new[] { FindByKey, FindAllKey, ModifiersKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey }.Any(key => Has(map, key)))
             {
                 throw new FlowValidationException(
@@ -578,7 +593,7 @@ internal static partial class MappingMapper
 
         if (named[0] == LookupKey)
         {
-            return LookupNode(map, target, location, scope, index, condition, description, at);
+            return LookupNode(map, target, location, scope, index, condition, description, source);
         }
 
         var read = named[0] switch
@@ -670,6 +685,10 @@ internal static partial class MappingMapper
                 $"{at}: {UnverifiedKey} lets an id the node builds with id or ref go out when the cache holds no record under it, and this node builds no id; build one, or remove {UnverifiedKey}.");
         }
 
+        var required = Flag(map, RequiredKey, at) ?? true;
+        var notIncoming = read.ReadsRow
+            ? null
+            : read.Kind == MappingSourceKind.Search ? "this node's value is the id a search of the platform finds" : "this node's value comes from the partition's cache";
         return new MappingEntry
         {
             Index = index,
@@ -680,9 +699,10 @@ internal static partial class MappingMapper
             FindAll = findAll,
             Modifiers = modifiers,
             AppliesWhen = condition,
-            Required = Flag(map, RequiredKey, at) ?? true,
+            Required = required,
             IgnoreSeparators = Flag(map, IgnoreSeparatorsKey, at) ?? false,
             Unverified = unverified,
+            Assertions = Assertions(map, notIncoming, scope, required, location, source),
             Description = description,
         };
     }
@@ -693,8 +713,9 @@ internal static partial class MappingMapper
     /// <c>$required</c> and <c>$description</c>; how the record is found is the lookup's to say.
     /// </summary>
     private static MappingEntry LookupNode(
-        IDictionary<object, object> map, TemplatePath target, string location, TreeScope scope, int index, MappingExpression? condition, string? description, string at)
+        IDictionary<object, object> map, TemplatePath target, string location, TreeScope scope, int index, MappingExpression? condition, string? description, string source)
     {
+        var at = $"{source}: {location}";
         foreach (var key in map.Keys.Select(KeyText).Where(key => key != LookupKey && !LookupSettings.Contains(key)))
         {
             throw new FlowValidationException(key is FindByKey or FindAllKey or ModifiersKey or IgnoreSeparatorsKey
@@ -703,6 +724,7 @@ internal static partial class MappingMapper
         }
 
         var (lookup, path) = LookupPath(RequiredText(map, LookupKey, at), scope, $"{at}: {LookupKey}", LookupKey + ": wellbore.id");
+        var required = Flag(map, RequiredKey, at) ?? true;
         return new MappingEntry
         {
             Index = index,
@@ -713,7 +735,8 @@ internal static partial class MappingMapper
             Modifiers = lookup.Modifiers,
             IgnoreSeparators = lookup.IgnoreSeparators,
             AppliesWhen = condition,
-            Required = Flag(map, RequiredKey, at) ?? true,
+            Required = required,
+            Assertions = Assertions(map, $"this node's value is a field of the record lookup '{lookup.Name}' finds", scope, required, location, source),
             Description = description,
         };
     }
@@ -915,12 +938,14 @@ internal static partial class MappingMapper
             alternatives.Add(Value(alternative, path, alternativeLocation, scope, index, source) with { Required = false });
         }
 
+        var required = Flag(map, RequiredKey, at) ?? true;
         return alternatives[0] with
         {
             Location = location,
             Alternatives = alternatives.Skip(1).ToList(),
             AppliesWhen = Has(map, WhenKey) ? Condition(Get(map, WhenKey), WhenKey, scope, at) : null,
-            Required = Flag(map, RequiredKey, at) ?? true,
+            Required = required,
+            Assertions = Assertions(map, "this node's value is the first its alternatives give", scope, required, location, source),
             Description = Text(map, DescriptionKey, at),
         };
     }

@@ -139,7 +139,14 @@ public sealed class EditorCensusTests
             .Append("$$<name>")
             .Append("$param.<name>")
             .Append("iif(condition, value, other)")
-            .Concat(ExpressionFunctions.All.Select(f => f.Signature));
+            .Concat(ExpressionFunctions.All.Select(f => f.Signature))
+            // An assertion's words: its conditions are the assertion flows' own, without resolves, and its settings.
+            .Concat(ConditionReader.Operators.Where(o => o != "resolves"))
+            .Concat(MappingMapper.AssertionSettings)
+            .Concat(MappingMapper.AssertionFilterKeys)
+            .Concat(MappingMapper.AssertionStages)
+            .Concat(MappingMapper.AssertionActions)
+            .Concat(MappingMapper.AssertionQuantities);
         var unnamed = words.Where(word => !grammar.Contains(word, StringComparison.Ordinal)).ToList();
         Assert.True(unnamed.Count == 0, $"record.<name> does not describe: {string.Join(", ", unnamed)}");
     }

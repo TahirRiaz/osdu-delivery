@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
@@ -29,7 +28,7 @@ internal static partial class AssertionMapper
     public const int MaxIds = 1000;
 
     /// <summary>The most values an <c>in</c> or <c>notIn</c> lists.</summary>
-    public const int MaxListed = 1000;
+    public const int MaxListed = ConditionReader.MaxListed;
 
     /// <summary>The most rows a record set expects.</summary>
     public const int MaxRows = 1000;
@@ -44,13 +43,10 @@ internal static partial class AssertionMapper
     public const int MaxLabel = 200;
 
     /// <summary>How long a <c>matches</c> expression may take on one value before it is refused as a failure to evaluate.</summary>
-    public static readonly TimeSpan PatternTimeout = TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan PatternTimeout = ConditionReader.PatternTimeout;
 
     /// <summary>The properties an OSDU record has at its root, the only places a field path may start.</summary>
-    public static readonly IReadOnlySet<string> RecordRoots = new HashSet<string>(StringComparer.Ordinal)
-    {
-        "id", "kind", "version", "acl", "legal", "data", "tags", "ancestry", "meta", "createTime", "createUser", "modifyTime", "modifyUser",
-    };
+    public static readonly IReadOnlySet<string> RecordRoots = ConditionReader.RecordRoots;
 
     private static readonly JsonSerializerOptions HashJson = new()
     {
@@ -474,7 +470,7 @@ internal static partial class AssertionMapper
         var sort = new List<AssertionSort>(declared.Count);
         foreach (var s in declared)
         {
-            var field = CheckPath(FlowMapper.Require(s?.Field, where + ".sort[].field", source), where + ": sort", source);
+            var field = ConditionReader.RecordPath(FlowMapper.Require(s?.Field, where + ".sort[].field", source), where + ": sort", source);
             var order = s!.Order?.Trim().ToLowerInvariant() ?? "asc";
             if (order is not ("asc" or "desc"))
             {
@@ -556,7 +552,7 @@ internal static partial class AssertionMapper
             throw new FlowValidationException($"{source}: {at}.field is required: the geo field the filter applies to, such as data.SpatialLocation.Wgs84Coordinates.");
         }
 
-        _ = CheckPath(field, at + ".field", source);
+        _ = ConditionReader.RecordPath(field, at + ".field", source);
         var named = filters.Where(f => spatial.ContainsKey(f)).ToList();
         if (named.Count != 1)
         {
@@ -769,8 +765,6 @@ internal static partial class AssertionMapper
 
     private static readonly string[] Common = ["name", "description", "severity"];
 
-    private static readonly string[] ComparisonKeys = ["equals", "notEquals", "atLeast", "atMost", "greaterThan", "lessThan", "between"];
-
     private static TestAssertion MapAssertion(AssertionItemYaml y, string at, TestContext test)
     {
         var subjects = new List<string>();
@@ -863,7 +857,7 @@ internal static partial class AssertionMapper
     private static CountAssertion MapCount(AssertionItemYaml y, string at, TestContext test)
     {
         OnlyKeys(y, "count", ["count"], at, test);
-        var comparison = MapCountComparison(y.Count!, at + ".count", test.Source);
+        var comparison = ConditionReader.CountComparison(y.Count!, at + ".count", test.Source);
         return new CountAssertion(comparison) { Label = $"count {comparison}" };
     }
 
@@ -871,7 +865,7 @@ internal static partial class AssertionMapper
     {
         OnlyKeys(y, "rowCount", ["rowCount"], at, test);
         RequireBulk("rowCount", at, test);
-        var comparison = MapCountComparison(y.RowCount!, at + ".rowCount", test.Source);
+        var comparison = ConditionReader.CountComparison(y.RowCount!, at + ".rowCount", test.Source);
         return new RowCountAssertion(comparison) { Label = $"rowCount {comparison}" };
     }
 
@@ -999,7 +993,7 @@ internal static partial class AssertionMapper
         var fields = new List<string>();
         foreach (var raw in y.Unique!)
         {
-            var path = CheckPath(raw, at + ".unique", test.Source);
+            var path = ConditionReader.RecordPath(raw, at + ".unique", test.Source);
             if (fields.Contains(path, StringComparer.Ordinal))
             {
                 throw new FlowValidationException($"{test.Source}: {at}.unique names '{path}' more than once.");
@@ -1024,7 +1018,7 @@ internal static partial class AssertionMapper
             throw new FlowValidationException($"{test.Source}: {at} groups what the search index holds, and the test reads its records by id; give it a query instead.");
         }
 
-        var field = CheckPath(y.GroupBy!, at + ".groupBy", test.Source);
+        var field = ConditionReader.RecordPath(y.GroupBy!, at + ".groupBy", test.Source);
         var groups = new List<ExpectedGroup>();
         foreach (var (key, value) in y.Groups ?? [])
         {
@@ -1034,7 +1028,7 @@ internal static partial class AssertionMapper
                 throw new FlowValidationException($"{test.Source}: {at}.groups names a group with an empty key.");
             }
 
-            groups.Add(new ExpectedGroup(group, MapCountComparison(value, $"{at}.groups.{group}", test.Source)));
+            groups.Add(new ExpectedGroup(group, ConditionReader.CountComparison(value, $"{at}.groups.{group}", test.Source)));
         }
 
         var absent = new List<string>();
@@ -1066,7 +1060,7 @@ internal static partial class AssertionMapper
             throw new FlowValidationException($"{test.Source}: {at}.mode says how the groups listed under groups compare with the ones found, and groups lists none.");
         }
 
-        var groupCount = y.GroupCount is null ? null : MapCountComparison(y.GroupCount, at + ".groupCount", test.Source);
+        var groupCount = y.GroupCount is null ? null : ConditionReader.CountComparison(y.GroupCount, at + ".groupCount", test.Source);
         if (groups.Count == 0 && absent.Count == 0 && groupCount is null)
         {
             throw new FlowValidationException($"{test.Source}: {at} groups by {field} and expects nothing of the groups: name them under groups or absent, or bound their number with groupCount.");
@@ -1090,7 +1084,7 @@ internal static partial class AssertionMapper
         var columns = new List<string>();
         foreach (var raw in set.Columns ?? [])
         {
-            columns.Add(CheckPath(raw, at + ".recordSet.columns", test.Source));
+            columns.Add(ConditionReader.RecordPath(raw, at + ".recordSet.columns", test.Source));
         }
 
         if (columns.Count is 0 or > MaxColumns)
@@ -1120,7 +1114,7 @@ internal static partial class AssertionMapper
                 throw new FlowValidationException($"{test.Source}: {rowAt} holds {row.Count} value(s) for {columns.Count} column(s).");
             }
 
-            rows.Add(row.Select(cell => cell is null ? null : Scalar(cell, rowAt, test.Source)).ToList());
+            rows.Add(row.Select(cell => cell is null ? null : ConditionReader.Scalar(cell, rowAt, test.Source)).ToList());
         }
 
         if (rows.Count == 0 && mode is RecordSetMode.Includes or RecordSetMode.Excludes)
@@ -1140,7 +1134,7 @@ internal static partial class AssertionMapper
     private static AggregateAssertion MapAggregate(AssertionItemYaml y, string at, TestContext test)
     {
         var isColumn = y.Column is not null;
-        OnlyKeys(y, "aggregate", ComparisonKeys.Append("aggregate").Append(isColumn ? "column" : "field").Append("tolerance"), at, test);
+        OnlyKeys(y, "aggregate", ConditionReader.ComparisonKeys.Append("aggregate").Append(isColumn ? "column" : "field").Append("tolerance"), at, test);
         var function = FlowMapper.ParseEnum<AggregateFunction>(y.Aggregate!.Trim(), at + ".aggregate", test.Source);
         ValueTarget target;
         if (isColumn)
@@ -1151,18 +1145,18 @@ internal static partial class AssertionMapper
         else
         {
             var field = y.Field ?? throw new FlowValidationException($"{test.Source}: {at} aggregates, and names no field (or column) to aggregate.");
-            target = new ValueTarget(CheckPath(field, at + ".field", test.Source), IsColumn: false);
+            target = new ValueTarget(ConditionReader.RecordPath(field, at + ".field", test.Source), IsColumn: false);
         }
 
         // Min and max compare dates as well as numbers; every other aggregate is a number.
         var numbersOnly = function is not (AggregateFunction.Min or AggregateFunction.Max);
-        var terms = OperatorsOf(y).Select(o => MapTerm(o.Key, o.Operand, $"{at}.{o.Key}", test.Source, numbersOnly)).ToList();
+        var terms = OperatorsOf(y).Select(o => ConditionReader.Term(o.Key, o.Operand, $"{at}.{o.Key}", test.Source, numbersOnly)).ToList();
         if (terms.Count == 0)
         {
-            throw new FlowValidationException($"{test.Source}: {at} aggregates {target} and compares it with nothing: give it one of {string.Join(", ", ComparisonKeys)}.");
+            throw new FlowValidationException($"{test.Source}: {at} aggregates {target} and compares it with nothing: give it one of {string.Join(", ", ConditionReader.ComparisonKeys)}.");
         }
 
-        var tolerance = Tolerance(y.Tolerance, at, test.Source);
+        var tolerance = ConditionReader.Tolerance(y.Tolerance, at, test.Source);
         if (tolerance is not null && terms.All(t => t.Value.Kind != ExpectedValueKind.Number))
         {
             throw new FlowValidationException($"{test.Source}: {at}.tolerance applies to comparisons of numbers, and the aggregate is compared with a date.");
@@ -1198,7 +1192,7 @@ internal static partial class AssertionMapper
         }
         else
         {
-            target = new ValueTarget(CheckPath(y.Field!, at + ".field", test.Source), IsColumn: false);
+            target = new ValueTarget(ConditionReader.RecordPath(y.Field!, at + ".field", test.Source), IsColumn: false);
         }
 
         var condition = MapCondition(y, isColumn, at, test);
@@ -1263,7 +1257,7 @@ internal static partial class AssertionMapper
 
         var target = isColumn
             ? new ValueTarget(CheckColumn(y.Column ?? throw new FlowValidationException($"{test.Source}: {at} names no column; a condition on a column assertion selects rows by a column."), at + ".column", test.Source), IsColumn: true)
-            : new ValueTarget(CheckPath(y.Field ?? throw new FlowValidationException($"{test.Source}: {at} names no field; a condition on a field assertion selects records by a field."), at + ".field", test.Source), IsColumn: false);
+            : new ValueTarget(ConditionReader.RecordPath(y.Field ?? throw new FlowValidationException($"{test.Source}: {at} names no field; a condition on a field assertion selects records by a field."), at + ".field", test.Source), IsColumn: false);
         var condition = MapCondition(y, isColumn, at, test);
         if (condition.Operator == ValueOperator.Resolves)
         {
@@ -1274,148 +1268,8 @@ internal static partial class AssertionMapper
     }
 
     private static ValueCondition MapCondition(AssertionConditionYaml y, bool isColumn, string at, TestContext test)
-    {
-        var operators = OperatorsOf(y);
-        if (operators.Count != 1)
-        {
-            throw new FlowValidationException(operators.Count == 0
-                ? $"{test.Source}: {at} names no condition: one of equals, notEquals, in, notIn, atLeast, atMost, greaterThan, lessThan, between, matches, notMatches, startsWith, endsWith, contains, notContains, exists, empty, type, length{(isColumn ? string.Empty : ", resolves")}."
-                : $"{test.Source}: {at} names {string.Join(" and ", operators.Select(o => o.Key))}; a condition has one operator. Write between for a range, or one assertion for each.");
-        }
-
-        var (key, operand) = operators[0];
-        var op = key switch
-        {
-            "equals" => ValueOperator.EqualTo,
-            "notEquals" => ValueOperator.NotEqualTo,
-            _ => FlowMapper.ParseEnum<ValueOperator>(key, at, test.Source),
-        };
-        var where = $"{at}.{key}";
-        var condition = new ValueCondition { Operator = op, IgnoreCase = y.IgnoreCase ?? false, Tolerance = Tolerance(y.Tolerance, at, test.Source) };
-        switch (op)
-        {
-            case ValueOperator.EqualTo or ValueOperator.NotEqualTo or ValueOperator.Contains or ValueOperator.NotContains:
-                condition = condition with { Operands = [Scalar(operand, where, test.Source)] };
-                break;
-            case ValueOperator.In or ValueOperator.NotIn:
-                var listed = operand as IList ?? throw new FlowValidationException($"{test.Source}: {where} lists the values allowed.");
-                if (listed.Count is 0 or > MaxListed)
-                {
-                    throw new FlowValidationException($"{test.Source}: {where} lists between 1 and {MaxListed} values.");
-                }
-
-                condition = condition with { Operands = listed.Cast<object?>().Select(v => Scalar(v, where, test.Source)).ToList() };
-                break;
-            case ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan:
-                condition = condition with { Operands = [Ordered(Scalar(operand, where, test.Source), where, test.Source)] };
-                break;
-            case ValueOperator.Between:
-                var bounds = operand as IList;
-                if (bounds is not { Count: 2 })
-                {
-                    throw new FlowValidationException($"{test.Source}: {where} lists two values, the lower bound and the upper, such as [0, 100].");
-                }
-
-                var low = Ordered(Scalar(bounds[0], where, test.Source), where, test.Source);
-                var high = Ordered(Scalar(bounds[1], where, test.Source), where, test.Source);
-                CheckBounds(low, high, where, test.Source);
-                condition = condition with { Operands = [low, high] };
-                break;
-            case ValueOperator.Matches or ValueOperator.NotMatches:
-                var expression = (string)operand;
-                try
-                {
-                    condition = condition with
-                    {
-                        Operands = [ExpectedValue.OfText(expression)],
-                        Pattern = new Regex(
-                            expression,
-                            RegexOptions.CultureInvariant | (y.IgnoreCase == true ? RegexOptions.IgnoreCase : RegexOptions.None),
-                            PatternTimeout),
-                    };
-                }
-                catch (ArgumentException ex)
-                {
-                    throw new FlowValidationException($"{test.Source}: {where} '{Shown(expression)}' is not a regular expression: {ex.Message}", ex);
-                }
-
-                break;
-            case ValueOperator.StartsWith or ValueOperator.EndsWith:
-                var text = (string)operand;
-                if (text.Length == 0)
-                {
-                    throw new FlowValidationException($"{test.Source}: {where} is empty; every value starts and ends with nothing.");
-                }
-
-                condition = condition with { Operands = [ExpectedValue.OfText(text)] };
-                break;
-            case ValueOperator.Exists or ValueOperator.Empty:
-                condition = condition with { Flag = (bool)operand };
-                break;
-            case ValueOperator.Type:
-                condition = condition with { JsonType = JsonTypeOf(((string)operand).Trim(), where, test.Source) };
-                break;
-            case ValueOperator.Length:
-                condition = condition with { Length = MapCountComparison(operand, where, test.Source) };
-                break;
-            default:
-                if (isColumn)
-                {
-                    throw new FlowValidationException($"{test.Source}: {where} asks whether a reference resolves, and a column of bulk data holds no references.");
-                }
-
-                condition = operand switch
-                {
-                    true => condition,
-                    string entityType when EntityTypePattern().IsMatch(entityType.Trim()) => condition with { EntityType = entityType.Trim() },
-                    _ => throw new FlowValidationException(
-                        $"{test.Source}: {where} is true (every value names a record that exists) or the entity type the references point at, such as master-data--Well."),
-                };
-                break;
-        }
-
-        CheckModifiers(condition, at, test.Source);
-        return condition;
-    }
-
-    /// <summary>The JSON type a <c>type</c> condition names, by JSON Schema's word for it.</summary>
-    private static JsonValueType JsonTypeOf(string word, string at, string source) => word switch
-    {
-        "string" => JsonValueType.Text,
-        "number" => JsonValueType.Number,
-        "integer" => JsonValueType.WholeNumber,
-        "boolean" => JsonValueType.Boolean,
-        "object" => JsonValueType.Mapping,
-        "array" => JsonValueType.Array,
-        "null" => JsonValueType.Null,
-        _ => throw new FlowValidationException($"{source}: {at} '{word}' is not one of string, number, integer, boolean, object, array, null."),
-    };
-
-    private static void CheckModifiers(ValueCondition condition, string at, string source)
-    {
-        if (condition.IgnoreCase && condition.Operator is not (ValueOperator.EqualTo or ValueOperator.NotEqualTo or ValueOperator.In or ValueOperator.NotIn
-                or ValueOperator.Matches or ValueOperator.NotMatches or ValueOperator.StartsWith or ValueOperator.EndsWith
-                or ValueOperator.Contains or ValueOperator.NotContains))
-        {
-            throw new FlowValidationException($"{source}: {at}.ignoreCase applies to text comparisons, not to {AssertionText.Of(condition.Operator)}.");
-        }
-
-        if (condition.Tolerance is not null && condition.Operator is not (ValueOperator.EqualTo or ValueOperator.NotEqualTo or ValueOperator.In
-                or ValueOperator.NotIn or ValueOperator.Between or ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan))
-        {
-            throw new FlowValidationException($"{source}: {at}.tolerance applies to comparisons of numbers, not to {AssertionText.Of(condition.Operator)}.");
-        }
-
-        if (condition.Tolerance is not null && condition.Operands.All(o => o.Kind != ExpectedValueKind.Number))
-        {
-            throw new FlowValidationException($"{source}: {at}.tolerance applies to comparisons of numbers, and the value compared with is not a number.");
-        }
-    }
-
-    private static double? Tolerance(double? declared, string at, string source)
-        => declared is { } tolerance && (tolerance < 0 || !double.IsFinite(tolerance))
-            ? throw new FlowValidationException($"{source}: {at}.tolerance must be a number, zero or more.")
-            : declared;
+        => ConditionReader.Read(
+            OperatorsOf(y), y.IgnoreCase, y.Tolerance, isColumn ? "asks whether a reference resolves, and a column of bulk data holds no references." : null, at, test.Source);
 
     private static Quantifier MapQuantifier(string? declared, string at, string source)
     {
@@ -1440,148 +1294,6 @@ internal static partial class AssertionMapper
         throw new FlowValidationException($"{source}: {at}.for '{declared}' is all, any, none, or a share such as 95%.");
     }
 
-    /// <summary>
-    /// A comparison of a count (of records, rows, groups, or a length): a whole number, zero or more, meaning equals, or a
-    /// mapping of the comparison keys, every one of which has to hold.
-    /// </summary>
-    private static Comparison MapCountComparison(object declared, string at, string source)
-    {
-        if (declared is IDictionary map)
-        {
-            var terms = new List<ComparisonTerm>();
-            foreach (System.Collections.DictionaryEntry entry in map)
-            {
-                var key = entry.Key as string ?? string.Empty;
-                if (!ComparisonKeys.Contains(key, StringComparer.Ordinal))
-                {
-                    throw new FlowValidationException($"{source}: {at} has '{key}', which is not one of {string.Join(", ", ComparisonKeys)}.");
-                }
-
-                if (entry.Value is null)
-                {
-                    throw new FlowValidationException($"{source}: {at}.{key} has no value.");
-                }
-
-                terms.Add(MapTerm(key, entry.Value, $"{at}.{key}", source, numbersOnly: true, wholeNumbers: true));
-            }
-
-            if (terms.Count == 0)
-            {
-                throw new FlowValidationException($"{source}: {at} is empty; give it one of {string.Join(", ", ComparisonKeys)}.");
-            }
-
-            return new Comparison(terms);
-        }
-
-        return new Comparison([MapTerm("equals", declared, at, source, numbersOnly: true, wholeNumbers: true)]);
-    }
-
-    private static ComparisonTerm MapTerm(string key, object operand, string at, string source, bool numbersOnly, bool wholeNumbers = false)
-    {
-        ExpectedValue Value(object? raw)
-        {
-            var value = Scalar(raw, at, source);
-            if (numbersOnly && value.Kind != ExpectedValueKind.Number)
-            {
-                throw new FlowValidationException($"{source}: {at} compares a number, and '{value.Text}' is not one.");
-            }
-
-            if (value.Kind is ExpectedValueKind.Boolean or ExpectedValueKind.Null)
-            {
-                throw new FlowValidationException($"{source}: {at} compares a number or a date, and '{value.Text}' is neither.");
-            }
-
-            if (wholeNumbers && value.Number is { } n && (n < 0 || n != Math.Floor(n)))
-            {
-                throw new FlowValidationException($"{source}: {at} counts, so it is a whole number, zero or more; '{value.Text}' is not.");
-            }
-
-            return value;
-        }
-
-        var op = key switch
-        {
-            "equals" => ComparisonOperator.EqualTo,
-            "notEquals" => ComparisonOperator.NotEqualTo,
-            _ => FlowMapper.ParseEnum<ComparisonOperator>(key, at, source),
-        };
-        if (op != ComparisonOperator.Between)
-        {
-            return new ComparisonTerm(op, Value(operand));
-        }
-
-        if (operand is not IList { Count: 2 } bounds)
-        {
-            throw new FlowValidationException($"{source}: {at} lists two values, the lower bound and the upper, such as [1, 10].");
-        }
-
-        var low = Value(bounds[0]);
-        var high = Value(bounds[1]);
-        CheckBounds(low, high, at, source);
-        return new ComparisonTerm(op, low, high);
-    }
-
-    private static void CheckBounds(ExpectedValue low, ExpectedValue high, string at, string source)
-    {
-        if (low.Kind != high.Kind)
-        {
-            throw new FlowValidationException($"{source}: {at} bounds a range with a {Describe(low)} and a {Describe(high)}; both bounds are numbers, or both dates.");
-        }
-
-        var reversed = low.Number is { } a && high.Number is { } b
-            ? a > b
-            : Instants(low.Text, high.Text) is var (from, to) && from > to;
-        if (reversed)
-        {
-            throw new FlowValidationException($"{source}: {at} runs from {low} down to {high}; write the lower bound first.");
-        }
-    }
-
-    private static (DateTimeOffset, DateTimeOffset)? Instants(string a, string b)
-        => DateTimeOffset.TryParse(a, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var x)
-           && DateTimeOffset.TryParse(b, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var y)
-            ? (x, y)
-            : null;
-
-    private static string Describe(ExpectedValue value) => value.Kind switch
-    {
-        ExpectedValueKind.Number => "number",
-        ExpectedValueKind.Text => "text",
-        ExpectedValueKind.Boolean => "boolean",
-        _ => "null",
-    };
-
-    /// <summary>An operand an ordering compares with: a number, or text (an ISO 8601 date compares as an instant).</summary>
-    private static ExpectedValue Ordered(ExpectedValue value, string at, string source)
-        => value.Kind is ExpectedValueKind.Number or ExpectedValueKind.Text
-            ? value
-            : throw new FlowValidationException($"{source}: {at} orders numbers, dates and text, and '{value.Text}' is none of them.");
-
-    /// <summary>A scalar as the document writes it: text, a number or a boolean; a mapping or a list is refused.</summary>
-    /// <remarks>
-    /// The YAML reader types an unquoted number as the smallest type that holds it (a byte, a single, a long), so a number
-    /// is kept as the text that type writes it back as, which is what the document wrote: 0.1 stays 0.1, not the single
-    /// precision value nearest it, and an integer beyond what a double holds keeps every digit.
-    /// </remarks>
-    private static ExpectedValue Scalar(object? raw, string at, string source) => raw switch
-    {
-        null => ExpectedValue.Null,
-        string text => ExpectedValue.OfText(text),
-        bool flag => ExpectedValue.OfBoolean(flag),
-        int or long or short or byte or sbyte or uint or ulong or ushort
-            => Number(Convert.ToString(raw, CultureInfo.InvariantCulture)!, at, source),
-        double d when double.IsFinite(d) => Number(d.ToString("R", CultureInfo.InvariantCulture), at, source),
-        float f when float.IsFinite(f) => Number(f.ToString("R", CultureInfo.InvariantCulture), at, source),
-        decimal m => Number(m.ToString(CultureInfo.InvariantCulture), at, source),
-        IDictionary or IList => throw new FlowValidationException($"{source}: {at} takes a single value (text, a number or true/false), not a mapping or a list."),
-        _ => throw new FlowValidationException($"{source}: {at} holds a value that is not text, a number or true/false."),
-    };
-
-    private static ExpectedValue Number(string text, string at, string source)
-        => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) && double.IsFinite(number)
-            ? ExpectedValue.OfNumber(number, text)
-            : throw new FlowValidationException($"{source}: {at} holds the number {text}, which is out of range.");
-
     private static void RequireBulk(string subject, string at, TestContext test)
     {
         if (!test.Bulk)
@@ -1589,26 +1301,6 @@ internal static partial class AssertionMapper
             throw new FlowValidationException(
                 $"{test.Source}: {at} is {Article(subject)} {subject} assertion, which reads each record's bulk data; give the test a bulk block (bulk: {{ columns: [...] }}).");
         }
-    }
-
-    /// <summary>A path into an OSDU record as the cache writes one: dotted names from a root property, arrays crossed implicitly or with [*] and [n].</summary>
-    private static string CheckPath(string? declared, string at, string source)
-    {
-        var path = declared?.Trim() ?? string.Empty;
-        if (!PathPattern().IsMatch(path))
-        {
-            throw new FlowValidationException(
-                $"{source}: {at} '{Shown(path)}' is not a path into a record: names separated by dots, such as data.FacilityName or data.VerticalMeasurements[*].VerticalMeasurement.");
-        }
-
-        var root = path.Split('.', '[')[0];
-        if (!RecordRoots.Contains(root))
-        {
-            throw new FlowValidationException(
-                $"{source}: {at} '{Shown(path)}' starts at '{root}', which is not a property of an OSDU record; a path starts at one of {string.Join(", ", RecordRoots)}.");
-        }
-
-        return path;
     }
 
     /// <summary>A column (curve) of a record's bulk data as the DDMS names it; a comma would split the read's curve list.</summary>
@@ -1656,10 +1348,4 @@ internal static partial class AssertionMapper
     private static string Clip(string text, int max) => text.Length <= max ? text : text[..(max - 3)] + "...";
 
     private static string Shown(string value) => value.Length > 80 ? value[..80] + "..." : value;
-
-    [GeneratedRegex(@"^[A-Za-z_$@][\w$@-]*(\[(\*|\d+)\])*(\.[A-Za-z_$@][\w$@-]*(\[(\*|\d+)\])*)*$", RegexOptions.CultureInvariant)]
-    private static partial Regex PathPattern();
-
-    [GeneratedRegex(@"^[A-Za-z][\w-]*--[A-Za-z][\w-]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex EntityTypePattern();
 }

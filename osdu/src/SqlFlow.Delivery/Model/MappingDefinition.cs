@@ -117,6 +117,13 @@ public sealed record MappingDefinition
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList();
 
+    /// <summary>
+    /// Every assertion the mapping states, with the entry that states it, in document order: those of every node, the
+    /// properties of a list of objects' items included (osdu/docs/reference/flow/mapping-assertions.md).
+    /// </summary>
+    public IEnumerable<(MappingEntry Entry, NodeAssertion Assertion)> Assertions()
+        => Entries.SelectMany(e => e.Fillers).SelectMany(entry => entry.Assertions.Select(assertion => (entry, assertion)));
+
     /// <summary>The entries written into each item of a repeater's array.</summary>
     public IEnumerable<MappingEntry> ItemEntries(MappingEntry repeater)
     {
@@ -568,6 +575,16 @@ public sealed partial record MappingEntry
 
     public string? Description { get; init; }
 
+    /// <summary>
+    /// The node's <c>$assert</c>: what its value has to be (osdu/docs/reference/flow/mapping-assertions.md), each judged on
+    /// the value the record carries or on the value the row gives it, and saying what a record that breaks it does. Empty for
+    /// a node that states none, and for an alternative of a <c>$coalesce</c> node, whose assertions are the node's.
+    /// </summary>
+    public IReadOnlyList<NodeAssertion> Assertions { get; init; } = [];
+
+    /// <summary>The node's assertions judged on the value the row gives it, before its modifiers.</summary>
+    public IEnumerable<NodeAssertion> IncomingAssertions => Assertions.Where(a => a.Stage == AssertionStage.Incoming);
+
     /// <summary>True for a <c>$coalesce</c> node: one whose value is the first of its alternatives that gives one.</summary>
     public bool IsCoalesce => Alternatives.Count > 0;
 
@@ -664,6 +681,12 @@ public sealed partial record MappingEntry
                 if (node.Source?.Column is { } column)
                 {
                     yield return column;
+                }
+
+                // An incoming assertion reads the row the node reads, so a column its conditions name is one the node reads.
+                foreach (var assertionColumn in node.Assertions.SelectMany(a => a.Where).Select(w => w.Column).OfType<DatasetColumn>())
+                {
+                    yield return assertionColumn;
                 }
 
                 foreach (var find in node.FindBy)
