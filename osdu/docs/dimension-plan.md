@@ -20,7 +20,7 @@ value and key. A dimension's own table goes one step further: its two columns ar
 table).
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 15 are built (15: Views); the WellDB
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 17 are built (17: Full and incremental loads); the WellDB
 estate (a local estate repository) holds a demo flow,
 `welldb/flows/welldb-welllog-05-dimensions.yaml`, whose one dimension, Wellbore, carries the filters of the facade
 service's log explorer (country, field, UUID, and the sources its logs collect) as its attributes, the table its
@@ -45,6 +45,10 @@ cascading selects read. The live check listed under Close-out has not been run.
 | A view's columns | A T-SQL scalar expression and a data type each, read by SQL Server's own parser and written back by the module from a listed set of operators and functions | SQL Server is the module's only provider, so a person writes what they know; a view written from the parsed tree reads the dimensions it joins and nothing else, which text passed through could not promise. |
 | How a join compares keys | The partition, a SHA-256 of the key (`key_hash`), and the text under `Latin1_General_100_BIN2` | A key is up to 1,024 characters, over SQL Server's 1,700-byte index key, and the database's collation may equate ids that differ only in case, which OSDU holds as different records. |
 | What orders a pipeline reading a view | `target.connection`, the module's database as the pipeline names it, required with views and checked against the module's own connection | SQLFlow identifies a server by its reference as written, and the module's connection is configured per host, so only a reference the flow declares meets the pipeline's. |
+| Full or incremental | Declared in the flow, an `incremental` block naming a record's unique key (`keyColumns`) and when it last changed (`dateColumns`, `[modifyTime, createTime]` by default); without it every build loads in full | A build reads what the document says, on every host; SQLFlow's own `fullLoad` and backfill window ask a single run for a full load or a window, as they do of SQLFlow's flows. |
+| When a record changed | The first of `dateColumns` it holds | OSDU writes `createTime` alone on a record's first version and `modifyTime` from its second on, and the indexer indexes `modifyTime` only when storage holds one (storage-core `IngestionServiceImpl`, indexer-core `IndexerServiceImpl`), so a range on `modifyTime` alone never finds a record never modified. A nested object changes only with its record. |
+| What an incremental load reads again | The keys the changed records hold now and held before, and the keys read through a record that changed, each read whole over the dimension's query | Counts, labels and collected values are exact for every key read again; what a changed record held before is known from the keys a load kept by its unique key (`DimensionRecord`), and the records a key's reads went through from `DimensionKeyRecord`. |
+| What an incremental load cannot see | A record that left the index; its keys and counts stay until a full load (`fullLoadAfterHours`, `fullLoad`) | A soft-deleted record is gone from every search, so no read can say what it held; the load says how many at least have left. |
 
 Sources, read on 2026-09-30 through the GitLab API at the head of `master`:
 
@@ -975,6 +979,32 @@ samples README.
   a key with no element on SQL Server, its check counting the rows it holds; a field of a thousand characters kept whole
   in the ledger, the table and the view, after a table made at 256 is widened; the reader cutting at 4,000; the migration
   keeping the values written before.
+
+### Stage 17: full and incremental loads
+
+- `incremental` in the document (`DimensionIncremental`): `keyColumns` required, `dateColumns`, `lagMinutes`,
+  `fullLoadAfterHours`, `fullLoad`; the key census and the reference with them. `RecordChanges.Within` writes a record's
+  change time as the first of several dates it holds, which a retrieval's `modifyTime` window reads the same way.
+- A build plans each dimension's load (`DimensionRunner.PlanLoadAsync`): in full without the block, when asked, when the
+  dimension has no full load that kept its records by the flow's unique key, when its declaration or query changed, when
+  its last full load is older than `fullLoadAfterHours`; incrementally otherwise, from the lag before up to when its
+  completed builds read (`DimensionRun.WindowTo`), or over the run's backfill window.
+- A full load of an incremental flow reads every record once more (`DimensionRecordReader`) and keeps the keys each
+  holds by its unique key (`DimensionRecord`); every build keeps the records each key's label and attributes were read
+  through (`DimensionKeyRecord`, from `KeyLabels.Records`).
+- An incremental load (`DimensionRunner.Incremental.cs`) reads the records that changed and the keys they hold, looks up
+  what they held before, finds the keys read through a record that changed, reads every such key again whole a query's
+  worth at a time, and writes partially (`DimensionWrite.Partial`, `Removed`, `Records`): a key no record holds is
+  removed, a value left with no key is removed, and nothing else changes. More than a quarter of the records or keys, or
+  more than 100,000 changed records of a type labels are read through, loads in full instead.
+- Each build records how it loaded, its window, the records it found changed, the keys it read again and the key it kept
+  records by (migration `DimensionIncrementalLoads`, module version 1.38.0); the dimension its last full load. The API,
+  the CLI's history and a plan say so.
+- Tests: the document and its refusals; the run parameters a build takes; the migration keeping earlier builds as full
+  loads; on SQL Server, a first full load and an incremental one reading again only the keys of what changed, a key moved
+  away removed, a label and an attribute read again for a record they were read through, a deleted record kept until a
+  full load a run asks for or the flow's age says, a backfill window that moves nothing back, a window of most records
+  loading in full, and a flow that declares the block after loading in full loading in full once more.
 
 ## Close-out
 

@@ -22,13 +22,18 @@ public sealed record KeyLabel(string? Label, string? From, string? Problem);
 /// <param name="Unlabelled">Keys of a labelled dimension that have none.</param>
 /// <param name="Queries">Searches asked.</param>
 /// <param name="Notes">What reading had to say, a line each.</param>
+/// <param name="Records">
+/// The records each key's label and attributes were read through, by key, in the order they were asked for: the record the
+/// key names and every record a step reached or looked for, found or not. A change of any of them can change what the key
+/// reads, so an incremental load reads again the keys a changed record was read for.
+/// </param>
 public sealed record KeyLabels(
     IReadOnlyDictionary<string, KeyLabel> Labels, IReadOnlyDictionary<string, IReadOnlyList<DimensionAttributeState>> Attributes,
-    long Labelled, long Unlabelled, int Queries, IReadOnlyList<string> Notes)
+    long Labelled, long Unlabelled, int Queries, IReadOnlyList<string> Notes, IReadOnlyDictionary<string, IReadOnlyList<string>> Records)
 {
     public static KeyLabels None { get; } = new(
         new Dictionary<string, KeyLabel>(StringComparer.Ordinal), new Dictionary<string, IReadOnlyList<DimensionAttributeState>>(StringComparer.Ordinal),
-        0, 0, 0, []);
+        0, 0, 0, [], new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal));
 }
 
 /// <summary>
@@ -117,6 +122,7 @@ public sealed class DimensionLabeler
 
         var reached = chains.ToDictionary(c => c, _ => new Dictionary<string, (IReadOnlyList<string> References, string? Problem)>(start, StringComparer.Ordinal));
         var found = chains.ToDictionary(c => c, _ => new Dictionary<string, KeyLabel>(keys.Count, StringComparer.Ordinal));
+        var readThrough = new Dictionary<string, List<string>>(keys.Count, StringComparer.Ordinal);
         var cut = 0;
         var uncut = 0;
         var queries = 0;
@@ -130,10 +136,16 @@ public sealed class DimensionLabeler
             var wanted = new Dictionary<string, (HashSet<string> Ids, HashSet<string> Paths)>(StringComparer.Ordinal);
             foreach (var chain in active)
             {
-                foreach (var (references, _) in reached[chain].Values)
+                foreach (var (key, (references, _)) in reached[chain])
                 {
+                    var through = readThrough.TryGetValue(key, out var listed) ? listed : readThrough[key] = [];
                     foreach (var id in references)
                     {
+                        if (!through.Contains(id, StringComparer.Ordinal))
+                        {
+                            through.Add(id);
+                        }
+
                         var type = EntityTypeOf(id);
                         if (!wanted.TryGetValue(type, out var need))
                         {
@@ -271,7 +283,8 @@ public sealed class DimensionLabeler
         _log.LogInformation(
             "labels and attributes: {Labelled} of {Keys} key(s) labelled, {Attributes} attribute(s) read through {Chains} chain(s) in {Queries} search(es)",
             labels.Count - unlabelled.Count, keys.Count, attributeValues.Values.Sum(a => a.Count), chains.Count, queries);
-        return new KeyLabels(labels, attributeValues, labels.Count - unlabelled.Count, unlabelled.Count, queries, notes);
+        var keyRecords = readThrough.ToDictionary(a => a.Key, a => (IReadOnlyList<string>)a.Value, StringComparer.Ordinal);
+        return new KeyLabels(labels, attributeValues, labels.Count - unlabelled.Count, unlabelled.Count, queries, notes, keyRecords);
     }
 
     /// <summary>

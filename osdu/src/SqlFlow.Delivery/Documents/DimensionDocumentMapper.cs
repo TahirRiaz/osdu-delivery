@@ -109,6 +109,7 @@ internal static class DimensionMapper
             Target = target,
             Views = DimensionViewMapper.MapViews(y.Views, target, name, dimensions, source),
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
+            Incremental = MapIncremental(y.Incremental, source),
         };
 
         if (flow.Reliability.Concurrency < 1)
@@ -117,6 +118,72 @@ internal static class DimensionMapper
         }
 
         return flow;
+    }
+
+    /// <summary>The <c>incremental</c> block, its settings checked; null when the flow loads every dimension in full on every build.</summary>
+    private static DimensionIncremental? MapIncremental(DimensionIncrementalYaml? declared, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var lag = declared.LagMinutes ?? DimensionIncremental.DefaultLagMinutes;
+        if (lag is < 0 or > DimensionIncremental.MaxLagMinutes)
+        {
+            throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                $"{source}: incremental.lagMinutes is {lag}; it is how far behind now a build's window ends, so records the indexer has not caught up with are read by the next build, from 0 to {DimensionIncremental.MaxLagMinutes} minutes."));
+        }
+
+        if (declared.FullLoadAfterHours is { } hours && hours is < 1 or > DimensionIncremental.MaxFullLoadAfterHours)
+        {
+            throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                $"{source}: incremental.fullLoadAfterHours is {hours}; it is how old, in hours, a dimension's last full load may be before a build loads it in full again, from 1 to {DimensionIncremental.MaxFullLoadAfterHours}. Leave it out to load in full only when a run asks for it."));
+        }
+
+        var keyColumns = MapColumns(declared.KeyColumns, "incremental.keyColumns", source)
+            ?? throw new FlowValidationException(
+                $"{source}: incremental names no keyColumns. An incremental load keeps the keys each record holds by the record's unique key, so it can read again what a changed record held before: name it, keyColumns: [id] for an OSDU record.");
+        var dateColumns = MapColumns(declared.DateColumns, "incremental.dateColumns", source) ?? DimensionIncremental.DefaultDateColumns;
+        return new DimensionIncremental
+        {
+            KeyColumns = keyColumns,
+            DateColumns = dateColumns,
+            LagMinutes = lag,
+            FullLoadAfterHours = declared.FullLoadAfterHours,
+            FullLoad = declared.FullLoad ?? false,
+        };
+    }
+
+    /// <summary>
+    /// Properties of the record an incremental block names (its unique key, or when a record changed), each a path search
+    /// can name, none twice, at most <see cref="DimensionIncremental.MaxColumns"/>; null when the block names none.
+    /// </summary>
+    private static IReadOnlyList<string>? MapColumns(IReadOnlyList<string>? declared, string at, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var columns = declared.Select(c => (c ?? string.Empty).Trim()).ToList();
+        if (columns.Count is 0 or > DimensionIncremental.MaxColumns)
+        {
+            throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                $"{source}: {at} names {columns.Count} properties; it names from 1 to {DimensionIncremental.MaxColumns}."));
+        }
+
+        for (var i = 0; i < columns.Count; i++)
+        {
+            CheckPath(columns[i], string.Create(CultureInfo.InvariantCulture, $"{at}[{i}]"), source);
+        }
+
+        if (columns.GroupBy(c => c, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice)
+        {
+            throw new FlowValidationException($"{source}: {at} names {twice.Key} twice.");
+        }
+
+        return columns;
     }
 
     private static IReadOnlyList<string> MapPartitions(IReadOnlyList<string>? declared, string source)

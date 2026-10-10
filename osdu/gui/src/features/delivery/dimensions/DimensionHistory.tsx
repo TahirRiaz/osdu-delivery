@@ -16,7 +16,7 @@ import { counted } from "../assertions/assertionFormat";
 import { BuildStatusPill } from "./DimensionBadges";
 import { DimensionGrid, GridFooter } from "./DimensionGrid";
 import { DimensionValueText } from "./DimensionValueText";
-import { CHANGE_TEXT, buildDuration, coverage, keyTail, percent } from "./dimensionFormat";
+import { CHANGE_TEXT, buildDuration, coverage, keyTail, loadText, percent } from "./dimensionFormat";
 
 /** The builds the Builds tab lists. */
 const BUILDS = 50;
@@ -179,6 +179,14 @@ export function DimensionBuilds({ dimensionId }: { dimensionId: number }) {
   const columns: Column<DeliveryDimensionBuild>[] = [
     { id: "build", header: "Build", render: (row) => <span className="font-mono text-[12px]">#{row.buildId}</span> },
     { id: "status", header: "Status", render: (row) => <BuildStatusPill status={row.status} /> },
+    {
+      id: "load",
+      header: "Load",
+      render: (row) => {
+        const load = loadText(row);
+        return <RichTooltip body={load.text}><span className="text-[12px] text-muted-foreground" data-testid="dimension-build-load">{load.label}</span></RichTooltip>;
+      },
+    },
     { id: "started", header: "Started", render: (row) => <span className="text-[12px]"><RelativeTime value={row.startedUtc} absolute={false} /></span> },
     { id: "took", header: "Took", align: "right", render: (row) => <span className="font-mono text-[12px] tabular-nums">{buildDuration(row)}</span> },
     { id: "values", header: "Values", align: "right", render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.status === "completed" ? row.values.toLocaleString("en-US") : "-"}</span> },

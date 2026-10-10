@@ -103,7 +103,13 @@ function DimensionCard({ entry, onOpen }: { entry: DimensionEntry; onOpen: () =>
               <>
                 <span className="font-mono tabular-nums">{counted(dimension.keys, "key")}</span>
                 <span className="text-muted-foreground/60">·</span>
-                <span>built <RelativeTime value={dimension.lastBuiltUtc} absolute={false} /></span>
+                <RichTooltip
+                  body={dimension.current?.load === "incremental"
+                    ? `Its last build read only what changed. ${dimension.lastFullLoadUtc ? "Every key was last read in full on " + dimension.lastFullLoadUtc.slice(0, 16).replace("T", " ") + " UTC." : "No full load has completed."}`
+                    : "Its last build read every key the index holds."}
+                >
+                  <span>{dimension.current?.load === "incremental" ? "updated" : "built"} <RelativeTime value={dimension.lastBuiltUtc} absolute={false} /></span>
+                </RichTooltip>
               </>
             )}
       </div>
@@ -121,6 +127,15 @@ function FlowHeading({ flow, onBuild }: { flow: DeliveryDimensionFlow; onBuild: 
         </Link>
       </RichTooltip>
       {flow.description !== null && <span className="min-w-0 truncate text-[12px] text-muted-foreground">{flow.description}</span>}
+      {flow.incremental && (
+        <RichTooltip
+          body={flow.incremental.fullLoad
+            ? "The flow's incremental block says fullLoad: every build reads every key."
+            : `After a first full load, each build reads only the records that changed, ${flow.incremental.lagMinutes} minute${flow.incremental.lagMinutes === 1 ? "" : "s"} behind now${flow.incremental.fullLoadAfterHours ? `, and every key again once its last full load is ${flow.incremental.fullLoadAfterHours} hours old` : ""}.`}
+        >
+          <span className="shrink-0 text-[12px] text-muted-foreground" data-testid="dimension-flow-incremental">{flow.incremental.fullLoad ? "full loads" : "incremental"}</span>
+        </RichTooltip>
+      )}
       <RichTooltip body="Runs the flow's pipeline, which builds every dimension it declares; the dialog can pick some of them.">
         <Button variant="outline" size="xs" className="ml-auto" onClick={onBuild} data-testid="dimension-flow-build">
           <Play />

@@ -15,7 +15,8 @@ namespace SqlFlow.Delivery.Engine;
 /// <summary>
 /// Runs one dimension flow document as one platform run (docs/dimension-plan.md). The run's parameters select the operation:
 /// build (the default) or plan; the payload names the dimensions, none naming every one; the partition run value names the
-/// partition, settled as every run of the module settles it. The engine's log becomes the run log and live trace, the
+/// partition, settled as every run of the module settles it. SQLFlow's <c>fullLoad</c> makes a build load in full whatever
+/// the flow declares, and a backfill window names the window a flow loading incrementally reads. The engine's log becomes the run log and live trace, the
 /// outcome becomes <c>run.json</c>, and every build is kept in the flow's ledger. A build run in which a dimension failed ends
 /// failed, still carrying its outcome, with every other dimension built.
 /// </summary>
@@ -118,8 +119,13 @@ public sealed class DimensionExecutor : IFlowDocumentExecutor
         // supplied, the partition's own values first, before the node's own.
         var runContext = context.WithSuppliedReferences(payload.ReferencesFor(bound.Partition));
         var runner = new DimensionRunner(runContext, bound, values, log);
+        var load = new DimensionLoadRequest(parameters.FullLoad, Utc(parameters.BackfillFrom), Utc(parameters.BackfillTo));
         return operation == DeliveryOperations.Plan
-            ? await runner.PlanAsync(payload.Dimensions, ct).ConfigureAwait(false)
-            : await runner.BuildAsync(payload.Dimensions, runId, actor, ct).ConfigureAwait(false);
+            ? await runner.PlanAsync(payload.Dimensions, load, ct).ConfigureAwait(false)
+            : await runner.BuildAsync(payload.Dimensions, load, runId, actor, ct).ConfigureAwait(false);
     }
+
+    /// <summary>A bound of a backfill window as UTC: SQLFlow carries the window in UTC, and one with no kind is taken as such.</summary>
+    private static DateTime? Utc(DateTime? value)
+        => value is { } v ? v.Kind == DateTimeKind.Utc ? v : v.Kind == DateTimeKind.Local ? v.ToUniversalTime() : DateTime.SpecifyKind(v, DateTimeKind.Utc) : null;
 }

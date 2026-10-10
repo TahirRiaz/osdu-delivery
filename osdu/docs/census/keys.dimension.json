@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/dimension.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 113,
+  "keyCount": 121,
   "keys": [
     {
       "path": "batch",
@@ -262,6 +262,64 @@
       "enumValues": [
         "dimension"
       ]
+    },
+    {
+      "path": "incremental",
+      "type": "object",
+      "required": false,
+      "description": "How a build loads the flow's dimensions after their first full load. Left out, every build loads every dimension in full: every key the index holds read, labelled and cleaned, and what it no longer finds removed. Declared, a build loads incrementally: it reads the records that changed in a window (by `dateColumns`) and reads again, whole, every key they hold now or held before (kept by each record's unique key, `keyColumns`) and every key whose label or attributes were read through a record that changed; a key read again that no record holds is removed. A record that left the index cannot be seen, so the keys only it held stay until a full load: the first build, one after the declaration or query changed, one after `fullLoadAfterHours`, one a run asks for with `fullLoad`, and one where more than a quarter of the records or keys changed."
+    },
+    {
+      "path": "incremental.keyColumns",
+      "type": "list",
+      "required": true,
+      "description": "The properties whose values together identify one record, its unique key: `[id]` for an OSDU record. A full load keeps the keys each record holds by it, so an incremental load reads again what a changed record held before. Each a property a record holds once, at most 3, none twice; a record holding no single value at one is not kept.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.keyColumns[]",
+      "type": "string",
+      "required": false,
+      "description": "One property of a record's unique key, as a path: `id`, or a `data` property each record holds once.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.dateColumns",
+      "type": "list",
+      "required": false,
+      "description": "When a record last changed: the first of these dates it holds. OSDU sets `modifyTime` only from a record's second version on, so a record never modified is read by its `createTime`. Each a date a record holds once, at most 3, none twice.",
+      "default": "[modifyTime, createTime]",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.dateColumns[]",
+      "type": "string",
+      "required": false,
+      "description": "One date a record's change time is read from, as a path: `modifyTime`, `createTime`, or a `data` date each record holds once.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.lagMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "How far behind now a window ends, in minutes, so records the indexer has not caught up with are read by the next build; a window also begins this far before the last one ended. From 0 to 1440.",
+      "default": "5",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.fullLoadAfterHours",
+      "type": "integer",
+      "required": false,
+      "description": "A build loads a dimension in full when its last full load completed more than this many hours ago, so keys only records that left the index held are removed and counts they made settled. From 1 to 8784. Left out, a dimension is loaded in full only when a run asks for it or a build has to.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.fullLoad",
+      "type": "boolean",
+      "required": false,
+      "description": "Every build loads every dimension in full, as without the block, keeping its settings for when this is taken out. A single run asks for one with SQLFlow's `fullLoad` instead.",
+      "default": "false",
+      "appliesWhen": "incremental is declared."
     },
     {
       "path": "name",

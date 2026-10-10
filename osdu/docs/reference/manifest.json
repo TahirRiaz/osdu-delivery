@@ -2753,7 +2753,13 @@
         "osdu.v_dim_",
         "target.connection",
         "datatype",
-        "key_hash"
+        "key_hash",
+        "incremental load",
+        "full load",
+        "keycolumns",
+        "datecolumns",
+        "modifytime",
+        "fullloadafterhours"
       ],
       "yamlPath": "(root, flowType: dimension)",
       "related": [
@@ -2777,6 +2783,9 @@
         "osdu/src/SqlFlow.Delivery/Engine/DimensionExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRunner.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRunner.Incremental.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRecordReader.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Search/RecordChanges.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionCleaner.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionLabeler.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionCollector.cs",

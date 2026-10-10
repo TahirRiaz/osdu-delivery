@@ -62,6 +62,12 @@ public sealed record DimensionFlowDefinition
     public FlowReliability Reliability { get; init; } = new();
 
     /// <summary>
+    /// How a build loads the flow's dimensions after their first full load (docs/dimension-plan.md, Full and incremental
+    /// loads): null for a flow that loads every dimension in full on every build.
+    /// </summary>
+    public DimensionIncremental? Incremental { get; init; }
+
+    /// <summary>
     /// The module's database as the pipelines reading the flow's tables and views name it (docs/dimension-plan.md, Views),
     /// so SQLFlow's lineage orders them after the flow; null when the flow names none, which a flow declaring views must.
     /// </summary>
@@ -252,6 +258,64 @@ public sealed record DimensionFlowDefinition
 }
 
 /// <summary>Where a flow's dimensions are read: the platform's endpoint and credentials, its search paths, and how many groups its aggregation returns.</summary>
+/// <summary>
+/// The <c>incremental</c> block of a dimension flow: each build reads again only the keys of the records that changed since
+/// the last build read the dimension (by <see cref="DateColumns"/>), the keys those records held before (kept by their
+/// unique key, <see cref="KeyColumns"/>), and the keys whose labels and attributes were read through a record that changed;
+/// and reads a dimension in full when it has to.
+/// </summary>
+public sealed record DimensionIncremental
+{
+    /// <summary>How far behind now a window ends, unless the flow says otherwise: the retrieval flow's own default.</summary>
+    public const int DefaultLagMinutes = 5;
+
+    /// <summary>The most properties a record's unique key, or its change time, is read from.</summary>
+    public const int MaxColumns = 3;
+
+    /// <summary>
+    /// When a record last changed unless the flow says otherwise: OSDU's <c>modifyTime</c>, which it sets from a record's
+    /// second version on, and for a record never modified its <c>createTime</c>.
+    /// </summary>
+    public static IReadOnlyList<string> DefaultDateColumns { get; } = ["modifyTime", "createTime"];
+
+    /// <summary>
+    /// The properties whose values together identify one record (<c>id</c>): a full load keeps the keys each record holds
+    /// by them, and an incremental load reads again the keys a changed record held before as well as those it holds now.
+    /// </summary>
+    public required IReadOnlyList<string> KeyColumns { get; init; }
+
+    /// <summary>
+    /// When a record last changed: the first of these properties it holds, each a date the index holds once a record. A
+    /// window reads the records whose change time falls in it, each in the one window its change time falls in.
+    /// </summary>
+    public IReadOnlyList<string> DateColumns { get; init; } = DefaultDateColumns;
+
+    /// <summary>The unique key as a full load keeps it with its records: the key columns, in order, comma-separated.</summary>
+    public string RecordKey => string.Join(",", KeyColumns);
+
+    /// <summary>The longest lag a flow names: a day.</summary>
+    public const int MaxLagMinutes = 24 * 60;
+
+    /// <summary>The longest a flow waits between full loads: a year.</summary>
+    public const int MaxFullLoadAfterHours = 366 * 24;
+
+    /// <summary>
+    /// How far behind now a window ends, so records the indexer has not caught up with are read by the next build; a window
+    /// also begins this far before the last one ended, so a record indexed up to twice as late is still read.
+    /// </summary>
+    public int LagMinutes { get; init; } = DefaultLagMinutes;
+
+    /// <summary>
+    /// A build loads a dimension in full when its last full load completed more than this many hours ago, so keys no record
+    /// holds any more are removed and counts that went down are settled; null loads in full only when one is asked for or
+    /// needed.
+    /// </summary>
+    public int? FullLoadAfterHours { get; init; }
+
+    /// <summary>Every build loads in full, as without the block, keeping the block's settings for when this is taken out.</summary>
+    public bool FullLoad { get; init; }
+}
+
 public sealed record DimensionSource
 {
     public const string DefaultQueryPath = "/api/search/v2/query";

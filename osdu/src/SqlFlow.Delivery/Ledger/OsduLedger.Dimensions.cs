@@ -22,10 +22,15 @@ public sealed partial class OsduLedger
     public const int MaxDimensionPage = 1000;
 
     public async Task<(DimensionState Dimension, DimensionRunState Run)> StartDimensionRunAsync(
-        DimensionDeclaration declaration, Guid? runId, string actor, DateTime startedUtc, CancellationToken ct = default)
+        DimensionDeclaration declaration, Guid? runId, string actor, DateTime startedUtc, string mode = DimensionRunModes.Full, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(declaration);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        if (mode is not (DimensionRunModes.Full or DimensionRunModes.Incremental))
+        {
+            throw new ArgumentException($"A build reads its dimension {DimensionRunModes.Full} or {DimensionRunModes.Incremental}, not '{mode}'.", nameof(mode));
+        }
+
         var partition = await WritePartitionAsync(declaration.FlowId, ct).ConfigureAwait(false);
         for (var attempt = 1; ; attempt++)
         {
@@ -67,6 +72,7 @@ public sealed partial class OsduLedger
                 RunId = runId,
                 Actor = Truncate(actor, 200)!,
                 Status = DimensionRunStatus.Running,
+                Mode = mode,
                 DefinitionHash = declaration.DefinitionHash,
                 Query = declaration.Query,
                 StartedUtc = startedUtc,
@@ -107,8 +113,8 @@ public sealed partial class OsduLedger
             Apply(run, write.Read);
             run.Members = written.Members;
             run.Originals = written.Originals;
-            run.LeftOut = write.Originals.LongCount(o => o.CleanValue is null);
-            run.Unfilterable = write.Originals.LongCount(o => !o.Filterable && o.CleanValue is not null);
+            run.LeftOut = written.LeftOut;
+            run.Unfilterable = written.Unfilterable;
             run.MembersAdded = written.Changes.MembersAdded;
             run.MembersRemoved = written.Changes.MembersRemoved;
             run.MembersRestored = written.Changes.MembersRestored;
@@ -149,6 +155,125 @@ public sealed partial class OsduLedger
         run.Error = Truncate(failure, 4000);
         run.CompletedUtc = completedUtc;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task CompleteDimensionRunAsync(long dimensionRunId, DimensionReadCounts read, DateTime completedUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+        await using var db = Open();
+        await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        var run = await db.DeliveryDimensionRuns.FirstOrDefaultAsync(r => r.DimensionRunId == dimensionRunId, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException(string.Create(CultureInfo.InvariantCulture, $"Dimension build {dimensionRunId} is not in the ledger."));
+        if (run.Status != DimensionRunStatus.Running)
+        {
+            throw new DeliveryException(string.Create(CultureInfo.InvariantCulture, $"Dimension build {dimensionRunId} is {run.Status} already, so it cannot be completed."));
+        }
+
+        var dimension = await db.DeliveryDimensions.FirstOrDefaultAsync(d => d.PartitionId == run.PartitionId && d.DimensionId == run.DimensionId, ct).ConfigureAwait(false)
+            ?? throw new DeliveryException(string.Create(CultureInfo.InvariantCulture, $"Dimension {run.DimensionId} of build {dimensionRunId} is not in the ledger."));
+
+        // Nothing was written, so the build counts what the dimension holds, as its last write left it.
+        var held = db.DeliveryDimensionValues.AsNoTracking()
+            .Where(v => v.PartitionId == run.PartitionId && v.DimensionId == run.DimensionId && v.RemovedRunId == null);
+        var leftOut = await held.LongCountAsync(v => v.MemberId == null, ct).ConfigureAwait(false);
+        var unfilterable = await held.LongCountAsync(v => v.MemberId != null && !v.Filterable, ct).ConfigureAwait(false);
+        run.Status = DimensionRunStatus.Completed;
+        Apply(run, read);
+        run.Members = dimension.Members;
+        run.Originals = dimension.Originals;
+        run.LeftOut = leftOut;
+        run.Unfilterable = unfilterable;
+        run.AggregateBy = dimension.AggregateBy;
+        run.Error = null;
+        run.CompletedUtc = completedUtc;
+        dimension.LastRunId = run.DimensionRunId;
+        dimension.LastBuiltUtc = completedUtc;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await tx.CommitAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<DateTime?> DimensionReadUpToAsync(int dimensionId, CancellationToken ct = default)
+    {
+        if (await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
+        var upTo = await ReadAsync(
+            db => db.DeliveryDimensionRuns.AsNoTracking()
+                .Where(r => r.PartitionId == partition && r.DimensionId == dimensionId && r.Status == DimensionRunStatus.Completed && r.WindowTo != null)
+                .MaxAsync(r => r.WindowTo, ct),
+            ct).ConfigureAwait(false);
+        return upTo is { } to ? DateTime.SpecifyKind(to, DateTimeKind.Utc) : null;
+    }
+
+    public async Task<IReadOnlyList<string>> DimensionKeyRecordTypesAsync(int dimensionId, CancellationToken ct = default)
+    {
+        if (await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        return await ReadAsync(
+            db => db.DeliveryDimensionKeyRecords.AsNoTracking()
+                .Where(k => k.PartitionId == partition && k.DimensionId == dimensionId)
+                .Select(k => k.EntityType)
+                .Distinct()
+                .OrderBy(t => t)
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<string>> DimensionKeysReadThroughAsync(int dimensionId, IReadOnlyCollection<string> recordIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(recordIds);
+        if (recordIds.Count == 0 || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var chunk in recordIds.Distinct(StringComparer.Ordinal).Chunk(LookupChunk))
+        {
+            var keys = await ReadAsync(db => SqlServerDimensionStore.KeysReadThroughAsync(db, partition, dimensionId, chunk, ct), ct).ConfigureAwait(false);
+            found.UnionWith(keys);
+        }
+
+        return found.Order(StringComparer.Ordinal).ToList();
+    }
+
+    public async Task<IReadOnlyList<string>> DimensionRecordKeysAsync(int dimensionId, IReadOnlyCollection<byte[]> recordHashes, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(recordHashes);
+        if (recordHashes.Count == 0 || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var chunk in recordHashes.Chunk(LookupChunk))
+        {
+            found.UnionWith(await ReadAsync(db => SqlServerDimensionStore.RecordKeysAsync(db, partition, dimensionId, chunk, ct), ct).ConfigureAwait(false));
+        }
+
+        return found.Order(StringComparer.Ordinal).ToList();
+    }
+
+    public async Task<IReadOnlyList<DimensionValueState>> DimensionOriginalsAsync(int dimensionId, IReadOnlyCollection<string> originals, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(originals);
+        if (originals.Count == 0 || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var found = new List<DimensionValueState>(originals.Count);
+        foreach (var chunk in originals.Distinct(StringComparer.Ordinal).Where(o => o.Length <= DeliveryDimensionValue.MaxOriginalLength).Chunk(LookupChunk))
+        {
+            found.AddRange(await ReadAsync(db => SqlServerDimensionStore.OriginalsAsync(db, partition, dimensionId, chunk, ct), ct).ConfigureAwait(false));
+        }
+
+        return found;
     }
 
     public async Task<IReadOnlyList<DimensionState>> ListDimensionsAsync(string? partition, Guid? flowId, CancellationToken ct = default)
@@ -1095,6 +1220,12 @@ public sealed partial class OsduLedger
         run.LabelQueries = read.LabelQueries;
         run.Templates = read.Templates;
         run.Notes = read.Notes.Count == 0 ? null : JsonSerializer.Serialize(read.Notes.Take(MaxDimensionNotes).Select(n => Truncate(n, 2000)).ToList());
+        run.Mode = read.Mode;
+        run.WindowFrom = read.WindowFrom;
+        run.WindowTo = read.WindowTo;
+        run.ChangedRecords = read.ChangedRecords;
+        run.TouchedKeys = read.TouchedKeys;
+        run.RecordKey = Truncate(read.RecordKey, DeliveryDimensionRun.MaxRecordKeyLength);
     }
 
     private static DimensionState ToState(DeliveryDimension d) => new()
@@ -1121,6 +1252,8 @@ public sealed partial class OsduLedger
         Originals = d.Originals,
         LastRunId = d.LastRunId,
         LastBuiltUtc = d.LastBuiltUtc is { } built ? DateTime.SpecifyKind(built, DateTimeKind.Utc) : null,
+        LastFullRunId = d.LastFullRunId,
+        LastFullBuiltUtc = d.LastFullBuiltUtc is { } full ? DateTime.SpecifyKind(full, DateTimeKind.Utc) : null,
         CreatedUtc = DateTime.SpecifyKind(d.CreatedUtc, DateTimeKind.Utc),
     };
 
@@ -1154,6 +1287,12 @@ public sealed partial class OsduLedger
             LabelQueries = r.LabelQueries,
             Templates = r.Templates,
             Notes = r.Notes is null ? [] : JsonSerializer.Deserialize<List<string>>(r.Notes) ?? [],
+            Mode = r.Mode,
+            WindowFrom = r.WindowFrom is { } from ? DateTime.SpecifyKind(from, DateTimeKind.Utc) : null,
+            WindowTo = r.WindowTo is { } to ? DateTime.SpecifyKind(to, DateTimeKind.Utc) : null,
+            ChangedRecords = r.ChangedRecords,
+            TouchedKeys = r.TouchedKeys,
+            RecordKey = r.RecordKey,
         },
         Members = r.Members,
         Originals = r.Originals,

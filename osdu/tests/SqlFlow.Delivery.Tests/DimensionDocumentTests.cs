@@ -700,4 +700,59 @@ public class DimensionDocumentTests
         Assert.Contains(new KeyValuePair<string, string>("source.endpoint", "${env:OSDU_URL}"), references);
         Assert.Contains(new KeyValuePair<string, string>("source.auth.secretRef", "${env:OSDU_TOKEN}"), references);
     }
+
+    [Fact]
+    public void An_incremental_block_names_the_unique_key_and_takes_modifyTime_then_createTime_as_when_a_record_changed()
+    {
+        Assert.Null(Parse(Head + Curves).Incremental);
+
+        var flow = Parse(Head + """
+            incremental:
+              keyColumns: [id]
+              fullLoadAfterHours: 168
+
+            """ + Curves);
+
+        var incremental = flow.Incremental!;
+        Assert.Equal(["id"], incremental.KeyColumns);
+        Assert.Equal(["modifyTime", "createTime"], incremental.DateColumns);
+        Assert.Equal((5, (int?)168, false, "id"), (incremental.LagMinutes, incremental.FullLoadAfterHours, incremental.FullLoad, incremental.RecordKey));
+
+        var named = Parse(Head + """
+            incremental:
+              keyColumns: [id, data.Version]
+              dateColumns: [data.UpdatedDate]
+              lagMinutes: 0
+              fullLoad: true
+
+            """ + Curves).Incremental!;
+        Assert.Equal(["data.UpdatedDate"], named.DateColumns);
+        Assert.Equal((0, true, "id,data.Version"), (named.LagMinutes, named.FullLoad, named.RecordKey));
+
+        // The declaration a dimension is built with is its own: a flow's load is not part of it.
+        Assert.Equal(Parse(Head + Curves).Dimensions[0].DefinitionHash, flow.Dimensions[0].DefinitionHash);
+    }
+
+    [Theory]
+    [InlineData("incremental: { lagMinutes: 5 }", "incremental names no keyColumns")]
+    [InlineData("incremental: { keyColumns: [] }", "incremental.keyColumns names 0 properties")]
+    [InlineData("incremental: { keyColumns: [id, id] }", "incremental.keyColumns names id twice")]
+    [InlineData("incremental: { keyColumns: [a, b, c, d] }", "incremental.keyColumns names 4 properties")]
+    [InlineData("incremental: { keyColumns: ['data.Not a path'] }", "incremental.keyColumns[0]: path 'data.Not a path' is not a property path")]
+    [InlineData("incremental: { keyColumns: [id], dateColumns: [modifyTime, modifyTime] }", "incremental.dateColumns names modifyTime twice")]
+    [InlineData("incremental: { keyColumns: [id], lagMinutes: -1 }", "incremental.lagMinutes is -1")]
+    [InlineData("incremental: { keyColumns: [id], fullLoadAfterHours: 0 }", "incremental.fullLoadAfterHours is 0")]
+    [InlineData("incremental: { keyColumns: [id], since: 2026-01-01 }", "since")]
+    public void An_incremental_block_is_refused_where_it_cannot_be_read(string block, string expected)
+        => Assert.Contains(expected, Refused(Head + block + "\n" + Curves).Message, StringComparison.Ordinal);
+
+    [Fact]
+    public void A_build_takes_SQLFlow_s_full_load_and_backfill_window_and_still_refuses_what_a_file_flow_takes()
+    {
+        var kind = new DimensionFlowKind(new DeliveryDocumentLoader());
+        kind.ValidateParameters(new RunParameters { FullLoad = true });
+        kind.ValidateParameters(new RunParameters { BackfillFrom = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc), BackfillTo = new DateTime(2026, 9, 2, 0, 0, 0, DateTimeKind.Utc) });
+        var refused = Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { FilePattern = "*.csv" }));
+        Assert.StartsWith("filePattern do(es) not apply to 'dimension' flows; a build loads what the flow's incremental block says", refused.Message, StringComparison.Ordinal);
+    }
 }

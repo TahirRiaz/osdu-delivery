@@ -16,6 +16,22 @@ public static class DimensionRunStatus
     public const string Cancelled = "cancelled";
 }
 
+/// <summary>How a dimension build reads its dimension (docs/dimension-plan.md, Full and incremental loads).</summary>
+public static class DimensionRunModes
+{
+    /// <summary>
+    /// Every key the index holds, read whole: what adds and changes keys, and the only read that removes a key no record
+    /// holds any more and lowers a count.
+    /// </summary>
+    public const string Full = "full";
+
+    /// <summary>
+    /// The keys of the records that changed in a window, and of the records their labels and attributes were read
+    /// through, each read again whole: what adds and changes keys between full loads, and never removes one.
+    /// </summary>
+    public const string Incremental = "incremental";
+}
+
 /// <summary>Why an original belongs to no member, as its row keeps the reason.</summary>
 public static class DimensionLeftOut
 {
@@ -146,10 +162,16 @@ public sealed record DimensionState
 
     public long Originals { get; init; }
 
-    /// <summary>The build that last wrote the dimension; null when none has.</summary>
+    /// <summary>The build that last wrote or read the dimension; null when none has.</summary>
     public long? LastRunId { get; init; }
 
     public DateTime? LastBuiltUtc { get; init; }
+
+    /// <summary>The last build that read the dimension in full and kept what its keys were read through; null when none has.</summary>
+    public long? LastFullRunId { get; init; }
+
+    /// <summary>When <see cref="LastFullRunId"/> completed.</summary>
+    public DateTime? LastFullBuiltUtc { get; init; }
 
     public DateTime CreatedUtc { get; init; }
 }
@@ -197,6 +219,27 @@ public sealed record DimensionReadCounts
 
     /// <summary>What the build had to say, a line each.</summary>
     public IReadOnlyList<string> Notes { get; init; } = [];
+
+    /// <summary>How the run read its dimension (<see cref="DimensionRunModes"/>).</summary>
+    public string Mode { get; init; } = DimensionRunModes.Full;
+
+    /// <summary>Where an incremental load's window began; null for a full load, and for a window open below.</summary>
+    public DateTime? WindowFrom { get; init; }
+
+    /// <summary>Up to when the run read what changed, its start less the flow's lag; null until it is known.</summary>
+    public DateTime? WindowTo { get; init; }
+
+    /// <summary>The records an incremental load found changed in its window; null for a full load.</summary>
+    public long? ChangedRecords { get; init; }
+
+    /// <summary>The keys an incremental load read again; null for a full load.</summary>
+    public long? TouchedKeys { get; init; }
+
+    /// <summary>
+    /// The unique key the run kept the keys each record holds by (the flow's <c>incremental.keyColumns</c>, comma-separated);
+    /// null for a run that kept none.
+    /// </summary>
+    public string? RecordKey { get; init; }
 }
 
 /// <summary>One build of one dimension as the ledger holds it.</summary>
@@ -419,6 +462,34 @@ public sealed record DimensionWrite
     public required Guid FlowId { get; init; }
 
     /// <summary>
+    /// True for an incremental load: <see cref="Originals"/> are the keys it read again and <see cref="Members"/> the values
+    /// they were and are under, each laid out whole, and every other key and value stays as it is. A value left with no key
+    /// is removed; no key is. A text collected that the dimension does not hold yet is added, and the others stay. False
+    /// for a full load, which holds every key and value: what it does not hold is removed.
+    /// </summary>
+    public bool Partial { get; init; }
+
+    /// <summary>
+    /// The records each key's label and attributes were read through, found or not, by key: what a later incremental load
+    /// finds the keys to read again by. The keys the write holds are given these and no others.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> KeyRecords { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The keys records held when the load read them, by each record's unique key: every record a full load read, which
+    /// replace those the dimension kept, or the records an incremental load found changed, whose rows alone are replaced.
+    /// Null keeps none: a full load of a flow that loads in full leaves the dimension none.
+    /// </summary>
+    public DimensionRecordsWrite? Records { get; init; }
+
+    /// <summary>
+    /// For an incremental load, the keys it read again and found held by no record: they are removed, as a full load
+    /// removes a key it no longer finds. Empty for a full load, which removes every key it does not hold.
+    /// </summary>
+    public IReadOnlyList<string> Removed { get; init; } = [];
+
+    /// <summary>
     /// How the index stores the field, as the build settled it; null when it could not (no record of the kind for its templates
     /// to be read by), which leaves the field the dimension had.
     /// </summary>
@@ -451,6 +522,12 @@ public sealed record DimensionWrite
 
     public required DateTime CompletedUtc { get; init; }
 }
+
+/// <summary>
+/// The keys records held when a load read them (<see cref="DimensionWrite.Records"/>): the records read, each by the
+/// SHA-256 of its unique key, and each key a record held, a pair each. A record that holds no key is read with no pair.
+/// </summary>
+public sealed record DimensionRecordsWrite(IReadOnlyCollection<byte[]> Read, IReadOnlyList<(byte[] Record, string Original)> Held);
 
 /// <summary>A member as a page or a filter reads it.</summary>
 public sealed record DimensionMemberState

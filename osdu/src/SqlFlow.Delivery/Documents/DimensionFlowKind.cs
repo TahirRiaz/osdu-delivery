@@ -62,8 +62,8 @@ public sealed class DimensionFlowKind : IFlowDocumentKind
 
     public IReadOnlyList<FlowKindOperation> Operations { get; } =
     [
-        new(DeliveryOperations.Build, "Build", "Read every distinct key of each dimension (all of them, or those the payload names) from the search index, read each key's label where the dimension names one, clean them into values, and keep what changed.", WritesTarget: true),
-        new(DeliveryOperations.Plan, "Plan", "Check every dimension against the templates of the kinds it reads and count the records each would read, reading no value and keeping nothing.", WritesTarget: false),
+        new(DeliveryOperations.Build, "Build", "Load each dimension (all of them, or those the payload names) from the search index: in full, every distinct key read, labelled and cleaned into values; or, for a flow with an incremental block, the keys of the records that changed since the last build, read again. Keep what changed.", WritesTarget: true),
+        new(DeliveryOperations.Plan, "Plan", "Check every dimension against the templates of the kinds it reads, count the records each would read, and say how a build would load it, reading no value and keeping nothing.", WritesTarget: false),
     ];
 
     public RegisteredFlowDocument Parse(string yaml, string source)
@@ -75,7 +75,13 @@ public sealed class DimensionFlowKind : IFlowDocumentKind
     public void ValidateParameters(RunParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
-        DeliveryOperations.RefuseBuiltInOverrides(parameters, DimensionFlowDefinition.FlowTypeName, "a build reads every value the index holds; name the dimensions to build in the payload.");
+
+        // A full load, and the window an incremental load reads, are SQLFlow's own: a build takes them as SQLFlow's flows do.
+        // Whether the flow loads incrementally, which a window needs, is the document's to say, and the run checks it.
+        DeliveryOperations.RefuseBuiltInOverrides(
+            parameters with { FullLoad = false, BackfillFrom = null, BackfillTo = null },
+            DimensionFlowDefinition.FlowTypeName,
+            "a build loads what the flow's incremental block says, in full with fullLoad or over a backfill window; name the dimensions to build in the payload.");
 
         // A run names the dimensions it builds or plans, beside the central configuration.
         DeliveryRunPayload.Parse(parameters).RefuseOtherThan(DimensionFlowDefinition.FlowTypeName, [DeliveryRunPayload.DimensionsProperty]);

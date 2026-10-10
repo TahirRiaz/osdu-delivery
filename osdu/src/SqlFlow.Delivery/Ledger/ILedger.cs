@@ -2473,7 +2473,7 @@ public interface ILedger
     /// registered) and opens the build's row, returning both with their ids and the partition they are kept in.
     /// </summary>
     Task<(DimensionState Dimension, DimensionRunState Run)> StartDimensionRunAsync(
-        DimensionDeclaration declaration, Guid? runId, string actor, DateTime startedUtc, CancellationToken ct = default);
+        DimensionDeclaration declaration, Guid? runId, string actor, DateTime startedUtc, string mode = DimensionRunModes.Full, CancellationToken ct = default);
 
     /// <summary>
     /// Writes a completed build's originals and members into its dimension and closes the build, in one transaction: what is
@@ -2485,6 +2485,39 @@ public interface ILedger
 
     /// <summary>Closes a build that wrote nothing, as failed or cancelled, with what it read before it stopped and why.</summary>
     Task CloseDimensionRunAsync(long dimensionRunId, string status, DimensionReadCounts read, string? failure, DateTime completedUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Closes as completed a build that read its dimension and found nothing to write (an incremental load whose window held
+    /// no change), with what it read; the dimension names it as the build that last read it, and holds what it held.
+    /// </summary>
+    Task CompleteDimensionRunAsync(long dimensionRunId, DimensionReadCounts read, DateTime completedUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Up to when the dimension's completed builds have read what changed: the latest <see cref="DimensionReadCounts.WindowTo"/>
+    /// of them, which the next incremental load reads on from; null when none kept one.
+    /// </summary>
+    Task<DateTime?> DimensionReadUpToAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>The entity types of the records the dimension's keys were read through, which an incremental load asks the search what changed in.</summary>
+    Task<IReadOnlyList<string>> DimensionKeyRecordTypesAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The keys the dimension holds now that were read through one of <paramref name="recordIds"/> (ids without their
+    /// version): those whose label or attributes a change of one of them can have changed.
+    /// </summary>
+    Task<IReadOnlyList<string>> DimensionKeysReadThroughAsync(int dimensionId, IReadOnlyCollection<string> recordIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// The keys the dimension holds now that the records <paramref name="recordHashes"/> names (each by the SHA-256 of its
+    /// unique key) held when a load last read them: what an incremental load reads again besides what they hold now.
+    /// </summary>
+    Task<IReadOnlyList<string>> DimensionRecordKeysAsync(int dimensionId, IReadOnlyCollection<byte[]> recordHashes, CancellationToken ct = default);
+
+    /// <summary>
+    /// The originals <paramref name="originals"/> names as the dimension holds them, removed ones included, each with its
+    /// member's clean value; one the dimension never held is left out.
+    /// </summary>
+    Task<IReadOnlyList<DimensionValueState>> DimensionOriginalsAsync(int dimensionId, IReadOnlyCollection<string> originals, CancellationToken ct = default);
 
     /// <summary>
     /// The dimensions of one flow's ledger (<paramref name="flowId"/>), of one partition (by its data-partition-id), or of

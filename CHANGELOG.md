@@ -13,6 +13,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A dimension flow loads incrementally.** An `incremental` block names a record's unique key (`keyColumns: [id]`) and
+  when a record last changed (`dateColumns`, `[modifyTime, createTime]` by default, since OSDU sets `modifyTime` only
+  from a record's second version on). After a first full load, each build reads the records that changed in its window
+  and reads again, whole, the keys they hold now, the keys they held before (kept by their unique key) and the keys whose
+  label or attributes were read through a record that changed; a key no record holds is removed, and every other key
+  stays as it was. A full load runs when the dimension is new or its declaration changed, after `fullLoadAfterHours`,
+  when a run asks for one (SQLFlow's `fullLoad`) or when most records changed; SQLFlow's backfill window names the window
+  a run reads. Each build records how it loaded, its window, the records it found changed and the keys it read again,
+  which the API, the CLI's history, a plan, the editor's key census and the Dimensions page show (migration
+  `DimensionIncrementalLoads`, module version 1.38.0;
+  [flow/dimension.md](osdu/docs/reference/flow/dimension.md#full-and-incremental-loads)).
 - **The documentation is a reference corpus in SQLFlow's format, covering only what OSDU Delivery adds.**
   `osdu/docs/reference` holds 71 pages in four parts: `cli` (a page per OSDU verb of `sqlflow`, and what the module adds
   to SQLFlow's `run`, `validate`, `db`, `worker`, `control-plane` and `auth`), `flow` (a page per document the module
@@ -1318,6 +1329,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **An incremental retrieval on `modifyTime` takes a record that was never modified.** OSDU writes `createTime` alone
+  when it creates a record and `modifyTime` only from its second version on, so a window on `modifyTime` alone missed
+  every new record until something updated it. The window now reads a record without `modifyTime` by its `createTime`,
+  each record once, in the window its last change falls in ([flow/retrieval.md](osdu/docs/reference/flow/retrieval.md)).
 - **`verify.reconcile` has the flow's next deliver run send a drifted record again.** A verify that found a record
   drifted or missing cleared its hashes and noted "redelivery queued on next submission", but nothing put the record in
   a plan, so an incremental run read it only once its row changed. Each drifted or missing record is now marked for

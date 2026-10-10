@@ -282,7 +282,17 @@ the dimension flow. How a mapping reads a lookup table is in [mapping lookups](.
 ## 11. Keep it current, and retire a dimension
 
 Schedule the flow after the delivery flows that write the well logs ([schedules](../../../../sqlflow/docs/reference/flow/schedule.md));
-lineage orders it after them. A dimension taken out of the YAML is built no more and keeps what it held; declaring it
+lineage orders it after them. To have each build read only what changed since the last one, give the flow an
+`incremental` block naming a record's unique key, and how often a full load should still settle what deleted records
+held ([full and incremental loads](../flow/dimension.md#full-and-incremental-loads)):
+
+```yaml
+incremental:
+  keyColumns: [id]
+  fullLoadAfterHours: 168
+```
+
+A dimension taken out of the YAML is built no more and keeps what it held; declaring it
 again brings its ids back. To delete one for good (here `CurveUnit`), take it out of the flow's file first, and make
 sure no cache flow captures it:
 

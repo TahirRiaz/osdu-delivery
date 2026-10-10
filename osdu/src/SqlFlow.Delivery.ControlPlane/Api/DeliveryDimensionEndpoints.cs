@@ -33,7 +33,11 @@ public sealed record DeliveryDimensionKindDto(string Kind, long Records, string?
 /// <summary>
 /// One build of a dimension: who ran it and what came of it, how it read (aggregations, ranges split, ranges scanned, count
 /// queries, label searches), how complete the keys are (records, records with a key, nulls, keys too long for the index's
-/// exact field, keys not of the field's type), how many keys it labelled, what it found, and what it changed.
+/// exact field, keys not of the field's type), how many keys it labelled, what it found, and what it changed. <c>Load</c>
+/// says how it loaded the dimension, <c>full</c> or <c>incremental</c>; an incremental load read the records that changed
+/// in <c>[WindowFrom, WindowTo)</c> (<c>ChangedRecords</c>) and read again <c>TouchedKeys</c> keys, and every build read
+/// what changed up to <c>WindowTo</c>, which the next incremental load reads on from. For an incremental load
+/// <c>Records</c> are the records that changed.
 /// </summary>
 public sealed record DeliveryDimensionBuildDto(
     long BuildId, int DimensionId, Guid? RunId, string Actor, string Status, DateTime StartedUtc, DateTime? CompletedUtc, string? Error,
@@ -41,7 +45,16 @@ public sealed record DeliveryDimensionBuildDto(
     long? Records, long? WithValue, long Nulls, long? TooLong, long Unreadable,
     int Aggregations, int Slices, int Splits, int ScannedSlices, int ScanPages, long ScannedUnits, int CountQueries,
     long Labelled, long Unlabelled, int LabelQueries,
-    IReadOnlyList<DeliveryDimensionKindDto> Kinds, IReadOnlyList<string> Notes, DeliveryDimensionChangesDto Changes);
+    IReadOnlyList<DeliveryDimensionKindDto> Kinds, IReadOnlyList<string> Notes, DeliveryDimensionChangesDto Changes,
+    string Load, DateTime? WindowFrom, DateTime? WindowTo, long? ChangedRecords, long? TouchedKeys);
+
+/// <summary>
+/// How a dimension flow's builds load its dimensions after their first full load, as its <c>incremental</c> block says:
+/// how far behind now a window ends (<c>LagMinutes</c>), how old a dimension's last full load may be before a build loads
+/// it in full again (<c>FullLoadAfterHours</c>, null for never on its own), and whether every build loads in full
+/// (<c>FullLoad</c>).
+/// </summary>
+public sealed record DeliveryDimensionIncrementalDto(int LagMinutes, int? FullLoadAfterHours, bool FullLoad);
 
 /// <summary>
 /// One dimension of a dimension flow in a partition: what the flow declares of it (or, for one it no longer declares, what
@@ -59,7 +72,7 @@ public sealed record DeliveryDimensionDto(
     int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Label,
     string? Unlabelled, IReadOnlyList<DeliveryDimensionAttributeSpecDto> Attributes, IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared,
     bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current,
-    DeliveryDimensionBuildDto? Latest, string? Table, string KeyColumn, string ValueColumn);
+    DeliveryDimensionBuildDto? Latest, string? Table, string KeyColumn, string ValueColumn, DateTime? LastFullLoadUtc);
 
 /// <summary>
 /// One row of a dimension's table: the row's number (what a table of facts joins on), the key's number, the key, its
@@ -103,12 +116,14 @@ public sealed record DeliveryDimensionRemovedDto(
 
 /// <summary>
 /// One dimension flow in the partition a board is read in: its dimensions, the partitions it builds in and whether the
-/// board's is one, the parameters a run of it takes, and what keeps it from being shown (a document the catalog cannot parse,
-/// a partition it does not build in).
+/// board's is one, the parameters a run of it takes, what keeps it from being shown (a document the catalog cannot parse,
+/// a partition it does not build in), and how its builds load (<c>Incremental</c>, null for a flow whose every build loads
+/// in full).
 /// </summary>
 public sealed record DeliveryDimensionFlowDto(
     Guid PipelineId, Guid RepoId, string Name, string? Description, string? Batch, string? Partition, bool BuildsPartition, IReadOnlyList<string> Partitions,
-    Guid? LedgerId, IReadOnlyList<DeliveryParameterDto> Parameters, string? Problem, IReadOnlyList<DeliveryDimensionDto> Dimensions);
+    Guid? LedgerId, IReadOnlyList<DeliveryParameterDto> Parameters, string? Problem, IReadOnlyList<DeliveryDimensionDto> Dimensions,
+    DeliveryDimensionIncrementalDto? Incremental);
 
 /// <summary>What a board adds up to, over the dimensions of the flows that build in its partition.</summary>
 public sealed record DeliveryDimensionTotalsDto(
@@ -846,13 +861,13 @@ public static partial class DeliveryDimensionEndpoints
             {
                 flows.Add(new DeliveryDimensionFlowDto(
                     pipeline.Id, pipeline.RepoId, pipeline.Name, flow?.Description, flow?.Batch ?? pipeline.Batch, kept, false, flow?.Served(registered) ?? [], null,
-                    flow is null ? [] : Parameters(flow), problem, []));
+                    flow is null ? [] : Parameters(flow), problem, [], Incremental(flow)));
                 continue;
             }
 
             flows.Add(new DeliveryDimensionFlowDto(
                 pipeline.Id, pipeline.RepoId, pipeline.Name, bound.Description, bound.Batch ?? pipeline.Batch, kept, true, bound.Served(registered), bound.LedgerId,
-                Parameters(bound), null, Dimensions(bound, kept, held.GetValueOrDefault(bound.LedgerId) ?? [], builds)));
+                Parameters(bound), null, Dimensions(bound, kept, held.GetValueOrDefault(bound.LedgerId) ?? [], builds), Incremental(bound)));
         }
 
         return flows;
@@ -979,6 +994,10 @@ public static partial class DeliveryDimensionEndpoints
         return ToDto(spec, null, null, BuildIndex.None);
     }
 
+    /// <summary>How a flow's builds load, as its incremental block says; null for a flow whose every build loads in full.</summary>
+    private static DeliveryDimensionIncrementalDto? Incremental(DimensionFlowDefinition? flow)
+        => flow?.Incremental is { } incremental ? new DeliveryDimensionIncrementalDto(incremental.LagMinutes, incremental.FullLoadAfterHours, incremental.FullLoad) : null;
+
     private static DeliveryDimensionDto ToDto(DimensionSpec? spec, string? partition, DimensionState? state, BuildIndex builds)
     {
         var current = state?.LastRunId is { } id && builds.ById.TryGetValue(id, out var wrote) ? wrote : null;
@@ -1009,7 +1028,8 @@ public static partial class DeliveryDimensionEndpoints
             latest is null ? null : ToDto(latest),
             state?.TableName is { } table ? DimensionTables.Shown(table) : null,
             spec?.KeyColumn ?? state?.KeyColumn ?? DimensionColumnNames.KeyRole,
-            spec?.ValueColumn ?? state?.ValueColumn ?? DimensionColumnNames.ValueRole);
+            spec?.ValueColumn ?? state?.ValueColumn ?? DimensionColumnNames.ValueRole,
+            state?.LastFullBuiltUtc);
     }
 
     private static DeliveryDimensionBuildDto ToDto(DimensionRunState r) => new(
@@ -1021,7 +1041,8 @@ public static partial class DeliveryDimensionEndpoints
         r.Read.Notes,
         new DeliveryDimensionChangesDto(
             r.Changes.MembersAdded, r.Changes.MembersRemoved, r.Changes.MembersRestored, r.Changes.OriginalsAdded, r.Changes.OriginalsRemoved,
-            r.Changes.OriginalsMoved, r.Changes.OriginalsRestored));
+            r.Changes.OriginalsMoved, r.Changes.OriginalsRestored),
+        r.Read.Mode, r.Read.WindowFrom, r.Read.WindowTo, r.Read.ChangedRecords, r.Read.TouchedKeys);
 
     private static DeliveryDimensionValueDto ToDto(DimensionMemberState m, IReadOnlyList<DeliveryDimensionKeyBriefDto> top) => new(
         m.MemberId, m.Value, m.Records, m.RecordsExact, m.Originals, m.Unfilterable, m.Filter, m.FilterParts, m.FirstSeenRunId, m.FirstSeenUtc, m.RemovedRunId,

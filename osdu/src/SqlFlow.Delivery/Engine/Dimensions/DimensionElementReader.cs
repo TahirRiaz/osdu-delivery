@@ -14,6 +14,13 @@ internal sealed record ElementRead(
     IReadOnlyDictionary<string, IReadOnlyList<DimensionElementState>> Keys, long Elements, int Pages, int Ranges, IReadOnlyList<string> Notes);
 
 /// <summary>
+/// Keys a read covers and the query that finds their records: every key and the dimension's query for a full load; for an
+/// incremental load, the keys it reads again, a query's worth at a time, each group with the filter finding its records.
+/// The keys of two scopes are never the same.
+/// </summary>
+internal sealed record DimensionScope(string? Query, DistinctRead Keys);
+
+/// <summary>
 /// Reads the objects of a dimension's nested array (<see cref="DimensionElementsSpec"/>): one pass over the dimension's
 /// records through the search cursor, each record's key, id and objects read together, every field of an object kept as the
 /// field keeps it. The pass is cut into ranges of the dimension's keys read side by side, as a collected attribute's pass is
@@ -25,18 +32,27 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
 {
     /// <summary>Reads the elements of the keys <paramref name="keys"/> found, held at <paramref name="keyField"/>.</summary>
     /// <exception cref="DeliveryException">The records hold more objects than a build reads.</exception>
-    public async Task<ElementRead> ReadAsync(DimensionSpec dimension, string? query, OsduField keyField, DistinctRead keys, CancellationToken ct)
+    public Task<ElementRead> ReadAsync(DimensionSpec dimension, string? query, OsduField keyField, DistinctRead keys, CancellationToken ct)
+        => ReadAsync(dimension, [new DimensionScope(query, keys)], keyField, ct);
+
+    /// <summary>
+    /// Reads the elements of the keys of every scope, held at <paramref name="keyField"/>: each scope's records found by its
+    /// own query and cut into ranges of its own keys, every range of every scope read side by side.
+    /// </summary>
+    /// <exception cref="DeliveryException">The records hold more objects than a build reads.</exception>
+    public async Task<ElementRead> ReadAsync(DimensionSpec dimension, IReadOnlyList<DimensionScope> scopes, OsduField keyField, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(dimension);
+        ArgumentNullException.ThrowIfNull(scopes);
         ArgumentNullException.ThrowIfNull(keyField);
-        ArgumentNullException.ThrowIfNull(keys);
         var elements = dimension.Elements ?? throw new ArgumentException($"Dimension {dimension.Name} reads no elements.", nameof(dimension));
         var order = DimensionValueText.Order(keyField.Index);
-        var ranges = DimensionCollector.Ranges(keyField, keys.Values, order, Math.Max(1, concurrency));
+        var work = scopes
+            .SelectMany(scope => DimensionCollector.Ranges(keyField, scope.Keys.Values, order, Math.Max(1, concurrency)).Select(range => (Scope: scope, Range: range)))
+            .ToList();
         var returned = new List<string> { "id", keyField.Path };
         returned.AddRange(elements.ReturnedFields());
         returned = returned.Distinct(StringComparer.Ordinal).ToList();
-        var own = string.IsNullOrWhiteSpace(query) || query.Trim() == "*" ? null : query.Trim();
         var path = elements.Parsed;
         var fieldReaders = elements.Fields.Select(FieldReader.Of).ToList();
 
@@ -47,10 +63,13 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
         var pages = 0;
         var gate = new Lock();
         await Parallel.ForEachAsync(
-            ranges,
+            work,
             new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, concurrency), CancellationToken = ct },
-            async (range, token) =>
+            async (item, token) =>
             {
+                var (scope, range) = item;
+                var keys = scope.Keys;
+                var own = string.IsNullOrWhiteSpace(scope.Query) || scope.Query.Trim() == "*" ? null : scope.Query.Trim();
                 var request = new OsduSearchQuery
                 {
                     Kind = dimension.Kind,
@@ -130,7 +149,7 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
         var notes = new List<string>
         {
             string.Create(CultureInfo.InvariantCulture,
-                $"{total} object(s) at {elements.Path} read for {byKey.Count} of {keys.Values.Count} key(s); a key whose records hold none is one row with no element."),
+                $"{total} object(s) at {elements.Path} read for {byKey.Count} of {scopes.Sum(s => s.Keys.Values.Count)} key(s); a key whose records hold none is one row with no element."),
         };
         if (cut > 0)
         {
@@ -146,8 +165,8 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
 
         log.LogInformation(
             "dimension {Dimension}: {Elements} object(s) at {Path} for {Keys} key(s), read in one pass of {Pages} page(s) over {Ranges} range(s) of keys",
-            dimension.Name, total, elements.Path, byKey.Count, pages, ranges.Count);
-        return new ElementRead(byKey, total, pages, ranges.Count, notes);
+            dimension.Name, total, elements.Path, byKey.Count, pages, work.Count);
+        return new ElementRead(byKey, total, pages, work.Count, notes);
     }
 
     /// <summary>

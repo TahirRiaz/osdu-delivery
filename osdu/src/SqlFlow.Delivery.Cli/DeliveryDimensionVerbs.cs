@@ -448,6 +448,7 @@ internal static class DeliveryDimensionVerbs
                         ["values"] = dimension?.Members,
                         ["keys"] = dimension?.Originals,
                         ["lastBuiltUtc"] = dimension?.LastBuiltUtc,
+                        ["lastFullLoadUtc"] = dimension?.LastFullBuiltUtc,
                         ["latestBuild"] = newest is null ? null : Described(newest),
                     };
                 }).ToArray()),
@@ -916,7 +917,7 @@ internal static class DeliveryDimensionVerbs
         {
             var changes = run.Changes;
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {run.DimensionRunId,8}  {run.Status,-9}  {Stamp(run.StartedUtc)}  {run.Members} value(s) from {run.Originals} key(s), {run.LeftOut} of none; {changes.OriginalsAdded} arrived, {changes.OriginalsRemoved} left, {changes.OriginalsMoved} moved, {changes.OriginalsRestored} came back; {run.Read.Aggregations} aggregation(s), {run.Read.Splits} split(s), {run.Read.ScanPages} scan page(s), {run.Read.Labelled} labelled in {run.Read.LabelQueries} search(es)  by {run.Actor}"));
+                $"  {run.DimensionRunId,8}  {run.Status,-9}  {Stamp(run.StartedUtc)}  {Loaded(run.Read)}  {run.Members} value(s) from {run.Originals} key(s), {run.LeftOut} of none; {changes.OriginalsAdded} arrived, {changes.OriginalsRemoved} left, {changes.OriginalsMoved} moved, {changes.OriginalsRestored} came back; {run.Read.Aggregations} aggregation(s), {run.Read.Splits} split(s), {run.Read.ScanPages} scan page(s), {run.Read.Labelled} labelled in {run.Read.LabelQueries} search(es)  by {run.Actor}"));
             if (run.Error is { Length: > 0 } error)
             {
                 context.Out.WriteLine("            " + error);
@@ -1188,11 +1189,23 @@ internal static class DeliveryDimensionVerbs
         ["aggregations"] = run.Read.Aggregations,
         ["splits"] = run.Read.Splits,
         ["scanPages"] = run.Read.ScanPages,
+        ["load"] = run.Read.Mode,
+        ["windowFromUtc"] = run.Read.WindowFrom,
+        ["windowToUtc"] = run.Read.WindowTo,
+        ["changedRecords"] = run.Read.ChangedRecords,
+        ["touchedKeys"] = run.Read.TouchedKeys,
         ["actor"] = run.Actor,
         ["startedUtc"] = run.StartedUtc,
         ["completedUtc"] = run.CompletedUtc,
         ["error"] = run.Error,
     };
+
+    /// <summary>How a build loaded its dimension, as a line shows it: in full, or the window and what an incremental load read again.</summary>
+    private static string Loaded(DimensionReadCounts read)
+        => read.Mode == DimensionRunModes.Incremental
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"incremental [{(read.WindowFrom is { } from ? Stamp(from) : "*")}, {(read.WindowTo is { } to ? Stamp(to) : "*")}): {read.ChangedRecords?.ToString(CultureInfo.InvariantCulture) ?? "?"} record(s) changed, {read.TouchedKeys?.ToString(CultureInfo.InvariantCulture) ?? "?"} key(s) read again;")
+            : "full;";
 
     private static int Count(string? value, int fallback, string option)
     {

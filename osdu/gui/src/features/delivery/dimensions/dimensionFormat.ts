@@ -114,6 +114,28 @@ export function coverage(build: DeliveryDimensionBuild): { share: number; text: 
   };
 }
 
+/** A time a window is bounded by, as a person reads it: the date and the minute, in UTC. */
+function windowTime(value: string | null | undefined): string {
+  return value === null || value === undefined ? "the beginning" : `${value.slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * How a build loaded its dimension, as a grid shows it (`full` or `incremental`) and the words a tooltip explains it with:
+ * a full load read every key; an incremental one the records that changed in its window and the keys it read again.
+ */
+export function loadText(build: DeliveryDimensionBuild): { label: string; text: string } {
+  if (build.load !== "incremental") {
+    return { label: "full", text: "Read every key the index holds, and removed what it no longer found." };
+  }
+
+  const changed = build.changedRecords ?? 0;
+  const touched = build.touchedKeys ?? 0;
+  return {
+    label: "incremental",
+    text: `Read the ${changed.toLocaleString("en-US")} record${changed === 1 ? "" : "s"} that changed between ${windowTime(build.windowFrom)} and ${windowTime(build.windowTo)}, and read again the ${touched.toLocaleString("en-US")} key${touched === 1 ? "" : "s"} they hold or held, or were read through. Every other key stayed as it was.`,
+  };
+}
+
 /** A share as a percentage a reader takes in at a glance: whole above 10%, one decimal below, and never 100% unless it is. */
 export function percent(share: number): string {
   if (share >= 1) {

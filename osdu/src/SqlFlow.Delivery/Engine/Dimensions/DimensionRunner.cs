@@ -53,7 +53,37 @@ public sealed record DimensionBuildSummary(
     int Requests,
     string? AggregateBy,
     string? Error,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes)
+{
+    /// <summary>How the build loaded the dimension: <c>full</c> or <c>incremental</c> (<see cref="DimensionRunModes"/>).</summary>
+    public string Load { get; init; } = DimensionRunModes.Full;
+
+    /// <summary>Where an incremental load's window began; null for a full load.</summary>
+    public DateTime? WindowFrom { get; init; }
+
+    /// <summary>Up to when the build read what changed, which the next incremental load reads on from.</summary>
+    public DateTime? WindowTo { get; init; }
+
+    /// <summary>The records an incremental load found changed in its window; null for a full load.</summary>
+    public long? ChangedRecords { get; init; }
+
+    /// <summary>The keys an incremental load read again; null for a full load.</summary>
+    public long? TouchedKeys { get; init; }
+}
+
+/// <summary>
+/// How a run asks its build to load: as the flow declares (in full, or incrementally for a flow with an <c>incremental</c>
+/// block), in full whatever the flow declares (SQLFlow's <c>fullLoad</c>), or over the window it names (SQLFlow's backfill
+/// window, <c>[From, To)</c>, either end open), which only a flow loading incrementally takes.
+/// </summary>
+public sealed record DimensionLoadRequest(bool FullLoad = false, DateTime? From = null, DateTime? To = null)
+{
+    /// <summary>Load as the flow declares.</summary>
+    public static DimensionLoadRequest AsDeclared { get; } = new();
+
+    /// <summary>Whether the run names the window its incremental load reads.</summary>
+    public bool HasWindow => From is not null || To is not null;
+}
 
 /// <summary>
 /// One view as a build run left it (docs/dimension-plan.md, Views): written, unchanged or failed, why it failed, and what
@@ -121,7 +151,23 @@ public sealed class DimensionBuildsFailedException : DeliveryException
 /// <summary>What a plan found of one dimension: the field it would read, the kinds and records it would read them from, and what stops it.</summary>
 public sealed record DimensionPlanSummary(
     string Dimension, string Kind, string? Query, string Path, string? AggregateBy, bool? Repeats, long? Records, IReadOnlyList<DimensionKind> Kinds,
-    IReadOnlyList<string> Problems, string? Skipped);
+    IReadOnlyList<string> Problems, string? Skipped)
+{
+    /// <summary>How a build started now would load it: <c>full</c> or <c>incremental</c>; null when that cannot be told without the module's database.</summary>
+    public string? Load { get; init; }
+
+    /// <summary>Why a flow loading incrementally would load it in full; null otherwise.</summary>
+    public string? FullBecause { get; init; }
+
+    /// <summary>The window an incremental load would read, <c>[WindowFrom, WindowTo)</c>; null for a full load.</summary>
+    public DateTime? WindowFrom { get; init; }
+
+    /// <summary>Where that window would end.</summary>
+    public DateTime? WindowTo { get; init; }
+
+    /// <summary>The records that changed in that window, by the time each last changed; null for a full load.</summary>
+    public long? ChangedRecords { get; init; }
+}
 
 /// <summary>
 /// What a plan found of one view: the tables it reads, the statement a build writes it with, what stops a build writing it,
@@ -147,7 +193,7 @@ public sealed record DimensionPlanOutcome(string Operation, string Flow, string 
 /// transaction. Dimensions build as many at once as the flow's concurrency allows, and one that fails leaves the others
 /// building. The plan settles the fields and counts the records, reading no value and keeping nothing.
 /// </summary>
-public sealed class DimensionRunner
+public sealed partial class DimensionRunner
 {
     /// <summary>The most kinds one dimension's pattern is read over.</summary>
     private const int MaxKinds = 10_000;
@@ -190,11 +236,26 @@ public sealed class DimensionRunner
 
     private DateTime Now => _context.Time.GetUtcNow().UtcDateTime;
 
-    /// <summary>Builds the dimensions the run selects (every one when it names none) and keeps each build.</summary>
-    public async Task<DimensionBuildOutcome> BuildAsync(IReadOnlyCollection<string> names, Guid runId, string actor, CancellationToken ct)
+    /// <summary>Builds the dimensions the run selects (every one when it names none), each loaded as the flow declares, and keeps each build.</summary>
+    public Task<DimensionBuildOutcome> BuildAsync(IReadOnlyCollection<string> names, Guid runId, string actor, CancellationToken ct)
+        => BuildAsync(names, DimensionLoadRequest.AsDeclared, runId, actor, ct);
+
+    /// <summary>
+    /// Builds the dimensions the run selects (every one when it names none) and keeps each build: each loaded as the flow
+    /// declares (in full, or incrementally for a flow with an <c>incremental</c> block) unless <paramref name="load"/> asks
+    /// for a full load or names the window an incremental load reads.
+    /// </summary>
+    public async Task<DimensionBuildOutcome> BuildAsync(IReadOnlyCollection<string> names, DimensionLoadRequest load, Guid runId, string actor, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(names);
+        ArgumentNullException.ThrowIfNull(load);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        if (load.HasWindow && _flow.Incremental is null)
+        {
+            throw new DeliveryException(
+                $"Dimension flow '{_flow.Name}' declares no incremental block, so every build loads its dimensions in full and a backfill window has nothing to bound. Declare incremental: in the flow to load what changed in a window, or run without the window.");
+        }
+
         var ledger = _context.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage);
         var partition = await PartitionAsync(ct).ConfigureAwait(false);
         var selected = _flow.Select(names);
@@ -234,7 +295,7 @@ public sealed class DimensionRunner
             new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, _flow.Reliability.Concurrency), CancellationToken = ct },
             async (dimension, token) =>
             {
-                var summary = await BuildOneAsync(ledger, search, templates, dimension, partition, runId, actor, token).ConfigureAwait(false);
+                var summary = await BuildOneAsync(ledger, search, templates, dimension, partition, load, runId, actor, token).ConfigureAwait(false);
                 lock (gate)
                 {
                     summaries.Add(summary);
@@ -337,9 +398,24 @@ public sealed class DimensionRunner
     }
 
     /// <summary>Settles the field of every dimension the run selects and counts the records each would read, reading no value.</summary>
-    public async Task<DimensionPlanOutcome> PlanAsync(IReadOnlyCollection<string> names, CancellationToken ct)
+    public Task<DimensionPlanOutcome> PlanAsync(IReadOnlyCollection<string> names, CancellationToken ct)
+        => PlanAsync(names, DimensionLoadRequest.AsDeclared, ct);
+
+    /// <summary>
+    /// Settles the field of every dimension the run selects and counts the records each would read, reading no value; says
+    /// how a build asked as <paramref name="load"/> asks would load each, and for an incremental load the records that
+    /// changed in its window.
+    /// </summary>
+    public async Task<DimensionPlanOutcome> PlanAsync(IReadOnlyCollection<string> names, DimensionLoadRequest load, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(names);
+        ArgumentNullException.ThrowIfNull(load);
+        if (load.HasWindow && _flow.Incremental is null)
+        {
+            throw new DeliveryException(
+                $"Dimension flow '{_flow.Name}' declares no incremental block, so every build loads its dimensions in full and a backfill window has nothing to bound. Declare incremental: in the flow to load what changed in a window, or plan without the window.");
+        }
+
         var partition = await PartitionAsync(ct).ConfigureAwait(false);
         var selected = _flow.Select(names);
         using var http = new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, _transport, _allowLoopback, observer: _context.HttpObserver);
@@ -361,8 +437,26 @@ public sealed class DimensionRunner
             var problems = new List<string>();
             long? records = null;
             ResolvedField? resolved = null;
+            LoadPlan? loading = null;
+            long? changedRecords = null;
             try
             {
+                if (_context.Ledger is { } ledger)
+                {
+                    loading = await PlanLoadAsync(ledger, dimension, query, load, Now, ct).ConfigureAwait(false);
+                    if (loading.Mode == DimensionRunModes.Incremental)
+                    {
+                        changedRecords = await search.CountAsync(
+                            new OsduSearchQuery
+                            {
+                                Kind = dimension.Kind,
+                                Query = DimensionFilters.Within(query, RecordChanges.Within(RecordChanges.ModifyTime, loading.From, loading.To)),
+                                ReturnedFields = ["id"],
+                            },
+                            ct).ConfigureAwait(false);
+                    }
+                }
+
                 records = await search.CountAsync(new OsduSearchQuery { Kind = dimension.Kind, Query = query, ReturnedFields = ["id"] }, ct).ConfigureAwait(false);
                 resolved = await ResolveFieldAsync(search, templates, dimension, query, ct).ConfigureAwait(false);
                 if (resolved.Field is null)
@@ -383,13 +477,27 @@ public sealed class DimensionRunner
             }
 
             _log.LogInformation(
-                "plan {Dimension} ({Kind} {Path}): {Records}{Field}{Problems}",
+                "plan {Dimension} ({Kind} {Path}): {Records}{Field}{Load}{Problems}",
                 dimension.Name, dimension.Kind, dimension.Path, records is { } n ? string.Create(CultureInfo.InvariantCulture, $"{n} record(s)") : "not counted",
                 resolved?.Field is { } f ? $", read as {f.AggregateBy}" : string.Empty,
+                loading switch
+                {
+                    { Mode: DimensionRunModes.Incremental } => string.Create(CultureInfo.InvariantCulture,
+                        $", loaded incrementally: {changedRecords?.ToString(CultureInfo.InvariantCulture) ?? "some"} record(s) changed in [{OsduSearch.LuceneTime(loading.From)}, {OsduSearch.LuceneTime(loading.To)})"),
+                    { FullBecause: { } why } => $", loaded in full, since {why}",
+                    _ => string.Empty,
+                },
                 problems.Count > 0 ? "; " + problems[0] : string.Empty);
             plans.Add(new DimensionPlanSummary(
                 dimension.Name, dimension.Kind, query, dimension.Path, resolved?.Field?.AggregateBy, resolved?.Field is null ? null : resolved.Repeats, records,
-                resolved?.Kinds ?? [], problems, null));
+                resolved?.Kinds ?? [], problems, null)
+            {
+                Load = loading?.Mode,
+                FullBecause = loading?.FullBecause,
+                WindowFrom = loading?.Mode == DimensionRunModes.Incremental ? loading.From : null,
+                WindowTo = loading?.Mode == DimensionRunModes.Incremental ? loading.To : null,
+                ChangedRecords = changedRecords,
+            });
         }
 
         return new DimensionPlanOutcome(DeliveryOperations.Plan, _flow.Name, partition, plans) { Views = await PlanViewsAsync(ct).ConfigureAwait(false) };
@@ -436,9 +544,12 @@ public sealed class DimensionRunner
     }
 
     private async Task<DimensionBuildSummary> BuildOneAsync(
-        ILedger ledger, OsduSearch search, TemplateCache templates, DimensionSpec dimension, string partition, Guid runId, string actor, CancellationToken ct)
+        ILedger ledger, OsduSearch search, TemplateCache templates, DimensionSpec dimension, string partition, DimensionLoadRequest request, Guid runId,
+        string actor, CancellationToken ct)
     {
         var query = Query(dimension, partition);
+        var started = Now;
+        var load = await PlanLoadAsync(ledger, dimension, query, request, started, ct).ConfigureAwait(false);
         var (_, run) = await ledger.StartDimensionRunAsync(
             new DimensionDeclaration
             {
@@ -455,100 +566,179 @@ public sealed class DimensionRunner
                 ElementsJson = ElementsText(dimension.Elements),
                 DefinitionHash = dimension.DefinitionHash,
             },
-            runId, actor, Now, ct).ConfigureAwait(false);
-        var read = DimensionReadCounts.None;
+            runId, actor, started, load.Mode, ct).ConfigureAwait(false);
+        var progress = new ReadProgress(load.Stamp(DimensionReadCounts.None));
         try
         {
             var resolved = await ResolveFieldAsync(search, templates, dimension, query, ct).ConfigureAwait(false);
-            var templatesJson = resolved.Kinds.Count == 0 ? null : JsonSerializer.Serialize(resolved.Kinds, StepJson);
-            if (resolved.Field is not { } field)
+            if (load.Mode == DimensionRunModes.Incremental)
             {
-                // No record of the kind: nothing to settle the field by, and nothing to read. The dimension holds no value.
-                read = new DimensionReadCounts { Records = 0, Templates = templatesJson, Notes = [resolved.Note ?? "No record matched."] };
-                var empty = await ledger.WriteDimensionAsync(Write(run, dimension, null, [], [], read), ct).ConfigureAwait(false);
-                _log.LogWarning("dimension {Dimension}: {Note}", dimension.Name, resolved.Note);
-                return Summary(dimension, empty, read, null);
+                var incremental = await LoadIncrementallyAsync(ledger, search, templates, dimension, query, resolved, load, run, progress, ct).ConfigureAwait(false);
+                if (incremental.Summary is { } loaded)
+                {
+                    return loaded;
+                }
+
+                // What the incremental load found makes a full load the cheaper or the only true one: the same build loads in full.
+                load = load.InFull(incremental.FullBecause!);
+                progress.Read = load.Stamp(DimensionReadCounts.None);
+                _log.LogInformation("dimension {Dimension}: loading in full, since {Why}", dimension.Name, incremental.FullBecause);
+            }
+            else if (load.FullBecause is { } why)
+            {
+                _log.LogInformation("dimension {Dimension}: loading in full, since {Why}", dimension.Name, why);
             }
 
-            _log.LogInformation("dimension {Dimension}: reading {Kind} {Path} as {Field}", dimension.Name, dimension.Kind, dimension.Path, field.AggregateBy);
-            var values = await DistinctValues.ReadAsync(
-                new SearchDistinctSource(search, dimension.Kind, query, field),
-                new DistinctReadOptions(_flow.Source.AggregationSize, dimension.MaxValues, resolved.Repeats, Concurrency: Math.Max(1, _flow.Reliability.Concurrency)),
-                _log, ct).ConfigureAwait(false);
-            read = Counts(values, templatesJson, 0, [], KeyLabels.None);
-
-            // A key naming a record is followed to it for its label, which is what the key's value is cleaned from, and for
-            // the attributes read through it; and the values each key collects from its own records are read for each
-            // collected attribute. Neither read needs the other, so a flow that may ask several things at once has them made
-            // side by side, its concurrency shared between them; one that asks a thing at a time has them made in turn.
-            var throughKeys = dimension.Attributes.Where(a => !a.IsCollected).ToList();
-            var labelled = dimension.Label.Count > 0 || throughKeys.Count > 0;
-            var collects = dimension.Attributes.Any(a => a.IsCollected);
-            var concurrency = Math.Max(1, _flow.Reliability.Concurrency);
-            var together = labelled && collects && concurrency > 1;
-            var forLabels = together ? concurrency / 2 : concurrency;
-            var forCollected = together ? concurrency - forLabels : concurrency;
-            Task<KeyLabels> Labelling() => labelled
-                ? new DimensionLabeler(search, _log, forLabels).ReadAsync(values.Values.Keys.ToList(), dimension.Label, throughKeys, ct)
-                : Task.FromResult(KeyLabels.None);
-            Task<CollectedRead> Collecting() => ReadCollectedAsync(search, templates, dimension, query, field, resolved, values, forCollected, ct);
-            KeyLabels labels;
-            CollectedRead collected;
-            if (together)
-            {
-                var labelling = Labelling();
-                var collecting = Collecting();
-                await Task.WhenAll(labelling, collecting).ConfigureAwait(false);
-                labels = await labelling.ConfigureAwait(false);
-                collected = await collecting.ConfigureAwait(false);
-            }
-            else
-            {
-                labels = await Labelling().ConfigureAwait(false);
-                read = Counts(values, templatesJson, 0, [], labels);
-                collected = await Collecting().ConfigureAwait(false);
-            }
-
-            read = Counts(values, templatesJson, 0, [], labels, collected);
-
-            // The objects of the dimension's nested array, a row each, read in a pass of their own once the keys are known.
-            ElementRead? elements = null;
-            if (dimension.Elements is not null)
-            {
-                elements = await new DimensionElementReader(search, _log, Math.Max(1, _flow.Reliability.Concurrency))
-                    .ReadAsync(dimension, query, field, values, ct).ConfigureAwait(false);
-            }
-
-            var cleaner = Cleaner(dimension);
-            var attributes = KeyAttributes(dimension, values.Values.Keys, labels, collected.Attributes);
-            var (originals, members, notes, countQueries) = await GroupAsync(search, dimension, query, field, resolved.Repeats, cleaner, values, labels, attributes, ct).ConfigureAwait(false);
-            notes.AddRange(collected.Notes);
-            notes.AddRange(elements?.Notes ?? []);
-            read = Counts(values, templatesJson, countQueries, notes, labels, collected);
-            read = read with { ScanPages = read.ScanPages + (elements?.Pages ?? 0) };
-            var written = await ledger.WriteDimensionAsync(
-                Write(run, dimension, FieldState(field, resolved.Repeats), originals, members, read,
-                    collected.States.Count == 0 ? null : JsonSerializer.Serialize(collected.States, StepJson), collected.Texts, elements?.Keys),
-                ct).ConfigureAwait(false);
-            _log.LogInformation(
-                "dimension {Dimension}: {Values} value(s) from {Keys} key(s), {LeftOut} of none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
-                dimension.Name, written.Members, written.Originals, written.LeftOut, written.Changes.OriginalsAdded, written.Changes.OriginalsRemoved,
-                written.Changes.OriginalsMoved, written.Changes.OriginalsRestored);
-            return Summary(dimension, written, read, field.AggregateBy);
+            return await LoadInFullAsync(ledger, search, templates, dimension, query, resolved, load, run, progress, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            await CloseAsync(ledger, run.DimensionRunId, DimensionRunStatus.Cancelled, read, "the run was cancelled").ConfigureAwait(false);
+            await CloseAsync(ledger, run.DimensionRunId, DimensionRunStatus.Cancelled, progress.Read, "the run was cancelled").ConfigureAwait(false);
             throw;
         }
         catch (Exception ex) when (Expected(ex, ct))
         {
             var error = SecretHygiene.RedactedMessage(ex);
             _log.LogError(RunFailure.IsExpected(ex) ? null : ex, "dimension {Dimension} failed: {Error}", dimension.Name, error);
-            await CloseAsync(ledger, run.DimensionRunId, DimensionRunStatus.Failed, read, error).ConfigureAwait(false);
-            return new DimensionBuildSummary(dimension.Name, DimensionRunStatus.Failed, run.DimensionRunId, 0, 0, 0, 0, 0, DimensionBuildChanges.None, read.Aggregations + read.ScanPages,
-                null, error, read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList());
+            await CloseAsync(ledger, run.DimensionRunId, DimensionRunStatus.Failed, progress.Read, error).ConfigureAwait(false);
+            var read = progress.Read;
+            return new DimensionBuildSummary(dimension.Name, DimensionRunStatus.Failed, run.DimensionRunId, 0, 0, 0, 0, 0, DimensionBuildChanges.None,
+                read.Aggregations + read.ScanPages, null, error, read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList())
+            {
+                Load = read.Mode,
+                WindowFrom = read.WindowFrom,
+                WindowTo = read.WindowTo,
+                ChangedRecords = read.ChangedRecords,
+                TouchedKeys = read.TouchedKeys,
+            };
         }
+    }
+
+    /// <summary>
+    /// Loads a dimension in full: every key the index holds read, labelled, collected and cleaned, and the dimension written
+    /// whole, so what the read did not find is removed.
+    /// </summary>
+    private async Task<DimensionBuildSummary> LoadInFullAsync(
+        ILedger ledger, OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, ResolvedField resolved, LoadPlan load,
+        DimensionRunState run, ReadProgress progress, CancellationToken ct)
+    {
+        var templatesJson = resolved.Kinds.Count == 0 ? null : JsonSerializer.Serialize(resolved.Kinds, StepJson);
+
+        // A flow that loads incrementally keeps, by each record's unique key, the keys it holds, so its incremental loads read
+        // again what a changed record held before; one that loads in full keeps none.
+        var incremental = _flow.Incremental;
+        if (resolved.Field is not { } field)
+        {
+            // No record of the kind: nothing to settle the field by, and nothing to read. The dimension holds no value.
+            progress.Read = load.Stamp(new DimensionReadCounts { Records = 0, Templates = templatesJson, Notes = [resolved.Note ?? "No record matched."] }) with
+            {
+                RecordKey = incremental?.RecordKey,
+            };
+            var empty = await ledger.WriteDimensionAsync(
+                Write(run, dimension, null, [], [], progress.Read) with { Records = incremental is null ? null : new DimensionRecordsWrite([], []) }, ct).ConfigureAwait(false);
+            _log.LogWarning("dimension {Dimension}: {Note}", dimension.Name, resolved.Note);
+            return Summary(dimension, empty, progress.Read, null);
+        }
+
+        var keyColumns = incremental is null ? null : (await SettleRecordColumnsAsync(search, templates, dimension, query, resolved, incremental, ct).ConfigureAwait(false)).Keys;
+        _log.LogInformation("dimension {Dimension}: reading {Kind} {Path} as {Field}", dimension.Name, dimension.Kind, dimension.Path, field.AggregateBy);
+        var values = await DistinctValues.ReadAsync(
+            new SearchDistinctSource(search, dimension.Kind, query, field),
+            new DistinctReadOptions(_flow.Source.AggregationSize, dimension.MaxValues, resolved.Repeats, Concurrency: Math.Max(1, _flow.Reliability.Concurrency)),
+            _log, ct).ConfigureAwait(false);
+        progress.Read = load.Stamp(Counts(values, templatesJson, 0, [], KeyLabels.None));
+
+        var (labels, collected, elements) = await ReadKeysAsync(
+            search, templates, dimension, values.Values.Keys.ToList(), [new DimensionScope(query, values)], query, field, resolved, progress,
+            soFar => load.Stamp(Counts(values, templatesJson, 0, [], soFar)), ct).ConfigureAwait(false);
+        progress.Read = load.Stamp(Counts(values, templatesJson, 0, [], labels, collected));
+
+        var cleaner = Cleaner(dimension);
+        var attributes = KeyAttributes(dimension, values.Values.Keys, labels, collected.Attributes);
+        var (originals, groups, notes) = KeysOf(dimension, field, cleaner, values.Values, labels, attributes, values.Notes, ct);
+        var (members, memberNotes, countQueries) = await MembersAsync(search, dimension, query, field, resolved.Repeats, groups, ct).ConfigureAwait(false);
+        notes.AddRange(memberNotes);
+        notes.AddRange(collected.Notes);
+        notes.AddRange(elements?.Notes ?? []);
+        RecordRead? records = null;
+        if (incremental is not null)
+        {
+            records = await new DimensionRecordReader(search, _log, Math.Max(1, _flow.Reliability.Concurrency))
+                .ReadAsync(dimension, [new DimensionScope(query, values)], field, keyColumns!, ct).ConfigureAwait(false);
+            notes.Add(string.Create(CultureInfo.InvariantCulture,
+                $"{records.Read - records.Unidentified} record(s) kept by their unique key ({incremental.RecordKey}) with the {records.Held.Count} key(s) they hold, for incremental loads{(records.Unidentified > 0 ? $"; {records.Unidentified} hold no single value at a key column and are not kept, so an incremental load does not read again what they held" : string.Empty)}."));
+        }
+
+        var read = Counts(values, templatesJson, countQueries, notes, labels, collected);
+        progress.Read = load.Stamp(read with { ScanPages = read.ScanPages + (elements?.Pages ?? 0) + (records?.Pages ?? 0) }) with { RecordKey = incremental?.RecordKey };
+        var written = await ledger.WriteDimensionAsync(
+            Write(run, dimension, FieldState(field, resolved.Repeats), originals, members, progress.Read,
+                collected.States.Count == 0 ? null : JsonSerializer.Serialize(collected.States, StepJson), collected.Texts, elements?.Keys) with
+            {
+                KeyRecords = labels.Records,
+                Records = records is null ? null : new DimensionRecordsWrite([], records.Held),
+            },
+            ct).ConfigureAwait(false);
+        _log.LogInformation(
+            "dimension {Dimension}: loaded in full, {Values} value(s) from {Keys} key(s), {LeftOut} of none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
+            dimension.Name, written.Members, written.Originals, written.LeftOut, written.Changes.OriginalsAdded, written.Changes.OriginalsRemoved,
+            written.Changes.OriginalsMoved, written.Changes.OriginalsRestored);
+        return Summary(dimension, written, progress.Read, field.AggregateBy);
+    }
+
+    /// <summary>
+    /// What a build reads of the keys it holds beyond their counts: each key's label and attributes through the record it
+    /// names, the values each collects from its own records, and the objects of its nested array, each scope's records found
+    /// by its own query. Labels and collected values need nothing of each other, so a flow that may ask several things at
+    /// once has them read side by side, its concurrency shared between them; one that asks a thing at a time has them read in
+    /// turn. The elements are read once both are.
+    /// </summary>
+    private async Task<(KeyLabels Labels, CollectedRead Collected, ElementRead? Elements)> ReadKeysAsync(
+        OsduSearch search, TemplateCache templates, DimensionSpec dimension, IReadOnlyCollection<string> keys, IReadOnlyList<DimensionScope> scopes,
+        string? query, OsduField field, ResolvedField resolved, ReadProgress progress, Func<KeyLabels, DimensionReadCounts> labelled, CancellationToken ct)
+    {
+        var throughKeys = dimension.Attributes.Where(a => !a.IsCollected).ToList();
+        var reads = dimension.Label.Count > 0 || throughKeys.Count > 0;
+        var collects = dimension.Attributes.Any(a => a.IsCollected);
+        var concurrency = Math.Max(1, _flow.Reliability.Concurrency);
+        var together = reads && collects && concurrency > 1;
+        var forLabels = together ? concurrency / 2 : concurrency;
+        var forCollected = together ? concurrency - forLabels : concurrency;
+        Task<KeyLabels> Labelling() => reads
+            ? new DimensionLabeler(search, _log, forLabels).ReadAsync(keys, dimension.Label, throughKeys, ct)
+            : Task.FromResult(KeyLabels.None);
+        Task<CollectedRead> Collecting() => ReadCollectedAsync(search, templates, dimension, query, field, resolved, scopes, forCollected, ct);
+        KeyLabels labels;
+        CollectedRead collected;
+        if (together)
+        {
+            var labelling = Labelling();
+            var collecting = Collecting();
+            await Task.WhenAll(labelling, collecting).ConfigureAwait(false);
+            labels = await labelling.ConfigureAwait(false);
+            collected = await collecting.ConfigureAwait(false);
+        }
+        else
+        {
+            labels = await Labelling().ConfigureAwait(false);
+            progress.Read = labelled(labels);
+            collected = await Collecting().ConfigureAwait(false);
+        }
+
+        // The objects of the dimension's nested array, a row each, read in a pass of their own once the keys are known.
+        ElementRead? elements = null;
+        if (dimension.Elements is not null)
+        {
+            elements = await new DimensionElementReader(search, _log, concurrency).ReadAsync(dimension, scopes, field, ct).ConfigureAwait(false);
+        }
+
+        return (labels, collected, elements);
+    }
+
+    /// <summary>The read counts a build has got to, so a build that fails or is cancelled closes with what it read.</summary>
+    private sealed class ReadProgress(DimensionReadCounts read)
+    {
+        public DimensionReadCounts Read { get; set; } = read;
     }
 
     /// <summary>
@@ -565,22 +755,25 @@ public sealed class DimensionRunner
             ?? (dimension.Label.Count > 0 && dimension.Unlabelled is { } unlabelled ? unlabelled : DimensionLabeler.DisplayOf(original));
     }
 
+    /// <summary>A key as its value's count and filter are made from it: the key, how many units hold it, and whether a query can carry it.</summary>
+    private sealed record GroupedKey(string Original, long Count, bool Filterable);
+
     /// <summary>
-    /// Cleans every original into its member, gives each member its filter and its count, and says what cleaning and counting
-    /// had to say, a line each.
+    /// Cleans every key read into the value it belongs to, with its filter and attributes, and groups the keys by value; says
+    /// what cleaning had to say, a line each, after the read's own notes and the labels'.
     /// </summary>
-    private async Task<(List<DimensionOriginalWrite> Originals, List<DimensionMemberWrite> Members, List<string> Notes, int CountQueries)> GroupAsync(
-        OsduSearch search, DimensionSpec dimension, string? query, OsduField field, bool repeats, DimensionCleaner cleaner, DistinctRead read, KeyLabels labels,
-        IReadOnlyDictionary<string, IReadOnlyList<DimensionAttributeState>> keyAttributes, CancellationToken ct)
+    private static (List<DimensionOriginalWrite> Originals, Dictionary<string, List<GroupedKey>> Groups, List<string> Notes) KeysOf(
+        DimensionSpec dimension, OsduField field, DimensionCleaner cleaner, IReadOnlyDictionary<string, long> read, KeyLabels labels,
+        IReadOnlyDictionary<string, IReadOnlyList<DimensionAttributeState>> keyAttributes, IReadOnlyList<string> readNotes, CancellationToken ct)
     {
-        var originals = new List<DimensionOriginalWrite>(read.Values.Count);
-        var groups = new Dictionary<string, List<DimensionOriginalWrite>>(StringComparer.Ordinal);
-        var notes = new List<string>(read.Notes);
+        var originals = new List<DimensionOriginalWrite>(read.Count);
+        var groups = new Dictionary<string, List<GroupedKey>>(StringComparer.Ordinal);
+        var notes = new List<string>(readNotes);
         notes.AddRange(labels.Notes);
         var tooLong = 0;
         var leftOut = new Dictionary<string, int>(StringComparer.Ordinal);
         var unfilterable = new List<string>();
-        foreach (var (original, count) in read.Values)
+        foreach (var (original, count) in read)
         {
             ct.ThrowIfCancellationRequested();
             if (original.Length > DimensionSpec.MaxOriginalLength)
@@ -599,9 +792,8 @@ public sealed class DimensionRunner
             var attributes = keyAttributes.GetValueOrDefault(original);
             if (cleaned.Outcome == CleanOutcome.Member)
             {
-                var kept = new DimensionOriginalWrite(original, cleaned.Value, null, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter, attributes);
-                originals.Add(kept);
-                (groups.TryGetValue(cleaned.Value!, out var group) ? group : groups[cleaned.Value!] = []).Add(kept);
+                originals.Add(new DimensionOriginalWrite(original, cleaned.Value, null, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter, attributes));
+                (groups.TryGetValue(cleaned.Value!, out var group) ? group : groups[cleaned.Value!] = []).Add(new GroupedKey(original, count, filterable));
                 if (!filterable)
                 {
                     unfilterable.Add(original);
@@ -632,9 +824,21 @@ public sealed class DimensionRunner
                 $"{unfilterable.Count} key(s) cannot be carried in a search query, so no filter finds their records: {string.Join(", ", unfilterable.Take(5).Select(o => $"'{Shown(o)}'"))}{(unfilterable.Count > 5 ? ", ..." : string.Empty)}."));
         }
 
+        return (originals, groups, notes);
+    }
+
+    /// <summary>
+    /// Each value of <paramref name="groups"/> as a build writes it, from all its keys: its count and its filter, and the
+    /// exact count of its records where the dimension asks for one; says what counting had to say, a line each.
+    /// </summary>
+    private async Task<(List<DimensionMemberWrite> Members, List<string> Notes, int CountQueries)> MembersAsync(
+        OsduSearch search, DimensionSpec dimension, string? query, OsduField field, bool repeats, IReadOnlyDictionary<string, List<GroupedKey>> groups,
+        CancellationToken ct)
+    {
         // A member's count is exact where its originals' counts are counts of records that no two of them share: a field a
         // record holds once, or a list outside a nested array holding one original. Elsewhere it is their sum, unless the
         // dimension asks for exact counts, which one count of its filter gives where the filter is one query covering all.
+        var notes = new List<string>();
         var members = new List<DimensionMemberWrite>(groups.Count);
         var toCount = new List<(int Index, string Filter)>();
         var splitFilters = 0;
@@ -701,7 +905,7 @@ public sealed class DimensionRunner
                 $"The records of {failedCounts} value(s) could not be counted, so they are the sum of their keys': {firstFailure}"));
         }
 
-        return (originals, members, notes, countQueries);
+        return (members, notes, countQueries);
     }
 
     /// <summary>
@@ -808,45 +1012,71 @@ public sealed class DimensionRunner
     }
 
     /// <summary>
+    /// The field of each collected attribute (<see cref="DimensionAttributeSpec.Collect"/>), settled as the dimension's is, as
+    /// a build keeps it: what an incremental load compares with what the last build kept before it reads anything.
+    /// </summary>
+    private async Task<IReadOnlyList<(DimensionAttributeSpec Attribute, OsduField Field, bool Repeats, DimensionCollectedState State)>> SettleCollectedAsync(
+        OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, ResolvedField resolved, CancellationToken ct)
+    {
+        var settled = new List<(DimensionAttributeSpec, OsduField, bool, DimensionCollectedState)>();
+        foreach (var attribute in dimension.Attributes.Where(a => a.IsCollected))
+        {
+            var who = CollectedWho(dimension, attribute);
+            var path = await ResolvePathAsync(search, templates, dimension, attribute.Collect!, who, resolved.Kinds, query, ct).ConfigureAwait(false);
+            var field = path.Field ?? throw new DeliveryException($"{who} reads {attribute.Collect}, and {path.Note ?? "its field could not be settled."}");
+            settled.Add((attribute, field, path.Repeats, new DimensionCollectedState(attribute.Name, attribute.Collect!, FieldState(field, path.Repeats), dimension.Unlabelled)));
+        }
+
+        return settled;
+    }
+
+    /// <summary>
     /// The values each key collects from its own records, for each collected attribute (<see cref="DimensionAttributeSpec.Collect"/>):
-    /// its field settled as the dimension's is, then collected (<see cref="DimensionCollector"/>).
+    /// its field settled as the dimension's is, then collected (<see cref="DimensionCollector"/>) scope by scope, each over
+    /// the records its own query finds. The scopes' keys are never the same, so their rows are each key's; a text two scopes
+    /// collect counts the records of both.
     /// </summary>
     private async Task<CollectedRead> ReadCollectedAsync(
-        OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, OsduField keyField, ResolvedField resolved, DistinctRead keys,
-        int concurrency, CancellationToken ct)
+        OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, OsduField keyField, ResolvedField resolved,
+        IReadOnlyList<DimensionScope> scopes, int concurrency, CancellationToken ct)
     {
-        var collectedAttributes = dimension.Attributes.Where(a => a.IsCollected).ToList();
-        if (collectedAttributes.Count == 0)
+        if (!dimension.Attributes.Any(a => a.IsCollected))
         {
             return CollectedRead.None;
         }
 
         var collector = new DimensionCollector(search, _log, _flow.Source.AggregationSize, Math.Max(1, concurrency));
         var byKey = new Dictionary<string, List<DimensionAttributeState>>(StringComparer.Ordinal);
-        var states = new List<DimensionCollectedState>(collectedAttributes.Count);
-        var texts = new List<DimensionCollectedText>();
+        var states = new List<DimensionCollectedState>();
+        var texts = new Dictionary<(string Name, string Text), DimensionCollectedText>();
         var notes = new List<string>();
         var aggregations = 0;
         var pages = 0;
-        foreach (var attribute in collectedAttributes)
+        foreach (var (attribute, field, repeats, state) in await SettleCollectedAsync(search, templates, dimension, query, resolved, ct).ConfigureAwait(false))
         {
-            var who = CollectedWho(dimension, attribute);
-            var settled = await ResolvePathAsync(search, templates, dimension, attribute.Collect!, who, resolved.Kinds, query, ct).ConfigureAwait(false);
-            var field = settled.Field ?? throw new DeliveryException($"{who} reads {attribute.Collect}, and {settled.Note ?? "its field could not be settled."}");
-            var read = await collector.CollectAsync(dimension, attribute, query, keyField, resolved.Repeats, field, settled.Repeats, keys, ct).ConfigureAwait(false);
-            foreach (var (key, values) in read.Keys)
+            foreach (var scope in scopes)
             {
-                (byKey.TryGetValue(key, out var held) ? held : byKey[key] = []).AddRange(values);
+                var read = await collector.CollectAsync(dimension, attribute, scope.Query, keyField, resolved.Repeats, field, repeats, scope.Keys, ct).ConfigureAwait(false);
+                foreach (var (key, values) in read.Keys)
+                {
+                    (byKey.TryGetValue(key, out var held) ? held : byKey[key] = []).AddRange(values);
+                }
+
+                foreach (var text in read.Texts)
+                {
+                    texts[(text.Name, text.Text)] = texts.TryGetValue((text.Name, text.Text), out var seen) ? seen with { Records = seen.Records + text.Records } : text;
+                }
+
+                notes.AddRange(read.Notes.Where(n => !notes.Contains(n, StringComparer.Ordinal)));
+                aggregations += read.Aggregations;
+                pages += read.ScanPages;
             }
 
-            states.Add(new DimensionCollectedState(attribute.Name, attribute.Collect!, FieldState(field, settled.Repeats), dimension.Unlabelled));
-            texts.AddRange(read.Texts);
-            notes.AddRange(read.Notes);
-            aggregations += read.Aggregations;
-            pages += read.ScanPages;
+            states.Add(state);
         }
 
-        return new CollectedRead(byKey, states, texts, aggregations, pages, notes);
+        var collected = texts.Values.OrderBy(t => t.Name, StringComparer.Ordinal).ThenBy(t => t.Value, StringComparer.Ordinal).ThenBy(t => t.Text, StringComparer.Ordinal).ToList();
+        return new CollectedRead(byKey, states, collected, aggregations, pages, notes);
     }
 
     /// <summary>
@@ -935,7 +1165,14 @@ public sealed class DimensionRunner
     private static DimensionBuildSummary Summary(DimensionSpec dimension, DimensionRunState written, DimensionReadCounts read, string? aggregateBy)
         => new(dimension.Name, written.Status, written.DimensionRunId, written.Members, written.Originals, written.LeftOut, written.Unfilterable, read.Labelled,
             DimensionBuildChanges.Of(written.Changes), read.Aggregations + read.ScanPages + read.CountQueries + read.LabelQueries, aggregateBy, null,
-            read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList());
+            read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList())
+        {
+            Load = read.Mode,
+            WindowFrom = read.WindowFrom,
+            WindowTo = read.WindowTo,
+            ChangedRecords = read.ChangedRecords,
+            TouchedKeys = read.TouchedKeys,
+        };
 
     private static DimensionReadCounts Counts(DistinctRead read, string? templates, int countQueries, IReadOnlyList<string> notes, KeyLabels labels, CollectedRead? collected = null) => new()
     {

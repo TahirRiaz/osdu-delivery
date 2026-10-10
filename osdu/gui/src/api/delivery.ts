@@ -2657,6 +2657,26 @@ export interface DeliveryDimensionBuild {
   kinds: DeliveryDimensionKind[];
   notes: string[];
   changes: DeliveryDimensionChanges;
+  /** How the build loaded the dimension: every key (`full`), or the keys of what changed in its window (`incremental`). */
+  load: DimensionLoad;
+  /** Where an incremental load's window began; omitted for a full load. */
+  windowFrom?: string | null;
+  /** Up to when the build read what changed, which the next incremental load reads on from. */
+  windowTo?: string | null;
+  /** The records an incremental load found changed in its window; omitted for a full load. */
+  changedRecords?: number | null;
+  /** The keys an incremental load read again; omitted for a full load. */
+  touchedKeys?: number | null;
+}
+
+/** How a build loads a dimension. */
+export type DimensionLoad = "full" | "incremental";
+
+/** A dimension flow's incremental block: how far behind now a window ends, how old a full load may get, and whether every build loads in full. */
+export interface DeliveryDimensionIncremental {
+  lagMinutes: number;
+  fullLoadAfterHours?: number | null;
+  fullLoad: boolean;
 }
 
 /**
@@ -2706,6 +2726,8 @@ export interface DeliveryDimension {
   keyColumn: string;
   /** What the dimension calls its value: the property its label ends with (`FacilityName`), or its own name with no label, unless the flow names it. */
   valueColumn: string;
+  /** When the dimension was last loaded in full; omitted until a full load has completed. */
+  lastFullLoadUtc?: string | null;
 }
 
 /** One dimension flow in the partition a board is read in. */
@@ -2722,6 +2744,8 @@ export interface DeliveryDimensionFlow {
   parameters: DeliveryParameter[];
   problem: string | null;
   dimensions: DeliveryDimension[];
+  /** How the flow's builds load after a first full load; omitted for a flow whose every build loads in full. */
+  incremental?: DeliveryDimensionIncremental | null;
 }
 
 /** What a board adds up to, over the dimensions of the flows that build in its partition. */

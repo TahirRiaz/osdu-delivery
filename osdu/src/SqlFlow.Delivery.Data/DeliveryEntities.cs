@@ -1962,10 +1962,19 @@ public sealed class DeliveryDimension
     /// <summary>The originals the dimension holds now, those under no member included.</summary>
     public long Originals { get; set; }
 
-    /// <summary>The build that last wrote the dimension.</summary>
+    /// <summary>The build that last wrote or read the dimension.</summary>
     public long? LastRunId { get; set; }
 
     public DateTime? LastBuiltUtc { get; set; }
+
+    /// <summary>
+    /// The last build that read the dimension in full and kept the records each key's label and attributes were read
+    /// through (<see cref="DeliveryDimensionKeyRecord"/>): what an incremental load reads on from. Null until one has.
+    /// </summary>
+    public long? LastFullRunId { get; set; }
+
+    /// <summary>When <see cref="LastFullRunId"/> completed.</summary>
+    public DateTime? LastFullBuiltUtc { get; set; }
 
     public DateTime CreatedUtc { get; set; }
 }
@@ -1976,6 +1985,9 @@ public sealed class DeliveryDimension
 /// </summary>
 public sealed class DeliveryDimensionRun
 {
+    /// <summary>The longest unique key a load keeps records by: a few property paths.</summary>
+    public const int MaxRecordKeyLength = 1600;
+
     public short PartitionId { get; set; }
 
     public long DimensionRunId { get; set; }
@@ -1992,6 +2004,33 @@ public sealed class DeliveryDimensionRun
 
     /// <summary>running, completed, failed or cancelled.</summary>
     public string Status { get; set; } = "running";
+
+    /// <summary>
+    /// How the run read its dimension: <c>full</c>, every key the index holds, or <c>incremental</c>, the keys of the
+    /// records that changed in its window and of the records their labels and attributes were read through.
+    /// </summary>
+    public string Mode { get; set; } = "full";
+
+    /// <summary>Where an incremental load's window began; null for a full load, and for a window open below.</summary>
+    public DateTime? WindowFrom { get; set; }
+
+    /// <summary>
+    /// Up to when a completed run has read what changed, its start less the flow's lag: the next incremental load reads on
+    /// from the latest of them. Null for a run that has not completed, and for one made before runs kept it.
+    /// </summary>
+    public DateTime? WindowTo { get; set; }
+
+    /// <summary>The records an incremental load found changed in its window; null for a full load.</summary>
+    public long? ChangedRecords { get; set; }
+
+    /// <summary>The keys an incremental load read again; null for a full load.</summary>
+    public long? TouchedKeys { get; set; }
+
+    /// <summary>
+    /// The unique key a load kept the keys each record holds by (<see cref="DeliveryDimensionRecord"/>): the flow's
+    /// <c>incremental.keyColumns</c>, comma-separated. Null for a load that kept none, which no incremental load reads on from.
+    /// </summary>
+    public string? RecordKey { get; set; }
 
     public string DefinitionHash { get; set; } = string.Empty;
 
@@ -2421,6 +2460,55 @@ public sealed class DeliveryDimensionAttributeName
 
     /// <summary>Whether its values are collected from the dimension's own records, so a key holds several.</summary>
     public bool Collected { get; set; }
+}
+
+/// <summary>
+/// A record one key's label and attributes were read through: the record the key names and every record a step reached or
+/// looked for, found or not. A build rewrites them for every key it reads; an incremental load finds the keys to read
+/// again because a record changed by looking the record up here.
+/// </summary>
+public sealed class DeliveryDimensionKeyRecord
+{
+    /// <summary>The longest entity type a record id names.</summary>
+    public const int MaxEntityTypeLength = 256;
+
+    public short PartitionId { get; set; }
+
+    /// <summary>The row's own number, which the table is stored in the order of.</summary>
+    public long KeyRecordId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The original read through the record (<see cref="DeliveryDimensionValue.ValueId"/>).</summary>
+    public long ValueId { get; set; }
+
+    /// <summary>SHA-256 of the record's id without its version, as UTF-8: what a changed record is looked up by.</summary>
+    public byte[] RecordHash { get; set; } = [];
+
+    /// <summary>The entity type the id names (<c>master-data--Wellbore</c>): the kinds an incremental load asks the search what changed in.</summary>
+    public string EntityType { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// A key one record of a dimension held when a load last read the record, the record named by its unique key (the flow's
+/// <c>incremental.keyColumns</c>): what an incremental load reads again when the record changes, besides the keys it holds
+/// now. A full load of a flow that loads incrementally rewrites them all; an incremental load rewrites those of the records
+/// it found changed. A record that left the index keeps its rows until the next full load.
+/// </summary>
+public sealed class DeliveryDimensionRecord
+{
+    public short PartitionId { get; set; }
+
+    /// <summary>The row's own number, which the table is stored in the order of.</summary>
+    public long DimensionRecordId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>SHA-256 of the record's unique key, its columns' values joined, as UTF-8.</summary>
+    public byte[] RecordHash { get; set; } = [];
+
+    /// <summary>The original the record held (<see cref="DeliveryDimensionValue.ValueId"/>).</summary>
+    public long ValueId { get; set; }
 }
 
 /// <summary>
@@ -3302,6 +3390,8 @@ public static class DeliveryModel
             e.Property(r => r.DimensionRunId).ValueGeneratedOnAdd();
             e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
             e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Mode).HasMaxLength(16).IsRequired();
+            e.Property(r => r.RecordKey).HasMaxLength(DeliveryDimensionRun.MaxRecordKeyLength);
             e.Property(r => r.DefinitionHash).HasMaxLength(16).IsRequired();
             e.Property(r => r.Query).HasMaxLength(4000);
             e.Property(r => r.AggregateBy).HasMaxLength(DeliveryDimension.MaxAggregateByLength);
@@ -3435,6 +3525,35 @@ public static class DeliveryModel
             e.HasIndex(t => new { t.PartitionId, t.DimensionId, t.AttributeId, t.TextHash }).IsUnique();
             // The texts of the values a search picks: one seek.
             e.HasIndex(t => new { t.PartitionId, t.DimensionId, t.AttributeId, t.Value });
+        });
+
+        modelBuilder.Entity<DeliveryDimensionKeyRecord>(e =>
+        {
+            e.ToTable("DimensionKeyRecord", SchemaName);
+            e.HasKey(x => new { x.PartitionId, x.KeyRecordId });
+            e.Property(x => x.KeyRecordId).ValueGeneratedOnAdd();
+            e.Property(x => x.RecordHash).HasMaxLength(32).IsFixedLength().IsRequired();
+            ExactText(e.Property(x => x.EntityType)).HasMaxLength(DeliveryDimensionKeyRecord.MaxEntityTypeLength).IsRequired();
+            e.HasIndex(x => x.KeyRecordId).IsUnique();
+            // A key's records, once each: what a write rewrites them by.
+            e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.ValueId, x.RecordHash }).IsUnique();
+            // The keys read through a record that changed: one seek a record.
+            e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.RecordHash });
+            // The entity types a dimension's keys were read through, which an update asks the search what changed in.
+            e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.EntityType });
+        });
+
+        modelBuilder.Entity<DeliveryDimensionRecord>(e =>
+        {
+            e.ToTable("DimensionRecord", SchemaName);
+            e.HasKey(x => new { x.PartitionId, x.DimensionRecordId });
+            e.Property(x => x.DimensionRecordId).ValueGeneratedOnAdd();
+            e.Property(x => x.RecordHash).HasMaxLength(32).IsFixedLength().IsRequired();
+            e.HasIndex(x => x.DimensionRecordId).IsUnique();
+            // A record's keys, once each: what a load rewrites them by and an incremental load reads them by.
+            e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.RecordHash, x.ValueId }).IsUnique();
+            // The records of a key: what goes with a key a load removes.
+            e.HasIndex(x => new { x.PartitionId, x.DimensionId, x.ValueId });
         });
 
         modelBuilder.Entity<DeliveryDimensionChange>(e =>

@@ -66,12 +66,16 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before an element's field kept up to 4,000 characters: it kept 256, as an attribute does.</summary>
     private const string BeforeElementValues = "20261009204033_DimensionViews";
 
+    /// <summary>The migration before a dimension could be loaded incrementally: every build read it in full.</summary>
+    private const string BeforeIncrementalLoads = "20261010152004_DimensionElementValues";
+
     /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
 
     /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] DimensionTables =
-        ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute", "DimensionCollectedText", "DimensionAttributeName", "DimensionElement"];
+        ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute", "DimensionCollectedText", "DimensionAttributeName", "DimensionElement",
+            "DimensionKeyRecord", "DimensionRecord"];
 
     private static readonly Guid Mixed = FlowId.Of("wells-mixed-delivery");
 
@@ -604,7 +608,7 @@ public sealed class SqlServerLedgerMigrationTests
 
         await database.MigrateAsync(null);
 
-        Assert.Equal(11L, await database.ScalarAsync(Tables));
+        Assert.Equal(13L, await database.ScalarAsync(Tables));
         foreach (var table in DimensionTables)
         {
             Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
@@ -622,7 +626,48 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(BeforeDimensions);
         Assert.Equal(0L, await database.ScalarAsync(Tables));
         await database.MigrateAsync(null);
-        Assert.Equal(11L, await database.ScalarAsync(Tables));
+        Assert.Equal(13L, await database.ScalarAsync(Tables));
+    }
+
+    [Fact]
+    public async Task A_dimension_built_before_incremental_loads_keeps_its_builds_as_full_loads_and_the_new_tables_go_back_with_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeIncrementalLoads);
+        await database.ExecuteAsync("""
+            INSERT INTO [osdu].[DimensionRun] ([PartitionId], [DimensionId], [FlowId], [Actor], [Status], [DefinitionHash], [Nulls], [Unreadable], [Members], [Originals],
+                [LeftOut], [Unfilterable], [MembersAdded], [MembersRemoved], [MembersRestored], [OriginalsAdded], [OriginalsRemoved], [OriginalsMoved], [OriginalsRestored],
+                [Aggregations], [Slices], [Splits], [ScannedSlices], [ScanPages], [ScannedUnits], [CountQueries], [Labelled], [Unlabelled], [LabelQueries], [StartedUtc])
+            VALUES (1, 1, NEWID(), N'tests', N'completed', N'0123456789abcdef', 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, SYSUTCDATETIME());
+            """);
+
+        await database.MigrateAsync(null);
+
+        // A build made before is a full load, and kept no window, no record key and none of the records it read: an
+        // incremental load cannot read on from it, so the dimension's next build loads it in full.
+        Assert.Equal(1L, await database.ScalarAsync(
+            "SELECT COUNT_BIG(*) FROM [osdu].[DimensionRun] WHERE [Mode] = N'full' AND [WindowTo] IS NULL AND [RecordKey] IS NULL AND [ChangedRecords] IS NULL AND [TouchedKeys] IS NULL;"));
+        string[] tables = ["DimensionKeyRecord", "DimensionRecord"];
+        foreach (var table in tables)
+        {
+            Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
+        }
+
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, [.. tables, "Dimension", "DimensionRun"]), await database.IndexesAsync([.. tables, "Dimension", "DimensionRun"]));
+        }
+
+        const string Columns = "SELECT COUNT_BIG(*) FROM sys.columns WHERE ([object_id] = OBJECT_ID(N'[osdu].[DimensionRun]') AND [name] IN (N'Mode', N'WindowFrom', N'WindowTo', N'ChangedRecords', N'TouchedKeys', N'RecordKey')) OR ([object_id] = OBJECT_ID(N'[osdu].[Dimension]') AND [name] IN (N'LastFullRunId', N'LastFullBuiltUtc'));";
+        Assert.Equal(8L, await database.ScalarAsync(Columns));
+        const string New = "SELECT COUNT_BIG(*) FROM sys.tables WHERE [name] IN (N'DimensionKeyRecord', N'DimensionRecord') AND [schema_id] = SCHEMA_ID(N'osdu');";
+        Assert.Equal(2L, await database.ScalarAsync(New));
+
+        await database.MigrateAsync(BeforeIncrementalLoads);
+        Assert.Equal((0L, 0L), (await database.ScalarAsync(Columns), await database.ScalarAsync(New)));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionRun];"));
+        await database.MigrateAsync(null);
+        Assert.Equal((8L, 2L), (await database.ScalarAsync(Columns), await database.ScalarAsync(New)));
     }
 
     [Fact]

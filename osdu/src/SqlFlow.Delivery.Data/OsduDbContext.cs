@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.37.0";
+    public const string ModuleVersion = "1.38.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -112,6 +112,12 @@ public sealed class OsduDbContext : DbContext
 
     /// <summary>The fields of the objects of a nested array the dimensions' keys hold, one row per object and field.</summary>
     public DbSet<DeliveryDimensionElement> DeliveryDimensionElements => Set<DeliveryDimensionElement>();
+
+    /// <summary>The records each key's label and attributes were read through, which an incremental load finds keys to read again by.</summary>
+    public DbSet<DeliveryDimensionKeyRecord> DeliveryDimensionKeyRecords => Set<DeliveryDimensionKeyRecord>();
+
+    /// <summary>The keys each record of a dimension held when a load last read it, by the record's unique key.</summary>
+    public DbSet<DeliveryDimensionRecord> DeliveryDimensionRecords => Set<DeliveryDimensionRecord>();
 
     /// <summary>The views dimension flows declare over their tables, as their builds last wrote them.</summary>
     public DbSet<DeliveryDimensionView> DeliveryDimensionViews => Set<DeliveryDimensionView>();

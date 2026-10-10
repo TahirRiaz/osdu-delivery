@@ -24,6 +24,12 @@ keywords:
   - target.connection
   - datatype
   - key_hash
+  - incremental load
+  - full load
+  - keycolumns
+  - datecolumns
+  - modifytime
+  - fullloadafterhours
 yamlPath: "(root, flowType: dimension)"
 related:
   - delivery-guide-dimensions
@@ -45,6 +51,9 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/DimensionExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRunner.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRunner.Incremental.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRecordReader.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Search/RecordChanges.cs
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionCleaner.cs
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionLabeler.cs
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionCollector.cs
@@ -186,6 +195,7 @@ type ...`).
 | `target` | map | none | `connection`: the module's database, as the pipelines reading the flow's tables and views name it. Required with `views`. See [Views](#views). |
 | `views` | list | none | Views over the flow's dimension tables, at most 50. See [Views](#views). |
 | `reliability` | map | delivery defaults | The HTTP settings a delivery flow takes ([delivery flow](delivery.md)), and `concurrency` (default 8, at least 1): how many dimensions build at once, and how many requests each asks of the search at once (value ranges, label and attribute searches, cursors). `parallelInterfaces` is refused. |
+| `incremental` | map | none | How a build loads the dimensions after their first full load. Left out, every build loads every dimension in full. See [Full and incremental loads](#full-and-incremental-loads). |
 | `schedule`, `mode`, `lifecycle` | | none | SQLFlow's envelope keys ([schedule](../../../../sqlflow/docs/reference/flow/schedule.md), [flow overview](../../../../sqlflow/docs/reference/flow/overview.md)). A schedule's `values` may name the partition (`partition: dev`) and the flow's parameters. |
 
 ### source
@@ -550,18 +560,74 @@ matchKeys:
   action: delete                          # a curve the view no longer holds leaves the table
 ```
 
+## Full and incremental loads
+
+Without an `incremental` block every build loads every dimension in full (see [What a build does](#what-a-build-does)).
+With one, a build reads only what changed since the dimension was last read, and loads in full only when it has to:
+
+```yaml
+incremental:
+  keyColumns: [id]                        # required: the properties that identify one record
+  dateColumns: [modifyTime, createTime]   # when a record last changed: the first it holds
+  lagMinutes: 5
+  fullLoadAfterHours: 168                 # a full load at least once a week
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `keyColumns` | list | required | The properties whose values together identify one record: `[id]` for an OSDU record. A full load keeps the keys each record holds by them, so an incremental load reads again what a changed record held before. Each a property a record holds once, 1 to 3, none twice. |
+| `dateColumns` | list | `[modifyTime, createTime]` | When a record last changed: the first of these dates it holds. OSDU writes `createTime` alone when it creates a record and `modifyTime` only from its second version on (or when its ACL, legal tags or tags are patched), so a record never modified is read by its `createTime`. Each a date a record holds once, 1 to 3, none twice. |
+| `lagMinutes` | integer | 5 | How far behind now a window ends, so records the indexer has not caught up with are read by the next build; a window also begins this far before the last one ended. 0 to 1440. |
+| `fullLoadAfterHours` | integer | none | A build loads a dimension in full when its last full load completed more than this many hours ago. 1 to 8784. Left out, a dimension is loaded in full only when a run asks or a build has to. |
+| `fullLoad` | boolean | `false` | Every build loads in full, as without the block, keeping its settings. |
+
+A build of such a flow loads each dimension **in full** when the dimension has not been loaded in the partition; when its
+last full load kept no record of the keys each record holds, or kept them by other `keyColumns`; when its declaration or
+its query changed since its last full load; when its last full load is older than `fullLoadAfterHours`; when the run asks
+for one (SQLFlow's `fullLoad`, `--full`) or the block says `fullLoad: true`; and when an incremental load finds more than
+a quarter of the dimension's records or keys changed, or more than 100,000 records of one type its labels are read
+through, so reading every key costs less. A full load of such a flow also reads every record once more, its unique key
+and the keys it holds, and keeps them (`osdu.DimensionRecord`); a flow without the block keeps none.
+
+Otherwise it loads **incrementally**, over the window from the lag before where the dimension's completed builds have
+read up to, to the build's start less the lag:
+
+1. **The records that changed** in the window, by when each last changed (`(modifyTime:[from TO to} OR (createTime:[from
+   TO to} AND NOT _exists_:modifyTime))` with the default `dateColumns`), each read with its unique key and the keys it
+   holds now; and the keys those records held when a load last read them, by their unique keys.
+2. **The records a label or attribute was read through** that changed in the window, by OSDU's own `modifyTime` and
+   `createTime`, in the entity types the dimension's keys were read through (`osdu.DimensionKeyRecord`); and the keys
+   read through them.
+3. **Every key of either, read again whole** over the dimension's query: its count (a query's worth of keys at a time,
+   each group's records found by its filter), its label and attributes, its collected values and its elements. A key
+   read again that no record holds is removed, as a full load removes one. The values those keys were and are under are
+   laid out again from all their keys, and one left with none is removed.
+4. **The write** holds those keys and values only: every other key stays as the last load left it, with its count, label
+   and attributes. A build whose window held no change completes with nothing written.
+
+A record that left the index (a soft delete) cannot be seen by any search, so an incremental load cannot see it: the keys
+only it held, and the counts it made, stay until the next full load. An incremental load says how many at least have
+left: `At least <n> record(s) the last full load read (<time>) are gone from the index or no longer match the query; ...`.
+A run can name the window an incremental load reads with SQLFlow's backfill window (`--from`, `--to`): it ends no later
+than the build's start less the lag, and the next build still reads on from the latest any build read up to, so a window
+named for the past moves nothing back. A flow without an `incremental` block refuses a window.
+
+Every build records how it loaded (`full` or `incremental`), its window, the records it found changed and the keys it read
+again, and a plan says how a build started now would load each dimension and how many records changed in its window.
+
 ## Operations
 
 | Operation | What it does |
 | --- | --- |
-| `build` (default) | Reads every distinct key of each dimension, reads labels and attributes, cleans keys into values, and keeps what changed. |
-| `plan` | Settles each dimension's field from the templates and counts the records it would read, and gives each view's statement and what would stop a build writing it; reads no value and keeps nothing. |
+| `build` (default) | Loads each dimension, in full or incrementally as the flow's `incremental` block says ([Full and incremental loads](#full-and-incremental-loads)): reads its keys, their labels and attributes, cleans keys into values, and keeps what changed. |
+| `plan` | Settles each dimension's field from the templates, counts the records it would read, says how a build would load it (and, loading incrementally, the records that changed in its window), and gives each view's statement and what would stop a build writing it; reads no value and keeps nothing. |
 
 The run payload takes one field, `dimensions`, the names of the dimensions to build; a run naming none builds every
 one. A name the flow does not declare fails the run, listing the flow's dimensions. Anything else in the payload is
 refused before the run starts, for example
 `payload tests does not apply to a dimension flow: only an assertion flow's runs select tests; a dimension flow's payload names only dimensions.`
-SQLFlow's backfill flags (`--full`, `--from`, ...) are refused too, with or without a payload.
+SQLFlow's `fullLoad` (`--full`) makes a build load every dimension in full, and its backfill window (`--from`, `--to`)
+names the window a flow with an `incremental` block reads; its other flags (`--files`, `--filter`, ...) are refused.
 
 ```bash
 sqlflow run flows/welldb-welllog-05-dimensions.yaml --set partition=dev --payload '{"dimensions":["Wellbore"]}'
@@ -607,10 +673,11 @@ add up to the records holding a value, the build keeps what it read and says so 
 A build's result (`run.json`, the run page) is the flow, the partition, how many dimensions were built, failed and
 skipped (not built in this partition), and per dimension its status (`completed`, `failed` or `skipped`), build number,
 values, keys, keys of no value, unfilterable keys, labelled keys, what it changed (values and keys added, removed,
-restored, keys moved), requests, the field it aggregated, its error, and its first 5 notes. Every note is on the build in
+restored, keys moved), requests, the field it aggregated, how it loaded (`load`: `full` or `incremental`, the window
+`windowFrom` and `windowTo`, `changedRecords` and `touchedKeys`), its error, and its first 5 notes. Every note is on the build in
 the ledger (`sqlflow dimensions history`). A plan's result is, per dimension, the query, the field it would read,
 whether a record holds it more than once, the records it would read, the kinds with their records and templates, and
-what stops it. Both say, per view, what the build did or would do: a build's `views` give each view's status
+what stops it, and how a build would load it (`load`, `fullBecause`, `windowFrom`, `windowTo`, `changedRecords`). Both say, per view, what the build did or would do: a build's `views` give each view's status
 (`written`, `unchanged` or `failed`), its check (`passed` or `failed`), its rows and its first notes, and `viewsDropped`
 the views it dropped; a plan's `views` give each view's tables, its statement, what stops it and what a build will do. A
 view that cannot be written or read fails the run, every dimension still built.
@@ -656,6 +723,11 @@ A view the flow no longer declares is dropped by its next build. One whose flow 
 | `query uses '{logSource}', which is not declared under parameters.` | An undeclared token. |
 | `source.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it builds in. Remove the header.` | Both ways of naming a partition. |
 | `source.aggregationSize is 20000; ... between 10 and 10000.` | Out of range. |
+| `incremental names no keyColumns. An incremental load keeps the keys each record holds by the record's unique key, ... name it, keyColumns: [id] for an OSDU record.` | An `incremental` block without `keyColumns`. |
+| `incremental.keyColumns names 4 properties; it names from 1 to 3.` | Too many, or none. |
+| `incremental.dateColumns names modifyTime twice.` | A column named twice. |
+| `incremental.lagMinutes is -1; ... from 0 to 1440 minutes.` | Out of range. |
+| `incremental.fullLoadAfterHours is 0; ... from 1 to 8784. ...` | Out of range. |
 | `views needs target.connection: the module's database as the pipelines reading the views name it ...` | Views without `target.connection`. |
 | `views[0] 'Curve': join[0].on 'Mnemonic' holds no key: Mnemonic is a field kept as a value ...` | A join on a column holding no key. |
 | `views[0] 'Curve': join[0] joins 'WellLogID' to RefUnitOfMeasure, and it holds the id of a work-product-component--WellLog and the dimension is keyed by the id of a reference-data--UnitOfMeasure, ...` | Keys that never meet. |
@@ -678,3 +750,7 @@ A view the flow no longer declares is dropped by its next build. One whose flow 
 | `View <name> is declared by dimension flow '<other>' as well, and a view's name is unique among the flows of a database, so osdu.v_dim_<name> was not written. ...` | Rename one of the views, or remove the other flow's. |
 | `osdu.v_dim_<name> is in the database, and no build of a dimension flow made it, so it is not written over. ...` | Drop the object, or name the view otherwise. |
 | `Column <column> of view <name> could not be computed for every row of partition '<partition>': Arithmetic overflow ...` | Write the expression around the value. |
+| `incremental.keyColumns of dimension flow '<flow>', for dimension <name>, names <path>, which a record of <kind> can hold more than once, so it cannot stand for one record. ...` | Name properties each record holds once, such as `id`. |
+| `incremental.dateColumns of dimension flow '<flow>' names <path>, which the index holds as text, not a date, so no window can be read on it. ...` | Name dates, such as `modifyTime` and `createTime`. |
+| `Dimension flow '<flow>' declares no incremental block, so every build loads its dimensions in full and a backfill window has nothing to bound. ...` | Declare `incremental`, or run without `--from` and `--to`. |
+| `The records of dimension <name> hold more than 20,000,000 keys between them, more than a load keeps by record for incremental loads. ...` | Narrow its query, split it, or take out `incremental`. |

@@ -1416,6 +1416,27 @@ internal sealed class DimensionFlowYaml
     public List<DimensionViewYaml>? Views { get; set; }
 
     public FlowReliabilityYaml? Reliability { get; set; }
+
+    /// <summary>How a build loads the dimensions after their first full load; left out, every build loads them in full.</summary>
+    public DimensionIncrementalYaml? Incremental { get; set; }
+}
+
+internal sealed class DimensionIncrementalYaml
+{
+    /// <summary>The properties that together identify one record: its unique key, <c>[id]</c> for an OSDU record.</summary>
+    public List<string>? KeyColumns { get; set; }
+
+    /// <summary>When a record last changed: the first of these it holds. Left out, <c>[modifyTime, createTime]</c>.</summary>
+    public List<string>? DateColumns { get; set; }
+
+    /// <summary>How far behind now a window ends, in minutes.</summary>
+    public int? LagMinutes { get; set; }
+
+    /// <summary>The age of a dimension's last full load, in hours, past which a build loads it in full.</summary>
+    public int? FullLoadAfterHours { get; set; }
+
+    /// <summary>Every build loads in full.</summary>
+    public bool? FullLoad { get; set; }
 }
 
 internal sealed class DimensionTargetYaml
