@@ -83,6 +83,12 @@ public sealed record RecordInspection
     /// <summary>Questions the platform has to answer before the outcomes that wait on them settle.</summary>
     public IReadOnlyList<SearchQuestion> Unanswered { get; init; } = [];
 
+    /// <summary>
+    /// What the assertions of the entries evaluated found (osdu/docs/reference/flow/mapping-assertions.md), or null when the
+    /// mapping states none. Nothing a failure would leave out is left out of <see cref="Document"/>.
+    /// </summary>
+    public Validation.AssertionFindings? Assertions { get; init; }
+
     public bool IsIncomplete => Unanswered.Count > 0;
 }
 

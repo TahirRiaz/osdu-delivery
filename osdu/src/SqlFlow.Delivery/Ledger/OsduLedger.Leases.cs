@@ -764,6 +764,7 @@ public sealed partial class OsduLedger
             ValidationOutcome = completion.Validation?.Outcome,
             ValidationProblems = completion.Validation?.Problems,
             ValidatedUtc = completion.Validation?.CheckedUtc,
+            AssertionFailures = completion.Validation?.AssertionFailures,
             TargetId = completion.TargetId,
             TargetVersion = completion.TargetVersion,
             TargetStateJson = completion.TargetStateJson,

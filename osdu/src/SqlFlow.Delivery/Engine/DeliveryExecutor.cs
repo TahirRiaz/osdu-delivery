@@ -632,6 +632,8 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             Payload = summary.Payload,
             RenderedEvery = rerender,
             Sample = sample,
+            FailingAssertions = summary.FailingAssertions,
+            HeldByAssertions = summary.HeldByAssertions,
         };
     }
 
@@ -846,6 +848,12 @@ public sealed record PlanOutcome(
 
     /// <summary>The first records the plan would send, at most <see cref="DeliveryExecutor.PlanSampled"/>.</summary>
     public IReadOnlyList<PlanSampleEntry> Sample { get; init; } = [];
+
+    /// <summary>Of the deliveries, those whose document fails an assertion of the mapping (osdu/docs/reference/flow/mapping-assertions.md).</summary>
+    public long FailingAssertions { get; init; }
+
+    /// <summary>Of the deliveries, those the check before sending would hold for an assertion whose action is hold.</summary>
+    public long HeldByAssertions { get; init; }
 }
 
 /// <summary>One record a plan would send: its key, how a reader knows it, what it would send and why.</summary>

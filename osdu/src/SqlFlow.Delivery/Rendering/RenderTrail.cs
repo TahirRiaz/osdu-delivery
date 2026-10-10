@@ -13,6 +13,18 @@ internal sealed class RenderTrail
     private List<SearchUsage>? _used;
     private Dictionary<(string Target, int Alternative), CoalesceChoice>? _chosen;
 
+    /// <summary>
+    /// Where what the mapping's assertions find of this record is collected (osdu/docs/reference/flow/mapping-assertions.md),
+    /// or null when the mapping states none or the evaluation is a second look that records nothing (why a node is empty).
+    /// </summary>
+    public Validation.AssertionLog? Assertions { get; init; }
+
+    /// <summary>
+    /// Which row of its child dataset the node being evaluated reads, counting from zero, while the items of a repeated array
+    /// are evaluated; null for the dataset's own row. An incoming assertion names the row it judged by it.
+    /// </summary>
+    public int? Item { get; set; }
+
     /// <summary>The questions to ask before the row is rendered again, each once, in the order the render met them.</summary>
     public IReadOnlyList<SearchQuestion> Unanswered => _unanswered ?? (IReadOnlyList<SearchQuestion>)[];
 

@@ -237,8 +237,8 @@ public sealed class AssertionValueTests
 
     [Theory]
     [InlineData("- { field: data.FacilityNam, exists: true }", "'data.FacilityNam' is not a property of osdu:wks:master-data--Wellbore:1.3.0", "did you mean 'data.FacilityName'")]
-    [InlineData("- { field: data.SequenceNumber, startsWith: a }", "'data.SequenceNumber' is a integer", "startsWith compares text")]
-    [InlineData("- { field: data.SequenceNumber, equals: abc }", "is a integer, and \"abc\" is not a number", "")]
+    [InlineData("- { field: data.SequenceNumber, startsWith: a }", "'data.SequenceNumber' is an integer", "startsWith compares text")]
+    [InlineData("- { field: data.SequenceNumber, equals: abc }", "is an integer, and \"abc\" is not a number", "")]
     [InlineData("- { field: acl.viewers, equals: x }", "'acl.viewers' is a list", "acl.viewers[*]")]
     [InlineData("- { field: data.VerticalMeasurements, equals: x }", "'data.VerticalMeasurements' is a list", "")]
     [InlineData("- { field: data.WellID, resolves: master-data--Wellbore }", "refers to master-data--Well", "never to master-data--Wellbore")]

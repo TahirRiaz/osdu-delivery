@@ -3,8 +3,9 @@ using System.Globalization;
 namespace SqlFlow.Delivery.Validation;
 
 /// <summary>
-/// What the gate found over many records, counted by template and outcome, with the rules broken most often: what a run's
-/// trace says once instead of a line per record. Thread-safe, since a run's workers report from concurrent deliveries, and
+/// What the gate found over many records, counted by template and outcome, with the rules broken most often and what the
+/// mappings' assertions found (osdu/docs/reference/flow/mapping-assertions.md): what a run's trace says once instead of a
+/// line per record. Thread-safe, since a run's workers report from concurrent deliveries, and
 /// bounded however many records it counts: a template keeps its <see cref="MaxRulesKept"/> first distinct rules, and every
 /// rule past them is counted as one more.
 /// </summary>
@@ -70,14 +71,33 @@ public sealed class ValidationTally
             var invalid = _byKind.Values.Sum(c => c.Invalid);
             var unverified = _byKind.Values.Sum(c => c.Unverified);
             var held = _byKind.Values.Sum(c => c.Held);
-            return string.Create(CultureInfo.InvariantCulture, $"{Validated:N0} validated ({invalid:N0} invalid, {unverified:N0} unverified, {held:N0} held for it)");
+            var asserted = _byKind.Values.Sum(c => c.Asserted);
+            var failing = _byKind.Values.Sum(c => c.FailingAssertions);
+            return string.Create(CultureInfo.InvariantCulture, $"{Validated:N0} validated ({invalid:N0} invalid, {unverified:N0} unverified")
+                + (asserted > 0 ? string.Create(CultureInfo.InvariantCulture, $", {failing:N0} failing an assertion") : string.Empty)
+                + string.Create(CultureInfo.InvariantCulture, $", {held:N0} held for it)");
         }
     }
 
     private sealed class Counts
     {
         private readonly Dictionary<string, long> _rules = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, long> _assertions = new(StringComparer.Ordinal);
         private long _otherRules;
+        private long _otherAssertions;
+
+        /// <summary>The documents whose mapping states assertions.</summary>
+        public long Asserted { get; private set; }
+
+        /// <summary>The documents that failed one or more of them.</summary>
+        public long FailingAssertions { get; private set; }
+
+        /// <summary>The failures that held, were reported and left their value out.</summary>
+        public long AssertionsHeld { get; private set; }
+
+        public long AssertionsReported { get; private set; }
+
+        public long AssertionsOmitted { get; private set; }
 
         public long Valid { get; private set; }
 
@@ -110,19 +130,41 @@ public sealed class ValidationTally
             Accepted += verdict.Accepted ? 1 : 0;
             foreach (var rule in verdict.Problems.Select(p => $"{ValidationVerdict.Where(p)} {p.Rule}").Distinct(StringComparer.Ordinal))
             {
-                if (_rules.TryGetValue(rule, out var seen))
-                {
-                    _rules[rule] = seen + 1;
-                }
-                else if (_rules.Count < MaxRulesKept)
-                {
-                    _rules[rule] = 1;
-                }
-                else
-                {
-                    _otherRules++;
-                }
+                _otherRules += Count(_rules, rule);
             }
+
+            if (verdict.Assertions is not { } assertions)
+            {
+                return;
+            }
+
+            Asserted++;
+            FailingAssertions += assertions.Failed > 0 ? 1 : 0;
+            AssertionsHeld += assertions.Held;
+            AssertionsReported += assertions.Reported;
+            AssertionsOmitted += assertions.Omitted;
+            foreach (var failed in assertions.Failures.Select(f => $"{f.At} \"{f.Assertion}\"").Distinct(StringComparer.Ordinal))
+            {
+                _otherAssertions += Count(_assertions, failed);
+            }
+        }
+
+        /// <summary>Counts one more of <paramref name="name"/>, kept by name while fewer than <see cref="MaxRulesKept"/> are; 1 when it was not kept.</summary>
+        private static long Count(Dictionary<string, long> counts, string name)
+        {
+            if (counts.TryGetValue(name, out var seen))
+            {
+                counts[name] = seen + 1;
+                return 0;
+            }
+
+            if (counts.Count < MaxRulesKept)
+            {
+                counts[name] = 1;
+                return 0;
+            }
+
+            return 1;
         }
 
         public string Line(string kind, int topRules)
@@ -142,6 +184,22 @@ public sealed class ValidationTally
                 if (_otherRules > 0)
                 {
                     line += string.Create(CultureInfo.InvariantCulture, $"; {_otherRules:N0} more break(s) of rules past the first {MaxRulesKept} kept");
+                }
+            }
+
+            if (Asserted > 0)
+            {
+                line += string.Create(
+                    CultureInfo.InvariantCulture,
+                    $". Assertions: {FailingAssertions:N0} of {Asserted:N0} document(s) failed them ({AssertionsHeld:N0} failure(s) holding, {AssertionsReported:N0} reported, {AssertionsOmitted:N0} left out)");
+                var failedMost = _assertions.OrderByDescending(r => r.Value).ThenBy(r => r.Key, StringComparer.Ordinal).Take(topRules).ToList();
+                if (failedMost.Count > 0)
+                {
+                    line += ". Most failed: " + string.Join(", ", failedMost.Select(r => string.Create(CultureInfo.InvariantCulture, $"{r.Key} ({r.Value:N0})")));
+                    if (_otherAssertions > 0)
+                    {
+                        line += string.Create(CultureInfo.InvariantCulture, $"; {_otherAssertions:N0} more failure(s) of assertions past the first {MaxRulesKept} kept");
+                    }
                 }
             }
 

@@ -153,14 +153,7 @@ public abstract class Evaluator
     {
         foreach (var filter in filters)
         {
-            var found = values(filter.Target);
-            var holds = filter.Condition.Operator switch
-            {
-                ValueOperator.Exists => filter.Condition.Flag == found.Count > 0,
-                ValueOperator.Empty when found.Count == 0 => filter.Condition.Flag,
-                _ => found.Any(v => ValueComparer.Holds(filter.Condition, v, out _)),
-            };
-            if (!holds)
+            if (!ValueComparer.Selects(filter.Condition, values(filter.Target)))
             {
                 return false;
             }

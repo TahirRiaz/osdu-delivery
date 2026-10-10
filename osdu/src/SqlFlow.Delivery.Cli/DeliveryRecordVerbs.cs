@@ -187,6 +187,15 @@ internal static class DeliveryRecordVerbs
             context.Out.WriteLine("  error      " + One(lastError));
         }
 
+        if (record.ValidationOutcome is { } outcome)
+        {
+            var asserted = record.AssertionFailures is { } failures
+                ? string.Create(CultureInfo.InvariantCulture, $", {failures} assertion failure(s)")
+                : string.Empty;
+            context.Out.WriteLine(string.Create(
+                CultureInfo.InvariantCulture, $"  checked    {outcome}{asserted}{(record.ValidatedUtc is { } at ? $" at {at:u}" : string.Empty)}"));
+        }
+
         context.Out.WriteLine(string.Create(
             CultureInfo.InvariantCulture, $"  {attempts.Count} attempt(s) shown, {record.AttemptCount} on the work pending now; newest first:"));
         foreach (var attempt in attempts)
@@ -202,6 +211,18 @@ internal static class DeliveryRecordVerbs
             foreach (var step in Steps(attempt))
             {
                 context.Out.WriteLine("        " + step);
+            }
+
+            if (Validation.ValidationVerdict.FromJson(ResultNode(attempt)?["validation"]) is { Outcome: not Validation.ValidationOutcome.NotValidated } verdict)
+            {
+                context.Out.WriteLine("        checked " + One(verdict.Summary()));
+                if (verdict.Assertions is { Failed: > 0 } findings)
+                {
+                    foreach (var line in FindingLines.Of(findings))
+                    {
+                        context.Out.WriteLine("          " + One(line));
+                    }
+                }
             }
 
             if (attempt.Error is { Length: > 0 } error)
@@ -392,6 +413,24 @@ internal static class DeliveryRecordVerbs
     /// What a try's result records, one line each: the steps it took with what the target answered, for an undo what became
     /// of each artifact, and what a try that sent nothing had to say.
     /// </summary>
+    /// <summary>An attempt's result as JSON, or null when it holds none or holds text that is not JSON.</summary>
+    private static JsonNode? ResultNode(AttemptRecord attempt)
+    {
+        if (attempt.ResultJson is not { Length: > 0 } text)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonNode.Parse(text);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
     private static IEnumerable<string> Steps(AttemptRecord attempt)
     {
         if (attempt.ResultJson is not { Length: > 0 } text)
@@ -454,6 +493,9 @@ internal static class DeliveryRecordVerbs
         ["sourceFileName"] = record.SourceFileName,
         ["sourceRowNumber"] = record.SourceRowNumber,
         ["issue"] = record.ProblemHash is { } issue ? ProblemSignature.Format(issue) : null,
+        ["validationOutcome"] = record.ValidationOutcome,
+        ["validatedUtc"] = record.ValidatedUtc,
+        ["assertionFailures"] = record.AssertionFailures,
     };
 
     /// <summary>Where an issue lies, in the words the terminal and the JSON use.</summary>

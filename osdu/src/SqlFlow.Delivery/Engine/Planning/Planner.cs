@@ -137,6 +137,8 @@ public sealed class PlanSummary
     private long _untracked;
     private long _metadata;
     private long _payload;
+    private long _failingAssertions;
+    private long _heldByAssertions;
 
     public long Records => Interlocked.Read(ref _records);
 
@@ -167,6 +169,15 @@ public sealed class PlanSummary
 
     /// <summary>Records without a derivable delivery key: they cannot be tracked and are not delivered.</summary>
     public long Untracked => Interlocked.Read(ref _untracked);
+
+    /// <summary>
+    /// Of the deliveries, those whose document fails an assertion of the mapping (osdu/docs/reference/flow/mapping-assertions.md),
+    /// whatever the failure does.
+    /// </summary>
+    public long FailingAssertions => Interlocked.Read(ref _failingAssertions);
+
+    /// <summary>Of the deliveries, those the check before sending would hold for an assertion whose action is hold.</summary>
+    public long HeldByAssertions => Interlocked.Read(ref _heldByAssertions);
 
     public void Add(PlanEntry entry)
     {
@@ -211,12 +222,24 @@ public sealed class PlanSummary
                     Interlocked.Increment(ref _payload);
                 }
 
+                if (entry.IsDelivery && entry.Render?.Assertions is { Failed: > 0 } findings)
+                {
+                    Interlocked.Increment(ref _failingAssertions);
+                    if (findings.Holds)
+                    {
+                        Interlocked.Increment(ref _heldByAssertions);
+                    }
+                }
+
                 break;
         }
     }
 
     public override string ToString()
-        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Deliveries} to deliver, {Skips} unchanged, {AwaitingApproval} awaiting approval, {Stale} stale, {Holds} held, {Blocked} blocked, {Untracked} untracked");
+        => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Deliveries} to deliver, {Skips} unchanged, {AwaitingApproval} awaiting approval, {Stale} stale, {Holds} held, {Blocked} blocked, {Untracked} untracked")
+            + (FailingAssertions > 0
+                ? string.Create(CultureInfo.InvariantCulture, $"; of the deliveries, {FailingAssertions} fail an assertion of the mapping, {HeldByAssertions} of them to be held before they are sent")
+                : string.Empty);
 }
 
 /// <summary>What a run would do (design.md section 11: plan changes nothing), with every entry collected. For the
@@ -1246,6 +1269,9 @@ public static class PlanFormatting
         };
         var chunks = e.ChunkCount is { } c ? $", {c.ToString(CultureInfo.InvariantCulture)} file(s)" : string.Empty;
         var label = e.Label is null ? string.Empty : $" [{e.Label}]";
-        return $"{action,-24} {e.SourceKey}{label}  {e.TargetId ?? "-"}  ({e.Reason}{chunks})";
+        var asserted = e.IsDelivery && e.Render?.Assertions is { Failed: > 0 } findings
+            ? "; " + (findings.Holds ? "to be held before it is sent, as " : string.Empty) + findings.Summary()
+            : string.Empty;
+        return $"{action,-24} {e.SourceKey}{label}  {e.TargetId ?? "-"}  ({e.Reason}{chunks}{asserted})";
     }
 }

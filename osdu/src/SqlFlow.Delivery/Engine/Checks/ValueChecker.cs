@@ -23,7 +23,7 @@ namespace SqlFlow.Delivery.Engine.Checks;
 /// <see cref="ValueCheckLimits"/>. A caller that must name every failing row gives <c>each</c>, which meets every one of
 /// them in the order the scope is read.
 /// </remarks>
-public sealed class ValueChecker
+public sealed partial class ValueChecker
 {
     private readonly FlowRuntime _runtime;
     private readonly ValueCheckLimits _limits;
@@ -229,8 +229,31 @@ public sealed class ValueChecker
             paths.Add(path!);
         }
 
-        return EntrySelection.Of(paths);
+        // An assertion of a variable checked reads the fields its where conditions name, so the entries filling them are
+        // evaluated too, or a condition would read nothing and the assertion would never be judged.
+        var selected = EntrySelection.Of(paths);
+        var conditions = mapping.Assertions()
+            .Where(a => selected.Includes(a.Entry.Target.Text) || selected.Covers(a.Entry.Target.Text))
+            .SelectMany(a => a.Assertion.Where)
+            .Select(filter => filter.Field)
+            .OfType<string>()
+            .Select(field => FieldBrackets().Replace(field, string.Empty))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        foreach (var field in conditions)
+        {
+            paths.AddRange(mapping.Entries
+                .Where(entry => entry.Target.SchemaPath == field
+                    || field.StartsWith(entry.Target.SchemaPath + ".", StringComparison.Ordinal)
+                    || entry.Target.SchemaPath.StartsWith(field + ".", StringComparison.Ordinal))
+                .Select(entry => entry.Target));
+        }
+
+        return EntrySelection.Of(paths.Distinct().ToList());
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\[(\*|\d+)\]", System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex FieldBrackets();
 
     /// <summary>Why a delivery never renders the row, or null when it does: a row the ingestion table marks deleted, or one the source cannot give whole.</summary>
     private static string? Unfit(SourceRecord record)

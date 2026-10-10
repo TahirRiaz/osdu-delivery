@@ -264,6 +264,13 @@ public sealed class DeliveryRecord
     public DateTime? ValidatedUtc { get; set; }
 
     /// <summary>
+    /// How many judgements of the mapping's assertions failed on the document that check read (held, reported or left out;
+    /// osdu/docs/reference/flow/mapping-assertions.md). Null when its mapping states none, or no check has reached the
+    /// record. A flow's records failing an assertion are counted and listed by it.
+    /// </summary>
+    public long? AssertionFailures { get; set; }
+
+    /// <summary>
     /// The metadata hash of the pending document an operator's release accepted as it is: the gate sends that document
     /// whatever its verdict says. A document rendered differently has another hash and is judged again.
     /// </summary>
@@ -491,6 +498,9 @@ public sealed class DeliveryRecordEvent
 
     /// <summary>When that check was made.</summary>
     public DateTime? ValidatedUtc { get; set; }
+
+    /// <summary>How many judgements of the mapping's assertions failed on the document that check read; null when its mapping states none.</summary>
+    public long? AssertionFailures { get; set; }
 
     public string? TargetId { get; set; }
 
@@ -2977,6 +2987,11 @@ public static class DeliveryModel
             // invalid or unverified ones listed. The filter leaves out the records no check has reached.
             e.HasIndex(r => new { r.PartitionId, r.FlowId, r.ValidationOutcome, r.UpdatedUtc })
                 .HasFilter("[ValidationOutcome] IS NOT NULL");
+
+            // A flow's records whose last checked document failed an assertion of its mapping: counted for the flow's page and
+            // listed. The filter leaves out the records that met every assertion, or whose mapping states none.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.AssertionFailures, r.UpdatedUtc })
+                .HasFilter("[AssertionFailures] > 0");
         });
 
         modelBuilder.Entity<DeliveryRecordIdentity>(e =>

@@ -42,6 +42,8 @@ internal sealed partial class ValueTally
     private long _withHeld;
     private long _withInvalid;
     private long _withEmpty;
+    private long _withFailedAssertion;
+    private long _heldByAssertion;
 
     public ValueTally(
         MappingDefinition mapping, SchemaSnapshot schema, EntrySelection selection, ValueCheckRequest request, ValueCheckLimits limits, Action<ValueCheckOccurrence>? each)
@@ -127,6 +129,21 @@ internal sealed partial class ValueTally
             worst[outcome.Target] = worst.TryGetValue(outcome.Target, out var seen) && seen > standing ? seen : standing;
         }
 
+        // What the assertions found is noted on the variable each judged, once per row whatever the values that failed.
+        var findings = inspection.Assertions;
+        foreach (var failure in findings?.Failures ?? [])
+        {
+            if (_variables.TryGetValue($"{TemplatePath.Prefix}.{failure.At}", out var asserted))
+            {
+                var sample = basis with { Message = failure.Message };
+                Note(asserted, "asserted", asserted.Target, failure.Assertion, Fails(failure), Clip(failure.Value, _limits.MaxValueChars), row, sample);
+                asserted.CountAsserted(row);
+            }
+        }
+
+        _withFailedAssertion += findings is { Failed: > 0 } ? 1 : 0;
+        _heldByAssertion += findings?.Holds == true ? 1 : 0;
+
         bool held = false, invalid = false, empty = false;
         foreach (var variable in _variables.Values)
         {
@@ -141,7 +158,7 @@ internal sealed partial class ValueTally
         _withHeld += held ? 1 : 0;
         _withInvalid += invalid ? 1 : 0;
         _withEmpty += empty ? 1 : 0;
-        _clean += held || invalid || empty ? 0 : 1;
+        _clean += held || invalid || empty || findings is { Failed: > 0 } ? 0 : 1;
     }
 
     public ValueCheckRows Rows(long scopeRecords, long read, bool complete) => new()
@@ -161,6 +178,8 @@ internal sealed partial class ValueTally
         WithHeld = _withHeld,
         WithInvalid = _withInvalid,
         WithEmpty = _withEmpty,
+        WithFailedAssertion = _withFailedAssertion,
+        HeldByAssertion = _heldByAssertion,
     };
 
     public IReadOnlyList<ValueCheckVariable> Variables() => _variables.Values.Select(a => a.Build(_request.SkipSamples)).ToList();
@@ -263,6 +282,17 @@ internal sealed partial class ValueTally
         };
     }
 
+    /// <summary>
+    /// What a failure of an assertion amounts to, as its finding says it: the assertion and what its failure does, the same
+    /// for every row it fails in, so the rows one assertion fails are one finding.
+    /// </summary>
+    private static string Fails(Validation.AssertionFailure failure) => failure.OnFail switch
+    {
+        Model.AssertionWords.Report => $"fails \"{failure.Assertion}\" ({failure.Stage}); the record is sent and the failure recorded",
+        Model.AssertionWords.Omit => $"fails \"{failure.Assertion}\" ({failure.Stage}); the value is left out",
+        _ => $"fails \"{failure.Assertion}\" ({failure.Stage}); the record is held before it is sent",
+    };
+
     /// <summary>A reason without the variable it names first, which the finding already says.</summary>
     private static string Said(string reason, string target)
         => reason.StartsWith(target + ": ", StringComparison.Ordinal) ? reason[(target.Length + 2)..] : reason;
@@ -311,6 +341,8 @@ internal sealed partial class ValueTally
         private readonly Dictionary<(string Outcome, string At, string Shape), FindingTally> _findings = [];
         private bool _moreValues;
         private long _unlisted;
+        private long _asserted;
+        private long _lastAsserted = -1;
 
         public string Target => target;
 
@@ -319,6 +351,16 @@ internal sealed partial class ValueTally
         public void CountRow(Standing standing) => _rows[standing] = _rows.GetValueOrDefault(standing) + 1;
 
         public void CountItem(Standing standing) => _items[standing] = _items.GetValueOrDefault(standing) + 1;
+
+        /// <summary>Counts a row a value of the variable failed an assertion in, once however many failed.</summary>
+        public void CountAsserted(long row)
+        {
+            if (row != _lastAsserted)
+            {
+                _asserted++;
+                _lastAsserted = row;
+            }
+        }
 
         public void CountValue(string value)
         {
@@ -360,7 +402,7 @@ internal sealed partial class ValueTally
             Entry = entry?.Where,
             Required = entry?.Required ?? true,
             Repeater = repeater,
-            Rows = Counts(_rows),
+            Rows = Counts(_rows) with { Asserted = _asserted },
             Items = repeater is null ? null : Counts(_items),
             Values = _values
                 .OrderByDescending(v => v.Value)

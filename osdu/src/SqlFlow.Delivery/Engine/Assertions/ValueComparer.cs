@@ -224,6 +224,23 @@ public static class ValueComparer
         }
     }
 
+    /// <summary>
+    /// Whether the values a <c>where</c> condition reads select what it is written for (a record, a row, an item): <c>exists</c>
+    /// asks whether there is a value at all, <c>empty</c> holds of no value as of an empty one, and any other condition holds
+    /// when one of the values meets it. An assertion flow's conditions and a mapping's assertions select alike.
+    /// </summary>
+    public static bool Selects(ValueCondition condition, IReadOnlyList<JsonNode> found)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        ArgumentNullException.ThrowIfNull(found);
+        return condition.Operator switch
+        {
+            ValueOperator.Exists => condition.Flag == found.Count > 0,
+            ValueOperator.Empty when found.Count == 0 => condition.Flag,
+            _ => found.Any(v => Holds(condition, v, out _)),
+        };
+    }
+
     /// <summary>Whether a value is empty: null, empty text, an empty list or an empty object.</summary>
     public static bool IsEmpty(JsonNode? value) => value is null || value.GetValueKind() switch
     {

@@ -251,16 +251,16 @@ public static partial class AssertionTemplates
         switch (op)
         {
             case ValueOperator.Matches or ValueOperator.NotMatches or ValueOperator.StartsWith or ValueOperator.EndsWith when numeric || type == "boolean":
-                problems.Add($"{at}: '{path}' is a {type} in {where}; {AssertionText.Of(op)} compares text.");
+                problems.Add($"{at}: '{path}' is {Article(type)} {type} in {where}; {AssertionText.Of(op)} compares text.");
                 break;
             case ValueOperator.Contains or ValueOperator.NotContains or ValueOperator.Length when numeric || type == "boolean":
-                problems.Add($"{at}: '{path}' is a {type} in {where}; {AssertionText.Of(op)} looks in text or a list.");
+                problems.Add($"{at}: '{path}' is {Article(type)} {type} in {where}; {AssertionText.Of(op)} looks in text or a list.");
                 break;
             case ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan or ValueOperator.Between when type == "boolean":
                 problems.Add($"{at}: '{path}' is a boolean in {where}; it has no order.");
                 break;
             case ValueOperator.Resolves when type != "string":
-                problems.Add($"{at}: '{path}' is a {type} in {where}; a reference is text.");
+                problems.Add($"{at}: '{path}' is {Article(type)} {type} in {where}; a reference is text.");
                 break;
             case ValueOperator.Resolves when condition.EntityType is { } entityType && variable.Relationships.Count > 0
                 && !variable.Relationships.Any(r => string.Equals(r, entityType, StringComparison.OrdinalIgnoreCase)):
@@ -282,25 +282,138 @@ public static partial class AssertionTemplates
         switch (type)
         {
             case "number" or "integer" when operand.Kind == ExpectedValueKind.Text && !RecordValues.TryParseNumber(operand.Text, out _):
-                problems.Add($"{at}: '{path}' is a {type}, and {operand} is not a number.");
+                problems.Add($"{Prefix(at)}'{path}' is {Article(type)} {type}, and {operand} is not a number.");
                 break;
             case "boolean" when operand.Kind != ExpectedValueKind.Boolean
                 && !(operand.Kind == ExpectedValueKind.Text && operand.Text is "true" or "false"):
-                problems.Add($"{at}: '{path}' is a boolean, and {operand} is not true or false.");
+                problems.Add($"{Prefix(at)}'{path}' is a boolean, and {operand} is not true or false.");
                 break;
             case "string" when format is "date" or "date-time" && operand.Kind == ExpectedValueKind.Number:
-                problems.Add($"{at}: '{path}' is a {format}, and {operand} is a number; write the date, such as \"2026-01-01T00:00:00Z\".");
+                problems.Add($"{Prefix(at)}'{path}' is a {format}, and {operand} is a number; write the date, such as \"2026-01-01T00:00:00Z\".");
                 break;
             case "string" when format is "date" or "date-time" && operand.Kind == ExpectedValueKind.Text && !RecordValues.TryInstant(operand.Text, out _)
                 && !operand.Text.Contains('{', StringComparison.Ordinal):
-                problems.Add($"{at}: '{path}' is a {format}, and {operand} is not an ISO 8601 date.");
+                problems.Add($"{Prefix(at)}'{path}' is a {format}, and {operand} is not an ISO 8601 date.");
                 break;
             case "string" when pattern is not null && operand.Kind == ExpectedValueKind.Text && !operand.Text.Contains('{', StringComparison.Ordinal)
                 && !Fits(pattern, operand.Text):
-                problems.Add($"{at}: {operand} cannot be a value of '{path}', whose schema pattern is {pattern}.");
+                problems.Add($"{Prefix(at)}{operand} cannot be a value of '{path}', whose schema pattern is {pattern}.");
                 break;
         }
     }
+
+    /// <summary>
+    /// Every place a mapping's assertion does not fit the variable it is written beside, or the template its <c>where</c>
+    /// fields read (osdu/docs/reference/flow/mapping-assertions.md): a record-stage condition has to suit the type of the
+    /// value the record carries there (a list judged value by value, except by the conditions that judge a list whole; a
+    /// list of objects only by whether it is there, empty, or how long), its operands have to be values of that type, and
+    /// every field a condition reads has to be a property of the template, its condition suiting that property. An incoming
+    /// condition judges what the row gives, whatever the template types it as, so only its fields are checked.
+    /// </summary>
+    internal static IReadOnlyList<string> CheckAssertion(TemplateVariable variable, NodeAssertion assertion, OsduTemplate template)
+    {
+        ArgumentNullException.ThrowIfNull(variable);
+        ArgumentNullException.ThrowIfNull(assertion);
+        ArgumentNullException.ThrowIfNull(template);
+        var problems = new List<string>();
+        var where = $"{template.Kind} (template {template.Version})";
+        if (assertion.Stage == AssertionStage.Record)
+        {
+            CheckJudged(variable, assertion.Condition, Validation.MappingAssertionJudge.At(variable.Path), where, problems);
+        }
+
+        foreach (var field in assertion.Where.Select(filter => (filter.Field, filter.Condition)).Where(filter => filter.Field is not null))
+        {
+            if (Resolve(template, field.Field!, "where", where, problems) is { } filtered)
+            {
+                CheckCondition(filtered, field.Field!, field.Condition, "where", where, problems);
+            }
+        }
+
+        return problems;
+    }
+
+    /// <summary>Whether a record-stage condition suits the value a mapping's property carries.</summary>
+    private static void CheckJudged(TemplateVariable variable, ValueCondition condition, string path, string where, ICollection<string> problems)
+    {
+        if (variable.Shape == TemplateVariableShape.Whole || variable.Type == "any")
+        {
+            return;
+        }
+
+        var op = condition.Operator;
+        if (variable.Shape == TemplateVariableShape.GroupList)
+        {
+            if (op is not (ValueOperator.Exists or ValueOperator.Empty or ValueOperator.Length))
+            {
+                problems.Add(
+                    $"'{path}' is a list of objects in {where}; an assertion on the list asks whether it is there (exists), whether it is empty (empty) or how many items it holds (length), "
+                    + $"and {AssertionText.Of(op)} on a property of its items is written beside that property.");
+            }
+
+            return;
+        }
+
+        if (variable.Shape == TemplateVariableShape.Group || variable.Type == "object")
+        {
+            if (op is not (ValueOperator.Exists or ValueOperator.Empty))
+            {
+                problems.Add($"'{path}' is an object in {where}; assert on a property inside it.");
+            }
+
+            return;
+        }
+
+        var isList = variable.Shape == TemplateVariableShape.ValueList || variable.Type == "array";
+        if (isList && op is ValueOperator.Exists or ValueOperator.Empty or ValueOperator.Length)
+        {
+            return;
+        }
+
+        if (isList && op is ValueOperator.Contains or ValueOperator.NotContains)
+        {
+            if (variable.ItemType is { } itemType)
+            {
+                CheckOperand(itemType, variable.Format, variable.Pattern, condition.Operands[0], path, string.Empty, problems);
+            }
+
+            return;
+        }
+
+        var type = isList ? variable.ItemType ?? "any" : variable.Type;
+        if (type == "any")
+        {
+            return;
+        }
+
+        var numeric = type is "number" or "integer";
+        var subject = isList ? $"'{path}' is a list of {type} values in {where}, each judged on its own" : $"'{path}' is {Article(type)} {type} in {where}";
+        switch (op)
+        {
+            case ValueOperator.Matches or ValueOperator.NotMatches or ValueOperator.StartsWith or ValueOperator.EndsWith when numeric || type == "boolean":
+                problems.Add($"{subject}; {AssertionText.Of(op)} compares text.");
+                break;
+            case ValueOperator.Contains or ValueOperator.NotContains or ValueOperator.Length when numeric || type == "boolean":
+                problems.Add($"{subject}; {AssertionText.Of(op)} looks in text or a list.");
+                break;
+            case ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan or ValueOperator.Between when type == "boolean":
+                problems.Add($"{subject}; a boolean has no order.");
+                break;
+            case ValueOperator.EqualTo or ValueOperator.NotEqualTo or ValueOperator.In or ValueOperator.NotIn
+                or ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan or ValueOperator.Between:
+                foreach (var operand in condition.Operands)
+                {
+                    CheckOperand(type, variable.Format, op is ValueOperator.EqualTo or ValueOperator.In ? variable.Pattern : null, operand, path, string.Empty, problems);
+                }
+
+                break;
+        }
+    }
+
+    private static string Prefix(string at) => at.Length == 0 ? string.Empty : at + ": ";
+
+    /// <summary>The article a JSON Schema type takes in a sentence: an integer, an object, an array, a string.</summary>
+    private static string Article(string type) => type.Length > 0 && "aeiou".Contains(type[0], StringComparison.Ordinal) ? "an" : "a";
 
     private static void CheckAggregate(TemplateVariable variable, AggregateAssertion aggregate, string at, ICollection<string> problems)
     {
@@ -315,16 +428,16 @@ public static partial class AssertionTemplates
         switch (aggregate.Function)
         {
             case AggregateFunction.Sum or AggregateFunction.Avg when !numeric && type != "any":
-                problems.Add($"{at}: '{aggregate.Target}' is a {type}; {AssertionText.Of(aggregate.Function)} adds up numbers.");
+                problems.Add($"{at}: '{aggregate.Target}' is {Article(type)} {type}; {AssertionText.Of(aggregate.Function)} adds up numbers.");
                 break;
             case AggregateFunction.Min or AggregateFunction.Max when !numeric && !dated && type != "any":
-                problems.Add($"{at}: '{aggregate.Target}' is a {type}; {AssertionText.Of(aggregate.Function)} is taken of numbers or dates.");
+                problems.Add($"{at}: '{aggregate.Target}' is {Article(type)} {type}; {AssertionText.Of(aggregate.Function)} is taken of numbers or dates.");
                 break;
             case AggregateFunction.Min or AggregateFunction.Max when dated && aggregate.Comparison.Terms.Any(t => t.Value.Kind == ExpectedValueKind.Number):
                 problems.Add($"{at}: '{aggregate.Target}' is a {variable.Format}, and it is compared with a number; write the date.");
                 break;
             case AggregateFunction.Min or AggregateFunction.Max when numeric && aggregate.Comparison.Terms.Any(t => t.Value.Kind == ExpectedValueKind.Text):
-                problems.Add($"{at}: '{aggregate.Target}' is a {type}, and it is compared with text.");
+                problems.Add($"{at}: '{aggregate.Target}' is {Article(type)} {type}, and it is compared with text.");
                 break;
         }
     }

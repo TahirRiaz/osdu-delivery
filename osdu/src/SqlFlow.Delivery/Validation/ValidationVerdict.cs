@@ -132,6 +132,13 @@ public sealed record ValidationVerdict
     /// <summary>Whether an operator's release accepted this verdict for the document, so it was sent whatever it says.</summary>
     public bool Accepted { get; init; }
 
+    /// <summary>
+    /// What the mapping's assertions found of the document (osdu/docs/reference/flow/mapping-assertions.md), or null when
+    /// its mapping states none. They are judged beside the schema, not by it: <see cref="Outcome"/> says what the schema
+    /// check came to, and a failure here holds the record when its assertion says so, whatever the outcome.
+    /// </summary>
+    public AssertionFindings? Assertions { get; init; }
+
     public string RulesVersion { get; init; } = CurrentRulesVersion;
 
     public DateTime CheckedUtc { get; init; }
@@ -221,11 +228,12 @@ public sealed record ValidationVerdict
     public string Summary()
     {
         var against = Schema is { } schema ? $" against {schema.Kind}" : string.Empty;
+        var asserted = Assertions is { Failed: > 0 } findings ? "; " + findings.Summary() : string.Empty;
         return Outcome switch
         {
-            ValidationOutcome.Valid => string.Create(CultureInfo.InvariantCulture, $"valid{against}: {Rules} rule(s) met"),
-            ValidationOutcome.Invalid => string.Create(CultureInfo.InvariantCulture, $"invalid{against}: {ProblemCount} problem(s){First(Problems)}{(Accepted ? "; accepted by a release" : string.Empty)}"),
-            ValidationOutcome.Unverified => string.Create(CultureInfo.InvariantCulture, $"unverified{against}: {UnverifiedCount} part(s) not checked{First(Unverified)}{(Accepted ? "; accepted by a release" : string.Empty)}"),
+            ValidationOutcome.Valid => string.Create(CultureInfo.InvariantCulture, $"valid{against}: {Rules} rule(s) met{asserted}{(Accepted && asserted.Length > 0 ? "; accepted by a release" : string.Empty)}"),
+            ValidationOutcome.Invalid => string.Create(CultureInfo.InvariantCulture, $"invalid{against}: {ProblemCount} problem(s){First(Problems)}{asserted}{(Accepted ? "; accepted by a release" : string.Empty)}"),
+            ValidationOutcome.Unverified => string.Create(CultureInfo.InvariantCulture, $"unverified{against}: {UnverifiedCount} part(s) not checked{First(Unverified)}{asserted}{(Accepted ? "; accepted by a release" : string.Empty)}"),
             _ => $"not validated: {(Notes.Count > 0 ? Notes[0] : "nothing of the document was sent")}",
         };
 
@@ -252,22 +260,23 @@ public sealed record ValidationVerdict
     /// <summary>The verdict as an attempt's result and the API carry it, within <see cref="MaxJsonChars"/>.</summary>
     public JsonObject ToJson()
     {
-        var json = Build(Problems, Unverified, References.MissingListed);
+        var json = Build(Problems, Unverified, References.MissingListed, AssertionFindings.MaxListed);
         if (json.ToJsonString().Length <= MaxJsonChars)
         {
             return json;
         }
 
-        // Shortened step by step: the parts not checked, then the problems, then the missing ids, each to a few.
-        json = Build(Problems, Unverified.Take(3).ToList(), References.MissingListed);
+        // Shortened step by step: the parts not checked, then the problems, the missing ids and the assertions' failures,
+        // each to a few. Every count stays exact.
+        json = Build(Problems, Unverified.Take(3).ToList(), References.MissingListed, AssertionFindings.MaxListed);
         if (json.ToJsonString().Length > MaxJsonChars)
         {
-            json = Build(Problems.Take(10).ToList(), Unverified.Take(3).ToList(), References.MissingListed.Take(5).ToList());
+            json = Build(Problems.Take(10).ToList(), Unverified.Take(3).ToList(), References.MissingListed.Take(5).ToList(), 10);
         }
 
         if (json.ToJsonString().Length > MaxJsonChars)
         {
-            json = Build(Problems.Take(3).Select(Short).ToList(), Unverified.Take(1).Select(Short).ToList(), References.MissingListed.Take(1).ToList());
+            json = Build(Problems.Take(3).Select(Short).ToList(), Unverified.Take(1).Select(Short).ToList(), References.MissingListed.Take(1).ToList(), 3);
         }
 
         json["shortened"] = true;
@@ -309,6 +318,7 @@ public sealed record ValidationVerdict
             },
             Notes = (json["notes"] as JsonArray ?? []).OfType<JsonValue>().Select(n => n.TryGetValue<string>(out var t) ? t : null).OfType<string>().ToList(),
             Accepted = json["accepted"] is JsonValue accepted && accepted.TryGetValue<bool>(out var isAccepted) && isAccepted,
+            Assertions = AssertionFindings.FromJson(json["assertions"]),
             RulesVersion = Text(json, "rulesVersion") ?? CurrentRulesVersion,
             CheckedUtc = DateTime.TryParse(Text(json, "checkedUtc"), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var at) ? at : default,
         };
@@ -321,7 +331,7 @@ public sealed record ValidationVerdict
         return finding.At.Length > 0 ? finding.At : "the record";
     }
 
-    private JsonObject Build(IReadOnlyList<SchemaFinding> problems, IReadOnlyList<SchemaFinding> unverified, IReadOnlyList<MissingReference> missing)
+    private JsonObject Build(IReadOnlyList<SchemaFinding> problems, IReadOnlyList<SchemaFinding> unverified, IReadOnlyList<MissingReference> missing, int assertionsListed)
     {
         var json = new JsonObject { ["outcome"] = ValidationOutcomes.Name(Outcome) };
         if (Schema is { } schema)
@@ -348,6 +358,11 @@ public sealed record ValidationVerdict
                 .ToArray()),
         };
         json["notes"] = new JsonArray(Notes.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray());
+        if (Assertions is { } assertions)
+        {
+            json["assertions"] = assertions.ToJson(assertionsListed);
+        }
+
         if (Accepted)
         {
             json["accepted"] = true;

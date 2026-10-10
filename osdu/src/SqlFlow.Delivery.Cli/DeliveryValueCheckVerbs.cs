@@ -90,9 +90,10 @@ internal static class DeliveryValueCheckVerbs
             }
         }
 
-        // A row that holds its record, or writes a value the template does not accept, fails the check; a variable an
-        // optional entry leaves out is the mapping's to decide, and is reported without failing it.
-        return checks.All(c => c.Rows.WithHeld == 0 && c.Rows.WithInvalid == 0 && c.Rows.Keyless == 0) ? 0 : 1;
+        // A row that holds its record, writes a value the template does not accept or fails an assertion that holds it fails
+        // the check; a variable an optional entry leaves out, and an assertion that only reports or leaves a value out, are the
+        // mapping's to decide, and are reported without failing it.
+        return checks.All(c => c.Rows.WithHeld == 0 && c.Rows.WithInvalid == 0 && c.Rows.Keyless == 0 && c.Rows.HeldByAssertion == 0) ? 0 : 1;
     }
 
     /// <summary>
@@ -202,7 +203,7 @@ internal static class DeliveryValueCheckVerbs
         // The check's flow is the flow's label, which names its interface already (flow/interface).
         var name = check.Flow;
         var rows = check.Rows;
-        var failing = rows.WithHeld + rows.WithInvalid;
+        var failing = rows.WithHeld + rows.WithInvalid + rows.HeldByAssertion;
         writer.WriteLine($"{(failing == 0 && rows.Keyless == 0 ? "OK " : "!! ")} {name}: {check.Inputs.Mapping} on {check.Inputs.Kind}{(check.Inputs.CacheVersion is { } cache ? $", cache {cache}" : string.Empty)}");
         writer.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
@@ -210,6 +211,12 @@ internal static class DeliveryValueCheckVerbs
         writer.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
             $"    outcome     {rows.Clean:N0} clean, {rows.WithHeld:N0} held, {rows.WithInvalid:N0} with an invalid value, {rows.WithEmpty:N0} leaving a variable out"));
+        if (rows.WithFailedAssertion > 0)
+        {
+            writer.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    asserted    {rows.WithFailedAssertion:N0} failing an assertion of the mapping, {rows.HeldByAssertion:N0} of them to be held before they are sent"));
+        }
         if (rows.Keyless > 0)
         {
             writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"    keyless     {rows.Keyless:N0} rows have an empty key part, so their records cannot be tracked"));
@@ -223,7 +230,7 @@ internal static class DeliveryValueCheckVerbs
         foreach (var variable in check.Variables)
         {
             var counts = variable.Rows;
-            var failed = counts.Held + counts.Invalid + counts.Empty;
+            var failed = counts.Held + counts.Invalid + counts.Empty + counts.Asserted;
             if (failed == 0)
             {
                 continue;
@@ -231,7 +238,8 @@ internal static class DeliveryValueCheckVerbs
 
             writer.WriteLine(string.Create(
                 CultureInfo.InvariantCulture,
-                $"    {variable.Target}: {counts.Held:N0} held, {counts.Invalid:N0} invalid, {counts.Empty:N0} empty, {counts.Valid:N0} valid, {counts.NotApplicable:N0} not applicable"));
+                $"    {variable.Target}: {counts.Held:N0} held, {counts.Invalid:N0} invalid, {counts.Empty:N0} empty, {counts.Valid:N0} valid, {counts.NotApplicable:N0} not applicable")
+                + (counts.Asserted > 0 ? string.Create(CultureInfo.InvariantCulture, $"; {counts.Asserted:N0} failing an assertion") : string.Empty));
             foreach (var finding in variable.Findings.Where(f => f.Outcome != "notApplicable"))
             {
                 var at = finding.At == variable.Target ? string.Empty : $" at {finding.At}";

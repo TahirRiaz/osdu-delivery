@@ -17,8 +17,10 @@ public sealed record GateDecision(ValidationVerdict Verdict, string? Hold);
 /// metadata a try writes is checked against the template of its own kind and render context (the one it was rendered
 /// for, whatever the flow pins now), as the route will send it, and the records it refers to are looked up once for the
 /// whole group (<see cref="ReferenceResolver"/>). The verdict goes on the try's attempt and the record whatever it says;
-/// the flow's <c>target.validation</c> decides which verdicts hold the record. A record whose references storage does not
-/// hold, under <c>target.verifyReferences: storage</c>, is held whatever the policy, as that setting has always meant.
+/// the flow's <c>target.validation</c> decides which verdicts hold the record. What the mapping's assertions found of the
+/// document when it was rendered (osdu/docs/reference/flow/mapping-assertions.md) joins the verdict, and a failure whose
+/// action is hold holds the record whatever the policy. A record whose references storage does not hold, under
+/// <c>target.verifyReferences: storage</c>, is held whatever the policy, as that setting has always meant.
 /// </summary>
 /// <remarks>
 /// A part of the document the route fills when it sends it (the dataset list the File service's ids replace, the data keys
@@ -64,7 +66,8 @@ public sealed class ValidationGate
     /// looked up (the ledger or storage cannot be read), so the caller tries the group again later rather than sending it
     /// unchecked or holding it for a question nobody answered.
     /// </summary>
-    public async Task<IReadOnlyList<GateDecision>> DecideAsync(IReadOnlyList<(RecordState Record, JsonObject Document, bool WritesMetadata)> works, CancellationToken ct = default)
+    public async Task<IReadOnlyList<GateDecision>> DecideAsync(
+        IReadOnlyList<(RecordState Record, JsonObject Document, bool WritesMetadata, AssertionFindings? Assertions)> works, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(works);
         var now = _time.GetUtcNow().UtcDateTime;
@@ -72,7 +75,7 @@ public sealed class ValidationGate
         var asked = new List<FoundReference>();
         for (var i = 0; i < works.Count; i++)
         {
-            var (record, document, writesMetadata) = works[i];
+            var (record, document, writesMetadata, _) = works[i];
             if (!writesMetadata)
             {
                 checks[i] = new Check(null, null, "the try sends the payload alone, so the document OSDU holds is not sent again and nothing of it is checked");
@@ -121,7 +124,7 @@ public sealed class ValidationGate
                 continue;
             }
 
-            var verdict = ValidationVerdict.Of(check.Findings!, check.Rules, VerdictSchema.Template, answers, now);
+            var verdict = ValidationVerdict.Of(check.Findings!, check.Rules, VerdictSchema.Template, answers, now) with { Assertions = works[i].Assertions };
 
             // What target.verifyReferences: storage has always held: a reference neither the ledger nor storage holds.
             if (_references.AsksOsdu)
@@ -136,7 +139,10 @@ public sealed class ValidationGate
                 }
             }
 
-            if (!Policy.Holds(verdict.Outcome))
+            // What the mapping asserts holds the record when an assertion that failed says so; the schema, when the policy does.
+            var schemaHolds = Policy.Holds(verdict.Outcome);
+            var assertionsHold = verdict.Assertions?.Holds == true;
+            if (!schemaHolds && !assertionsHold)
             {
                 decisions[i] = new GateDecision(verdict, null);
             }
@@ -146,11 +152,30 @@ public sealed class ValidationGate
             }
             else
             {
-                decisions[i] = new GateDecision(verdict, verdict.HoldMessage(ValidationPolicy.Setting(verdict.Outcome)));
+                decisions[i] = new GateDecision(verdict, HoldMessage(verdict, schemaHolds, assertionsHold));
             }
         }
 
         return decisions;
+    }
+
+    /// <summary>
+    /// Why the gate holds a record: the assertions that hold it first, since they name what the mapping says the record must
+    /// be, then the schema when the policy holds it as well; or the schema alone.
+    /// </summary>
+    private static string HoldMessage(ValidationVerdict verdict, bool schemaHolds, bool assertionsHold)
+    {
+        if (!assertionsHold)
+        {
+            return verdict.HoldMessage(ValidationPolicy.Setting(verdict.Outcome));
+        }
+
+        var asserted = verdict.Assertions!.HoldMessage();
+        return schemaHolds
+            ? asserted + string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $" It does not meet the schema of {verdict.Schema?.Kind ?? "its kind"} either ({(verdict.Outcome == ValidationOutcome.Invalid ? $"{verdict.ProblemCount} problem(s)" : $"{verdict.UnverifiedCount} part(s) not checked")}), which {ValidationPolicy.Setting(verdict.Outcome)} holds as well.")
+            : asserted;
     }
 
     /// <summary>

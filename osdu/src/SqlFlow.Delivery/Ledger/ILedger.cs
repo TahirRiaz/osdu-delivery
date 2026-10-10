@@ -482,6 +482,12 @@ public sealed record RecordState
     /// <summary>When that check was made.</summary>
     public DateTime? ValidatedUtc { get; init; }
 
+    /// <summary>
+    /// How many judgements of the mapping's assertions failed on the document that check read
+    /// (osdu/docs/reference/flow/mapping-assertions.md); null when its mapping states none or no document was checked.
+    /// </summary>
+    public long? AssertionFailures { get; init; }
+
     /// <summary>The metadata hash of the pending document an operator's release accepted as it is, whatever its verdict.</summary>
     public string? AcceptedMetadataHash { get; init; }
 
@@ -620,7 +626,14 @@ public sealed record RecordCompletion
 }
 
 /// <summary>What a check of a record's document came to, as the record keeps it: the outcome, the problems, and when.</summary>
-public sealed record RecordValidation(string Outcome, long Problems, DateTime CheckedUtc);
+/// <param name="Outcome">What the check against the schema came to (<see cref="Validation.ValidationOutcomes"/>).</param>
+/// <param name="Problems">How many problems it found.</param>
+/// <param name="CheckedUtc">When it was made.</param>
+/// <param name="AssertionFailures">
+/// How many judgements of the mapping's assertions failed on the document (osdu/docs/reference/flow/mapping-assertions.md),
+/// or null when its mapping states none.
+/// </param>
+public sealed record RecordValidation(string Outcome, long Problems, DateTime CheckedUtc, long? AssertionFailures = null);
 
 /// <summary>
 /// What a claimed record's pending work was: the submission and document reference that identify it (a reference is

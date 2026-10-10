@@ -160,6 +160,15 @@ public sealed record ValueCheckRows
 
     /// <summary>Rows a variable checked is left out of, the record going without it.</summary>
     public long WithEmpty { get; init; }
+
+    /// <summary>
+    /// Rows whose record fails an assertion of the mapping on a variable checked (osdu/docs/reference/flow/mapping-assertions.md),
+    /// whatever the failure does.
+    /// </summary>
+    public long WithFailedAssertion { get; init; }
+
+    /// <summary>Rows whose record a failed assertion would hold at the check before sending (<c>onFail: hold</c>).</summary>
+    public long HeldByAssertion { get; init; }
 }
 
 /// <summary>Why rows were passed over, how many, and the first of them.</summary>
@@ -180,6 +189,12 @@ public sealed record ValueCheckCounts
     public long NotApplicable { get; init; }
 
     public long Held { get; init; }
+
+    /// <summary>
+    /// The rows (or items) a value of the variable failed an assertion of the mapping in, counted apart from the others: a value
+    /// that fails an assertion is still a value the template accepts, or not.
+    /// </summary>
+    public long Asserted { get; init; }
 
     public long Total => Valid + Invalid + Empty + NotApplicable + Held;
 }
@@ -227,13 +242,16 @@ public sealed record ValueCheckVariable
 /// </summary>
 public sealed record ValueCheckFinding
 {
-    /// <summary>What it amounts to: <c>held</c>, <c>invalid</c>, <c>empty</c> or <c>notApplicable</c>.</summary>
+    /// <summary>
+    /// What it amounts to: <c>held</c>, <c>invalid</c>, <c>empty</c>, <c>notApplicable</c>, or <c>asserted</c> for a value
+    /// that fails an assertion of the mapping.
+    /// </summary>
     public required string Outcome { get; init; }
 
     /// <summary>The variable the reason is about: the one checked, or a property inside the value written there.</summary>
     public required string At { get; init; }
 
-    /// <summary>For an invalid value, the rule of the template it breaks.</summary>
+    /// <summary>For an invalid value, the rule of the template it breaks; for an asserted one, the assertion it fails.</summary>
     public string? Rule { get; init; }
 
     /// <summary>The reason, as the first occurrence states it.</summary>

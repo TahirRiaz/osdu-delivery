@@ -33,6 +33,7 @@ public sealed class MappingRenderer
     private readonly ResolvedSearches _searches;
     private readonly IRecordSearch _search;
     private readonly IReadOnlyDictionary<(string Target, string? EntityType), (IdTemplate? Template, string? Problem)> _referenceTemplates;
+    private readonly IReadOnlyList<(MappingEntry Entry, NodeAssertion Assertion)> _assertions;
 
     /// <param name="mapping">The mapping rendered.</param>
     /// <param name="schema">The template the mapping pins.</param>
@@ -100,6 +101,7 @@ public sealed class MappingRenderer
         _writesLists = !DspdmKinds.Is(mapping.Kind);
         _lists = new ListValues(schema, recordLists: _writesLists);
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
+        _assertions = mapping.Assertions().ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
         // A ref resolves by the variable its node fills and the entity type it names: every alternative of a $coalesce node
         // that writes one shares the node's variable and is told apart by what it names, and a property of an item of a
@@ -204,6 +206,10 @@ public sealed class MappingRenderer
             ["data"] = new JsonObject(),
         };
         renderer.Assemble(document, new ShapeValues(renderer, notes), notes);
+        foreach (var (entry, assertion) in renderer.Assertions)
+        {
+            notes.Add(AssertionNote(entry, assertion));
+        }
 
         // The envelope reads before the data it guards, as OSDU's own examples lay a record out.
         var shaped = new JsonObject();
@@ -279,12 +285,13 @@ public sealed class MappingRenderer
         var holds = new List<string>();
         var usages = new List<CacheUsage>();
 
-        // What this render asks of the platform, and the alternatives it takes, are its own: the plan renders on several
-        // threads over one renderer.
-        var searched = new RenderTrail();
+        // What this render asks of the platform, the alternatives it takes and what its assertions find are its own: the plan
+        // renders on several threads over one renderer.
+        var searched = new RenderTrail { Assertions = AssertionsLog() };
 
         var (document, key, sourceKey, targetId) = Start(record, holds);
         Assemble(document, new RowValues(this, record, holds, usages, searched), holds);
+        var asserted = Assert(document, searched.Assertions);
 
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
         string canonical;
@@ -315,7 +322,49 @@ public sealed class MappingRenderer
             SearchUsages = searched.Used,
             Unanswered = searched.Unanswered,
             Choices = searched.Chosen,
+            Assertions = asserted,
         };
+    }
+
+    /// <summary>
+    /// What one assertion does, as a record's shape notes it: the property, what it asserts of which value, and what a record
+    /// that fails it does.
+    /// </summary>
+    internal static string AssertionNote(MappingEntry entry, NodeAssertion assertion)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(assertion);
+        var value = assertion.Stage == AssertionStage.Incoming ? "the value the row gives, before its modifiers" : "the value the record carries";
+        var named = assertion.Named ? $" ({assertion.Label})" : string.Empty;
+        var outcome = assertion.OnFail switch
+        {
+            AssertionAction.Report => "a record that fails it is sent, and the failure recorded",
+            AssertionAction.Omit => "a value that fails it is left out, and the failure recorded",
+            _ => "a record that fails it is held, its document kept until a release accepts it",
+        };
+        return $"{entry.Target.Text}: asserts {assertion.Expected} of {value}{named}; {outcome}";
+    }
+
+    /// <summary>The assertions the mapping states, each with the node that states it, in document order.</summary>
+    public IReadOnlyList<(MappingEntry Entry, NodeAssertion Assertion)> Assertions => _assertions;
+
+    /// <summary>A log for what one record's assertions find, or null when the mapping states none.</summary>
+    private Validation.AssertionLog? AssertionsLog() => _assertions.Count == 0 ? null : new Validation.AssertionLog(_mapping.Reference);
+
+    /// <summary>
+    /// Judges the mapping's record-stage assertions on the record as it was assembled and leaves out what those that failed
+    /// with <c>onFail: omit</c> name (osdu/docs/reference/flow/mapping-assertions.md); the incoming stage was judged as the
+    /// values were read. Null when the mapping states no assertion.
+    /// </summary>
+    private Validation.AssertionFindings? Assert(JsonObject document, Validation.AssertionLog? log)
+    {
+        if (log is null)
+        {
+            return null;
+        }
+
+        Validation.MappingAssertionJudge.Omit(document, Validation.MappingAssertionJudge.JudgeRecord(document, _assertions, log));
+        return log.Findings();
     }
 
     /// <summary>
@@ -334,10 +383,21 @@ public sealed class MappingRenderer
         ArgumentNullException.ThrowIfNull(record);
         ArgumentNullException.ThrowIfNull(selection);
         var holds = new List<string>();
-        var searched = new RenderTrail();
+        var searched = new RenderTrail { Assertions = AssertionsLog() };
         var trail = new InspectionTrail(selection);
         var (document, key, sourceKey, _) = Start(record, holds);
         Assemble(document, new RowValues(this, record, holds, [], searched), holds, trail);
+
+        // The record-stage assertions of the entries evaluated are judged on what they wrote; nothing is left out, so each
+        // value is reported as it was written beside what its assertions found of it.
+        if (searched.Assertions is { } log)
+        {
+            var judged = _assertions
+                .Where(a => a.Entry.IsRepeater ? selection.Covers(a.Entry.Target.Text) : selection.Includes(a.Entry.Target.Text))
+                .ToList();
+            _ = Validation.MappingAssertionJudge.JudgeRecord(document, judged, log);
+        }
+
         return new RecordInspection
         {
             Key = key,
@@ -346,6 +406,7 @@ public sealed class MappingRenderer
             Outcomes = trail.Outcomes,
             Holds = holds,
             Unanswered = searched.Unanswered,
+            Assertions = searched.Assertions?.Findings(),
         };
     }
 
@@ -565,7 +626,7 @@ public sealed class MappingRenderer
 
             var held = holds.Count;
             var asked = values.Asked.Count;
-            var value = values.Value(entry, item: null, out var applied);
+            var value = values.Value(entry, item: null, ordinal: null, out var applied);
             if (value is not null)
             {
                 SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
@@ -639,7 +700,7 @@ public sealed class MappingRenderer
                 {
                     var held = holds.Count;
                     var asked = values.Asked.Count;
-                    var value = values.Value(entry, row, out var applied);
+                    var value = values.Value(entry, row, ordinal, out var applied);
                     if (value is not null)
                     {
                         SetPath(item, entry.Target.WithinItem, value);
@@ -848,10 +909,11 @@ public sealed class MappingRenderer
     private interface IRecordValues
     {
         /// <summary>
-        /// The entry's value, for the record's row or for one item of a repeater; null leaves the variable out.
-        /// <paramref name="applied"/> is false when the entry's <c>$when</c> does not hold for the row.
+        /// The entry's value, for the record's row or for one item of a repeater (the child row <paramref name="ordinal"/> of
+        /// its dataset); null leaves the variable out. <paramref name="applied"/> is false when the entry's <c>$when</c> does
+        /// not hold for the row.
         /// </summary>
-        JsonNode? Value(MappingEntry entry, SourceRow? item, out bool applied);
+        JsonNode? Value(MappingEntry entry, SourceRow? item, int? ordinal, out bool applied);
 
         /// <summary>Whether the repeater's condition lets it write its array.</summary>
         bool Applies(MappingEntry repeater);
@@ -872,8 +934,11 @@ public sealed class MappingRenderer
     /// <summary>A source record's values, as a delivery renders them.</summary>
     private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages, RenderTrail searched) : IRecordValues
     {
-        public JsonNode? Value(MappingEntry entry, SourceRow? item, out bool applied)
-            => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched, out applied);
+        public JsonNode? Value(MappingEntry entry, SourceRow? item, int? ordinal, out bool applied)
+        {
+            searched.Item = ordinal;
+            return EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched, out applied);
+        }
 
         public bool Applies(MappingEntry repeater)
             => repeater.AppliesWhen is not { } condition || EntryValues.Applies(condition, record.Row, item: null, renderer, holds, repeater.Target.Text);
@@ -891,7 +956,7 @@ public sealed class MappingRenderer
     /// <summary>Placeholders in place of a record's values: one item per repeater, whatever its condition, with a note saying how many a record takes.</summary>
     private sealed class ShapeValues(MappingRenderer renderer, List<string> notes) : IRecordValues
     {
-        public JsonNode? Value(MappingEntry entry, SourceRow? item, out bool applied)
+        public JsonNode? Value(MappingEntry entry, SourceRow? item, int? ordinal, out bool applied)
         {
             applied = true;
             return EntryValues.Describe(entry, renderer, notes);
@@ -971,6 +1036,13 @@ public sealed record RenderResult
     public IReadOnlyList<CoalesceChoice> Choices { get; init; } = [];
 
     public bool IsHeld => Holds.Count > 0 || Key is null;
+
+    /// <summary>
+    /// What the mapping's assertions found of the record (osdu/docs/reference/flow/mapping-assertions.md), or null when it
+    /// states none. Not part of the document, which the ledger hashes: it travels beside it to the check before sending,
+    /// which holds the record for a failure whose action is hold. What an omission left out is already out of the document.
+    /// </summary>
+    public Validation.AssertionFindings? Assertions { get; init; }
 }
 
 /// <summary>

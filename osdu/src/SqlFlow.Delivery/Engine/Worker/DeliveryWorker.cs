@@ -796,6 +796,7 @@ public sealed class DeliveryWorker
                 Key = key,
                 TargetId = state.TargetId,
                 Document = document,
+                Assertions = AssertionFindings.FromText(item.Assertions),
                 DeliverMetadata = sendMetadata,
                 DeliverPayload = sendPayload,
                 Payload = single,
@@ -1088,7 +1089,7 @@ public sealed class DeliveryWorker
         IReadOnlyList<GateDecision> decisions;
         try
         {
-            decisions = await gate.DecideAsync(works.Select(w => (w.Record, w.Work.Document, w.Work.DeliverMetadata)).ToList(), ct).ConfigureAwait(false);
+            decisions = await gate.DecideAsync(works.Select(w => (w.Record, w.Work.Document, w.Work.DeliverMetadata, w.Work.Assertions)).ToList(), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -1331,7 +1332,7 @@ public sealed class DeliveryWorker
         var completion = new RecordCompletion
         {
             Validation = verdict is { Outcome: not ValidationOutcome.NotValidated }
-                ? new RecordValidation(ValidationOutcomes.Name(verdict.Outcome), verdict.ProblemCount, verdict.CheckedUtc)
+                ? new RecordValidation(ValidationOutcomes.Name(verdict.Outcome), verdict.ProblemCount, verdict.CheckedUtc, verdict.Assertions?.Failed)
                 : null,
             DeliveryKey = record.DeliveryKey,
             Status = status,

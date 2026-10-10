@@ -528,6 +528,7 @@ public sealed class RecordPreviewer
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal)
                 .ToList(),
+            Assertions = render.Assertions,
         };
 
     /// <summary>

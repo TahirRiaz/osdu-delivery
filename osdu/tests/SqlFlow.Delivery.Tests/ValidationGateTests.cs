@@ -94,8 +94,9 @@ public sealed class ValidationGateTests
     private static ValidationGate Gate(FlowDefinition flow, Schemas? schemas = null, ReferenceResolver? references = null)
         => new(flow, (schemas ?? new Schemas()).Of, references ?? ReferenceResolver.None, Clock);
 
-    private static async Task<GateDecision> DecideAsync(ValidationGate gate, RecordState state, JsonObject document, bool writesMetadata = true)
-        => Assert.Single(await gate.DecideAsync([(state, document, writesMetadata)]));
+    private static async Task<GateDecision> DecideAsync(
+        ValidationGate gate, RecordState state, JsonObject document, bool writesMetadata = true, AssertionFindings? assertions = null)
+        => Assert.Single(await gate.DecideAsync([(state, document, writesMetadata, assertions)]));
 
     private static JsonObject Invalid() => Record(r => DataOf(r)["Status"] = "Planned");
 
@@ -250,7 +251,7 @@ public sealed class ValidationGateTests
         var references = new ReferenceResolver(null, null, (_, _) => throw new TimeoutException("the ledger did not answer"), null);
         var gate = Gate(Flow(), references: references);
 
-        await Assert.ThrowsAsync<TimeoutException>(() => gate.DecideAsync([(State(), ValidRecord(), true)]));
+        await Assert.ThrowsAsync<TimeoutException>(() => gate.DecideAsync([(State(), ValidRecord(), true, null)]));
     }
 
     [Fact]
@@ -261,10 +262,10 @@ public sealed class ValidationGateTests
 
         var decisions = await gate.DecideAsync(
         [
-            (State("T-1"), ValidRecord(), true),
-            (State("T-2"), Invalid(), true),
-            (State("T-3"), ValidRecord(), false),
-            (State("T-4"), Record(r => DataOf(r)["WellID"] = "dev:master-data--Well:W-2:"), true),
+            (State("T-1"), ValidRecord(), true, null),
+            (State("T-2"), Invalid(), true, null),
+            (State("T-3"), ValidRecord(), false, null),
+            (State("T-4"), Record(r => DataOf(r)["WellID"] = "dev:master-data--Well:W-2:"), true, null),
         ]);
 
         Assert.Equal(1, ledger.Calls);
@@ -305,5 +306,111 @@ public sealed class ValidationGateTests
         Assert.Contains("data.Status", filled);
         Assert.Contains("data.ExtensionProperties.wdms", filled);
         Assert.DoesNotContain("data.Datasets", filled);
+    }
+    private static AssertionFindings Findings(AssertionAction action, string value = "312", string label = "count-range")
+    {
+        var log = new AssertionLog("Thing@1.0.0");
+        log.Judged();
+        var assertion = new NodeAssertion
+        {
+            Label = label,
+            Named = true,
+            Location = "record.data.Count.$assert[0]",
+            Condition = new ValueCondition { Operator = ValueOperator.Between },
+            OnFail = action,
+        };
+        log.Fail("data.Count", "data.Count", assertion, action, value, $"is {value}, outside 0 to 250");
+        return log.Findings();
+    }
+
+    [Fact]
+    public async Task A_failure_whose_action_is_hold_holds_a_document_the_schema_accepts_and_names_the_assertion()
+    {
+        var decision = await DecideAsync(Gate(Flow()), State(), ValidRecord(), assertions: Findings(AssertionAction.Hold));
+
+        Assert.StartsWith(
+            "assertion: the record fails what its mapping Thing@1.0.0 asserts: data.Count fails \"count-range\" with '312'. Its mapping holds a record that fails them (onFail: hold), so it is held;",
+            decision.Hold,
+            StringComparison.Ordinal);
+        Assert.Equal(ValidationOutcome.Valid, decision.Verdict.Outcome);
+        Assert.Equal(1, decision.Verdict.Assertions!.Held);
+        Assert.Contains("1 of 1 assertion judgement(s) of Thing@1.0.0 failed (1 holding)", decision.Verdict.Summary(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_reported_or_omitted_failure_is_sent_with_its_verdict()
+    {
+        foreach (var action in new[] { AssertionAction.Report, AssertionAction.Omit })
+        {
+            var decision = await DecideAsync(Gate(Flow()), State(), ValidRecord(), assertions: Findings(action));
+            Assert.Null(decision.Hold);
+            Assert.Equal(1, decision.Verdict.Assertions!.Failed);
+        }
+    }
+
+    [Fact]
+    public async Task A_release_accepts_a_document_its_assertions_held()
+    {
+        var accepted = await DecideAsync(Gate(Flow()), State(accepted: "hash-of-this-document"), ValidRecord(), assertions: Findings(AssertionAction.Hold));
+        Assert.Null(accepted.Hold);
+        Assert.True(accepted.Verdict.Accepted);
+
+        var other = await DecideAsync(Gate(Flow()), State(accepted: "hash-of-an-earlier-document"), ValidRecord(), assertions: Findings(AssertionAction.Hold));
+        Assert.NotNull(other.Hold);
+    }
+
+    [Fact]
+    public async Task A_record_held_for_its_assertions_and_its_schema_says_both()
+    {
+        var decision = await DecideAsync(Gate(Flow(ValidationMode.Enforce)), State(), Invalid(), assertions: Findings(AssertionAction.Hold));
+
+        Assert.StartsWith("assertion: ", decision.Hold, StringComparison.Ordinal);
+        Assert.Contains("It does not meet the schema of", decision.Hold, StringComparison.Ordinal);
+        Assert.Contains("which validation.mode is enforce holds as well.", decision.Hold, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_try_that_sends_the_payload_alone_judges_no_assertion()
+    {
+        var decision = await DecideAsync(Gate(Flow()), State(), ValidRecord(), writesMetadata: false, assertions: Findings(AssertionAction.Hold));
+
+        Assert.Null(decision.Hold);
+        Assert.Equal(ValidationOutcome.NotValidated, decision.Verdict.Outcome);
+        Assert.Null(decision.Verdict.Assertions);
+    }
+
+    [Fact]
+    public async Task The_records_one_assertion_holds_are_one_issue_whatever_values_they_hold()
+    {
+        var first = (await DecideAsync(Gate(Flow()), State(), ValidRecord(), assertions: Findings(AssertionAction.Hold, "312"))).Hold!;
+        var second = (await DecideAsync(Gate(Flow()), State(), ValidRecord(), assertions: Findings(AssertionAction.Hold, "N'A 999"))).Hold!;
+        var other = (await DecideAsync(Gate(Flow()), State(), ValidRecord(), assertions: Findings(AssertionAction.Hold, "312", "count-positive"))).Hold!;
+
+        Assert.Equal(ProblemSignature.Of(first), ProblemSignature.Of(second));
+        Assert.NotEqual(ProblemSignature.Of(first), ProblemSignature.Of(other));
+    }
+
+    [Fact]
+    public async Task A_verdict_carries_its_assertions_through_its_json_and_stays_within_its_bound()
+    {
+        var decision = await DecideAsync(Gate(Flow()), State(), ValidRecord(), assertions: Findings(AssertionAction.Report));
+        var read = ValidationVerdict.FromJson(JsonNode.Parse(decision.Verdict.ToJson().ToJsonString()))!;
+        Assert.Equal(decision.Verdict.Assertions!.Failures, read.Assertions!.Failures);
+        Assert.Equal(1, read.Assertions.Reported);
+
+        // A verdict whose failures carry long values is shortened, every count kept.
+        var log = new AssertionLog("Thing@1.0.0");
+        var assertion = new NodeAssertion { Label = "long", Location = "record.data.Name.$assert[0]", Condition = new ValueCondition { Operator = ValueOperator.Exists } };
+        for (var i = 0; i < 50; i++)
+        {
+            log.Judged();
+            log.Fail("data.Name", $"data.Name[{i}]", assertion, AssertionAction.Report, new string('x', 200), new string('y', 500));
+        }
+
+        var big = decision.Verdict with { Assertions = log.Findings() };
+        var json = big.ToJson();
+        Assert.True(json.ToJsonString().Length <= ValidationVerdict.MaxJsonChars);
+        Assert.True(json["shortened"]!.GetValue<bool>());
+        Assert.Equal(50, ValidationVerdict.FromJson(json)!.Assertions!.Failed);
     }
 }

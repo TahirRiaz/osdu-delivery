@@ -179,6 +179,16 @@ internal static class DeliveryPreviewVerbs
                 writer.WriteLine($"    held        {hold}");
             }
 
+            if (document.Assertions is { } findings)
+            {
+                var held = findings.Holds ? "; the check before sending would hold the record, its document kept" : string.Empty;
+                writer.WriteLine($"    asserted    {findings.Summary()}{held}");
+                foreach (var line in FindingLines.Of(findings))
+                {
+                    writer.WriteLine($"                {line}");
+                }
+            }
+
             foreach (var choice in document.Choices)
             {
                 var values = choice.Values == 1 ? string.Empty : string.Create(CultureInfo.InvariantCulture, $", {choice.Values:N0} values");

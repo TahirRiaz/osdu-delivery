@@ -6,8 +6,13 @@ using SqlFlow.Core.Model;
 
 namespace SqlFlow.Delivery.Storage;
 
-/// <summary>One rendered record waiting in a work batch: its key, its target id and its canonical document.</summary>
-public sealed record WorkItem(Guid Key, string TargetId, string Document);
+/// <summary>
+/// One rendered record waiting in a work batch: its key, its target id, its canonical document, and what its mapping's
+/// assertions found of that document (osdu/docs/reference/flow/mapping-assertions.md) as compact JSON, or null when the
+/// mapping states none. The findings sit beside the document they judge, so the check before sending reads the findings
+/// of exactly the document it sends, and a release that accepts the document accepts them with it.
+/// </summary>
+public sealed record WorkItem(Guid Key, string TargetId, string Document, string? Assertions = null);
 
 /// <summary>Where one document sits inside a work batch: the batch index and the byte range of its line.</summary>
 public readonly record struct DocumentRef(int Batch, long Offset, int Length)
@@ -67,14 +72,23 @@ public static class WorkBatchFile
     public static string PathFor(string workRoot, Guid submissionId, int batch)
         => Join(DirectoryFor(workRoot, submissionId), "batch-" + batch.ToString("D6", CultureInfo.InvariantCulture) + ".jsonl");
 
-    /// <summary>The bytes of one line (without the newline): key, target id and the document, as one JSON object.</summary>
+    /// <summary>
+    /// The bytes of one line (without the newline): key, target id, the document and, when there are any, the assertions'
+    /// findings, as one JSON object.
+    /// </summary>
     public static byte[] Encode(WorkItem item)
     {
         ArgumentNullException.ThrowIfNull(item);
-        var builder = new StringBuilder(item.Document.Length + 128);
+        var builder = new StringBuilder(item.Document.Length + 128 + (item.Assertions?.Length ?? 0));
         builder.Append("{\"key\":\"").Append(item.Key.ToString("D")).Append("\",\"targetId\":");
         builder.Append(JsonSerializer.Serialize(item.TargetId));
-        builder.Append(",\"document\":").Append(item.Document).Append('}');
+        builder.Append(",\"document\":").Append(item.Document);
+        if (item.Assertions is { Length: > 0 } assertions)
+        {
+            builder.Append(",\"assertions\":").Append(assertions);
+        }
+
+        builder.Append('}');
         return Utf8.GetBytes(builder.ToString());
     }
 
@@ -90,7 +104,9 @@ public static class WorkBatchFile
             throw new DeliveryException("A work batch line is not a work item (key, targetId, document).");
         }
 
-        return new WorkItem(parsedKey, targetId, doc.GetRawText());
+        // A line written before a mapping could assert carries no findings, and its document is judged by its schema alone.
+        var assertions = root.TryGetProperty("assertions", out var found) && found.ValueKind == JsonValueKind.Object ? found.GetRawText() : null;
+        return new WorkItem(parsedKey, targetId, doc.GetRawText(), assertions);
     }
 
     /// <summary>Reads one document by its reference: a range read of the batch file.</summary>

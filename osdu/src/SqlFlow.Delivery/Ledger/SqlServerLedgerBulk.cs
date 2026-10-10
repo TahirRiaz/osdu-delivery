@@ -262,6 +262,7 @@ internal static partial class SqlServerLedgerBulk
             [ValidationOutcome] = COALESCE(s.[ValidationOutcome], r.[ValidationOutcome]),
             [ValidationProblems] = CASE WHEN s.[ValidationOutcome] IS NULL THEN r.[ValidationProblems] ELSE s.[ValidationProblems] END,
             [ValidatedUtc] = CASE WHEN s.[ValidationOutcome] IS NULL THEN r.[ValidatedUtc] ELSE s.[ValidatedUtc] END,
+            [AssertionFailures] = CASE WHEN s.[ValidationOutcome] IS NULL THEN r.[AssertionFailures] ELSE s.[AssertionFailures] END,
             [LeaseOwner] = NULL, [UpdatedUtc] = @now,
             [NextAttemptUtc] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[NextAttemptUtc] END,
             [LastError] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[Error] END,
@@ -919,6 +920,7 @@ internal static partial class SqlServerLedgerBulk
         table.Columns.Add("ValidationOutcome", typeof(string));
         table.Columns.Add("ValidationProblems", typeof(long));
         table.Columns.Add("ValidatedUtc", typeof(DateTime));
+        table.Columns.Add("AssertionFailures", typeof(long));
         table.Columns.Add("TargetId", typeof(string));
         table.Columns.Add("TargetVersion", typeof(long));
         table.Columns.Add("TargetStateJson", typeof(string));
@@ -941,7 +943,7 @@ internal static partial class SqlServerLedgerBulk
             table.Rows.Add(
                 e.PartitionId, e.LeaseToken, e.FlowId, e.DeliveryKey, e.Kind, e.AtUtc, Value(e.StepJson),
                 Value(e.Status), e.Promote, e.NothingSent, Value(e.NextAttemptUtc), Value(e.Error), Value(e.ProblemHash),
-                Value(e.ValidationOutcome), Value(e.ValidationProblems), Value(e.ValidatedUtc),
+                Value(e.ValidationOutcome), Value(e.ValidationProblems), Value(e.ValidatedUtc), Value(e.AssertionFailures),
                 Value(e.TargetId), Value(e.TargetVersion), Value(e.TargetStateJson), Value(e.PendingStepJson),
                 Value(e.ClaimSubmissionId), Value(e.ClaimDocumentRef), Value(e.ClaimRenderContext), Value(e.ClaimSourceFingerprint),
                 Value(e.ClaimSourceModifiedUtc), Value(e.ClaimSourceFileName), Value(e.ClaimSourceRowNumber), Value(e.ClaimSourceUpdatedUtc),

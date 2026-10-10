@@ -27,6 +27,13 @@ public sealed record DeliveryWork
 
     public required JsonObject Document { get; init; }
 
+    /// <summary>
+    /// What the mapping's assertions found of <see cref="Document"/> when it was rendered (osdu/docs/reference/flow/mapping-assertions.md),
+    /// or null when the mapping states none or the document was queued before mappings could assert. The check before
+    /// sending adds them to the record's verdict and holds the record for a failure whose action is hold.
+    /// </summary>
+    public Validation.AssertionFindings? Assertions { get; init; }
+
     public required bool DeliverMetadata { get; init; }
 
     public required bool DeliverPayload { get; init; }

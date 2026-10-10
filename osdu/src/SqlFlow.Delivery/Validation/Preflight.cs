@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Assertions;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
@@ -172,6 +173,16 @@ public static partial class Preflight
             issues.Add(ValidationIssue.Error(
                 $"{name} is a list of objects whose properties read values, which fills a list of objects the template breaks into properties, and {entry.Target.Text} is {Describe(variable)}."));
             return;
+        }
+
+        // The node's assertions judge a value of this variable, so each has to suit its type, and every field their conditions
+        // read has to be a property of the template (osdu/docs/reference/flow/mapping-assertions.md).
+        foreach (var assertion in entry.Assertions)
+        {
+            foreach (var problem in AssertionTemplates.CheckAssertion(variable, assertion, template))
+            {
+                issues.Add(ValidationIssue.Error($"{where}: {assertion.Location}: {problem}"));
+            }
         }
 
         // A $coalesce node fills its variable with whichever alternative gives a value, and a list of values with what every

@@ -3497,6 +3497,7 @@ public sealed partial class OsduLedger : ILedger
         ValidationOutcome = r.ValidationOutcome,
         ValidationProblems = r.ValidationProblems,
         ValidatedUtc = r.ValidatedUtc,
+        AssertionFailures = r.AssertionFailures,
         AcceptedMetadataHash = r.AcceptedMetadataHash,
         CacheSetId = r.CacheSetId,
         PlanRequestedUtc = r.PlanRequestedUtc,

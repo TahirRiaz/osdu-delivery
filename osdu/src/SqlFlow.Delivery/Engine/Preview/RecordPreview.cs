@@ -268,6 +268,13 @@ public sealed record PreviewDocument
     /// <c>$unverified</c> where they are built.
     /// </summary>
     public IReadOnlyList<string> Unverified { get; init; } = [];
+
+    /// <summary>
+    /// What the mapping's assertions found of the document (osdu/docs/reference/flow/mapping-assertions.md), or null when it
+    /// states none. A failure whose action is hold would hold the record at the check before sending, with the document
+    /// kept; what a failure that leaves its value out left out is already out of <see cref="Rendered"/>.
+    /// </summary>
+    public Validation.AssertionFindings? Assertions { get; init; }
 }
 
 /// <summary>

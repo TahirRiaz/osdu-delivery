@@ -6,6 +6,7 @@ using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Rendering;
 
@@ -72,6 +73,14 @@ internal static partial class EntryValues
             else
             {
                 read = Read(entry.Source.Column!, root, item);
+            }
+
+            // What the row gives is judged before the modifiers change it; one that fails with onFail: omit leaves the value
+            // out whatever $required says, since the mapping asked for that.
+            if (entry.Assertions.Count > 0 && searched.Assertions is { } log
+                && !MappingAssertionJudge.JudgeIncoming(entry, read, column => Read(column, root, item), IncomingPath(entry, searched.Item), log))
+            {
+                return null;
             }
 
             if (!TryModify(entry, read, root, item, renderer, holds, usages, out raw))
@@ -176,7 +185,7 @@ internal static partial class EntryValues
     internal static IReadOnlyList<MappingEntry> Alternatives(MappingEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        return [entry with { Alternatives = [], AppliesWhen = null, Required = false, Location = null }, .. entry.Alternatives];
+        return [entry with { Alternatives = [], AppliesWhen = null, Required = false, Location = null, Assertions = [] }, .. entry.Alternatives];
     }
 
     /// <summary>
@@ -192,10 +201,16 @@ internal static partial class EntryValues
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(renderer);
         var said = new List<string>();
-        var value = Evaluate(entry with { Required = true, AppliesWhen = null }, root, item, renderer, said, [], new RenderTrail(), out _);
+        var log = entry.IncomingAssertions.Any() ? new AssertionLog(renderer.Mapping.Reference) : null;
+        var value = Evaluate(entry with { Required = true, AppliesWhen = null }, root, item, renderer, said, [], new RenderTrail { Assertions = log }, out _);
         if (said.Count > 0)
         {
             return Reason(said[0], entry.Target.Text);
+        }
+
+        if (value is null && log?.Findings().Failures.FirstOrDefault(f => f.OnFail == AssertionWords.Omit) is { } omitted)
+        {
+            return $"its assertion \"{omitted.Assertion}\" leaves it out: the row's value {omitted.Message}";
         }
 
         return entry.IsList && value is null ? $"none of the {entry.Parts.Count} items of the list gives a value" : "gives no value";
@@ -391,6 +406,25 @@ internal static partial class EntryValues
         => column.Child is null ? root.Get(column.Column) : item?.Get(column.Column);
 
     private static bool IsEmpty(object? value) => value is null || (value is string text && string.IsNullOrWhiteSpace(text));
+
+    /// <summary>
+    /// Where the value an incoming assertion judges came from: the column of the dataset's own row (<c>dataset.log_name</c>)
+    /// or of a child row (<c>dataset.curves[3].curve_id</c>), or the row an expression read and the expression.
+    /// </summary>
+    private static string IncomingPath(MappingEntry entry, int? item)
+    {
+        var source = entry.Source!;
+        string Row(string? child) => child is null
+            ? DatasetColumn.Prefix
+            : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{DatasetColumn.Prefix}.{child}[{item ?? 0}]");
+        if (source.Column is { } column)
+        {
+            return $"{Row(column.Child)}.{column.Column}";
+        }
+
+        var child = source.Expression!.Columns.Select(c => c.Child).FirstOrDefault(c => c is not null);
+        return $"{Row(child)}: {source.Expression.Text}";
+    }
 
     /// <summary>
     /// Why a value read from the row came to nothing: the column (or the expression) gave nothing, or it gave a value its
