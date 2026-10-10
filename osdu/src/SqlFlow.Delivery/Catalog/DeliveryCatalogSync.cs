@@ -33,6 +33,16 @@ namespace SqlFlow.Delivery.Catalog;
 /// </summary>
 public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 {
+    /// <summary>
+    /// The id a mapping is synced under: derived from the repository that declares it and its reference, so the same mapping
+    /// keeps its id across syncs, and a page or a check names it without reading the catalog first.
+    /// </summary>
+    public static Guid MappingId(Guid repoId, string reference)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        return FlowIdentity.FromName($"delivery-mapping/{repoId:N}/{reference}");
+    }
+
     private static readonly HashSet<string> SkippedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
         ".git", ".sqlflow", "bin", "obj", "node_modules", "runs",
@@ -371,7 +381,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             }
 
             var reference = mapping?.Reference ?? relative;
-            var id = FlowIdentity.FromName($"delivery-mapping/{repoId:N}/{reference}");
+            var id = MappingId(repoId, reference);
             if (!seen.Add(id))
             {
                 warnings.Add($"{relative}: mapping '{reference}' is declared more than once in the repository; the first file wins.");

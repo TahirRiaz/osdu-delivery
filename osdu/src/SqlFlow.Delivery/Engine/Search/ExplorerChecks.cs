@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
@@ -67,8 +68,21 @@ public sealed record ExplorerRuleCount(
     string At, string Rule, long Records, long Problems, string ExampleId, string ExamplePath, string ExampleMessage, string ExampleValue,
     string? Expected = null, string? Advice = null);
 
-/// <summary>One record of a list and what checking it came to.</summary>
-public sealed record ExplorerRecordVerdict(string Id, string? Kind, string Outcome, long Problems, long Unverified, string? First);
+/// <summary>One record of a list and what checking it came to; <paramref name="AssertionFailures"/> is how many judgements of the mapping's assertions failed on it, null when none were judged.</summary>
+public sealed record ExplorerRecordVerdict(string Id, string? Kind, string Outcome, long Problems, long Unverified, string? First, long? AssertionFailures = null);
+
+/// <summary>
+/// The mapping whose assertions a check judges on the records OSDU holds (osdu/docs/reference/flow/mapping-assertions.md),
+/// or why none could be read: the mapping, or the problem, never both.
+/// </summary>
+public sealed record ExplorerAssertions(MappingDefinition? Mapping, string? Problem);
+
+/// <summary>
+/// An assertion the records of a list fail: the property, the assertion and what its failure does, how many of the records
+/// fail it and how many times, and one example.
+/// </summary>
+public sealed record ExplorerAssertionCount(
+    string At, string Assertion, string Stage, string OnFail, long Records, long Failures, string ExampleId, string ExamplePath, string ExampleMessage, string ExampleValue);
 
 /// <summary>A kind no schema could be had for, and why its records were not checked.</summary>
 public sealed record ExplorerKindProblem(string Kind, string Why, long Records);
@@ -117,6 +131,18 @@ public sealed record ExplorerListValidation
 
     /// <summary>Whether the search matches more records than the check read, so the counts are of the first ones.</summary>
     public bool Cut { get; init; }
+
+    /// <summary>The mapping whose assertions were judged on the records, as <c>Name@version</c>; null when none was asked for or could be read.</summary>
+    public string? Mapping { get; init; }
+
+    /// <summary>The records the mapping's assertions were judged on: those of the entity type it renders.</summary>
+    public long Asserted { get; init; }
+
+    /// <summary>Of those, the records that failed one or more of them.</summary>
+    public long FailingAssertions { get; init; }
+
+    /// <summary>The assertions the records fail, the most records first, each with an example.</summary>
+    public IReadOnlyList<ExplorerAssertionCount> Assertions { get; init; } = [];
 
     /// <summary>What the explorer did that the reader should know, and the service's words when it refused the search.</summary>
     public IReadOnlyList<string> Notes { get; init; } = [];
@@ -173,8 +199,12 @@ public sealed class ExplorerChecks
         _examples = examples;
     }
 
-    /// <summary>Checks the record <paramref name="targetId"/>, at its latest or at <paramref name="version"/>.</summary>
-    public async Task<ExplorerValidation> RecordAsync(string targetId, long? version, ExplorerSchemaSource source, string? templateVersion, CancellationToken ct = default)
+    /// <summary>
+    /// Checks the record <paramref name="targetId"/>, at its latest or at <paramref name="version"/>, and judges on it the
+    /// assertions of the mapping <paramref name="assertions"/> names, when it names one.
+    /// </summary>
+    public async Task<ExplorerValidation> RecordAsync(
+        string targetId, long? version, ExplorerSchemaSource source, string? templateVersion, ExplorerAssertions? assertions = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         var record = version is null
@@ -210,7 +240,7 @@ public sealed class ExplorerChecks
         var rules = SchemaRules.Of(schema);
         var findings = RecordValidator.Check(record, rules, limits: _limits, form: RecordForm.Stored);
         var answers = await References().ResolveAsync(findings.References, ct).ConfigureAwait(false);
-        var verdict = ValidationVerdict.Of(findings, rules, described!.Source, answers, _time.GetUtcNow().UtcDateTime);
+        var verdict = Asserted(ValidationVerdict.Of(findings, rules, described!.Source, answers, _time.GetUtcNow().UtcDateTime), record, assertions);
         var (example, exampleNote) = verdict.Problems.Count + verdict.Unverified.Count > 0 ? await ExampleOfAsync(kind, ct).ConfigureAwait(false) : (null, null);
         return new ExplorerValidation
         {
@@ -230,7 +260,8 @@ public sealed class ExplorerChecks
     /// <see cref="MaxRecords"/>): their ids paged from the search in its order, the records read from storage in batches,
     /// and each record checked against the schema of its kind, each schema read once.
     /// </summary>
-    public async Task<ExplorerListValidation> ListAsync(RecordExplorer explorer, ExplorerSearch search, int max, ExplorerSchemaSource source, CancellationToken ct = default)
+    public async Task<ExplorerListValidation> ListAsync(
+        RecordExplorer explorer, ExplorerSearch search, int max, ExplorerSchemaSource source, ExplorerAssertions? assertions = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(explorer);
         ArgumentNullException.ThrowIfNull(search);
@@ -307,12 +338,39 @@ public sealed class ExplorerChecks
         var broken = new Dictionary<(string At, string Rule), (long Records, long Problems, SchemaFinding Example, string Id, string Kind, SchemaRules Rules)>();
         var absentBlocks = new Dictionary<string, long>(StringComparer.Ordinal);
         var verdicts = new List<ExplorerRecordVerdict>(checkedRecords.Count);
+        var failedAssertions = new Dictionary<(string At, string Assertion), (long Records, long Failures, AssertionFailure Example, string Id)>();
+        var assertionNotes = new List<string>();
+        long asserted = 0, failingAssertions = 0;
+        if (assertions is { Mapping: null, Problem: { } unread })
+        {
+            assertionNotes.Add($"No assertions were judged: {unread}.");
+        }
+
         foreach (var (id, kind, findings, recordRules) in checkedRecords)
         {
+            // The mapping's assertions are judged on every record of the type it renders, whether or not a schema could be had for it.
+            long? assertionFailures = null;
+            if (assertions?.Mapping is { } mapping && records.TryGetValue(id, out var stored))
+            {
+                var found = MappingAssertionJudge.OfStored(stored, mapping, out var judgedNotes);
+                assertionNotes.AddRange(judgedNotes);
+                if (found is not null)
+                {
+                    asserted++;
+                    failingAssertions += found.Failed > 0 ? 1 : 0;
+                    assertionFailures = found.Failed;
+                    foreach (var group in found.Failures.GroupBy(f => (f.At, f.Assertion)))
+                    {
+                        var counted = failedAssertions.TryGetValue(group.Key, out var already) ? already : (0, 0, group.First(), id);
+                        failedAssertions[group.Key] = (counted.Records + 1, counted.Failures + group.LongCount(), counted.Example, counted.Id);
+                    }
+                }
+            }
+
             if (findings is null || recordRules is null)
             {
                 notChecked++;
-                verdicts.Add(new ExplorerRecordVerdict(id, kind, ValidationOutcomes.NotValidated, 0, 0, null));
+                verdicts.Add(new ExplorerRecordVerdict(id, kind, ValidationOutcomes.NotValidated, 0, 0, null, assertionFailures));
                 continue;
             }
 
@@ -344,7 +402,7 @@ public sealed class ExplorerChecks
             var firstFound = verdict.Problems.Count > 0 ? verdict.Problems[0] : verdict.Unverified.Count > 0 ? verdict.Unverified[0] : null;
             verdicts.Add(new ExplorerRecordVerdict(
                 id, kind, ValidationOutcomes.Name(verdict.Outcome), verdict.ProblemCount, verdict.UnverifiedCount,
-                firstFound is null ? null : $"{ValidationVerdict.Where(firstFound)} {firstFound.Rule}: {firstFound.Message}"));
+                firstFound is null ? null : $"{ValidationVerdict.Where(firstFound)} {firstFound.Rule}: {firstFound.Message}", assertionFailures));
         }
 
         // Each rule broken most often comes with what the schema expects where it is and how to meet it, worked out on its example.
@@ -359,6 +417,7 @@ public sealed class ExplorerChecks
                 key.At, key.Rule, count.Records, count.Problems, count.Id, count.Example.Path, count.Example.Message, count.Example.Value, expected?.Summary, guide.Advice));
         }
 
+        notes.AddRange(assertionNotes.Distinct(StringComparer.Ordinal));
         notes.AddRange(absentBlocks.Select(b => string.Create(
             CultureInfo.InvariantCulture,
             $"{b.Value:N0} record(s) hold {b.Key} null or empty, which is how a stored record with no {b.Key} can read, so it was read as absent.")));
@@ -381,7 +440,37 @@ public sealed class ExplorerChecks
             Unavailable = unavailable.Select(u => new ExplorerKindProblem(u.Key, u.Value.Why, u.Value.Records)).OrderByDescending(u => u.Records).ToList(),
             Cut = (first?.Total ?? 0) > ids.Count,
             Notes = notes.Distinct(StringComparer.Ordinal).ToList(),
+            Mapping = assertions?.Mapping?.Reference,
+            Asserted = asserted,
+            FailingAssertions = failingAssertions,
+            Assertions = failedAssertions
+                .OrderByDescending(a => a.Value.Records).ThenBy(a => a.Key.At, StringComparer.Ordinal).ThenBy(a => a.Key.Assertion, StringComparer.Ordinal)
+                .Take(MaxRules)
+                .Select(a => new ExplorerAssertionCount(
+                    a.Key.At, a.Key.Assertion, a.Value.Example.Stage, a.Value.Example.OnFail, a.Value.Records, a.Value.Failures,
+                    a.Value.Id, a.Value.Example.Path, a.Value.Example.Message, a.Value.Example.Value))
+                .ToList(),
         };
+    }
+
+    /// <summary>
+    /// A verdict with what the mapping's assertions find of the record added (osdu/docs/reference/flow/mapping-assertions.md),
+    /// and what was not judged among its notes; the verdict as it is when no mapping was asked for.
+    /// </summary>
+    private static ValidationVerdict Asserted(ValidationVerdict verdict, JsonObject record, ExplorerAssertions? assertions)
+    {
+        if (assertions is null)
+        {
+            return verdict;
+        }
+
+        if (assertions.Mapping is not { } mapping)
+        {
+            return verdict with { Notes = [.. verdict.Notes, $"No assertions were judged: {assertions.Problem}."] };
+        }
+
+        var findings = MappingAssertionJudge.OfStored(record, mapping, out var notes);
+        return verdict with { Assertions = findings, Notes = [.. verdict.Notes, .. notes] };
     }
 
     /// <summary>The references of what is checked, looked up in OSDU's storage service alone: what OSDU holds is the answer.</summary>

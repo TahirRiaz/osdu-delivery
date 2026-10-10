@@ -1250,6 +1250,9 @@ internal sealed class AssertionItemYaml : AssertionConditionYaml
 
     public bool? Conforms { get; set; }
 
+    // The mapping (Name@version) whose record-stage assertions every record read is held to.
+    public string? Mapping { get; set; }
+
     public bool? Indexed { get; set; }
 
     public string? Legal { get; set; }

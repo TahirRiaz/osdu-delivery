@@ -162,6 +162,12 @@ public sealed class DeliveryExplorerApiTests
             var againstSaved = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
             Assert.Equal(("saved", "9f3c41d07a2b88e1"), (againstSaved.Argument(ExploreOperation.SchemaArgument), againstSaved.Argument(ExploreOperation.TemplateVersionArgument)));
 
+            // The explorer judges a mapping's assertions only when the request names one, by its synced id.
+            Assert.Null(validated.Argument(ExploreOperation.MappingArgument));
+            var mappingId = Guid.NewGuid();
+            var asserted = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:Wellbore-B", mapping = mappingId });
+            Assert.Equal(mappingId.ToString("D"), asserted.Argument(ExploreOperation.MappingArgument));
+
             // A check of a search reads from the first record whatever page the search was on, up to the most asked.
             var listed = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new
             {
@@ -174,6 +180,9 @@ public sealed class DeliveryExplorerApiTests
             Assert.Null(checkedSearch.Facet);
             var everything = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new { });
             Assert.Equal(ExplorerChecks.MaxRecords.ToString(CultureInfo.InvariantCulture), everything.Argument(ExploreOperation.MaxArgument));
+            Assert.Null(everything.Argument(ExploreOperation.MappingArgument));
+            var listedAsserted = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new { mapping = mappingId });
+            Assert.Equal(mappingId.ToString("D"), listedAsserted.Argument(ExploreOperation.MappingArgument));
 
             var validate400 = $"/api/v1/delivery/explorer/validate?partition={named}";
             await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
@@ -217,6 +226,12 @@ public sealed class DeliveryExplorerApiTests
                 (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:Wellbore-B", "7", "saved", "9f3c41d07a2b88e1"),
                 (pageChecked.Argument(ExploreOperation.ActionArgument), pageChecked.Argument("targetId"), pageChecked.Argument("version"),
                     pageChecked.Argument(ExploreOperation.SchemaArgument), pageChecked.Argument(ExploreOperation.TemplateVersionArgument)));
+            // A record page judges the assertions of the record's own flow's mapping, unless the request names another.
+            Assert.Equal(
+                SqlFlow.Delivery.Catalog.DeliveryCatalogSync.MappingId(repoId, "Wellbore@1.0.0").ToString("D"),
+                pageChecked.Argument(ExploreOperation.MappingArgument));
+            var pageNamed = await RanAsync(client, token, onPage, new { targetId = "dev:master-data--Wellbore:Wellbore-B", mapping = mappingId });
+            Assert.Equal(mappingId.ToString("D"), pageNamed.Argument(ExploreOperation.MappingArgument));
             await RefusedAsync(client, token, onPage, new { targetId = "Wellbore B-2 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
             await RefusedAsync(client, token, onPage, new { targetId = "dev:master-data--Wellbore:Wellbore-B", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
 

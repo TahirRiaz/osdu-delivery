@@ -502,6 +502,7 @@ public sealed record AssertionBulk
 [JsonDerivedType(typeof(RowCountAssertion), "rowCount")]
 [JsonDerivedType(typeof(ColumnsAssertion), "columns")]
 [JsonDerivedType(typeof(MonotonicAssertion), "monotonic")]
+[JsonDerivedType(typeof(MappingRulesAssertion), "mapping")]
 public abstract record TestAssertion
 {
     /// <summary>What reports call the assertion: the document's <c>name</c>, or a label read off what it asserts.</summary>
@@ -672,6 +673,27 @@ public sealed record ConformsAssertion : TestAssertion
     public override string Type => "conforms";
 
     public override string Expected => "every record meets the template of its kind";
+}
+
+/// <summary>
+/// Every record read meets what a mapping asserts of the values a record carries (osdu/docs/reference/flow/mapping-assertions.md):
+/// the record-stage assertions of the mapping named, judged on what OSDU holds by the code a render judges a document with.
+/// The mapping is read, when a run binds the test, from the mappings the repository sync keeps.
+/// </summary>
+/// <param name="Mapping">The mapping, as <c>Name@version</c>.</param>
+public sealed record MappingRulesAssertion(string Mapping) : TestAssertion
+{
+    /// <summary>The mapping a run read for the test; null until it is bound, or when it could not be read (<see cref="Unread"/>).</summary>
+    [JsonIgnore]
+    public MappingDefinition? Definition { get; init; }
+
+    /// <summary>Why the mapping could not be read when the run bound the test; null when it was, or before it is bound.</summary>
+    [JsonIgnore]
+    public string? Unread { get; init; }
+
+    public override string Type => "mapping";
+
+    public override string Expected => $"every record meets what mapping {Mapping} asserts of the values a record carries";
 }
 
 /// <summary>The search indexed every record the test matches cleanly: no record carries an index status above 200 (<c>index.statusCode:[201 TO *]</c>).</summary>

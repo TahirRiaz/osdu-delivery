@@ -95,7 +95,7 @@ public static partial class AssertionTemplates
         {
             ValueAssertion { Target.IsColumn: false } => true,
             AggregateAssertion { Target.IsColumn: false } => true,
-            UniqueAssertion or GroupAssertion or RecordSetAssertion or ConformsAssertion => true,
+            UniqueAssertion or GroupAssertion or RecordSetAssertion or ConformsAssertion or MappingRulesAssertion => true,
             _ => false,
         });
     }
@@ -160,6 +160,9 @@ public static partial class AssertionTemplates
                         _ = Resolve(template, column, at, where, problems);
                     }
 
+                    break;
+                case MappingRulesAssertion rules:
+                    CheckMapping(test, rules, template, at, where, problems);
                     break;
             }
         }
@@ -331,6 +334,48 @@ public static partial class AssertionTemplates
         }
 
         return problems;
+    }
+
+    /// <summary>
+    /// Whether a mapping a test holds its records to fits the test: it was read, it renders the kind the test reads, it asserts
+    /// something of the values a record carries, and every such assertion fits the template the test reads (its property is
+    /// one, its condition suits the property's type).
+    /// </summary>
+    private static void CheckMapping(AssertionTest test, MappingRulesAssertion rules, OsduTemplate template, string at, string where, ICollection<string> problems)
+    {
+        if (rules.Definition is not { } mapping)
+        {
+            problems.Add($"{at}: {rules.Unread ?? $"mapping {rules.Mapping} was not read"}.");
+            return;
+        }
+
+        if (!string.Equals(mapping.Kind, test.Kind, StringComparison.OrdinalIgnoreCase))
+        {
+            problems.Add($"{at}: mapping {rules.Mapping} renders {mapping.Kind}, and the test reads {test.Kind}; a test holds the records of the kind a mapping renders to its assertions.");
+            return;
+        }
+
+        var judged = mapping.Assertions().Where(a => a.Assertion.Stage == AssertionStage.Record).ToList();
+        if (judged.Count == 0)
+        {
+            problems.Add(
+                $"{at}: mapping {rules.Mapping} asserts nothing of the values a record carries (stage: record), so there is nothing to hold the records to; its incoming assertions judge the rows records were rendered from, which OSDU does not hold.");
+            return;
+        }
+
+        foreach (var (entry, assertion) in judged)
+        {
+            if (template.Find(entry.Target) is not { } variable)
+            {
+                problems.Add($"{at}: {assertion.Location} asserts on {entry.Target.Text}, which is not a property of {where}.");
+                continue;
+            }
+
+            foreach (var problem in CheckAssertion(variable, assertion, template))
+            {
+                problems.Add($"{at}: {assertion.Location}: {problem}");
+            }
+        }
     }
 
     /// <summary>Whether a record-stage condition suits the value a mapping's property carries.</summary>

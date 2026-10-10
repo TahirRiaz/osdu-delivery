@@ -154,7 +154,7 @@ public sealed class AssertionRunner
             },
             ct).ConfigureAwait(false);
 
-        var runnable = selected.Where(t => t.RunsIn(partition)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList();
+        var runnable = await BindMappingsAsync(selected.Where(t => t.RunsIn(partition)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList(), ct).ConfigureAwait(false);
         var skipped = selected.Where(t => !t.RunsIn(partition)).ToList();
         var fits = await AssertionTemplates.FitAsync(runnable, _context.Templates, ct).ConfigureAwait(false);
         var run = await ledger.StartAssertionRunAsync(
@@ -294,12 +294,41 @@ public sealed class AssertionRunner
             }).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The tests with every <c>mapping</c> assertion bound to the mapping it names, read once per run from the mappings the
+    /// repository sync keeps (osdu/docs/reference/flow/mapping-assertions.md); one that cannot be read keeps why, and its
+    /// test is reported as not fitting, with that reason.
+    /// </summary>
+    private async Task<List<AssertionTest>> BindMappingsAsync(List<AssertionTest> tests, CancellationToken ct)
+    {
+        var references = tests.SelectMany(t => t.Assertions).OfType<MappingRulesAssertion>().Select(a => a.Mapping).Distinct(StringComparer.Ordinal).ToList();
+        if (references.Count == 0)
+        {
+            return tests;
+        }
+
+        var read = new Dictionary<string, (MappingDefinition? Mapping, string? Problem)>(StringComparer.Ordinal);
+        foreach (var reference in references)
+        {
+            read[reference] = await SyncedMappings.ByReferenceAsync(_context, reference, ct).ConfigureAwait(false);
+        }
+
+        return tests
+            .Select(t => t with
+            {
+                Assertions = t.Assertions
+                    .Select(a => a is MappingRulesAssertion rules ? rules with { Definition = read[rules.Mapping].Mapping, Unread = read[rules.Mapping].Problem } : a)
+                    .ToList(),
+            })
+            .ToList();
+    }
+
     /// <summary>Checks and counts the tests the run selects, evaluating nothing and recording nothing.</summary>
     public async Task<AssertionPlanOutcome> PlanAsync(IReadOnlyCollection<string> tests, IReadOnlyCollection<string> tags, CancellationToken ct)
     {
         var partition = await PartitionAsync(ct).ConfigureAwait(false);
         var selected = _flow.Select(tests, tags);
-        var runnable = selected.Where(t => t.RunsIn(partition)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList();
+        var runnable = await BindMappingsAsync(selected.Where(t => t.RunsIn(partition)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList(), ct).ConfigureAwait(false);
         var fits = await AssertionTemplates.FitAsync(runnable, _context.Templates, ct).ConfigureAwait(false);
         using var http = new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, _transport, _allowLoopback, observer: _context.HttpObserver);
         var client = await ProtocolFactory.ClientAsync(http, _flow.Source.Endpoint, _flow.Source.Auth, _flow.Source.Headers, _context.Secrets, ct).ConfigureAwait(false);

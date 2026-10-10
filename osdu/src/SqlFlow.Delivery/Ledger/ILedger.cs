@@ -625,6 +625,21 @@ public sealed record RecordCompletion
     public IReadOnlyList<string> Superseded { get; init; } = [];
 }
 
+/// <summary>
+/// A mapping the repository sync read into the module database: where it came from, its text (secret references redacted,
+/// as synced) and whether it loaded. The engine reads a mapping this way where it has no repository tree.
+/// </summary>
+/// <param name="Id">The synced mapping's id, derived from its repository and reference.</param>
+/// <param name="RepoId">The repository it was read from.</param>
+/// <param name="Reference">Its reference, <c>Name@version</c>.</param>
+/// <param name="Kind">The kind of the template it fills.</param>
+/// <param name="RelativePath">Its file, relative to the repository.</param>
+/// <param name="ContentHash">The hash of its text, which tells two repositories' documents of one reference apart.</param>
+/// <param name="Yaml">Its text.</param>
+/// <param name="Valid">Whether the sync loaded it.</param>
+/// <param name="Message">Why the sync could not load it, when it could not.</param>
+public sealed record SyncedMapping(Guid Id, Guid RepoId, string Reference, string Kind, string RelativePath, string ContentHash, string Yaml, bool Valid, string? Message);
+
 /// <summary>What a check of a record's document came to, as the record keeps it: the outcome, the problems, and when.</summary>
 /// <param name="Outcome">What the check against the schema came to (<see cref="Validation.ValidationOutcomes"/>).</param>
 /// <param name="Problems">How many problems it found.</param>
@@ -2015,6 +2030,15 @@ public interface ILedger
     /// other than a record removed from OSDU.
     /// </summary>
     Task<IReadOnlySet<string>> HeldIdsAsync(Guid flowId, IReadOnlyCollection<string> ids, CancellationToken ct = default);
+
+    /// <summary>The mapping the repository sync read under <paramref name="mappingId"/>, or null when none is synced under it.</summary>
+    Task<SyncedMapping?> SyncedMappingAsync(Guid mappingId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The mappings the repository sync read under <paramref name="reference"/> (<c>Name@version</c>), one per repository that
+    /// declares it, at most <c>50</c>; empty when none is synced.
+    /// </summary>
+    Task<IReadOnlyList<SyncedMapping>> SyncedMappingsAsync(string reference, CancellationToken ct = default);
 
     /// <summary>
     /// The records that hold <paramref name="targetId"/> as the id they are delivered to, in any flow of the partition of

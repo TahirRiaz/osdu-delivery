@@ -69,6 +69,51 @@ public static partial class MappingAssertionJudge
     }
 
     /// <summary>
+    /// What a mapping's assertions find of a record OSDU holds: its record-stage assertions judged on the record, which is
+    /// the value they judge whether a render wrote it or OSDU stores it. The incoming ones judge the row a record was rendered
+    /// from, which OSDU does not hold; a record of another entity type than the one the mapping renders is not judged at all,
+    /// and null is answered for it. <paramref name="notes"/> says what was not judged, and why.
+    /// </summary>
+    public static AssertionFindings? OfStored(JsonObject record, MappingDefinition mapping, out IReadOnlyList<string> notes)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(mapping);
+        var said = new List<string>();
+        notes = said;
+        var kind = record["kind"] is JsonValue value && value.TryGetValue<string>(out var text) ? text.Trim() : null;
+        if (kind is null || !string.Equals(TypeOf(kind), TypeOf(mapping.Kind), StringComparison.Ordinal))
+        {
+            said.Add($"mapping {mapping.Reference} renders {mapping.Kind}, and the record is {(kind is null ? "of no kind" : kind)}, so its assertions were not judged");
+            return null;
+        }
+
+        if (!string.Equals(kind, mapping.Kind, StringComparison.Ordinal))
+        {
+            said.Add($"mapping {mapping.Reference} renders {mapping.Kind}, and the record is {kind}; its assertions were judged on what the record holds at the same properties");
+        }
+
+        var assertions = mapping.Assertions().ToList();
+        var incoming = assertions.Count(a => a.Assertion.Stage == AssertionStage.Incoming);
+        if (incoming > 0)
+        {
+            said.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{incoming} assertion(s) of {mapping.Reference} judge the value a row gives before the mapping's modifiers, which OSDU does not hold, so they were not judged"));
+        }
+
+        var log = new AssertionLog(mapping.Reference);
+        _ = JudgeRecord(record, assertions, log);
+        return log.Findings();
+    }
+
+    /// <summary>The type a kind names, without its version: <c>authority:source:entityType</c>.</summary>
+    private static string TypeOf(string kind)
+    {
+        var last = kind.LastIndexOf(':');
+        return last < 0 ? kind : kind[..last];
+    }
+
+    /// <summary>
     /// Leaves out what <paramref name="omissions"/> name: a property is removed (a list written empty, since the mapping
     /// defines it), a value is removed from its list, and an object left with nothing is left out with it, as a render leaves
     /// out an object nothing fills; the record's <c>data</c> always stays.

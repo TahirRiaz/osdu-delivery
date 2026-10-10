@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/assertion.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 231,
+  "keyCount": 232,
   "keys": [
     {
       "path": "batch",
@@ -491,7 +491,7 @@
       "path": "tests[].assert",
       "type": "list",
       "required": true,
-      "description": "The assertions, 1 to 100. Each names one subject: count, field, column, aggregate, unique, groupBy, recordSet, conforms, indexed, legal, delivered, rowCount, columns or monotonic."
+      "description": "The assertions, 1 to 100. Each names one subject: count, field, column, aggregate, unique, groupBy, recordSet, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic."
     },
     {
       "path": "tests[].assert[]",
@@ -609,6 +609,12 @@
       "type": "boolean",
       "required": false,
       "description": "true: every record meets the template of its kind: the properties it requires, and the type, format, pattern, enumeration and ranges of every value. Needs `read: storage`."
+    },
+    {
+      "path": "tests[].assert[].mapping",
+      "type": "string",
+      "required": false,
+      "description": "A mapping as Name@version, such as WellLog@1.4.0: every record meets what that mapping asserts of the values a record carries (its $assert with stage: record), judged as a delivery judges the documents it renders. The mapping is read from the mappings the repository sync keeps, renders the test's kind, and its incoming assertions are not judged, since OSDU does not hold the rows. Needs `read: storage`."
     },
     {
       "path": "tests[].assert[].contains",

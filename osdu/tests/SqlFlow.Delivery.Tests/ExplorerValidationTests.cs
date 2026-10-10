@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Http;
@@ -446,6 +447,105 @@ public sealed class ExplorerValidationTests : IDisposable
         Assert.Equal("Use one of the values the schema allows: Active, Retired.", status.Advice);
         Assert.Contains("1 record(s) hold meta null or empty, which is how a stored record with no meta can read, so it was read as absent.", list.Notes);
         Assert.Equal((1L, 1L), (list.Valid, list.Invalid));
+    }
+
+    /// <summary>A mapping over the fixture's kind asserting on two properties of the record and one of the row.</summary>
+    private static MappingDefinition Asserting(string kind = Kind) => new DeliveryDocumentLoader().ParseMapping($$"""
+        documentType: mapping
+        name: Thing
+        version: 2.0.0
+        template:
+          kind: {{kind}}
+          version: {{Schema.Version}}
+        dataset:
+          system: test
+          key: [code]
+        parameters:
+          dataPartition: { required: true }
+        record:
+          acl:
+            owners: [owners@x]
+            viewers: [viewers@x]
+          legal:
+            legaltags: [tag]
+            otherRelevantDataCountries: [US]
+          data:
+            Name:
+              $from: name
+              $assert:
+                - length: { atMost: 4 }
+                  name: short-name
+            Depth:
+              $from: depth
+              $assert:
+                - between: [0, 1000]
+                  onFail: report
+            Code:
+              $from: code
+              $assert:
+                - stage: incoming
+                  matches: '^[A-Z]'
+        """, "Thing@2.0.0.yaml");
+
+    [Fact]
+    public async Task A_record_is_held_to_a_mappings_record_stage_assertions_and_the_ones_it_cannot_judge_are_named()
+    {
+        var id = Stored();
+
+        var verdict = VerdictOf(await Checks().RecordAsync(id, null, ExplorerSchemaSource.Osdu, null, new ExplorerAssertions(Asserting(), null)));
+
+        Assert.Equal(ValidationOutcome.Valid, verdict.Outcome);
+        var findings = verdict.Assertions!;
+        Assert.Equal("Thing@2.0.0", findings.Mapping);
+        Assert.Equal((2L, 2L), (findings.Checked, findings.Failed));
+        Assert.Equal((1L, 1L), (findings.Held, findings.Reported));
+        Assert.Equal(["data.Name", "data.Depth"], findings.Failures.Select(f => f.At));
+        Assert.Equal("Alpha", findings.Failures[0].Value);
+        Assert.Contains("1 assertion(s) of Thing@2.0.0 judge the value a row gives before the mapping's modifiers, which OSDU does not hold, so they were not judged", verdict.Notes);
+    }
+
+    [Fact]
+    public async Task A_mapping_that_could_not_be_read_is_said_and_the_schemas_verdict_stands()
+    {
+        var id = Stored();
+
+        var verdict = VerdictOf(await Checks().RecordAsync(id, null, ExplorerSchemaSource.Osdu, null, new ExplorerAssertions(null, "no mapping is synced under it")));
+
+        Assert.Equal(ValidationOutcome.Valid, verdict.Outcome);
+        Assert.Null(verdict.Assertions);
+        Assert.Contains("No assertions were judged: no mapping is synced under it.", verdict.Notes);
+    }
+
+    [Fact]
+    public void A_record_of_another_type_is_not_judged_and_one_of_another_version_is_judged_saying_so()
+    {
+        Assert.Null(MappingAssertionJudge.OfStored(ValidRecord(), Asserting("test:wks:master-data--Other:1.0.0"), out var other));
+        Assert.Equal("mapping Thing@2.0.0 renders test:wks:master-data--Other:1.0.0, and the record is test:wks:master-data--Thing:1.0.0, so its assertions were not judged", Assert.Single(other));
+
+        var later = MappingAssertionJudge.OfStored(ValidRecord(), Asserting("test:wks:master-data--Thing:1.1.0"), out var version);
+        Assert.Equal(2, later!.Failed);
+        Assert.Contains(version, n => n.Contains("its assertions were judged on what the record holds at the same properties", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_records_a_search_finds_are_counted_by_the_assertions_they_fail_with_an_example_of_each()
+    {
+        Stored();
+        _platform.Put(Record(r => { r["id"] = "dev:master-data--Thing:T-2"; DataOf(r)["Name"] = "Ab"; DataOf(r)["Depth"] = 5; }));
+        _platform.Put(FakeOsduPlatform.Record("dev:master-data--Other:O-1", "osdu:wks:master-data--Other:1.0.0"));
+        _platform.Search = (_, _) => ["dev:master-data--Thing:T-1", "dev:master-data--Thing:T-2", "dev:master-data--Other:O-1"];
+
+        var list = await Checks().ListAsync(
+            new RecordExplorer(_client, "dev", NullLogger.Instance), new ExplorerSearch(), ExplorerChecks.MaxRecords, ExplorerSchemaSource.Osdu, new ExplorerAssertions(Asserting(), null));
+
+        Assert.Equal("Thing@2.0.0", list.Mapping);
+        Assert.Equal((2L, 1L), (list.Asserted, list.FailingAssertions));
+        var name = Assert.Single(list.Assertions, a => a.At == "data.Name");
+        Assert.Equal(("short-name", "hold", 1L, 1L, "dev:master-data--Thing:T-1", "Alpha"), (name.Assertion, name.OnFail, name.Records, name.Failures, name.ExampleId, name.ExampleValue));
+        Assert.Contains(list.Assertions, a => a.At == "data.Depth" && a.OnFail == "report");
+        Assert.Equal(2, list.Records.Single(r => r.Id == "dev:master-data--Thing:T-1").AssertionFailures);
+        Assert.Equal(0, list.Records.Single(r => r.Id == "dev:master-data--Thing:T-2").AssertionFailures);
+        Assert.Contains(list.Notes, n => n.Contains("and the record is osdu:wks:master-data--Other:1.0.0, so its assertions were not judged", StringComparison.Ordinal));
     }
 
     public void Dispose()

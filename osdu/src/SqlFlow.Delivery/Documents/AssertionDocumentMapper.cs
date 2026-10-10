@@ -711,6 +711,7 @@ internal static partial class AssertionMapper
             Add(item.GroupCount is not null, "groupCount");
             Add(item.RecordSet is not null, "recordSet");
             Add(item.Conforms is not null, "conforms");
+            Add(item.Mapping is not null, "mapping");
             Add(item.Indexed is not null, "indexed");
             Add(item.Legal is not null, "legal");
             Add(item.Delivered is not null, "delivered");
@@ -774,6 +775,7 @@ internal static partial class AssertionMapper
                      (y.Unique is not null, "unique"), (y.GroupBy is not null, "groupBy"), (y.RecordSet is not null, "recordSet"),
                      (y.Conforms is not null, "conforms"), (y.Indexed is not null, "indexed"), (y.Legal is not null, "legal"),
                      (y.Delivered is not null, "delivered"), (y.RowCount is not null, "rowCount"), (y.Columns is not null, "columns"),
+                     (y.Mapping is not null, "mapping"),
                  })
         {
             if (present)
@@ -802,7 +804,7 @@ internal static partial class AssertionMapper
         if (subjects.Count != 1)
         {
             throw new FlowValidationException(subjects.Count == 0
-                ? $"{test.Source}: {at} names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, indexed, legal, delivered, rowCount, columns or monotonic."
+                ? $"{test.Source}: {at} names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic."
                 : $"{test.Source}: {at} names {string.Join(" and ", subjects)}; an assertion has one subject. Write one assertion for each.");
         }
 
@@ -818,6 +820,7 @@ internal static partial class AssertionMapper
             "groupBy" => MapGroup(y, at, test),
             "recordSet" => MapRecordSet(y, at, test),
             "conforms" => MapConforms(y, at, test),
+            "mapping" => MapMapping(y, at, test),
             "indexed" => MapIndexed(y, at, test),
             "legal" => MapLegal(y, at, test),
             "delivered" => MapDelivered(y, at, test),
@@ -880,6 +883,33 @@ internal static partial class AssertionMapper
         }
 
         return new ConformsAssertion { Label = "conforms to its template" };
+    }
+
+    /// <summary>
+    /// A <c>mapping</c> assertion: the mapping, as <c>Name@version</c>, whose record-stage assertions every record read is held
+    /// to. It reads each record whole, as storage holds it; what the index holds of a record leaves out what an assertion
+    /// may read.
+    /// </summary>
+    private static MappingRulesAssertion MapMapping(AssertionItemYaml y, string at, TestContext test)
+    {
+        OnlyKeys(y, "mapping", ["mapping"], at, test);
+        var reference = y.Mapping!.Trim();
+        var split = reference.IndexOf('@', StringComparison.Ordinal);
+        if (split <= 0 || split == reference.Length - 1
+            || reference.Contains('/', StringComparison.Ordinal) || reference.Contains('\\', StringComparison.Ordinal) || reference.Contains("..", StringComparison.Ordinal)
+            || reference.Any(char.IsWhiteSpace))
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at}.mapping '{Shown(reference)}' names the mapping whose assertions the records are held to as Name@version, such as mapping: WellLog@1.4.0.");
+        }
+
+        if (test.Read == AssertionRead.Index)
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at} holds every record to what mapping {reference} asserts, which needs each record as storage holds it; the test reads the index (read: index), which holds only what it indexed. Take read: index out.");
+        }
+
+        return new MappingRulesAssertion(reference) { Label = $"meets what mapping {reference} asserts" };
     }
 
     private static IndexedAssertion MapIndexed(AssertionItemYaml y, string at, TestContext test)

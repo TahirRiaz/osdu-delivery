@@ -138,6 +138,7 @@ public abstract class Evaluator
             GroupAssertion group => new GroupEvaluator(index, group, examples),
             RecordSetAssertion set => new RecordSetEvaluator(index, set, examples),
             ConformsAssertion conforms => new ConformsEvaluator(index, conforms, scope),
+            MappingRulesAssertion rules => new MappingRulesEvaluator(index, rules, examples),
             IndexedAssertion indexed => new IndexedEvaluator(index, indexed, examples),
             LegalAssertion legal => new LegalEvaluator(index, legal, examples),
             DeliveredAssertion delivered => new DeliveredEvaluator(index, delivered, examples, scope.Test),
@@ -952,6 +953,70 @@ internal sealed class RecordSetEvaluator : Evaluator
 }
 
 /// <summary>Every record meets the schema of its kind, as the template the test was checked against states it.</summary>
+/// <summary>
+/// Every record read meets what a mapping asserts of the values a record carries (osdu/docs/reference/flow/mapping-assertions.md),
+/// judged by the code a render judges a document with; the assertions each record fails are counted, the ones failed most
+/// named in what the outcome found.
+/// </summary>
+internal sealed class MappingRulesEvaluator(int index, MappingRulesAssertion assertion, int examples) : Evaluator(index, assertion, examples)
+{
+    /// <summary>The assertions the outcome names as failed most.</summary>
+    private const int NamedMost = 5;
+
+    private readonly Tally _tally = new(Quantifier.All, examples);
+    private readonly Dictionary<string, long> _failed = new(StringComparer.Ordinal);
+    private long _judged;
+
+    public override RecordNeed Need => RecordNeed.Fields;
+
+    public override void Observe(string id, JsonNode record)
+    {
+        if (assertion.Definition is not { } mapping || record is not JsonObject obj)
+        {
+            _tally.Add(false, id, null, record is JsonObject ? $"mapping {assertion.Mapping} was not read" : "is not a JSON object");
+            return;
+        }
+
+        var findings = MappingAssertionJudge.OfStored(obj, mapping, out var notes);
+        if (findings is null)
+        {
+            _tally.Add(false, id, null, notes.Count > 0 ? notes[0] : $"is not of the kind mapping {assertion.Mapping} renders");
+            return;
+        }
+
+        _judged += findings.Checked;
+        if (findings.Failed == 0)
+        {
+            _tally.Add(true, id, null, string.Empty);
+            return;
+        }
+
+        foreach (var failed in findings.Failures.Select(f => $"{f.At} \"{f.Assertion}\"").Distinct(StringComparer.Ordinal))
+        {
+            _failed[failed] = _failed.GetValueOrDefault(failed) + 1;
+        }
+
+        var first = findings.Failures[0];
+        _tally.Add(false, id, TestResults.Quote(first.Value),
+            $"{first.Path} fails \"{first.Assertion}\": {first.Message}"
+            + (findings.Failed > 1 ? string.Create(CultureInfo.InvariantCulture, $" (and {findings.Failed - 1} more)") : string.Empty));
+    }
+
+    public override Task<AssertionOutcome> CompleteAsync(TestScope scope, TestSubject subject, CancellationToken ct)
+    {
+        if (subject.NotRead is not null)
+        {
+            return Task.FromResult(NotRead(subject));
+        }
+
+        var most = _failed.OrderByDescending(f => f.Value).ThenBy(f => f.Key, StringComparer.Ordinal).Take(NamedMost).ToList();
+        var actual = _tally.Actual("record")
+            + string.Create(CultureInfo.InvariantCulture, $"; {_judged} judgement(s) made")
+            + (most.Count > 0 ? "; failed most: " + string.Join(", ", most.Select(f => string.Create(CultureInfo.InvariantCulture, $"{f.Key} ({f.Value})"))) : string.Empty);
+        return Task.FromResult(Result(_tally.Passed, actual, _tally.Message("record"), _tally.Considered, _tally.Failing, _tally.Share, _tally.Examples));
+    }
+}
+
 internal sealed class ConformsEvaluator(int index, ConformsAssertion assertion, TestScope scope) : Evaluator(index, assertion, scope.Examples)
 {
     private readonly Tally _tally = new(Quantifier.All, scope.Examples);

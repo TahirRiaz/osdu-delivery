@@ -27,13 +27,19 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// <param name="Version">The version to check; its latest when left out.</param>
 /// <param name="Schema"><c>osdu</c> (the default): what the partition's Schema service holds for its kind; <c>saved</c>: a saved template.</param>
 /// <param name="TemplateVersion">With <c>saved</c>, the template version to check against; the kind's newest when left out.</param>
-public sealed record DeliveryExplorerValidateRequest(string? TargetId, long? Version = null, string? Schema = null, string? TemplateVersion = null);
+/// <param name="Mapping">
+/// The synced mapping (its id, as the Mappings page lists it) whose assertions are judged on the record
+/// (osdu/docs/reference/flow/mapping-assertions.md); none when left out, except on a record page, whose check judges the
+/// assertions of the record's own flow's mapping.
+/// </param>
+public sealed record DeliveryExplorerValidateRequest(string? TargetId, long? Version = null, string? Schema = null, string? TemplateVersion = null, Guid? Mapping = null);
 
 /// <summary>The records a search finds, checked against their schemas: the search as the explorer sends it, how many records at most, and the schema.</summary>
 /// <param name="Search">The search, as <c>/explorer/search</c> takes it; its page and grouping are not used.</param>
 /// <param name="Max">The most records read and checked, 1 to 1,000; 1,000 when left out.</param>
 /// <param name="Schema"><c>osdu</c> (the default) or <c>saved</c>, each kind's newest saved template.</param>
-public sealed record DeliveryExplorerValidateListRequest(DeliveryExplorerSearchRequest? Search = null, int? Max = null, string? Schema = null);
+/// <param name="Mapping">The synced mapping whose assertions are judged on the records, by its id; none when left out.</param>
+public sealed record DeliveryExplorerValidateListRequest(DeliveryExplorerSearchRequest? Search = null, int? Max = null, string? Schema = null, Guid? Mapping = null);
 
 public static partial class DeliveryExplorerEndpoints
 {
@@ -92,6 +98,12 @@ public static partial class DeliveryExplorerEndpoints
                 title: "No record to check");
         }
 
+        // A record page judges the assertions of the record's own flow's mapping unless the request names another.
+        if (!arguments.ContainsKey(ExploreOperation.MappingArgument))
+        {
+            arguments[ExploreOperation.MappingArgument] = DeliveryCatalogSync.MappingId(flow.Pipeline.RepoId, flow.Flow.Render.Mapping).ToString("D");
+        }
+
         arguments[ExploreOperation.ActionArgument] = ExploreOperation.ValidateAction;
         return await DirectOperationRunner.RunAsync(db, config, direct, flow, ExploreOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
@@ -129,6 +141,11 @@ public static partial class DeliveryExplorerEndpoints
         if (!string.IsNullOrWhiteSpace(body.TemplateVersion))
         {
             arguments[ExploreOperation.TemplateVersionArgument] = body.TemplateVersion.Trim();
+        }
+
+        if (body.Mapping is { } mapping)
+        {
+            arguments[ExploreOperation.MappingArgument] = mapping.ToString("D");
         }
 
         return null;
@@ -176,6 +193,11 @@ public static partial class DeliveryExplorerEndpoints
         if (!string.IsNullOrWhiteSpace(asked.Schema))
         {
             arguments[ExploreOperation.SchemaArgument] = asked.Schema.Trim().ToLowerInvariant();
+        }
+
+        if (asked.Mapping is { } mapping)
+        {
+            arguments[ExploreOperation.MappingArgument] = mapping.ToString("D");
         }
 
         return await QueueAsync(ExploreOperation.ValidateListAction, arguments, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct).ConfigureAwait(false);

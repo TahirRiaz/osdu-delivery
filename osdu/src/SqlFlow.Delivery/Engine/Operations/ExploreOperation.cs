@@ -26,8 +26,8 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// <item><description><c>read</c>: one record from the storage service by its <c>targetId</c>, at its latest or at a <c>version</c>, with its version list.</description></item>
 /// <item><description><c>dimension-keys</c>: the commonest keys of a drafted dimension's path, which the builder's example steps through (<see cref="DimensionSampler.KeysAsync"/>), asked by the <c>keys</c> long argument.</description></item>
 /// <item><description><c>dimension-example</c>: one key of a drafted dimension made into its row as a build makes it (<see cref="DimensionSampler.ExampleAsync"/>): the dimension's item as YAML (<c>item</c>), the <c>key</c>, and how the key and each collected path are indexed (<c>fields</c>).</description></item>
-/// <item><description><c>validate</c>: one record (<c>targetId</c>, at its latest or a <c>version</c>) checked against the schema of its kind, the Schema service's or a saved template's (<c>schema</c>, <c>templateVersion</c>), with the records it refers to looked up in storage (<see cref="ExplorerChecks.RecordAsync"/>).</description></item>
-/// <item><description><c>validate-list</c>: the records a <c>search</c> finds, up to <c>max</c>, checked the same way and counted by rule (<see cref="ExplorerChecks.ListAsync"/>).</description></item>
+/// <item><description><c>validate</c>: one record (<c>targetId</c>, at its latest or a <c>version</c>) checked against the schema of its kind, the Schema service's or a saved template's (<c>schema</c>, <c>templateVersion</c>), with the records it refers to looked up in storage, and the assertions of the synced <c>mapping</c> named by its id judged on it (<see cref="ExplorerChecks.RecordAsync"/>).</description></item>
+/// <item><description><c>validate-list</c>: the records a <c>search</c> finds, up to <c>max</c>, checked the same way and counted by rule and by assertion (<see cref="ExplorerChecks.ListAsync"/>).</description></item>
 /// <item><description><c>referenced-by</c>: the types whose schemas name records of a <c>type</c> (<see cref="ExplorerReferences"/>), answered from what the partition's Schema service holds, read once and kept (<see cref="PartitionSchemaIndex"/>); <c>refresh</c> reads it again.</description></item>
 /// </list>
 /// Every read goes to the platform's own services (search, storage and schema), whatever route the flow delivers by.
@@ -88,6 +88,12 @@ public sealed class ExploreOperation : DeliveryOperation
     /// <summary>The task argument naming how many records a check of a search reads at most.</summary>
     public const string MaxArgument = "max";
 
+    /// <summary>
+    /// The task argument naming, by its id, the synced mapping whose assertions a check judges on the records it reads
+    /// (osdu/docs/reference/flow/mapping-assertions.md); a check that names none judges none.
+    /// </summary>
+    public const string MappingArgument = "mapping";
+
     /// <summary>Every read the task can name.</summary>
     public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionKeysAction, DimensionExampleAction, ValidateAction, ValidateListAction, ReferencedByAction];
 
@@ -141,9 +147,10 @@ public sealed class ExploreOperation : DeliveryOperation
         {
             ValidateAction => await Checks(context, flow, client).RecordAsync(
                 TargetId.WithoutVersion(payload.RequireArgument("targetId").Trim()), ReadRecordOperation.VersionOf(payload), SchemaSourceOf(payload),
-                payload.Argument(TemplateVersionArgument), ct).ConfigureAwait(false),
+                payload.Argument(TemplateVersionArgument), await AssertionsAsync(context, payload, ct).ConfigureAwait(false), ct).ConfigureAwait(false),
             ValidateListAction => await Checks(context, flow, client).ListAsync(
-                explorer, ExplorerSearch.Parse(payload.Argument(SearchArgument)), MaxOf(payload), SchemaSourceOf(payload), ct).ConfigureAwait(false),
+                explorer, ExplorerSearch.Parse(payload.Argument(SearchArgument)), MaxOf(payload), SchemaSourceOf(payload),
+                await AssertionsAsync(context, payload, ct).ConfigureAwait(false), ct).ConfigureAwait(false),
             TypesAction => await explorer.TypesAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
             SearchAction => await explorer.SearchAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
             DimensionKeysAction => await Sampler(client, context).KeysAsync(KeysOf(payload, partition), ct).ConfigureAwait(false),
@@ -216,6 +223,28 @@ public sealed class ExploreOperation : DeliveryOperation
             lease.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// The mapping whose assertions a check judges, as the task names it by its synced id, read from the module database; or
+    /// why it cannot be read, which the answer says. Null when the task names none.
+    /// </summary>
+    internal static async Task<ExplorerAssertions?> AssertionsAsync(EngineContext context, ComputeTaskPayload payload, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(payload);
+        if (payload.Argument(MappingArgument)?.Trim() is not { Length: > 0 } text)
+        {
+            return null;
+        }
+
+        if (!Guid.TryParse(text, out var id))
+        {
+            throw new SqlFlowException($"'{text}' is not the id of a synced mapping, as the Mappings page lists them.");
+        }
+
+        var (mapping, problem) = await SyncedMappings.ByIdAsync(context, id, ct).ConfigureAwait(false);
+        return new ExplorerAssertions(mapping, problem);
     }
 
     /// <summary>The schema a check reads, as the task names it: <c>osdu</c> (the default) or <c>saved</c>.</summary>
