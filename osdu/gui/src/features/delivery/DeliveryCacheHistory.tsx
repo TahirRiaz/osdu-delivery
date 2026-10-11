@@ -26,6 +26,7 @@ import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { parseUtc } from "@/lib/time";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
 import { CachedRecordId } from "./DeliveryCacheRecords";
+import { CachePruneButton } from "./CachePruneButton";
 import { ChangeBadge, ChangeCount } from "./ChangeMark";
 import { isPruned, shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
 import { shortId } from "./idTail";
@@ -361,12 +362,12 @@ function prunedAt(prunedUtc: string): string {
   return format(parseUtc(prunedUtc), "yyyy-MM-dd HH:mm");
 }
 
-/** The mark of a version whose records the cache's retention pruned, with what that means on hover. */
-function PrunedChip({ prunedUtc }: { prunedUtc: string }) {
+/** The mark of a version whose records the cache's retention pruned, with when, by whom and what that means on hover. */
+function PrunedChip({ prunedUtc, prunedBy }: { prunedUtc: string; prunedBy?: string | null }) {
   return (
     <RichTooltip
       title="Records pruned"
-      body={`The cache's retention pruned this version's records at ${prunedAt(prunedUtc)} UTC. The version stays listed with who captured it, when, and what it changed; its records can no longer be read or compared. A delivered record keeps the cached values it was built from.`}
+      body={`The cache's retention pruned this version's records at ${prunedAt(prunedUtc)} UTC${prunedBy ? ` by ${prunedBy}` : ""}. The version stays listed with who captured it, when, and what it changed; its records can no longer be read or compared. A delivered record keeps the cached values it was built from.`}
     >
       <span className="rounded-sm bg-muted px-1.5 text-[11px] text-muted-foreground" data-testid="delivery-cache-history-pruned">pruned</span>
     </RichTooltip>
@@ -555,7 +556,12 @@ function VersionLabel({ label, current, note }: { label: string; current: boolea
  * content hash moved, each compared with the version of the type before it. It covers the whole cache, where Approvals
  * covers only the changes that reach records already delivered.
  */
-export function DeliveryCacheHistory({ scope, type }: { scope: string; type: string | null }) {
+export function DeliveryCacheHistory({ scope, type, retentionDays }: {
+  scope: string;
+  type: string | null;
+  /** The partition's retention; given, an admin can purge the history from the list, starting from it. */
+  retentionDays?: number;
+}) {
   const history = useQuery({
     queryKey: ["delivery", "cache", "history", scope, type],
     queryFn: () => deliveryApi.cacheHistory(scope, type ?? undefined),
@@ -585,7 +591,7 @@ export function DeliveryCacheHistory({ scope, type }: { scope: string; type: str
   }
 
   return type === null
-    ? <CacheVersionList entries={history.data} />
+    ? <CacheVersionList entries={history.data} prune={retentionDays === undefined ? null : <CachePruneButton scope={scope} retentionDays={retentionDays} />} />
     : <TypeVersionList scope={scope} type={type} entries={history.data} />;
 }
 
@@ -619,8 +625,11 @@ function usePickedPanel<T>(rows: T[], keyOf: (row: T) => string, content: (row: 
   };
 }
 
-/** Every version of the cache, with the types each moved and what it changed against the version before it. */
-function CacheVersionList({ entries }: { entries: DeliveryCacheHistoryEntry[] }) {
+/**
+ * Every version of the cache, with the types each moved and what it changed against the version before it, and the purge of
+ * the history beside the count, for an admin.
+ */
+function CacheVersionList({ entries, prune }: { entries: DeliveryCacheHistoryEntry[]; prune: ReactNode }) {
   const content = useCallback((entry: DeliveryCacheHistoryEntry) => ({
     title: `Changes · ${entry.version.version}`,
     body: <VersionChanges entry={entry} />,
@@ -636,7 +645,7 @@ function CacheVersionList({ entries }: { entries: DeliveryCacheHistoryEntry[] })
         <VersionLabel
           label={entry.version.version}
           current={entry.version.current}
-          note={entry.version.prunedUtc ? <PrunedChip prunedUtc={entry.version.prunedUtc} /> : undefined}
+          note={entry.version.prunedUtc ? <PrunedChip prunedUtc={entry.version.prunedUtc} prunedBy={entry.version.prunedBy} /> : undefined}
         />
       ),
     },
@@ -654,10 +663,13 @@ function CacheVersionList({ entries }: { entries: DeliveryCacheHistoryEntry[] })
 
   return (
     <div className="flex flex-col gap-2" data-testid="delivery-cache-history">
-      <span className="text-[12px] text-muted-foreground">
-        {entries.length.toLocaleString()} version{entries.length === 1 ? "" : "s"}
-        {pruned > 0 && `, ${pruned.toLocaleString()} of them pruned by the cache's retention`}; pick one to see what it changed.
-      </span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[12px] text-muted-foreground">
+          {entries.length.toLocaleString()} version{entries.length === 1 ? "" : "s"}
+          {pruned > 0 && `, ${pruned.toLocaleString()} of them pruned by the cache's retention`}; pick one to see what it changed.
+        </span>
+        {prune}
+      </div>
       <DataTable
         columns={columns}
         rows={entries}
@@ -736,7 +748,7 @@ function TypeVersionList({ scope, type, entries }: { scope: string; type: string
                   <span className="rounded-sm bg-muted px-1.5 text-[11px] text-muted-foreground">same as current</span>
                 </RichTooltip>
               )}
-              {version.entry.version.prunedUtc && <PrunedChip prunedUtc={version.entry.version.prunedUtc} />}
+              {version.entry.version.prunedUtc && <PrunedChip prunedUtc={version.entry.version.prunedUtc} prunedBy={version.entry.version.prunedBy} />}
             </>
           )}
         />

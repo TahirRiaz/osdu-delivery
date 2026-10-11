@@ -576,7 +576,7 @@ function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType
         </TabsContent>
 
         <TabsContent value="history">
-          <DeliveryCacheHistory scope={cache.scope} type={scoped?.name ?? null} />
+          <DeliveryCacheHistory scope={cache.scope} type={scoped?.name ?? null} retentionDays={cache.retentionDays ?? 7} />
         </TabsContent>
 
         <TabsContent value="deliveries">

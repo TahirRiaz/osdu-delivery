@@ -627,6 +627,30 @@ export interface DeliveryCacheVersion {
    * listed with what it was and changed, and can no longer be read or compared.
    */
   prunedUtc?: string | null;
+  /** Who pruned them: the refresh's requester, the import's account, or the admin who purged the history. */
+  prunedBy?: string | null;
+}
+
+/** A purge of a partition cache's history: the days of replaced versions that keep their records, 0 to 36500. */
+export interface DeliveryCachePruneRequest {
+  scope: string;
+  keepDays: number;
+}
+
+/**
+ * What a purge of a partition cache's history did, or for a preview would do: the days it keeps, how many versions keep
+ * their records, the versions it prunes and the stored rows that go, what it waits for when it cannot prune yet, and one
+ * line saying it.
+ */
+export interface DeliveryCachePruneResult {
+  scope: string;
+  keepDays: number;
+  preview: boolean;
+  kept: number;
+  pruned: string[];
+  rows: number;
+  deferred?: string | null;
+  summary: string;
 }
 
 /** How one cached record differs between two versions of its cache. */
@@ -3732,6 +3756,12 @@ export const deliveryApi = {
   /** Every version of one partition's cache, newest first, with what it changed against the one before it; `type` narrows the counts to one type. */
   cacheHistory: (scope: string, type?: string) =>
     get<DeliveryCacheHistoryEntry[]>("/api/v1/delivery/cache/history", { scope, type }),
+  /** What purging the partition cache's history, keeping `keepDays`, would prune; changes nothing. */
+  cachePrunePreview: (request: DeliveryCachePruneRequest) =>
+    post<DeliveryCachePruneResult>("/api/v1/delivery/cache/prune/preview", request),
+  /** Purges the partition cache's history, keeping `keepDays`, as the signed-in admin. */
+  cachePrune: (request: DeliveryCachePruneRequest) =>
+    post<DeliveryCachePruneResult>("/api/v1/delivery/cache/prune", request),
   /** The cache changes delivered records were built from, by status (pending, approved, rolling, rejected, applied) and partition. */
   updateTags: (query: PageQuery & { status?: string; scope?: string }) =>
     get<PagedResult<DeliveryUpdateTag>>("/api/v1/delivery/cache/tags", query as QueryParams),
