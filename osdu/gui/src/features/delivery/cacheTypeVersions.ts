@@ -40,8 +40,17 @@ export interface CacheTypeVersion {
    * comparing it with the current version finds no change.
    */
   sameAsCurrent: boolean;
+  /** True when the cache's retention pruned this version's records: it is listed with its counts, and cannot be read. */
+  pruned: boolean;
+  /** True when the version it is compared with ({@link previous}) is pruned, so the records that differ cannot be listed. */
+  previousPruned: boolean;
   /** The cache version as the history describes it. */
   entry: DeliveryCacheHistoryEntry;
+}
+
+/** Whether the cache's retention pruned a version's records. The field is left out of an answer while they are kept. */
+export function isPruned(version: { prunedUtc?: string | null }): boolean {
+  return Boolean(version.prunedUtc);
 }
 
 /**
@@ -60,6 +69,7 @@ export function typeVersions(entries: DeliveryCacheHistoryEntry[], type: string)
 
   return moved.map(({ entry, moved: typed }, index): CacheTypeVersion => {
     const holdsCurrent = index === 0 && typed.change !== "removed";
+    const before = moved.at(index + 1);
     return {
       version: entry.version.version,
       capturedUtc: entry.version.capturedUtc,
@@ -69,10 +79,12 @@ export function typeVersions(entries: DeliveryCacheHistoryEntry[], type: string)
       changed: typed.changed,
       added: typed.added,
       removed: typed.removed,
-      previous: moved.at(index + 1)?.entry.version.version ?? entry.before,
-      previousOfType: moved.at(index + 1) !== undefined,
+      previous: before?.entry.version.version ?? entry.before,
+      previousOfType: before !== undefined,
       holdsCurrent,
       sameAsCurrent: !holdsCurrent && typed.hash !== null && currentHash !== null && typed.hash === currentHash,
+      pruned: isPruned(entry.version),
+      previousPruned: before !== undefined ? isPruned(before.entry.version) : Boolean(entry.beforePruned),
       entry,
     };
   });
@@ -81,7 +93,8 @@ export function typeVersions(entries: DeliveryCacheHistoryEntry[], type: string)
 /**
  * The earlier versions of a type a reader can open and compare with the current one: every version that added or changed
  * it, but the newest, whose content the current version holds and which the picker's Current version already reads. A
- * version that removed the type holds none of it, so there is nothing of the type to read in it.
+ * version that removed the type holds none of it, so there is nothing of the type to read in it. A version the cache's
+ * retention pruned is listed by the picker as such, and cannot be picked.
  */
 export function earlierTypeVersions(versions: CacheTypeVersion[]): CacheTypeVersion[] {
   return versions.filter((candidate) => !candidate.holdsCurrent && candidate.change !== "removed");

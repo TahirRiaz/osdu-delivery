@@ -22,6 +22,14 @@ import type { SetupNode } from "./cacheSetupNode";
 /** The partition's feature flag OSDU Delivery reads, which the overview names by its state. */
 const KEYWORD_LOWER = { service: "indexer", name: "featureFlag.keywordLower.enabled", short: "keywordLower" };
 
+/** The retention of a cache flow that declares no `retentionDays`, in days, as the module applies it. */
+const DEFAULT_RETENTION_DAYS = 7;
+
+/** A number of days as the setup says it. */
+function days(count: number): string {
+  return `${count.toLocaleString()} day${count === 1 ? "" : "s"}`;
+}
+
 /** What each part of the setup is for, as the info mark beside its title says it. */
 const ABOUT = {
   overview: "How this partition's cache is filled, in brief: the cache flows that fill it, the types they declare, what a changed value does, the OSDU feature flags the engine reads, and how a mapping reads the cache. Pick any of them for the whole of it.",
@@ -340,6 +348,19 @@ function SetupOverview({ cache, types, version, onNode }: {
           <Fact label="A new version">
             Written whenever a refresh of any of its flows changes what the cache holds, and current from then on.
           </Fact>
+          <Fact label="History kept" testId="delivery-cache-setup-fact-retention">
+            A replaced version&apos;s records for{" "}
+            <span className="font-mono text-[12.5px]">{days(cache.retentionDays ?? DEFAULT_RETENTION_DAYS)}</span>, then pruned by the next refresh;
+            the version stays listed with what it changed.{" "}
+            <RichTooltip
+              title="Retention"
+              body={"The longest retentionDays any cache flow of the partition declares (7 when none does). The current version, the one it replaced and every version a delivery flow pins keep their records whatever their age. A delivered record keeps the cached values it was built from, so pruning never touches what was delivered."}
+            >
+              <span className="inline-flex align-[-2px] text-muted-foreground">
+                <Info className="size-3.5" aria-label="How the retention works" />
+              </span>
+            </RichTooltip>
+          </Fact>
           <Fact label="OSDU feature flags">
             {version === null
               ? <span className="text-muted-foreground">none read yet: no refresh has run</span>
@@ -367,13 +388,19 @@ function SetupOverview({ cache, types, version, onNode }: {
   );
 }
 
-/** One cache flow: its file and where it captures from, when it runs, the partitions it builds, and the types it declares. */
-function FlowDetail({ flow, types, onNode, onRefresh }: {
+/**
+ * One cache flow: its file and where it captures from, when it runs, the partitions it builds, the history it asks the
+ * partition to keep, and the types it declares.
+ */
+function FlowDetail({ flow, types, partitionRetention, onNode, onRefresh }: {
   flow: DeliveryCacheFlow;
   types: CachedTypeSummary[];
+  /** The retention the partition keeps: the longest of its flows'. */
+  partitionRetention: number;
   onNode: (node: SetupNode) => void;
   onRefresh: (flow: DeliveryCacheFlow) => void;
 }) {
+  const retention = flow.retentionDays ?? DEFAULT_RETENTION_DAYS;
   const navigate = useNavigate();
   const declared = types.filter((type) => flow.types.includes(type.name));
   const columns: Column<CachedTypeSummary>[] = [
@@ -436,6 +463,15 @@ function FlowDetail({ flow, types, onNode, onRefresh }: {
               <span className="font-mono text-[12.5px]" data-testid={`delivery-cache-flow-partitions-${flow.name}`}>{flow.partitions!.join(", ")}</span>
             </Fact>
           )}
+          <Fact label="Keeps history" testId={`delivery-cache-flow-retention-${flow.name}`}>
+            <span className="flex flex-wrap items-baseline gap-x-1.5">
+              <span className="font-mono text-[12.5px]">{days(retention)}</span>
+              <span className="text-[12px] text-muted-foreground">
+                {flow.retentionDays === undefined || flow.retentionDays === DEFAULT_RETENTION_DAYS ? "retentionDays, the default" : "retentionDays"}
+                {partitionRetention > retention && `; the partition keeps ${days(partitionRetention)}, which another of its flows asks for`}
+              </span>
+            </span>
+          </Fact>
         </dl>
       </Card>
       <DataTable
@@ -578,7 +614,15 @@ export function DeliveryCacheSetup({ cache, version, versions, node, onNode, onR
           <SetupPicker cache={cache} node={shown} onNode={onNode} />
         </div>
         {shown === "overview" && <SetupOverview cache={cache} types={types} version={version} onNode={onNode} />}
-        {flow !== null && <FlowDetail flow={flow} types={types} onNode={onNode} onRefresh={onRefresh} />}
+        {flow !== null && (
+          <FlowDetail
+            flow={flow}
+            types={types}
+            partitionRetention={cache.retentionDays ?? DEFAULT_RETENTION_DAYS}
+            onNode={onNode}
+            onRefresh={onRefresh}
+          />
+        )}
         {type !== null && <TypeDetail type={type} onNode={onNode} onOpen={onOpen} />}
         {shown === "flags" && (
           <div id="delivery-cache-part-flags" className="flex flex-col gap-3" data-testid="delivery-cache-part-flags">

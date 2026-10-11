@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, GitCommitHorizontal } from "lucide-react";
+import { format } from "date-fns";
+import { ArrowRight, Archive, GitCommitHorizontal } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -22,10 +23,11 @@ import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
+import { parseUtc } from "@/lib/time";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
 import { CachedRecordId } from "./DeliveryCacheRecords";
 import { ChangeBadge, ChangeCount } from "./ChangeMark";
-import { shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
+import { isPruned, shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
 import { shortId } from "./idTail";
 
 const ALL = "all";
@@ -354,6 +356,41 @@ export function CacheCompareDialog({ scope, from, to, type, onClose }: {
   );
 }
 
+/** When a version's records were pruned, as the History tab says it. */
+function prunedAt(prunedUtc: string): string {
+  return format(parseUtc(prunedUtc), "yyyy-MM-dd HH:mm");
+}
+
+/** The mark of a version whose records the cache's retention pruned, with what that means on hover. */
+function PrunedChip({ prunedUtc }: { prunedUtc: string }) {
+  return (
+    <RichTooltip
+      title="Records pruned"
+      body={`The cache's retention pruned this version's records at ${prunedAt(prunedUtc)} UTC. The version stays listed with who captured it, when, and what it changed; its records can no longer be read or compared. A delivered record keeps the cached values it was built from.`}
+    >
+      <span className="rounded-sm bg-muted px-1.5 text-[11px] text-muted-foreground" data-testid="delivery-cache-history-pruned">pruned</span>
+    </RichTooltip>
+  );
+}
+
+/**
+ * What the changes panel shows when the records that differ cannot be listed, because the cache's retention pruned the
+ * version or the one it is compared with. The counts in the list were recorded before the records went.
+ */
+function PrunedChanges({ header, version, against }: { header: ReactNode; version: string; against: string | null }) {
+  const description = against === null
+    ? `The cache's retention pruned the records of ${version}, so the records it changed can no longer be listed. The counts in the list were recorded before they went.`
+    : `The cache's retention pruned the records of ${against}, the version it is compared with, so the records that differ can no longer be listed. The counts in the list were recorded before they went.`;
+  return (
+    <div className="flex flex-col gap-3 p-3" data-testid="delivery-cache-history-detail">
+      {header}
+      <Card className="gap-0 rounded-lg p-0">
+        <EmptyState icon={<Archive />} title="Records pruned" description={description} data-testid="delivery-cache-history-pruned-changes" />
+      </Card>
+    </div>
+  );
+}
+
 /**
  * The changes one version made to the cache, compared with the version before it: the bottom panel's content once a
  * version is picked.
@@ -374,6 +411,7 @@ function VersionChanges({ entry }: { entry: DeliveryCacheHistoryEntry }) {
     </div>
   );
 
+  // The first version has nothing to compare with, whether its records are kept or not.
   if (before === null) {
     return (
       <div className="flex flex-col gap-3 p-3" data-testid="delivery-cache-history-detail">
@@ -382,12 +420,22 @@ function VersionChanges({ entry }: { entry: DeliveryCacheHistoryEntry }) {
           <EmptyState
             icon={<GitCommitHorizontal />}
             title="Nothing to compare"
-            description="This is the first version of the cache, so there is nothing before it to compare with. Its records are under Records."
+            description={isPruned(version)
+              ? "This is the first version of the cache, so there is nothing before it to compare with, and the cache's retention pruned its records. The counts in the list were recorded before they went."
+              : "This is the first version of the cache, so there is nothing before it to compare with. Its records are under Records."}
             data-testid="delivery-cache-history-uncomparable"
           />
         </Card>
       </div>
     );
+  }
+
+  if (isPruned(version)) {
+    return <PrunedChanges header={header} version={version.version} against={null} />;
+  }
+
+  if (entry.beforePruned === true) {
+    return <PrunedChanges header={header} version={version.version} against={before} />;
   }
 
   return (
@@ -424,6 +472,7 @@ function TypeVersionChanges({ scope, type, version }: { scope: string; type: str
     </div>
   );
 
+  // The cache's first version has nothing to compare with, whether its records are kept or not.
   if (version.previous === null) {
     return (
       <div className="flex flex-col gap-3 p-3" data-testid="delivery-cache-history-detail">
@@ -432,12 +481,22 @@ function TypeVersionChanges({ scope, type, version }: { scope: string; type: str
           <EmptyState
             icon={<GitCommitHorizontal />}
             title="Nothing to compare"
-            description={`This is the first version of the cache, so there is nothing before it to compare with. Its ${type} records are under Records.`}
+            description={version.pruned
+              ? `This is the first version of the cache, so there is nothing before it to compare with, and the cache's retention pruned its ${type} records. The counts in the list were recorded before they went.`
+              : `This is the first version of the cache, so there is nothing before it to compare with. Its ${type} records are under Records.`}
             data-testid="delivery-cache-history-uncomparable"
           />
         </Card>
       </div>
     );
+  }
+
+  if (version.pruned) {
+    return <PrunedChanges header={header} version={version.version} against={null} />;
+  }
+
+  if (version.previousPruned) {
+    return <PrunedChanges header={header} version={version.version} against={version.previous} />;
   }
 
   return (
@@ -568,8 +627,19 @@ function CacheVersionList({ entries }: { entries: DeliveryCacheHistoryEntry[] })
   }), []);
   const { highlighted, pick } = usePickedPanel(entries, keyOf, content);
 
+  const pruned = entries.filter((entry) => isPruned(entry.version)).length;
   const columns: Column<DeliveryCacheHistoryEntry>[] = [
-    { id: "version", header: "Version", render: (entry) => <VersionLabel label={entry.version.version} current={entry.version.current} /> },
+    {
+      id: "version",
+      header: "Version",
+      render: (entry) => (
+        <VersionLabel
+          label={entry.version.version}
+          current={entry.version.current}
+          note={entry.version.prunedUtc ? <PrunedChip prunedUtc={entry.version.prunedUtc} /> : undefined}
+        />
+      ),
+    },
     { id: "captured", header: "Captured", render: (entry) => <RelativeTime value={entry.version.capturedUtc} /> },
     { id: "capturedBy", header: "Written by", fill: true, floor: 160, render: (entry) => <WrittenBy entry={entry} /> },
     {
@@ -585,7 +655,8 @@ function CacheVersionList({ entries }: { entries: DeliveryCacheHistoryEntry[] })
   return (
     <div className="flex flex-col gap-2" data-testid="delivery-cache-history">
       <span className="text-[12px] text-muted-foreground">
-        {entries.length.toLocaleString()} version{entries.length === 1 ? "" : "s"}; pick one to see what it changed.
+        {entries.length.toLocaleString()} version{entries.length === 1 ? "" : "s"}
+        {pruned > 0 && `, ${pruned.toLocaleString()} of them pruned by the cache's retention`}; pick one to see what it changed.
       </span>
       <DataTable
         columns={columns}
@@ -658,10 +729,15 @@ function TypeVersionList({ scope, type, entries }: { scope: string; type: string
         <VersionLabel
           label={version.version}
           current={version.holdsCurrent}
-          note={version.sameAsCurrent && (
-            <RichTooltip body={`This version holds the same ${type} records and values as the current version: its content came back.`}>
-              <span className="rounded-sm bg-muted px-1.5 text-[11px] text-muted-foreground">same as current</span>
-            </RichTooltip>
+          note={(
+            <>
+              {version.sameAsCurrent && (
+                <RichTooltip body={`This version holds the same ${type} records and values as the current version: its content came back.`}>
+                  <span className="rounded-sm bg-muted px-1.5 text-[11px] text-muted-foreground">same as current</span>
+                </RichTooltip>
+              )}
+              {version.entry.version.prunedUtc && <PrunedChip prunedUtc={version.entry.version.prunedUtc} />}
+            </>
           )}
         />
       ),

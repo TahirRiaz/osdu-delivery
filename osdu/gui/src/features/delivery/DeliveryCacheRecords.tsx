@@ -33,7 +33,7 @@ import { KindText } from "./KindText";
 import { cacheTypeLineageTarget } from "./lineageTargets";
 import { cachedCell, isLookupEntityType, recordIdentity, splitRecordId, type CachedTypeSummary } from "./cacheFormat";
 import { SECTION_ROWS, browsedTypes, columnNames, typeSampleQuery, type BrowsedType } from "./cacheRecordsModel";
-import { earlierTypeVersions, shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
+import { earlierTypeVersions, isPruned, shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
 import { useNearViewport } from "./useNearViewport";
 
 /** The picker's value for "whichever version is current", which is what the records open on. */
@@ -92,13 +92,34 @@ export function CachedRecordId({ id, entityType, maxWidth = 360, tailOnly = fals
     : <RecordId id={id} maxWidth={maxWidth} tailOnly={tailOnly} />;
 }
 
-/** The version picker: the current version by default, or any version of the cache by label, with when it was captured. */
+/**
+ * What a version picker says of the versions it leaves out because the cache's retention pruned their records: how many,
+ * and that History still lists them.
+ */
+function PrunedNote({ count }: { count: number }) {
+  if (count === 0) {
+    return null;
+  }
+
+  return (
+    <div className="border-t border-border px-2 py-1.5 text-[12px] text-muted-foreground" data-testid="delivery-cache-version-pruned">
+      {count.toLocaleString()} earlier version{count === 1 ? "" : "s"} pruned by the cache's retention: listed under History, no
+      longer readable
+    </div>
+  );
+}
+
+/**
+ * The version picker: the current version by default, or any version of the cache whose records are kept, by label, with
+ * when it was captured. A version the cache's retention pruned cannot be read, so it is counted rather than offered.
+ */
 export function CacheVersionPicker({ versions, value, onChange, className }: {
   versions: DeliveryCacheVersion[];
   value: string;
   onChange: (version: string) => void;
   className?: string;
 }) {
+  const readable = versions.filter((option) => !isPruned(option));
   return (
     <Select value={value} onValueChange={onChange} disabled={versions.length === 0}>
       <SelectTrigger
@@ -114,13 +135,14 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={CURRENT}>Current version</SelectItem>
-        {versions.map((option) => (
+        {readable.map((option) => (
           <SelectItem key={option.version} value={option.version}>
             <span className="font-mono text-[12px]">{option.version}</span>
             <span className="text-[11px] text-muted-foreground">{format(parseUtc(option.capturedUtc), "MMM d, HH:mm")}</span>
             {option.current && <span className="text-[11px] font-medium text-primary">current</span>}
           </SelectItem>
         ))}
+        <PrunedNote count={versions.length - readable.length} />
       </SelectContent>
     </Select>
   );
@@ -141,7 +163,8 @@ export function TypeVersionPicker({ type, versions, value, onChange, className }
   className?: string;
 }) {
   const head = versions.find((candidate) => candidate.holdsCurrent);
-  const earlier = earlierTypeVersions(versions);
+  const all = earlierTypeVersions(versions);
+  const earlier = all.filter((candidate) => !candidate.pruned);
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger
@@ -159,7 +182,7 @@ export function TypeVersionPicker({ type, versions, value, onChange, className }
           Current version
           {head?.hash != null && <span className="font-mono text-[11px] text-muted-foreground">{shortHash(head.hash)}</span>}
         </SelectItem>
-        {earlier.length === 0 && (
+        {all.length === 0 && (
           <div className="px-2 py-1.5 text-[12px] text-muted-foreground" data-testid="delivery-cache-type-versions-none">
             No earlier version of {type}
           </div>
@@ -173,6 +196,7 @@ export function TypeVersionPicker({ type, versions, value, onChange, className }
             {option.sameAsCurrent && <span className="text-[11px] text-muted-foreground">same as current</span>}
           </SelectItem>
         ))}
+        <PrunedNote count={all.length - earlier.length} />
       </SelectContent>
     </Select>
   );
@@ -584,9 +608,12 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions, onC
   );
   const earlier = ofType === null ? null : earlierTypeVersions(ofType);
 
-  // A label the picker does not offer (one the cache no longer lists, or a version of the cache that left the type in view
-  // as the current one holds it) would read as a stale pick, so it falls back to current.
-  const offered = earlier === null ? versions.map((v) => v.version) : earlier.map((v) => v.version);
+  // A label the picker does not offer (one the cache no longer lists, one whose records the retention pruned since it was
+  // picked, or a version of the cache that left the type in view as the current one holds it) would read as a stale pick,
+  // so it falls back to current.
+  const offered = earlier === null
+    ? versions.filter((v) => !isPruned(v)).map((v) => v.version)
+    : earlier.filter((v) => !v.pruned).map((v) => v.version);
   const versionFilter = picked === CURRENT || offered.includes(picked) ? picked : CURRENT;
   const typeVersion = earlier?.find((candidate) => candidate.version === versionFilter) ?? null;
   const reading = versions.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));

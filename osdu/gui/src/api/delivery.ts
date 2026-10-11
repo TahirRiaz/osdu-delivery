@@ -525,6 +525,8 @@ export interface DeliveryCacheFlow {
    * builds, or builds each in turn. Null for a flow whose partition is its source header's.
    */
   partitions?: string[] | null;
+  /** How many days the flow asks the partition's cache to keep a replaced version's records (`retentionDays`, 7 by default). */
+  retentionDays?: number;
 }
 
 /**
@@ -539,6 +541,11 @@ export interface DeliveryCache {
   types: DeliveryCacheType[];
   current: DeliveryCacheVersion | null;
   versions: number;
+  /**
+   * How many days a replaced version's records are kept before a refresh prunes them: the longest retention any of the
+   * partition's cache flows declares.
+   */
+  retentionDays?: number;
 }
 
 /** One cached record: its OSDU id and the values captured at the declared paths, in whatever shape they came. */
@@ -615,6 +622,11 @@ export interface DeliveryCacheVersion {
   types: DeliveryCacheVersionType[];
   /** The partition's system properties the capture found, kept apart from the types. */
   systemProperties: DeliveryCacheSystemProperty[];
+  /**
+   * When the cache's retention pruned the version's records; absent or null while they are kept. A pruned version is still
+   * listed with what it was and changed, and can no longer be read or compared.
+   */
+  prunedUtc?: string | null;
 }
 
 /** How one cached record differs between two versions of its cache. */
@@ -698,6 +710,8 @@ export interface DeliveryCacheHistoryEntry {
   removed: number;
   /** The types the version added, changed or removed (the type in scope alone, when one is named). */
   types: DeliveryCacheHistoryType[];
+  /** True when the cache's retention pruned the version before it: the counts stand, the records that differ are gone. */
+  beforePruned?: boolean;
 }
 
 /** One cache change and what happens about it: it covers every delivered record built from the value that moved. */
