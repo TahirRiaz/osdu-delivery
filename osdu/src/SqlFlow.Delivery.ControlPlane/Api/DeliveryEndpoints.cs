@@ -296,12 +296,12 @@ public sealed record DeliveryCacheSystemPropertyDto(string Service, string Name,
 /// One version of a partition's cache: when it was captured, whether it is the version deliveries render against, the version
 /// that was current before it, the cache flow and the run that wrote it and who asked (null run for an import from files),
 /// where the content came from, what it holds, the partition's system properties the capture found, and when the cache's
-/// retention pruned its records (null while they are kept; a pruned version can no longer be read or compared).
+/// retention pruned its records and who did (null while they are kept; a pruned version can no longer be read or compared).
 /// </summary>
 public sealed record DeliveryCacheVersionDto(
     string Scope, string Version, int Sequence, DateTime CapturedUtc, bool Current, string? PreviousVersion, string Flow, Guid? RunId, string CapturedBy,
     string Origin, long Items, IReadOnlyList<DeliveryCacheVersionTypeDto> Types, IReadOnlyList<DeliveryCacheSystemPropertyDto> SystemProperties,
-    DateTime? PrunedUtc = null);
+    DateTime? PrunedUtc = null, string? PrunedBy = null);
 
 /// <summary>
 /// What changed in a partition's cache between two versions: counts per type and a page of the records that differ. The
@@ -623,6 +623,9 @@ public static class DeliveryEndpoints
         DeliveryLedgerEndpoints.MapWrites(delivery);
         DeliveryInventoryEndpoints.MapWrites(delivery);
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
+
+        // Purging a partition cache's history: its preview, and the purge itself, an admin's.
+        DeliveryCachePruneEndpoints.MapWrites(delivery);
         DeliveryDimensionEndpoints.MapWrites(delivery);
         DeliveryDimensionViewEndpoints.MapWrites(delivery);
         return group;
@@ -1510,9 +1513,13 @@ public static class DeliveryEndpoints
                 : UnknownCacheVersion(partition, version.Trim());
         }
 
-        if (resolved.PrunedUtc is { } pruned)
+        try
         {
-            return PrunedCacheVersion(new CacheVersionPrunedException(partition, resolved.Version, DateTime.SpecifyKind(pruned, DateTimeKind.Utc)));
+            CacheVersions.ThrowIfPruned(resolved);
+        }
+        catch (CacheVersionPrunedException pruned)
+        {
+            return PrunedCacheVersion(pruned);
         }
 
         var query = CacheVersions.ItemsAt(osdu, partition, resolved.Sequence);
@@ -1580,7 +1587,8 @@ public static class DeliveryEndpoints
             version.Types.Select(t => new DeliveryCacheVersionTypeDto(
                 t.Name, t.EntityType, t.Items, t.Key, t.Hash, t.Change is { } change ? CacheTypeChanges.Text(change) : null, t.Since)).ToList(),
             version.SystemProperties.Select(p => new DeliveryCacheSystemPropertyDto(p.Service, p.Name, p.State.ToString(), p.Source, p.Detail)).ToList(),
-            version.PrunedUtc);
+            version.PrunedUtc,
+            version.PrunedBy);
 
     private static ProblemHttpResult NoCacheNamed()
         => TypedResults.Problem(

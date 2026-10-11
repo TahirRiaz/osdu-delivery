@@ -238,19 +238,21 @@ public sealed partial class SnapshotBuilder
                 _scope, _flow, write.Snapshot.Version);
         }
 
-        return write with { Retention = await RetainAsync(ct).ConfigureAwait(false) };
+        return write with { Retention = await RetainAsync(capture.CapturedBy, ct).ConfigureAwait(false) };
     }
 
     /// <summary>
-    /// Applies the partition's retention once the merge is written. The merge stands whatever happens here: a retention that
-    /// fails is logged and reported in the outcome, and the next refresh or import applies it again, finishing what this one
-    /// left. Cancellation still cancels.
+    /// Applies the partition's retention once the merge is written, recording <paramref name="actor"/>, who asked for the
+    /// refresh or the import, on every version it prunes. The merge stands whatever happens here: a retention that fails is
+    /// logged and reported in the outcome, and the next refresh or import applies it again, finishing what this one left.
+    /// Cancellation still cancels.
     /// </summary>
-    private async Task<CacheRetentionOutcome> RetainAsync(CancellationToken ct)
+    private async Task<CacheRetentionOutcome> RetainAsync(string actor, CancellationToken ct)
     {
         try
         {
-            var outcome = await _store.ApplyRetentionAsync(_scope, _flow, _retentionDays, _time.GetUtcNow(), ct).ConfigureAwait(false);
+            var outcome = await _store.ApplyRetentionAsync(
+                CacheRetentionRequest.ForFlow(_scope, _flow, _retentionDays, _time.GetUtcNow(), actor), ct).ConfigureAwait(false);
             if (outcome.Deferred is { } waiting)
             {
                 _logger.LogInformation(

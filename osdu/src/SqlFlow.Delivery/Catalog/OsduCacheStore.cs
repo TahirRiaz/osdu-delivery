@@ -80,7 +80,7 @@ public sealed class OsduCacheStore : ICacheStore
 
         if (row.PrunedUtc is { } pruned)
         {
-            throw new CacheVersionPrunedException(scope, version, Utc(pruned));
+            throw new CacheVersionPrunedException(scope, version, Utc(pruned), row.PrunedBy);
         }
 
         if (Recent(scope, version) is { } known)
@@ -333,21 +333,16 @@ public sealed class OsduCacheStore : ICacheStore
     /// removes. It is housekeeping, so it runs at a low deadlock priority: when it meets a merge, a delivery or a reader of
     /// the cache in a deadlock, the database rolls back its statement rather than theirs, and the pass starts again.
     /// </remarks>
-    public async Task<CacheRetentionOutcome> ApplyRetentionAsync(
-        string scope, string flowName, int retentionDays, DateTimeOffset now, CancellationToken ct = default)
+    public async Task<CacheRetentionOutcome> ApplyRetentionAsync(CacheRetentionRequest request, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
-        ArgumentOutOfRangeException.ThrowIfLessThan(retentionDays, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(retentionDays, CacheRetention.MaxDays);
-
+        ArgumentNullException.ThrowIfNull(request);
         var progress = new RetentionProgress();
         for (var attempt = 1; ; attempt++)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                return await RetainAsync(scope, flowName, retentionDays, now, progress, ct).ConfigureAwait(false);
+                return await RetainAsync(request, progress, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (attempt < RetentionAttempts && IsDeadlockVictim(ex))
             {
@@ -390,15 +385,14 @@ public sealed class OsduCacheStore : ICacheStore
     /// One attempt of a retention, on one connection at a low deadlock priority, restored before the connection goes back to
     /// the pool.
     /// </summary>
-    private async Task<CacheRetentionOutcome> RetainAsync(
-        string scope, string flowName, int retentionDays, DateTimeOffset now, RetentionProgress progress, CancellationToken ct)
+    private async Task<CacheRetentionOutcome> RetainAsync(CacheRetentionRequest request, RetentionProgress progress, CancellationToken ct)
     {
         await using var db = _factory();
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
             await db.Database.ExecuteSqlRawAsync("SET DEADLOCK_PRIORITY LOW;", ct).ConfigureAwait(false);
-            return await RetainOnAsync(db, scope, flowName, retentionDays, now, progress, ct).ConfigureAwait(false);
+            return await RetainOnAsync(db, request, progress, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -409,11 +403,18 @@ public sealed class OsduCacheStore : ICacheStore
         }
     }
 
-    /// <summary>The attempt's work on its connection: weigh the versions, record what the pruned ones changed, mark them, remove their rows.</summary>
-    private async Task<CacheRetentionOutcome> RetainOnAsync(
-        OsduDbContext db, string scope, string flowName, int retentionDays, DateTimeOffset now, RetentionProgress progress, CancellationToken ct)
+    /// <summary>
+    /// The attempt's work on its connection: weigh the versions, record what the pruned ones changed, mark them, remove their
+    /// rows; or, for a dry run, weigh them and count the rows that would go.
+    /// </summary>
+    private async Task<CacheRetentionOutcome> RetainOnAsync(OsduDbContext db, CacheRetentionRequest request, RetentionProgress progress, CancellationToken ct)
     {
-        var days = (await DeclarationAsync(db, scope, ct).ConfigureAwait(false)).RetentionFor(flowName, retentionDays);
+        var scope = request.Scope;
+        var now = request.Now;
+        // A cache flow's refresh or import keeps the longest any flow of the partition asks for; a purge keeps what it names.
+        var days = request.FlowName is { } flowName
+            ? (await DeclarationAsync(db, scope, ct).ConfigureAwait(false)).RetentionFor(flowName, request.Days)
+            : request.Days;
         var rows = await db.DeliveryCacheVersions.AsNoTracking()
             .Where(v => v.Scope == scope)
             .Select(v => new { v.Sequence, v.Version, v.CapturedUtc, v.Current, v.PrunedUtc, Counted = v.ChangesJson != null })
@@ -423,7 +424,8 @@ public sealed class OsduCacheStore : ICacheStore
         {
             return new CacheRetentionOutcome(
                 days, held, [.. progress.Pruned], progress.RowsRemoved,
-                Deferred: "a delivery flow that may read this partition was synced before pinned cache versions were recorded, so the versions it pins are not known yet; the next repository sync records them, and the refresh after it prunes");
+                Deferred: "a delivery flow that may read this partition was synced before pinned cache versions were recorded, so the versions it pins are not known yet; the next repository sync records them, and the refresh after it prunes",
+                DryRun: request.DryRun);
         }
 
         var plan = CacheRetention.Plan(
@@ -431,7 +433,16 @@ public sealed class OsduCacheStore : ICacheStore
             days, now.UtcDateTime, pinned);
         if (plan.Current == 0)
         {
-            return new CacheRetentionOutcome(days, held, [.. progress.Pruned], progress.RowsRemoved);
+            return new CacheRetentionOutcome(days, held, [.. progress.Pruned], progress.RowsRemoved, DryRun: request.DryRun);
+        }
+
+        if (request.DryRun)
+        {
+            // What a pass would remove: the same rows, by the same predicate, counted instead of deleted.
+            var wouldRemove = plan.Pruned.Count > 0 || rows.Any(v => v.PrunedUtc is not null)
+                ? await CountUnkeptRowsAsync(db, scope, plan, ct).ConfigureAwait(false)
+                : 0;
+            return new CacheRetentionOutcome(days, plan.Kept.Count, plan.Pruned.Select(v => v.Version).ToList(), wouldRemove, DryRun: true);
         }
 
         // What each version changed is recorded before any row it was counted from goes, so the history reads the same after.
@@ -454,9 +465,10 @@ public sealed class OsduCacheStore : ICacheStore
         {
             var sequences = plan.Pruned.Select(v => v.Sequence).ToList();
             var at = now.UtcDateTime;
+            var by = Clip(request.Actor, 200);
             await db.DeliveryCacheVersions
                 .Where(v => v.Scope == scope && sequences.Contains(v.Sequence) && v.PrunedUtc == null)
-                .ExecuteUpdateAsync(set => set.SetProperty(v => v.PrunedUtc, at), ct).ConfigureAwait(false);
+                .ExecuteUpdateAsync(set => set.SetProperty(v => v.PrunedUtc, at).SetProperty(v => v.PrunedBy, by), ct).ConfigureAwait(false);
             progress.Pruned.AddRange(pruned);
             Forget(scope, pruned);
         }
@@ -495,41 +507,65 @@ public sealed class OsduCacheStore : ICacheStore
     }
 
     /// <summary>
-    /// Removes, a batch at a time, every stored row of the partition that no kept version holds: a closed range, ended by the
-    /// current version at the latest, that overlaps no run of kept versions. Each batch is its own statement, and counts in
-    /// <paramref name="progress"/> as soon as it commits.
+    /// The stored rows of a partition no kept version holds: a closed range, ended by the current version at the latest, that
+    /// overlaps no run of kept versions. A pass removes them and a dry run counts them, by this one predicate.
+    /// </summary>
+    private const string UnkeptRows = """
+        FROM [osdu].[CacheItem] AS i
+        WHERE i.[Scope] = @scope
+          AND i.[ToSequence] IS NOT NULL
+          AND i.[ToSequence] <= @current
+          AND NOT EXISTS (
+              SELECT 1 FROM OPENJSON(@kept) WITH ([From] int '$.from', [To] int '$.to') AS k
+              WHERE i.[FromSequence] <= k.[To] AND i.[ToSequence] > k.[From])
+        """;
+
+    /// <summary>The parameters of <see cref="UnkeptRows"/> for a plan, made afresh for each statement.</summary>
+    private static List<SqlParameter> UnkeptRowsParameters(string scope, CacheRetentionPlan plan)
+    {
+        var kept = new JsonArray(plan.KeptRuns().Select(run => (JsonNode)new JsonObject { ["from"] = run.From, ["to"] = run.To }).ToArray()).ToJsonString();
+        return
+        [
+            new SqlParameter("@scope", SqlDbType.NVarChar, MaxNameLength) { Value = scope },
+            new SqlParameter("@current", SqlDbType.Int) { Value = plan.Current },
+            new SqlParameter("@kept", SqlDbType.NVarChar, -1) { Value = kept },
+        ];
+    }
+
+    /// <summary>
+    /// Removes, a batch at a time, every stored row of the partition that no kept version holds (<see cref="UnkeptRows"/>).
+    /// Each batch is its own statement, and counts in <paramref name="progress"/> as soon as it commits.
     /// </summary>
     private static async Task RemoveUnkeptRowsAsync(OsduDbContext db, string scope, CacheRetentionPlan plan, RetentionProgress progress, CancellationToken ct)
     {
-        const string Sql = """
-            DELETE TOP (@chunk) i
-            FROM [osdu].[CacheItem] AS i
-            WHERE i.[Scope] = @scope
-              AND i.[ToSequence] IS NOT NULL
-              AND i.[ToSequence] <= @current
-              AND NOT EXISTS (
-                  SELECT 1 FROM OPENJSON(@kept) WITH ([From] int '$.from', [To] int '$.to') AS k
-                  WHERE i.[FromSequence] <= k.[To] AND i.[ToSequence] > k.[From]);
-            """;
-        var kept = new JsonArray(plan.KeptRuns().Select(run => (JsonNode)new JsonObject { ["from"] = run.From, ["to"] = run.To }).ToArray()).ToJsonString();
+        const string Sql = "DELETE TOP (@chunk) i " + UnkeptRows + ";";
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var deleted = await db.Database.ExecuteSqlRawAsync(
-                Sql,
-                [
-                    new SqlParameter("@chunk", SqlDbType.Int) { Value = PruneChunk },
-                    new SqlParameter("@scope", SqlDbType.NVarChar, MaxNameLength) { Value = scope },
-                    new SqlParameter("@current", SqlDbType.Int) { Value = plan.Current },
-                    new SqlParameter("@kept", SqlDbType.NVarChar, -1) { Value = kept },
-                ],
-                ct).ConfigureAwait(false);
+            var parameters = UnkeptRowsParameters(scope, plan);
+            parameters.Add(new SqlParameter("@chunk", SqlDbType.Int) { Value = PruneChunk });
+            var deleted = await db.Database.ExecuteSqlRawAsync(Sql, parameters, ct).ConfigureAwait(false);
             progress.RowsRemoved += deleted;
             if (deleted < PruneChunk)
             {
                 return;
             }
         }
+    }
+
+    /// <summary>How many stored rows of the partition no kept version holds: what a pass by the same plan would remove.</summary>
+    private static async Task<long> CountUnkeptRowsAsync(OsduDbContext db, string scope, CacheRetentionPlan plan, CancellationToken ct)
+    {
+        var connection = db.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT_BIG(*) " + UnkeptRows + ";";
+        command.Parameters.AddRange(UnkeptRowsParameters(scope, plan).ToArray());
+        if (db.Database.GetCommandTimeout() is { } timeout)
+        {
+            command.CommandTimeout = timeout;
+        }
+
+        return Convert.ToInt64(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
     /// <summary>How long a merge waits for another merge of the same partition to finish before it gives up.</summary>
@@ -579,7 +615,8 @@ public sealed class OsduCacheStore : ICacheStore
             row.Scope, row.Version, row.Sequence, DateTime.SpecifyKind(row.CapturedUtc, DateTimeKind.Utc), row.Current, row.PreviousVersion,
             row.RunId, row.CapturedBy, row.Origin, row.FlowName, row.Items, ParseTypes(row.TypesJson, row.Scope, row.Version),
             ParseSystemProperties(row.SystemPropertiesJson, row.Scope, row.Version),
-            row.PrunedUtc is { } pruned ? Utc(pruned) : null);
+            row.PrunedUtc is { } pruned ? Utc(pruned) : null,
+            row.PrunedBy);
     }
 
     /// <summary>The captured values of a record as the catalog stores them: names in ordinal order, each value as captured.</summary>
@@ -665,12 +702,12 @@ public sealed class OsduCacheStore : ICacheStore
         {
             // A retention may have pruned the version while its records were read: that is what to say, not that they were altered.
             var pruned = await db.DeliveryCacheVersions.AsNoTracking()
-                .Where(v => v.Id == row.Id)
-                .Select(v => v.PrunedUtc)
+                .Where(v => v.Id == row.Id && v.PrunedUtc != null)
+                .Select(v => new { At = v.PrunedUtc!.Value, By = v.PrunedBy })
                 .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            if (pruned is { } at)
+            if (pruned is not null)
             {
-                throw new CacheVersionPrunedException(scope, row.Version, Utc(at));
+                throw new CacheVersionPrunedException(scope, row.Version, Utc(pruned.At), pruned.By);
             }
 
             var which = altered.Count == 0 ? string.Empty : $" (the records of {string.Join(", ", altered)} no longer match the hash the version recorded for them)";

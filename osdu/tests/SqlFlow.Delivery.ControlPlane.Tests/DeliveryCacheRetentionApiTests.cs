@@ -7,6 +7,7 @@ using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Tests;
@@ -71,7 +72,7 @@ public sealed class DeliveryCacheRetentionApiTests
             }
 
             // Ten days in, the current version and the one it replaced keep their records; the first two are pruned.
-            var outcome = await store.ApplyRetentionAsync(scope, Flow, 2, Start.AddDays(10));
+            var outcome = await store.ApplyRetentionAsync(CacheRetentionRequest.ForFlow(scope, Flow, 2, Start.AddDays(10), "tests"));
             Assert.True(
                 outcome.Deferred is null,
                 $"The retention waited ({outcome.Deferred}): an interrupted earlier run left an active interface row whose pin is not recorded in the test database. Running the module suite empties it.");
@@ -83,7 +84,7 @@ public sealed class DeliveryCacheRetentionApiTests
                 .WithSetting("ControlPlane:Worker:Enabled", "false")
                 .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
             using var client = factory.CreateClient();
-            var token = await TokenAsync(client);
+            var token = await TokenAsync(client, ["read"]);
 
             var versions = (await JsonAsync(client, token, $"/api/v1/delivery/cache/versions?scope={scope}")).EnumerateArray().ToList();
             Assert.Equal(4, versions.Count);
@@ -153,11 +154,104 @@ public sealed class DeliveryCacheRetentionApiTests
         return await client.SendAsync(request);
     }
 
-    private static async Task<string> TokenAsync(HttpClient client)
+    [Fact]
+    public async Task An_admin_purges_the_history_after_a_preview_an_operator_may_see()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+        var scope = "cp-purge-" + Guid.NewGuid().ToString("N")[..8];
+        var store = new OsduCacheStore(() => SampleEstate.Context(cs));
+
+        try
+        {
+            var labels = new List<string>();
+            for (var day = 0; day < 4; day++)
+            {
+                var write = await store.MergeAsync(
+                    scope, Flow,
+                    [new ReferenceType("UnitOfMeasure", "reference-data--UnitOfMeasure", [ReferenceItem.FromText(scope + ":reference-data--UnitOfMeasure:m", new Dictionary<string, string> { ["Name"] = "metre-" + day })])],
+                    new CacheCapture(null, "tests", "seeded"), Start.AddDays(day));
+                labels.Add(write.Snapshot.Version);
+            }
+
+            await using var factory = new ControlPlaneAppFactory()
+                .WithCatalog(cs)
+                .WithModules(new DeliveryControlPlaneModule())
+                .WithSetting("ControlPlane:Worker:Enabled", "false")
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+            using var client = factory.CreateClient();
+            var operate = await TokenAsync(client, ["read", "operate"]);
+            var admin = await TokenAsync(client, ["admin"]);
+            var body = new DeliveryCachePruneRequest(scope, 0);
+
+            // An operator sees what keeping no days would prune, and nothing is pruned by looking.
+            using (var preview = await PostAsync(client, operate, "/api/v1/delivery/cache/prune/preview", body))
+            {
+                var text = await preview.Content.ReadAsStringAsync();
+                Assert.True(preview.StatusCode == HttpStatusCode.OK, text);
+                var result = JsonDocument.Parse(text).RootElement;
+                Assert.True(result.GetProperty("preview").GetBoolean());
+                Assert.Equal(labels.Take(2), result.GetProperty("pruned").EnumerateArray().Select(v => v.GetString()));
+                Assert.StartsWith("Pruning, keeping only the current version", result.GetProperty("summary").GetString(), StringComparison.Ordinal);
+            }
+
+            Assert.DoesNotContain(await store.ListVersionsAsync(scope), v => v.Pruned);
+
+            // The purge itself is an admin's.
+            using (var refused = await PostAsync(client, operate, "/api/v1/delivery/cache/prune", body))
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+            }
+
+            using (var purged = await PostAsync(client, admin, "/api/v1/delivery/cache/prune", body))
+            {
+                var text = await purged.Content.ReadAsStringAsync();
+                Assert.True(purged.StatusCode == HttpStatusCode.OK, text);
+                var result = JsonDocument.Parse(text).RootElement;
+                Assert.False(result.GetProperty("preview").GetBoolean());
+                Assert.Equal(2, result.GetProperty("pruned").GetArrayLength());
+                Assert.StartsWith("Pruned the records of 2 version(s)", result.GetProperty("summary").GetString(), StringComparison.Ordinal);
+            }
+
+            // Each pruned version says who pruned it, as the versions listing answers it.
+            var versions = (await JsonAsync(client, operate, $"/api/v1/delivery/cache/versions?scope={scope}")).EnumerateArray().ToList();
+            var pruned = versions.Where(v => v.GetProperty("prunedUtc").ValueKind == JsonValueKind.String).ToList();
+            Assert.Equal(2, pruned.Count);
+            Assert.All(pruned, v => Assert.False(string.IsNullOrWhiteSpace(v.GetProperty("prunedBy").GetString())));
+
+            // Days out of range, and a partition with no cache, are refused.
+            using (var negative = await PostAsync(client, admin, "/api/v1/delivery/cache/prune/preview", new DeliveryCachePruneRequest(scope, -1)))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, negative.StatusCode);
+            }
+
+            using (var nowhere = await PostAsync(client, admin, "/api/v1/delivery/cache/prune/preview", new DeliveryCachePruneRequest("cp-purge-nowhere", 3)))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, nowhere.StatusCode);
+            }
+        }
+        finally
+        {
+            await using var db = SampleEstate.Context(cs);
+            await db.DeliveryCacheItems.Where(i => i.Scope == scope).ExecuteDeleteAsync();
+            await db.DeliveryCacheMembers.Where(m => m.Scope == scope).ExecuteDeleteAsync();
+            await db.DeliveryCacheVersions.Where(v => v.Scope == scope).ExecuteDeleteAsync();
+        }
+    }
+
+    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, string token, string path, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(path, UriKind.Relative)) { Content = JsonContent.Create(body) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<string> TokenAsync(HttpClient client, string[] scopes)
     {
         using var response = await client.PostAsJsonAsync(
             new Uri("/api/v1/auth/token", UriKind.Relative),
-            new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, ["read"]));
+            new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, scopes));
         response.EnsureSuccessStatusCode();
         var token = await response.Content.ReadFromJsonAsync<TokenResponse>();
         Assert.NotNull(token);

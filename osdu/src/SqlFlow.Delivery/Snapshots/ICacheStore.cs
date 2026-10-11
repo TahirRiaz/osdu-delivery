@@ -29,7 +29,9 @@ public sealed record CacheVersionType(
 /// A version of a partition's cache as its row describes it, without its records: <c>Scope</c> is the partition whose cache
 /// the version belongs to, and <c>FlowName</c> the cache flow whose capture or import wrote it. <c>SystemProperties</c> are
 /// the partition's own settings the capture found, kept apart from the types. <c>PrunedUtc</c> is when the cache's retention
-/// pruned the version's records (<see cref="CacheRetention"/>), null while they are kept.
+/// pruned the version's records (<see cref="CacheRetention"/>), null while they are kept, and <c>PrunedBy</c> who: the
+/// requester of the refresh, the account of the import, or the operator who purged; null for a version pruned before that
+/// was recorded.
 /// </summary>
 public sealed record CacheVersionInfo(
     string Scope,
@@ -45,7 +47,8 @@ public sealed record CacheVersionInfo(
     long Items,
     IReadOnlyList<CacheVersionType> Types,
     IReadOnlyList<SystemProperty> SystemProperties,
-    DateTime? PrunedUtc = null)
+    DateTime? PrunedUtc = null,
+    string? PrunedBy = null)
 {
     /// <summary>True when the cache's retention pruned the version's records: it can no longer be read or compared.</summary>
     public bool Pruned => PrunedUtc is not null;
@@ -110,12 +113,12 @@ public interface ICacheStore
         CancellationToken ct = default);
 
     /// <summary>
-    /// Applies the partition's retention (<see cref="CacheRetention"/>) at <paramref name="now"/>, as a refresh or an import by
-    /// <paramref name="flowName"/> does once its merge is written: the longest of <paramref name="retentionDays"/>, which the
-    /// flow declares, and what the partition's other synced cache flows declare. Every version whose records it prunes has
-    /// its change counts recorded first, so the cache's history reads the same before and after. Safe to run beside a merge
-    /// and beside another retention of the same partition, and repeatable: a pass cut short is finished by the next.
+    /// Applies a retention to the partition's cache (<see cref="CacheRetention"/>): the one a refresh or an import of a cache
+    /// flow applies once its merge is written, the longest of what the flow declares and what the partition's other synced
+    /// cache flows declare, or an operator's purge, which keeps exactly the days it names. Every version whose records it
+    /// prunes has its change counts recorded first, so the cache's history reads the same before and after, and records when
+    /// it was pruned and by whom. A dry run says what it would prune and changes nothing. Safe to run beside a merge and
+    /// beside another retention of the same partition, and repeatable: a pass cut short is finished by the next.
     /// </summary>
-    Task<CacheRetentionOutcome> ApplyRetentionAsync(
-        string scope, string flowName, int retentionDays, DateTimeOffset now, CancellationToken ct = default);
+    Task<CacheRetentionOutcome> ApplyRetentionAsync(CacheRetentionRequest request, CancellationToken ct = default);
 }

@@ -49,7 +49,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
         // Eight days in, a retention of two days keeps the current version and the one it replaced; the four before them
         // were replaced more than two days ago.
         var now = Start.AddDays(8);
-        var outcome = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 2, now);
+        var outcome = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 2, now, "tests"));
 
         Assert.Equal((2, 2, 3L), (outcome.RetentionDays, outcome.Kept, outcome.RowsRemoved));
         Assert.Equal(labels.Take(4), outcome.Pruned);
@@ -89,7 +89,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
         }
 
         // A second pass finds nothing left to prune.
-        var again = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 2, now.AddHours(1));
+        var again = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 2, now.AddHours(1), "tests"));
         Assert.Equal((2, 0L), (again.Kept, again.RowsRemoved));
         Assert.Empty(again.Pruned);
         Assert.Equal(Describe(before), Describe(await HistoryAsync(null)));
@@ -106,7 +106,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
         await CaptureAsync(3, Uom("ft", "foot"), Uom("m", "metre"), Uom("km", "kilometre"));
         Assert.Equal(2, await RowCountAsync(UomId("ft")));
 
-        var outcome = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(10));
+        var outcome = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(10), "tests"));
 
         Assert.Equal(2, outcome.Pruned.Count);
         Assert.Equal(1, await RowCountAsync(UomId("ft")));
@@ -127,7 +127,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
         await InterfaceAsync(labels[2], partition: "prod");
         await InterfaceAsync(labels[0], active: false);
 
-        var outcome = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(30));
+        var outcome = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(30), "tests"));
         Assert.Equal([labels[0], labels[2]], outcome.Pruned);
         Assert.Equal(3, outcome.Kept);
         Assert.NotNull(await _catalog.Caches().LoadAsync(Scope, labels[1]));
@@ -138,7 +138,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
             await db.DeliveryInterfaces.Where(i => i.Id == pin).ExecuteUpdateAsync(set => set.SetProperty(i => i.CacheVersion, FlowRender.CurrentCacheVersion));
         }
 
-        var unpinned = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(30));
+        var unpinned = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(30), "tests"));
         Assert.Equal([labels[1]], unpinned.Pruned);
         await Assert.ThrowsAsync<CacheVersionPrunedException>(() => _catalog.Caches().LoadAsync(Scope, labels[1]));
     }
@@ -153,7 +153,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
 
         // A flow whose partition is its header's, synced before pins were recorded: it may read this partition.
         var unrecorded = await InterfaceAsync(null, partition: string.Empty);
-        var waiting = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(30));
+        var waiting = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(30), "tests"));
         Assert.Empty(waiting.Pruned);
         Assert.Equal((0L, 4), (waiting.RowsRemoved, waiting.Kept));
         Assert.Contains("the next repository sync records them", waiting.Deferred, StringComparison.Ordinal);
@@ -164,7 +164,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
             await db.DeliveryInterfaces.Where(i => i.Id == unrecorded).ExecuteUpdateAsync(set => set.SetProperty(i => i.CacheVersion, FlowRender.CurrentCacheVersion));
         }
 
-        var applied = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(30));
+        var applied = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(30), "tests"));
         Assert.Null(applied.Deferred);
         Assert.Equal(2, applied.Pruned.Count);
     }
@@ -184,13 +184,55 @@ public sealed class CacheRetentionStoreTests : IDisposable
             await db.DeliveryCacheDefinitions.Where(d => d.FlowName == "project-b-cache").ExecuteUpdateAsync(set => set.SetProperty(d => d.RetentionDays, 30));
         }
 
-        var kept = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(20));
+        var kept = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(20), "tests"));
         Assert.Equal(30, kept.RetentionDays);
         Assert.Empty(kept.Pruned);
 
         // Past thirty days, the same pass prunes.
-        var pruned = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(40));
+        var pruned = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(40), "tests"));
         Assert.Equal(4, pruned.Pruned.Count);
+    }
+
+    [Fact]
+    public async Task An_operator_purge_keeps_exactly_the_days_it_names_and_its_dry_run_says_what_it_would_do()
+    {
+        var labels = new List<string>();
+        for (var day = 0; day < 6; day++)
+        {
+            labels.Add(await CaptureAsync(day, Uom("m", "metre-" + day), Uom("km", "kilometre")));
+        }
+
+        // Another project's cache flow asks for thirty days, which every refresh keeps and an operator's purge does not.
+        await _catalog.DeclareCacheAsync(Scope, "project-b-cache", UnitType());
+        await using (var db = _catalog.CreateDbContext())
+        {
+            await db.DeliveryCacheDefinitions.Where(d => d.FlowName == "project-b-cache").ExecuteUpdateAsync(set => set.SetProperty(d => d.RetentionDays, 30));
+        }
+
+        var before = await HistoryAsync(null);
+        var now = Start.AddDays(6);
+        Assert.Empty((await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, now, "tests"))).Pruned);
+
+        // The dry run names what goes and counts the rows, and changes nothing.
+        var preview = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.Purge(Scope, 0, now, "tahir", dryRun: true));
+        Assert.True(preview.DryRun);
+        Assert.Equal((0, 2, 4L), (preview.RetentionDays, preview.Kept, preview.RowsRemoved));
+        Assert.Equal(labels.Take(4), preview.Pruned);
+        Assert.Equal(7, await RowCountAsync());
+        Assert.DoesNotContain(await _catalog.Caches().ListVersionsAsync(Scope), v => v.Pruned);
+
+        // The purge does exactly that, and every version it prunes says who pruned it and when.
+        var purged = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.Purge(Scope, 0, now, "tahir", dryRun: false));
+        Assert.False(purged.DryRun);
+        Assert.Equal(preview.Pruned, purged.Pruned);
+        Assert.Equal(preview.RowsRemoved, purged.RowsRemoved);
+        Assert.Equal(3, await RowCountAsync());
+        var versions = await _catalog.Caches().ListVersionsAsync(Scope);
+        Assert.All(versions.Where(v => v.Sequence <= 4), v => Assert.Equal((now.UtcDateTime, "tahir"), (v.PrunedUtc!.Value, v.PrunedBy)));
+        Assert.All(versions.Where(v => v.Sequence > 4), v => Assert.Null(v.PrunedBy));
+        Assert.Equal(Describe(before), Describe(await HistoryAsync(null)));
+        var gone = await Assert.ThrowsAsync<CacheVersionPrunedException>(() => _catalog.Caches().LoadAsync(Scope, labels[0]));
+        Assert.Contains("by tahir", gone.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -220,7 +262,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
         Assert.Equal(4, await RowCountAsync());
 
         // Three days in, nothing new is due; the rows only the marked version held still go.
-        var finished = await _catalog.Caches().ApplyRetentionAsync(Scope, Flow, 7, Start.AddDays(3));
+        var finished = await _catalog.Caches().ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 7, Start.AddDays(3), "tests"));
         Assert.Empty(finished.Pruned);
         Assert.Equal(1L, finished.RowsRemoved);
         Assert.Equal(Describe(before), Describe(await HistoryAsync(null)));
@@ -235,12 +277,12 @@ public sealed class CacheRetentionStoreTests : IDisposable
         {
             var types = Types(Uom("m", "metre-" + hour), Uom("km", "kilometre"), Uom("x" + hour, "unit " + hour));
             var merge = store.MergeAsync(Scope, Flow, types, Capture, Start.AddHours(hour));
-            var retain = store.ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(30));
+            var retain = store.ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(30), "tests"));
             await Task.WhenAll(merge, retain);
             Assert.True((await merge).Written);
         }
 
-        await store.ApplyRetentionAsync(Scope, Flow, 1, Start.AddDays(30));
+        await store.ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Scope, Flow, 1, Start.AddDays(30), "tests"));
 
         // Every version that keeps its records reads whole and matches its hash, read afresh; every pruned version has
         // its changes recorded.
@@ -281,7 +323,10 @@ public sealed class CacheRetentionStoreTests : IDisposable
         var unchanged = await builder.WriteAsync(Types(Uom("m", "metre-3")), Capture, []);
         Assert.False(unchanged.Written);
         Assert.Equal(CacheVersionLabel.Mint(Start.AddDays(1)), Assert.Single(unchanged.Retention!.Pruned));
-        Assert.Equal(2, (await _catalog.Caches().ListVersionsAsync(Scope)).Count(v => v.Pruned));
+        var pruned = (await _catalog.Caches().ListVersionsAsync(Scope)).Where(v => v.Pruned).ToList();
+        Assert.Equal(2, pruned.Count);
+        // Each records who asked for the write that pruned it.
+        Assert.All(pruned, v => Assert.Equal(Capture.CapturedBy, v.PrunedBy));
 
         // The store fails the retention with a message that names a secret: the write stands, and the failure is reported
         // without it.
@@ -304,7 +349,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
         var store = _catalog.Caches();
         await Samples.ImportSampleCacheAsync(store);
         var lookups = CacheVersionLabel.Mint(Samples.SampleCacheCaptured.AddMinutes(-1));
-        var outcome = await store.ApplyRetentionAsync(Samples.SampleCacheScope, Flow, 1, Samples.SampleCacheCaptured.AddDays(30));
+        var outcome = await store.ApplyRetentionAsync(CacheRetentionRequest.ForFlow(Samples.SampleCacheScope, Flow, 1, Samples.SampleCacheCaptured.AddDays(30), "tests"));
         Assert.Equal([lookups], outcome.Pruned);
 
         var engine = Samples.Engine(ledger: null, cache: store);
@@ -418,7 +463,7 @@ public sealed class CacheRetentionStoreTests : IDisposable
             IReadOnlyList<SystemPropertyReading>? readings = null, CancellationToken ct = default)
             => inner.MergeAsync(scope, flowName, captured, capture, capturedUtc, readings, ct);
 
-        public Task<CacheRetentionOutcome> ApplyRetentionAsync(string scope, string flowName, int retentionDays, DateTimeOffset now, CancellationToken ct = default)
+        public Task<CacheRetentionOutcome> ApplyRetentionAsync(CacheRetentionRequest request, CancellationToken ct = default)
             => cancel
                 ? throw new OperationCanceledException("The refresh was cancelled.")
                 : throw new InvalidOperationException("the cache database answered: Login failed for 'svc' with password=hunter2.");

@@ -190,11 +190,17 @@ public sealed class DeliveryCliModule : ICliModule
                 "sqlflow cache import <cache.yaml> --from-dir <dir> [--partition <id>]",
                 "                                   Write type files as a version of the cache, for offline work (needs --db).",
                 "                                   A cache is captured from OSDU by running its cache flow: sqlflow run <cache.yaml>",
+                "sqlflow cache prune <partition> [--keep-days <n>] [--dry-run]",
+                "                                   Purge the cache's history: prune the records of every version replaced more",
+                "                                   than n days ago (0 to 36500; the partition's retention when left out). The",
+                "                                   current version, the one it replaced and pinned versions are always kept;",
+                "                                   --dry-run says what it would prune and changes nothing (needs --db)",
             ],
             DeliveryVerbs.CacheAsync)
         {
-            Subcommands = ["list", "import"],
-            ValueOptions = ["--from-dir", "--partition"],
+            Subcommands = ["list", "import", "prune"],
+            ValueOptions = ["--from-dir", "--partition", "--keep-days"],
+            Flags = ["--dry-run"],
         },
         new CliVerb(
             "template",

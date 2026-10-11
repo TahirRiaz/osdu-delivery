@@ -1547,6 +1547,13 @@ public sealed class DeliveryCacheVersion
     public DateTime? PrunedUtc { get; set; }
 
     /// <summary>
+    /// Who pruned the version's records: the requester of the refresh that applied the retention (a person, or
+    /// schedule:&lt;name&gt;), the account of the import, or the operator who purged the cache's history. Null while they are
+    /// kept, and for a version pruned before this was recorded.
+    /// </summary>
+    public string? PrunedBy { get; set; }
+
+    /// <summary>
     /// What the version changed against the one before it, per type, as counted from its records before a retention removed
     /// any of them: <c>[{ "type", "changed", "added", "removed" }]</c>, listing the types that moved. Null while the history
     /// can still count them from the records.
@@ -3711,6 +3718,7 @@ public static class DeliveryModel
             e.Property(v => v.Origin).HasMaxLength(1000).IsRequired();
             e.Property(v => v.TypesJson).IsRequired();
             e.Property(v => v.SystemPropertiesJson).IsRequired().HasDefaultValue("[]");
+            e.Property(v => v.PrunedBy).HasMaxLength(200);
             e.HasIndex(v => new { v.Scope, v.Version }).IsUnique();
             // The sequence is what a concurrent second write of the same partition collides on, so two captures can never
             // both claim the next version. It is the table's clustered key: a partition's versions in order.

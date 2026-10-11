@@ -143,7 +143,7 @@ public static class CacheVersions
         ArgumentNullException.ThrowIfNull(version);
         if (version.PrunedUtc is { } pruned)
         {
-            throw new CacheVersionPrunedException(version.Scope, version.Version, DateTime.SpecifyKind(pruned, DateTimeKind.Utc));
+            throw new CacheVersionPrunedException(version.Scope, version.Version, DateTime.SpecifyKind(pruned, DateTimeKind.Utc), version.PrunedBy);
         }
     }
 

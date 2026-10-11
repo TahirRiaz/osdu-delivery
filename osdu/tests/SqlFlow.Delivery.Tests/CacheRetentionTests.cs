@@ -113,10 +113,55 @@ public sealed class CacheRetentionTests
     }
 
     [Theory]
-    [InlineData(0)]
+    [InlineData(-1)]
     [InlineData(CacheRetention.MaxDays + 1)]
-    public void A_plan_is_given_a_retention_a_document_may_declare(int days)
+    public void A_plan_is_given_days_from_none_to_a_hundred_years(int days)
         => Assert.Throws<ArgumentOutOfRangeException>(() => CacheRetention.Plan(Daily(2), days, Start, NoPins));
+
+    [Fact]
+    public void A_purge_keeping_no_days_keeps_only_the_versions_that_are_always_kept()
+    {
+        var pins = new HashSet<string>(StringComparer.Ordinal) { Label(3) };
+
+        // An hour after the last capture, every version but the current one, the one it replaced and the pinned one goes,
+        // however recently it was replaced.
+        var plan = CacheRetention.Plan(Daily(6), retentionDays: 0, Start.AddDays(5).AddHours(1), pins);
+
+        Assert.Equal([3, 5, 6], plan.Kept);
+        Assert.Equal([1, 2, 4], plan.Pruned.Select(v => v.Sequence));
+        Assert.Equal([Label(3)], plan.Pinned);
+    }
+
+    [Fact]
+    public void A_refresh_weighs_what_its_flow_declares_and_a_purge_keeps_the_days_it_names()
+    {
+        var now = new DateTimeOffset(Start);
+        var refresh = CacheRetentionRequest.ForFlow("dev", "units", 30, now, "schedule:nightly");
+        Assert.Equal(("dev", "units", 30, "schedule:nightly", false), (refresh.Scope, refresh.FlowName, refresh.Days, refresh.Actor, refresh.DryRun));
+
+        var purge = CacheRetentionRequest.Purge("dev", 0, now, "tahir", dryRun: true);
+        Assert.Equal(("dev", (string?)null, 0, "tahir", true), (purge.Scope, purge.FlowName, purge.Days, purge.Actor, purge.DryRun));
+
+        // A flow declares at least a day; a purge keeps from none to a hundred years; both name who applies them.
+        Assert.Throws<ArgumentOutOfRangeException>(() => CacheRetentionRequest.ForFlow("dev", "units", 0, now, "tahir"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => CacheRetentionRequest.Purge("dev", -1, now, "tahir", dryRun: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() => CacheRetentionRequest.Purge("dev", CacheRetention.MaxDays + 1, now, "tahir", dryRun: false));
+        Assert.Throws<ArgumentException>(() => CacheRetentionRequest.Purge("dev", 7, now, " ", dryRun: false));
+        Assert.Throws<ArgumentException>(() => CacheRetentionRequest.Purge(" ", 7, now, "tahir", dryRun: false));
+    }
+
+    [Fact]
+    public void A_purge_says_in_one_line_what_it_did_would_do_or_waits_for()
+    {
+        Assert.Equal(
+            "Pruned the records of 2 version(s), keeping 7 day(s) of history, and removed 40 stored row(s); 3 version(s) keep theirs.",
+            new CacheRetentionOutcome(7, 3, ["a", "b"], 40).DescribePurge());
+        Assert.Equal(
+            "Pruning, keeping only the current version, the one it replaced and every pinned version, removes the records of 1 version(s), 5 stored row(s); 2 version(s) keep theirs.",
+            new CacheRetentionOutcome(0, 2, ["a"], 5, DryRun: true).DescribePurge());
+        Assert.Equal("Nothing to prune keeping 30 day(s) of history; 4 version(s) keep their records.", new CacheRetentionOutcome(30, 4, [], 0).DescribePurge());
+        Assert.Equal("Nothing can be pruned yet: the sync has to run.", new CacheRetentionOutcome(7, 4, [], 0, Deferred: "the sync has to run").DescribePurge());
+    }
 
     [Fact]
     public void A_cache_flow_keeps_seven_days_unless_it_declares_a_retention_from_one_day_to_a_hundred_years()

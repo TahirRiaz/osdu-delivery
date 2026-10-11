@@ -472,9 +472,85 @@ internal static class DeliveryVerbs
                 return 0;
             }
 
+            case "prune":
+                return await CachePruneAsync(ModuleCommand.Of(context), target).ConfigureAwait(false);
+
             default:
                 return context.UsageError($"'{verb}' is not a cache subcommand.");
         }
+    }
+
+    /// <summary>
+    /// <c>sqlflow cache prune</c>: an operator's purge of a partition cache's history, through the retention every refresh
+    /// applies, keeping <c>--keep-days</c> (the partition's own retention when left out). The pruned versions record the
+    /// account the command runs as. <c>--dry-run</c> says what it would prune and changes nothing.
+    /// </summary>
+    internal static async Task<int> CachePruneAsync(ModuleCommand command, string target)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentException.ThrowIfNullOrWhiteSpace(target);
+        var ct = command.CancellationToken;
+        var engine = command.Services.GetRequiredService<EngineContext>();
+        var store = engine.Cache
+            ?? throw new FlowValidationException("Caches live in the module's database. Run 'sqlflow cache' with --db <conn-ref>, or set the catalog variable.");
+
+        // The option given without a value it takes (none, or a token that reads as an option, such as -1) is refused as one
+        // given a value out of range: a purge never falls back to other days than the ones asked for.
+        int? keepDays = null;
+        if (command.Arguments.HasFlag("--keep-days"))
+        {
+            var text = command.Arguments.GetOption("--keep-days");
+            if (text is null || !int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed > CacheRetention.MaxDays)
+            {
+                var given = text ?? FollowingToken(command.Arguments, "--keep-days");
+                return command.UsageError(
+                    $"--keep-days is a whole number of days from 0 to {CacheRetention.MaxDays}{(given is null ? ", and none was given" : $", not '{given}'")}.");
+            }
+
+            keepDays = parsed;
+        }
+
+        var scope = await ResolvedScopeAsync(engine, target, "sqlflow cache prune", ct).ConfigureAwait(false);
+        if (await store.CurrentVersionAsync(scope, ct).ConfigureAwait(false) is null)
+        {
+            throw new FlowValidationException($"The cache of partition '{scope}' holds no version, so it has no history to prune.");
+        }
+
+        var days = keepDays ?? (await store.DeclarationAsync(scope, ct).ConfigureAwait(false)).RetentionDays;
+        var dryRun = command.Arguments.HasFlag("--dry-run");
+        var outcome = await store.ApplyRetentionAsync(
+            CacheRetentionRequest.Purge(scope, days, engine.Time.GetUtcNow(), RunActors.LocalAccount(), dryRun), ct).ConfigureAwait(false);
+        if (command.Json)
+        {
+            var json = DescribeRetention(outcome);
+            json["partition"] = scope;
+            json["dryRun"] = outcome.DryRun;
+            command.Out.WriteLine(CanonicalJson.Pretty(json));
+            return 0;
+        }
+
+        command.Out.WriteLine($"cache of partition {scope}: {outcome.DescribePurge()}");
+        foreach (var version in outcome.Pruned)
+        {
+            command.Out.WriteLine($"  {(outcome.DryRun ? "would prune" : "pruned")}  {version}");
+        }
+
+        return 0;
+    }
+
+    /// <summary>The token right after <paramref name="option"/> on the command line, or null when it is the last one.</summary>
+    private static string? FollowingToken(CliArguments arguments, string option)
+    {
+        var all = arguments.All;
+        for (var i = 0; i < all.Count - 1; i++)
+        {
+            if (string.Equals(all[i], option, StringComparison.Ordinal))
+            {
+                return all[i + 1];
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -530,7 +606,9 @@ internal static class DeliveryVerbs
         {
             var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
             var state = v.Current ? "current" : v.PrunedUtc is not null ? "pruned " : "       ";
-            var pruned = v.PrunedUtc is { } at ? $"; records pruned at {at.ToString("u", CultureInfo.InvariantCulture)}" : string.Empty;
+            var pruned = v.PrunedUtc is { } at
+                ? $"; records pruned at {at.ToString("u", CultureInfo.InvariantCulture)}{(v.PrunedBy is { } by ? $" by {by}" : string.Empty)}"
+                : string.Empty;
             context.Out.WriteLine(
                 $"{v.Version}  {state}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}{pruned}");
 
@@ -578,6 +656,7 @@ internal static class DeliveryVerbs
         ["sequence"] = v.Sequence,
         ["current"] = v.Current,
         ["prunedUtc"] = v.PrunedUtc?.ToString("O", CultureInfo.InvariantCulture),
+        ["prunedBy"] = v.PrunedBy,
         ["retentionDays"] = retentionDays,
         ["capturedUtc"] = v.CapturedUtc.ToString("O", CultureInfo.InvariantCulture),
         ["capturedBy"] = v.CapturedBy,
