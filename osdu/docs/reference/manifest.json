@@ -93,9 +93,9 @@
       "id": "delivery-cli-cache",
       "corpus": "reference",
       "path": "cli/cache.md",
-      "title": "sqlflow cache: list a partition's cache versions, or import cached types for work without OSDU",
+      "title": "sqlflow cache: list a partition's cache versions, import cached types for work without OSDU, or purge the cache's history",
       "type": "cli-command",
-      "summary": "sqlflow cache list shows the versions of a partition's cache and its system properties; cache import loads OSDU type files where no platform is reachable.",
+      "summary": "sqlflow cache list shows a partition cache's versions; cache import loads OSDU type files where no platform is reachable; cache prune purges its history.",
       "keywords": [
         "sqlflow cache",
         "cache list",
@@ -107,7 +107,10 @@
         "system properties",
         "refresh the cache",
         "cache retention",
-        "pruned version"
+        "pruned version",
+        "cache prune",
+        "purge cache history",
+        "keep-days"
       ],
       "cliCommand": "cache",
       "related": [
@@ -1560,6 +1563,8 @@
         "cache retention",
         "retentiondays",
         "pruned version",
+        "purge cache history",
+        "prune history",
         "several cache flows",
         "onchange approve",
         "approve a cache change",
@@ -1590,6 +1595,8 @@
         "osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/CacheVersions.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryInterfaceCatalog.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCachePruneEndpoints.cs",
+        "osdu/gui/src/features/delivery/CachePruneButton.tsx",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",

@@ -1,8 +1,8 @@
 ---
 id: delivery-cli-cache
-title: "sqlflow cache: list a partition's cache versions, or import cached types for work without OSDU"
+title: "sqlflow cache: list a partition's cache versions, import cached types for work without OSDU, or purge the cache's history"
 type: cli-command
-summary: "sqlflow cache list shows the versions of a partition's cache and its system properties; cache import loads OSDU type files where no platform is reachable."
+summary: "sqlflow cache list shows a partition cache's versions; cache import loads OSDU type files where no platform is reachable; cache prune purges its history."
 keywords:
   - sqlflow cache
   - cache list
@@ -15,6 +15,9 @@ keywords:
   - refresh the cache
   - cache retention
   - pruned version
+  - cache prune
+  - purge cache history
+  - keep-days
 cliCommand: cache
 related:
   - delivery-concept-partition-cache
@@ -38,13 +41,14 @@ sourceRefs:
   - sqlflow/src/SqlFlow.Core/Runs/RunActors.cs
 ---
 
-# sqlflow cache: list a partition's cache versions, or import cached types for work without OSDU
+# sqlflow cache: list a partition's cache versions, import cached types for work without OSDU, or purge the cache's history
 
 ## Synopsis
 
 ```bash
 sqlflow cache list <partition | cache.yaml> [--partition <id>] [--db <conn-ref>] [--json]
 sqlflow cache import <cache.yaml> --from-dir <dir> [--partition <id>] [--db <conn-ref>] [--json]
+sqlflow cache prune <partition> [--keep-days <n>] [--dry-run] [--db <conn-ref>] [--json]
 ```
 
 ## Description
@@ -64,7 +68,7 @@ sqlflow run osdu-reference-00-cache.yaml --operation plan --set partition=dev   
 That is also how a lookup table gets into the cache: a cache flow's `table`, `dictionary` or `dimension` type is
 captured from its origin by a refresh, and `cache import` refuses it ([lookup table guide](../guides/lookup-table-cache.md)).
 
-Both subcommands need the module's database: `SQLFLOW_OSDU_DB` when the `osdu` schema has a database of its own, or else
+Every subcommand needs the module's database: `SQLFLOW_OSDU_DB` when the `osdu` schema has a database of its own, or else
 the catalog's database, named by `--db` (default `${env:SQLFLOW_CATALOG_DB}`). Without either, the command fails before
 it reads anything (`Environment variable 'SQLFLOW_CATALOG_DB' is not set.`).
 
@@ -75,6 +79,7 @@ it reads anything (`Environment variable 'SQLFLOW_CATALOG_DB' is not set.`).
 | `list <partition>` | one of the two | A partition id (`dev`) or a `${env:...}` / `${keyvault:...}` reference resolving to one. A value that is neither is refused. |
 | `list <cache.yaml>` | one of the two | A cache flow file: lists the cache of each partition the flow builds (every one for a flow that names its partitions or serves the registry, unless `--partition` names one), or of the partition its header names. |
 | `import <cache.yaml>` | yes | The cache flow whose capture the files stand in for. |
+| `prune <partition>` | yes | A partition id or a reference resolving to one, whose cache history to purge. |
 
 ## Options
 
@@ -82,8 +87,10 @@ it reads anything (`Environment variable 'SQLFLOW_CATALOG_DB' is not set.`).
 | --- | --- | --- |
 | `--partition <id>` | both, with a cache flow file | The partition to list or import into, settled as a refresh settles it. With `import`, a flow that builds several partitions needs it when the registry's default is not one of them. A flow whose partition is its header's refuses it. |
 | `--from-dir <dir>` | `import` | The directory of type files. Required: `name the directory the type files are in with --from-dir.` |
-| `--db <conn-ref>` | both | The catalog connection reference, used for the `osdu` schema when `SQLFLOW_OSDU_DB` is not set. |
-| `--json` | both | Print JSON instead of text. |
+| `--keep-days <n>` | `prune` | How many days of replaced versions keep their records, a whole number from 0 to 36500; the partition's retention when left out. |
+| `--dry-run` | `prune` | Say what the purge would prune, and change nothing. |
+| `--db <conn-ref>` | all | The catalog connection reference, used for the `osdu` schema when `SQLFLOW_OSDU_DB` is not set. |
+| `--json` | all | Print JSON instead of text. |
 
 ## cache list
 
@@ -158,6 +165,31 @@ applies it` when it failed, which leaves the import standing. With `--json`, an 
 Records imported this way are not the platform's: a record delivered against them carries references to whatever the
 files say. Fill the cache of a partition that delivers for real by refreshing its cache flow.
 
+## cache prune
+
+Purges the history of a partition's cache now, rather than at its next refresh: the same pass every refresh applies
+([retention](../concepts/partition-cache.md#retention)), keeping the days `--keep-days` names in place of the partition's
+retention, whatever its cache flows declare. The current version, the one it replaced and every version a delivery flow
+pins keep their records whatever the days; `--keep-days 0` keeps those alone. Every version it prunes stays listed by
+`cache list`, and records the account the command runs as (`cli:<user>@<machine>`) and when.
+
+```text
+$ sqlflow cache prune dev --keep-days 0 --dry-run
+cache of partition dev: Pruning, keeping only the current version, the one it replaced and every pinned version, removes the records of 2 version(s), 4 stored row(s); 2 version(s) keep theirs.
+  would prune  20260920T050000Z
+  would prune  20260921T050000Z
+
+$ sqlflow cache prune dev --keep-days 0
+cache of partition dev: Pruned the records of 2 version(s), keeping only the current version, the one it replaced and every pinned version, and removed 4 stored row(s); 2 version(s) keep theirs.
+  pruned  20260920T050000Z
+  pruned  20260921T050000Z
+```
+
+Nothing to prune prints `Nothing to prune keeping <n> day(s) of history; <k> version(s) keep their records.`. After an
+upgrade, until the repository sync has recorded which versions delivery flows pin, it prunes nothing and says so. With
+`--json` it prints `partition`, `dryRun`, `retentionDays` (the days kept), `kept`, `pruned`, `rowsRemoved`, `failure`
+and `deferred`. The Cache page's History tab offers the same purge to an admin.
+
 ## Errors and exit codes
 
 | Message | Cause |
@@ -168,6 +200,8 @@ files say. Fill the cache of a partition that delivers for real by refreshing it
 | `The directory '<dir>' to import cached types from does not exist.` | A wrong `--from-dir`. |
 | `The directory '<dir>' holds no cached type files ({Name}.json), so there is nothing to import.` | An empty directory. |
 | `the cache flow builds a cache for dev, test; name the one the files belong to with --partition.` | `import` with `--partition '*'`. |
+| `--keep-days is a whole number of days from 0 to 36500, not '<value>'.` | `prune` with days out of range, or a value that is not a number. |
+| `The cache of partition '<p>' holds no version, so it has no history to prune.` | `prune` of a partition whose cache has no version. |
 
 The command exits 0 on success, 1 on a usage error or a failure (printed as `ERROR  <message>`, with the usage text
 after a usage error), and 130 when interrupted with Ctrl+C.
@@ -183,6 +217,10 @@ sqlflow cache list reference/osdu-reference-00-cache.yaml --json
 
 # fill the test partition's cache from type files, without OSDU
 sqlflow cache import reference/osdu-reference-00-cache.yaml --from-dir cache-records --partition test
+
+# see what keeping a day of history would prune, then prune it
+sqlflow cache prune dev --keep-days 1 --dry-run
+sqlflow cache prune dev --keep-days 1
 ```
 
 ## Related

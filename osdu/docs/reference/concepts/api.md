@@ -232,11 +232,14 @@ Every cache route but `GET /caches` names one partition's cache with `scope` (or
 | `GET /cache/diff` | read | `scope`, `from`, `to`, `type`, `change`, `search`, `page`, `pageSize` | What changed between two versions (`to` defaults to the current one). |
 | `GET /cache/tags` | read | `status` (`pending`, `approved`, `rolling`, `rejected`, `applied`), `scope`, `page`, `pageSize` | The cache changes delivered records were built from, and what each reaches. |
 | `GET /cache/gaps` | read | `scope`, `type`, `empty`, `page`, `pageSize` | What delivered records were built without, most records first. |
+| `POST /cache/prune/preview` | operate | body `scope`, `keepDays` | What purging the cache's history, keeping `keepDays` (0 to 36500; the partition's retention when left out), would prune: `kept`, `pruned`, `rows`, `summary`. Changes nothing. |
+| `POST /cache/prune` | admin | body `scope`, `keepDays` | Purges the cache's history as the preview says, and records the admin and the time on every version it prunes. |
 
 A version whose records the partition's [retention](partition-cache.md#retention) pruned stays listed by
 `/cache/versions` and `/cache/history`, its counts unchanged. `GET /cache/items` naming it, and `GET /cache/diff` naming
 it on either side, answer `410 Gone` (`Version <v> of the cache of partition '<p>' was pruned at <time> by the cache's
-retention: ...`), which a client tells apart from `404` for a version the cache never held.
+retention: ...`), which a client tells apart from `404` for a version the cache never held. A purge answers `400` for days
+out of range and `404` for a partition whose cache holds no version.
 
 See [the partition cache](partition-cache.md).
 

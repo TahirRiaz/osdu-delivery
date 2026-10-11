@@ -13,6 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **An admin purges a partition cache's history by hand.** **Prune history** on the Cache page's History tab asks how
+  many days of replaced versions to keep (the partition's retention to start with, 0 to keep only the versions that are
+  always kept), shows which versions and how many stored rows that prunes, and prunes them on confirmation. It is the
+  retention pass every refresh applies, with the days named in place of the partition's: the current version, the one
+  it replaced and every pinned version keep their records whatever the days, and a pruned version stays listed with what
+  it changed. `POST /cache/prune/preview` (operate) and `POST /cache/prune` (admin), and `sqlflow cache prune <partition>
+  [--keep-days <n>] [--dry-run]`, do the same. Every pruned version now records who pruned it as well as when (the
+  refresh's requester, the import's account, or the admin): History's mark, `sqlflow cache list` and the API's
+  `prunedBy` show it (`osdu.CacheVersion.PrunedBy`, migration `CachePruneActor`, module version 1.41.0).
 - **A partition's cache keeps a bounded history: every refresh and import prunes the records of the versions it no
   longer needs.** A cache flow declares `retentionDays` (a whole number from 1 to 36500, 7 when left out), and the
   partition keeps the longest any of its cache flows declares. The current version, the one it replaced and every version

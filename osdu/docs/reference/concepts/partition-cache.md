@@ -11,6 +11,8 @@ keywords:
   - cache retention
   - retentiondays
   - pruned version
+  - purge cache history
+  - prune history
   - several cache flows
   - onchange approve
   - approve a cache change
@@ -39,6 +41,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs
   - osdu/src/SqlFlow.Delivery/Catalog/CacheVersions.cs
   - osdu/src/SqlFlow.Delivery/Catalog/DeliveryInterfaceCatalog.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCachePruneEndpoints.cs
+  - osdu/gui/src/features/delivery/CachePruneButton.tsx
   - osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs
   - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs
@@ -141,9 +145,23 @@ the sync has recorded the pins of every delivery flow that may read the partitio
 sync), the refresh prunes nothing and says why. A retention that fails is logged and reported in the run's result; the
 refresh itself stands, and the next one applies the retention again.
 
-In the database, `osdu.CacheDefinition.RetentionDays` holds what each flow declares, `osdu.CacheVersion.PrunedUtc` when
-a version was pruned and `ChangesJson` what it changed, and `osdu.Interface.CacheVersion` the version each delivery
-interface renders against (migration `CacheRetention`, module version 1.40.0).
+### Purging the history by hand
+
+An admin can purge a partition cache's history now, rather than wait for its next refresh: **Prune history** on the
+Cache page's History tab, `POST /cache/prune` ([the API](api.md)), or `sqlflow cache prune` ([the CLI](../cli/cache.md)).
+It is the same pass, with the days the admin names in place of the partition's retention, whatever its cache flows
+declare: the current version, the one it replaced and every pinned version keep their records whatever the days, and 0
+keeps those alone. The page starts from the partition's retention and shows what the days chosen prune (the versions,
+and how many stored rows) before anything goes; `POST /cache/prune/preview` and `--dry-run` say the same. The purge is
+an admin's, since what it removes cannot be brought back; a preview is anyone's who may operate.
+
+Every pruned version records when and by whom: the requester of the refresh, the account of the import, or the admin who
+purged. History shows it on the version's `pruned` mark, `sqlflow cache list` beside it, and the API as `prunedBy`.
+
+In the database, `osdu.CacheDefinition.RetentionDays` holds what each flow declares, `osdu.CacheVersion.PrunedUtc` and
+`PrunedBy` when and by whom a version was pruned and `ChangesJson` what it changed, and `osdu.Interface.CacheVersion` the
+version each delivery interface renders against (migrations `CacheRetention`, module version 1.40.0, and
+`CachePruneActor`, module version 1.41.0).
 
 ## Several cache flows, one cache
 
@@ -253,7 +271,7 @@ table is never imported: it is captured from its table, dictionary or dimension 
   that fill it, with **Cache files** and **Refresh now** (a **Refresh** menu naming the flows when several fill the
   partition, since a refresh captures what one flow declares); and four tabs. **Records** browses what a version holds, a type
   at a time, with how a mapping reads each row. **History** lists the versions and which types each changed, a pruned
-  version marked as such.
+  version marked as such, and offers an admin **Prune history**.
   **Deliveries** lists the changes with what they reach, the approvals waiting, and the records built without something
   the cache did not hold yet. **Setup** lists the cache flows, the types each declares, the retention each declares and
   the one the partition keeps, and the partition's OSDU feature flags.
@@ -262,7 +280,7 @@ table is never imported: it is captured from its table, dictionary or dimension 
   marked, and the current version's system properties.
 - **The API** (`/api/v1/delivery`): `GET /caches`, `/cache/versions`, `/cache/items`, `/cache/history`, `/cache/diff`,
   `/cache/tags`, `/cache/gaps`, `/cache/streams` (each type's upstream flows, from files to the cache flow, and who reads
-  it), and `POST /cache/tags/decide` ([the API](api.md)).
+  it), `POST /cache/tags/decide`, and `POST /cache/prune` with its preview ([the API](api.md)).
 
 ## Related
 
