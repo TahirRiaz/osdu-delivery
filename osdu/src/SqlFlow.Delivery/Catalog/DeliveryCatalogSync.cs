@@ -587,7 +587,8 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                     continue;
                 }
 
-                declared[scope].Add(new Snapshots.CacheTypeDeclaration(cache.Name, type.Name, type.EntityType, type.Kind, type.Query, type.Fields, type.OnChange, type.Origin));
+                declared[scope].Add(new Snapshots.CacheTypeDeclaration(
+                    cache.Name, type.Name, type.EntityType, type.Kind, type.Query, type.Fields, type.OnChange, type.Origin, RetentionDays: cache.RetentionDays));
                 // A flow that names no partitions keeps the identity its declarations always had; one that names them keeps
                 // one per partition.
                 var id = FlowIdentity.FromName(
@@ -901,17 +902,18 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         type.Origin == Snapshots.CacheOrigin.Osdu ? type.Query : null,
         JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson),
         type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve",
-        cache.Partitioned);
+        cache.Partitioned,
+        cache.RetentionDays);
 
     private sealed record CacheDefinitionRow(
         string Origin, string? Endpoint, string? Connection, string? SourceObject, string? KeyField, string? DictionaryPath, string RelativePath,
-        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange, bool DeclaresPartitions)
+        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange, bool DeclaresPartitions, int RetentionDays)
     {
         public bool Matches(DeliveryCacheDefinition row)
             => row.Origin == Origin && row.Endpoint == Endpoint && row.Connection == Connection && row.SourceObject == SourceObject
                && row.KeyField == KeyField && row.DictionaryPath == DictionaryPath && row.RelativePath == RelativePath && row.Name == Name
                && row.EntityType == EntityType && row.Kind == Kind && row.Query == Query && row.FieldsJson == FieldsJson && row.OnChange == OnChange
-               && row.DeclaresPartitions == DeclaresPartitions;
+               && row.DeclaresPartitions == DeclaresPartitions && row.RetentionDays == RetentionDays;
 
         public void WriteTo(DeliveryCacheDefinition row)
         {
@@ -929,6 +931,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             row.FieldsJson = FieldsJson;
             row.OnChange = OnChange;
             row.DeclaresPartitions = DeclaresPartitions;
+            row.RetentionDays = RetentionDays;
         }
     }
 }

@@ -458,6 +458,35 @@ public sealed class CacheCatalogSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task A_cache_flow_s_retention_reaches_the_catalog_and_a_change_to_it_is_synced()
+    {
+        Write("cache/a.yaml", Flow("project-a-cache", AliasedWellboreAndUnits).Replace("types:", "retentionDays: 30\ntypes:", StringComparison.Ordinal));
+        Write("cache/b.yaml", Flow("project-b-cache", FacilityWellbore));
+        var repoId = Guid.NewGuid();
+        Assert.Empty(await SyncAsync(repoId));
+
+        await using (var db = _catalog.CreateDbContext())
+        {
+            // Every type a flow declares carries the flow's retention; a flow that declares none keeps seven days.
+            var rows = await db.DeliveryCacheDefinitions.AsNoTracking().Where(c => c.RepoId == repoId).ToListAsync();
+            Assert.All(rows.Where(r => r.FlowName == "project-a-cache"), r => Assert.Equal(30, r.RetentionDays));
+            Assert.All(rows.Where(r => r.FlowName == "project-b-cache"), r => Assert.Equal(CacheRetention.DefaultDays, r.RetentionDays));
+
+            // The partition keeps the longest of the two.
+            Assert.Equal(30, (await OsduCacheStore.DeclarationAsync(db, "dev")).RetentionDays);
+        }
+
+        Write("cache/a.yaml", Flow("project-a-cache", AliasedWellboreAndUnits));
+        var (_, result) = await SyncWithResultAsync(repoId);
+        Assert.True(result.Updated > 0);
+        await using (var db = _catalog.CreateDbContext())
+        {
+            Assert.All(await db.DeliveryCacheDefinitions.AsNoTracking().Where(c => c.RepoId == repoId).ToListAsync(), r => Assert.Equal(CacheRetention.DefaultDays, r.RetentionDays));
+            Assert.Equal(CacheRetention.DefaultDays, (await OsduCacheStore.DeclarationAsync(db, "dev")).RetentionDays);
+        }
+    }
+
+    [Fact]
     public async Task A_cache_another_repository_declares_under_the_same_name_is_reported()
     {
         Write("cache/welldb-osdu-00-reference-cache.yaml", CacheFlow);

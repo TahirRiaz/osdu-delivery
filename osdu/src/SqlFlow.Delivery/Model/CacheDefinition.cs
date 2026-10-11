@@ -191,6 +191,13 @@ public sealed record CacheDefinition
     /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>
     public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Auto;
 
+    /// <summary>
+    /// How many days the partition's cache keeps the records of a version after a newer one replaced it
+    /// (<c>retentionDays</c>, <see cref="CacheRetention.DefaultDays"/> when the document declares none). The partition keeps
+    /// the longest any of its cache flows asks for (<see cref="CacheRetention"/>).
+    /// </summary>
+    public int RetentionDays { get; init; } = CacheRetention.DefaultDays;
+
     public FlowReliability Reliability { get; init; } = new();
 
     /// <summary>The secret references the source declares, keyed by document path; references only, never values.</summary>

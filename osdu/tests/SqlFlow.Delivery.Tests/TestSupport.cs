@@ -104,6 +104,12 @@ public sealed class FixedCacheStore : ICacheStore
         IReadOnlyList<SystemPropertyReading>? readings = null,
         CancellationToken ct = default)
         => throw new InvalidOperationException("The fixed sample cache is read-only; write versions through the module's cache store.");
+
+    /// <summary>The one version is the current one, which a retention always keeps, so there is never anything to prune.</summary>
+    public Task<CacheRetentionOutcome> ApplyRetentionAsync(
+        string scope, string flowName, int retentionDays, DateTimeOffset now, CancellationToken ct = default)
+        => Task.FromResult(new CacheRetentionOutcome(
+            (scope == _scope ? _declaration : CacheDeclaration.None(scope)).RetentionFor(flowName, retentionDays), scope == _scope ? 1 : 0, [], 0));
 }
 
 /// <summary>

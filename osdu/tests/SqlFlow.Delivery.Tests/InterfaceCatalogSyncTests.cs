@@ -118,6 +118,49 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task An_interface_records_the_cache_version_it_renders_against_and_a_pin_the_retention_pruned_is_reported()
+    {
+        const string Pinned = "20260901T060000Z";
+        Write("flows/wells-wellbore-03-header-delivery.yaml", File.ReadAllText(Samples.WellboreFlowFile));
+        Write("mappings/Wellbore@1.0.0.yaml", File.ReadAllText(Path.Combine(Samples.FixtureMappings, "Wellbore@1.0.0.yaml")));
+        Write("flows/welldb-welllog-03-header-delivery.yaml", File.ReadAllText(Samples.Flow)
+            .Replace("mapping: WellLog@1.4.0", $"mapping: WellLog@1.4.0\n  cacheVersion: {Pinned}", StringComparison.Ordinal));
+
+        var (warnings, _) = await SyncAsync();
+        Assert.Empty(warnings);
+        var rows = await RowsAsync();
+        // What the cache's retention keeps for each: the current version, which it always keeps, or the version pinned.
+        Assert.Equal(Model.FlowRender.CurrentCacheVersion, rows.Single(r => r.FlowName == "wells-wellbore-03-header-delivery").CacheVersion);
+        Assert.Equal(Pinned, rows.Single(r => r.FlowName == "welldb-welllog-03-header-delivery").CacheVersion);
+
+        // The version is in the cache, and its records are pruned: the next sync says the flow's runs fail, and what to do.
+        await using (var db = _module.CreateDbContext())
+        {
+            var captured = new DateTime(2026, 9, 1, 6, 0, 0, DateTimeKind.Utc);
+            db.DeliveryCacheVersions.Add(new Data.DeliveryCacheVersion
+            {
+                Id = Guid.NewGuid(),
+                Scope = "dev",
+                FlowName = "welldb-osdu-00-reference-cache",
+                Version = Pinned,
+                Sequence = 1,
+                CapturedUtc = captured,
+                ContentHash = new string('0', 64),
+                CapturedBy = "tests",
+                Origin = "seeded",
+                TypesJson = "[]",
+                PrunedUtc = captured.AddDays(30),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var (pruned, _) = await SyncAsync();
+        var warning = Assert.Single(pruned);
+        Assert.Contains("flows/welldb-welllog-03-header-delivery.yaml: flow 'welldb-welllog-03-header-delivery' pins version 20260901T060000Z of the cache", warning, StringComparison.Ordinal);
+        Assert.Contains("the cache's retention has pruned that version's records, so its runs fail", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task An_interface_the_repository_no_longer_declares_stays_findable_as_inactive()
     {
         Write("flows/petrel.yaml", Source);

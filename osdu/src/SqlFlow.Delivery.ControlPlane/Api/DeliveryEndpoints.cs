@@ -225,20 +225,23 @@ public sealed record DeliveryCacheScheduleDto(Guid Id, string Name, string? Cron
 /// A cache flow that fills a partition's cache: the repository and file that define it (the file is where what it caches is
 /// changed), its pipeline, the OSDU endpoint reference its OSDU types are searched on and the connection reference its table
 /// types are read from (each null when it declares none of those), the schedules that refresh it, the types it declares for
-/// the partition, and the partitions it names (<c>partitions</c>): every partition it builds a cache for, which a refresh of
-/// it names, or empty for a flow whose partition is its header's, which a refresh names none for.
+/// the partition, the partitions it names (<c>partitions</c>): every partition it builds a cache for, which a refresh of it
+/// names, or empty for a flow whose partition is its header's, which a refresh names none for; and the retention it declares
+/// (<c>retentionDays</c>).
 /// </summary>
 public sealed record DeliveryCacheFlowDto(
     string Name, Guid RepoId, string RepoName, string RelativePath, Guid? PipelineId, string? Endpoint, IReadOnlyList<DeliveryCacheScheduleDto> Schedules,
-    IReadOnlyList<string> Types, string? Connection = null, IReadOnlyList<string>? Partitions = null);
+    IReadOnlyList<string> Types, string? Connection = null, IReadOnlyList<string>? Partitions = null, int RetentionDays = CacheRetention.DefaultDays);
 
 /// <summary>
 /// The cache of one OSDU partition: every cache flow that fills it, the types it holds as those flows together declare them,
-/// its current version with the flow and run that wrote it, and how many versions it has. Every delivery flow that delivers
-/// to the partition reads it.
+/// its current version with the flow and run that wrote it, how many versions it has, and its retention: how many days the
+/// records of a replaced version are kept, the longest any of its cache flows declares. Every delivery flow that delivers to
+/// the partition reads it.
 /// </summary>
 public sealed record DeliveryCacheDto(
-    string Scope, IReadOnlyList<DeliveryCacheFlowDto> Flows, IReadOnlyList<DeliveryCacheTypeDto> Types, DeliveryCacheVersionDto? Current, int Versions);
+    string Scope, IReadOnlyList<DeliveryCacheFlowDto> Flows, IReadOnlyList<DeliveryCacheTypeDto> Types, DeliveryCacheVersionDto? Current, int Versions,
+    int RetentionDays = CacheRetention.DefaultDays);
 
 /// <summary>
 /// One cache change and what happens about it: the partition, the cached record and path that moved, the value before and
@@ -292,11 +295,13 @@ public sealed record DeliveryCacheSystemPropertyDto(string Service, string Name,
 /// <summary>
 /// One version of a partition's cache: when it was captured, whether it is the version deliveries render against, the version
 /// that was current before it, the cache flow and the run that wrote it and who asked (null run for an import from files),
-/// where the content came from, what it holds, and the partition's system properties the capture found.
+/// where the content came from, what it holds, the partition's system properties the capture found, and when the cache's
+/// retention pruned its records (null while they are kept; a pruned version can no longer be read or compared).
 /// </summary>
 public sealed record DeliveryCacheVersionDto(
     string Scope, string Version, int Sequence, DateTime CapturedUtc, bool Current, string? PreviousVersion, string Flow, Guid? RunId, string CapturedBy,
-    string Origin, long Items, IReadOnlyList<DeliveryCacheVersionTypeDto> Types, IReadOnlyList<DeliveryCacheSystemPropertyDto> SystemProperties);
+    string Origin, long Items, IReadOnlyList<DeliveryCacheVersionTypeDto> Types, IReadOnlyList<DeliveryCacheSystemPropertyDto> SystemProperties,
+    DateTime? PrunedUtc = null);
 
 /// <summary>
 /// What changed in a partition's cache between two versions: counts per type and a page of the records that differ. The
@@ -318,10 +323,13 @@ public sealed record DeliveryCacheDiffItemDto(
 
 /// <summary>
 /// One version in a cache's history: the version captured before it, how many records it changed, added and removed against
-/// that one, and which types it moved. A type that only rode along with another's change is not listed.
+/// that one, and which types it moved. A type that only rode along with another's change is not listed. The counts stay when
+/// the cache's retention prunes either version's records; <c>BeforePruned</c> says the version before it is pruned, so the
+/// records that differ can no longer be listed.
 /// </summary>
 public sealed record DeliveryCacheHistoryEntryDto(
-    DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheHistoryTypeDto> Types);
+    DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheHistoryTypeDto> Types,
+    bool BeforePruned = false);
 
 /// <summary>
 /// One type a version moved: <c>added</c>, <c>changed</c> or <c>removed</c>, with how many of its records changed, arrived and
@@ -1431,7 +1439,8 @@ public static class DeliveryEndpoints
                             declared.Select(d => d.Endpoint).FirstOrDefault(e => e is not null), refreshedBy,
                             declared.Select(d => d.Name).Order(StringComparer.Ordinal).ToList(),
                             declared.Select(d => d.Connection).FirstOrDefault(c => c is not null),
-                            partitions);
+                            partitions,
+                            CacheRetention.OfPartition(declared.Select(d => d.RetentionDays)));
                     })
                     .OrderBy(f => f.Name, StringComparer.Ordinal)
                     .ToList();
@@ -1470,7 +1479,9 @@ public static class DeliveryEndpoints
                     .OrderBy(t => t.Name, StringComparer.Ordinal)
                     .ToList();
 
-                return new DeliveryCacheDto(scope, flows, types, current is null ? null : ToVersionDto(current), versionCounts.GetValueOrDefault(scope));
+                return new DeliveryCacheDto(
+                    scope, flows, types, current is null ? null : ToVersionDto(current), versionCounts.GetValueOrDefault(scope),
+                    CacheRetention.OfPartition(group.Select(d => d.RetentionDays)));
             })
             .ToList();
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheDto>>(caches);
@@ -1497,6 +1508,11 @@ public static class DeliveryEndpoints
             return string.IsNullOrWhiteSpace(version)
                 ? TypedResults.Ok(new PagedResult<DeliveryCachedItemDto>([], p, size, 0))
                 : UnknownCacheVersion(partition, version.Trim());
+        }
+
+        if (resolved.PrunedUtc is { } pruned)
+        {
+            return PrunedCacheVersion(new CacheVersionPrunedException(partition, resolved.Version, DateTime.SpecifyKind(pruned, DateTimeKind.Utc)));
         }
 
         var query = CacheVersions.ItemsAt(osdu, partition, resolved.Sequence);
@@ -1552,7 +1568,8 @@ public static class DeliveryEndpoints
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>(history
             .Select(h => new DeliveryCacheHistoryEntryDto(
                 ToVersionDto(h.Version), h.Before, h.Changes.Changed, h.Changes.Added, h.Changes.Removed,
-                h.Types.Select(t => new DeliveryCacheHistoryTypeDto(t.TypeName, t.Change, t.Counts.Changed, t.Counts.Added, t.Counts.Removed, t.Hash, t.Items)).ToList()))
+                h.Types.Select(t => new DeliveryCacheHistoryTypeDto(t.TypeName, t.Change, t.Counts.Changed, t.Counts.Added, t.Counts.Removed, t.Hash, t.Items)).ToList(),
+                h.BeforePruned))
             .ToList());
     }
 
@@ -1562,7 +1579,8 @@ public static class DeliveryEndpoints
             version.CapturedBy, version.Origin, version.Items,
             version.Types.Select(t => new DeliveryCacheVersionTypeDto(
                 t.Name, t.EntityType, t.Items, t.Key, t.Hash, t.Change is { } change ? CacheTypeChanges.Text(change) : null, t.Since)).ToList(),
-            version.SystemProperties.Select(p => new DeliveryCacheSystemPropertyDto(p.Service, p.Name, p.State.ToString(), p.Source, p.Detail)).ToList());
+            version.SystemProperties.Select(p => new DeliveryCacheSystemPropertyDto(p.Service, p.Name, p.State.ToString(), p.Source, p.Detail)).ToList(),
+            version.PrunedUtc);
 
     private static ProblemHttpResult NoCacheNamed()
         => TypedResults.Problem(
@@ -1570,6 +1588,13 @@ public static class DeliveryEndpoints
 
     private static ProblemHttpResult UnknownCacheVersion(string scope, string version)
         => TypedResults.Problem(title: "Unknown version", detail: $"The cache of partition '{scope}' holds no version '{version}'.", statusCode: StatusCodes.Status404NotFound);
+
+    /// <summary>
+    /// A version whose records the cache's retention pruned: gone for good (410), which a client tells apart from a version
+    /// the cache never held (404). The version is still listed, with what it was.
+    /// </summary>
+    private static ProblemHttpResult PrunedCacheVersion(CacheVersionPrunedException pruned)
+        => TypedResults.Problem(title: "Version pruned", detail: pruned.Message, statusCode: StatusCodes.Status410Gone);
 
     /// <summary>The names of the repositories a cache answer mentions, by id.</summary>
     private static async Task<Dictionary<Guid, string>> RepoNamesAsync(CatalogDbContext db, IEnumerable<Guid> repoIds, CancellationToken ct)
@@ -1628,7 +1653,16 @@ public static class DeliveryEndpoints
             Skip = (int)Math.Min(int.MaxValue, (long)(p - 1) * size),
             Take = size,
         };
-        var diff = await CacheVersions.CompareAsync(osdu, query, ct).ConfigureAwait(false);
+        CacheComparison? diff;
+        try
+        {
+            diff = await CacheVersions.CompareAsync(osdu, query, ct).ConfigureAwait(false);
+        }
+        catch (CacheVersionPrunedException pruned)
+        {
+            return PrunedCacheVersion(pruned);
+        }
+
         if (diff is null)
         {
             var named = query.ToVersion is null ? $"'{query.FromVersion}' (or has no current version)" : $"'{query.FromVersion}' or '{query.ToVersion}'";

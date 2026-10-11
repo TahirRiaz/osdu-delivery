@@ -937,6 +937,9 @@ internal sealed class CacheYaml
 
     public string? OnChange { get; set; }
 
+    /// <summary>How many days the partition's cache keeps the records of a version after a newer one replaced it.</summary>
+    public int? RetentionDays { get; set; }
+
     public List<CachedTypeYaml>? Types { get; set; }
 
     public FlowReliabilityYaml? Reliability { get; set; }

@@ -1336,6 +1336,14 @@ public sealed class DeliveryInterface
     /// <summary>The mapping it pins (Name@version).</summary>
     public string MappingReference { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The version of the partition's cache it renders against, as its <c>render.cacheVersion</c> says: <c>current</c>, or
+    /// the label of the version it pins. The cache's retention keeps the records of every version an active interface pins.
+    /// Null for a row the sync wrote before it recorded this: until the next sync records it, the retention of the partitions
+    /// the interface may read prunes nothing, since it cannot tell which versions are pinned.
+    /// </summary>
+    public string? CacheVersion { get; set; }
+
     /// <summary>The OSDU kind the mapping fills, when the repository holds a valid mapping of that reference; empty otherwise.</summary>
     public string Kind { get; set; } = string.Empty;
 
@@ -1458,6 +1466,12 @@ public sealed class DeliveryCacheDefinition
     /// <summary>approve or auto: what a changed cached value of this type does to the records already built from it.</summary>
     public string OnChange { get; set; } = "auto";
 
+    /// <summary>
+    /// How many days the partition's cache keeps the records of a version after a newer one replaced it, as the flow declares
+    /// it (<c>retentionDays</c>, 7 when it declares none). The partition keeps the longest any of its cache flows asks for.
+    /// </summary>
+    public int RetentionDays { get; set; } = 7;
+
     public DateTime FirstSeenUtc { get; set; }
 
     public DateTime LastSeenUtc { get; set; }
@@ -1465,10 +1479,12 @@ public sealed class DeliveryCacheDefinition
 
 /// <summary>
 /// One version of a partition's cache: the whole cache as one merge left it, written by the cache flow whose capture moved
-/// it. A version is never rewritten. A capture that changes what the cache holds writes the next version, which becomes
-/// current, and one that changes nothing writes none, because a new version moves the render context of every record built
-/// against the cache. Every version stays readable for as long as the ledger exists: a delivered record's render context
-/// names the version it was rendered against, and the ledger has to be able to show what that version held.
+/// it. A capture that changes what the cache holds writes the next version, which becomes current, and one that changes
+/// nothing writes none, because a new version moves the render context of every record built against the cache. A version's
+/// content never changes once written. Its records are kept while it is current, while it is the version the current one
+/// replaced, while a delivery flow pins it, and for the partition's retention after a newer version replaced it; then a
+/// refresh prunes them (<see cref="PrunedUtc"/>). The row itself is kept for as long as the ledger exists: a delivered
+/// record's render context names the version, and the row says who captured it, when, from where and what it changed.
 /// </summary>
 public sealed class DeliveryCacheVersion
 {
@@ -1523,6 +1539,19 @@ public sealed class DeliveryCacheVersion
 
     /// <summary>How many cached records the version holds across its types.</summary>
     public long Items { get; set; }
+
+    /// <summary>
+    /// When the cache's retention removed the version's records; null while they are kept. A pruned version can no longer be
+    /// read, compared or rendered against, and its row still describes it.
+    /// </summary>
+    public DateTime? PrunedUtc { get; set; }
+
+    /// <summary>
+    /// What the version changed against the one before it, per type, as counted from its records before a retention removed
+    /// any of them: <c>[{ "type", "changed", "added", "removed" }]</c>, listing the types that moved. Null while the history
+    /// can still count them from the records.
+    /// </summary>
+    public string? ChangesJson { get; set; }
 }
 
 /// <summary>
@@ -3643,6 +3672,7 @@ public static class DeliveryModel
             e.Property(i => i.Route).HasMaxLength(32).IsRequired();
             e.Property(i => i.RouteReason).HasMaxLength(1000);
             e.Property(i => i.MappingReference).HasMaxLength(200).IsRequired();
+            e.Property(i => i.CacheVersion).HasMaxLength(64);
             e.Property(i => i.Kind).HasMaxLength(200).IsRequired();
             e.Property(i => i.RecordObject).HasMaxLength(400).IsRequired();
             e.Property(i => i.AfterJson).HasMaxLength(4000).IsRequired();
@@ -3704,8 +3734,12 @@ public static class DeliveryModel
             // A record holds one range per distinct content: the type listing is its prefix, so this index answers both a
             // version's listing of a type and one record's history.
             e.HasIndex(i => new { i.Scope, i.TypeName, i.RecordId, i.FromSequence }).IsUnique();
-            // The rows the newest version holds (ToSequence null), which a merge compares its result against.
+            // The rows the newest version holds (ToSequence null), which a merge compares its result against, and the closed
+            // ranges a retention removes.
             e.HasIndex(i => new { i.Scope, i.ToSequence });
+            // The rows each version began: what a version changed is counted from them, by the history and by a retention
+            // recording a version's changes before it removes the version's records.
+            e.HasIndex(i => new { i.Scope, i.FromSequence }).IncludeProperties(i => new { i.TypeName, i.RecordId });
         });
 
         modelBuilder.Entity<DeliveryCacheMember>(e =>
@@ -3818,6 +3852,7 @@ public static class DeliveryModel
             e.Property(c => c.Query).HasMaxLength(4000);
             e.Property(c => c.FieldsJson).IsRequired();
             e.Property(c => c.OnChange).HasMaxLength(16).IsRequired();
+            e.Property(c => c.RetentionDays).HasDefaultValue(7);
             // A cache flow that names its partitions declares each of its types once per partition it builds a cache for.
             e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name, c.Scope }).IsUnique();
             // A refresh reads every declaration of its partition; the GUI lists a partition's types and the flows filling them.

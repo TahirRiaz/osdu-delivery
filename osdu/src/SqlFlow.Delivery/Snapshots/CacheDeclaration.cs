@@ -4,7 +4,8 @@ namespace SqlFlow.Delivery.Snapshots;
 
 /// <summary>
 /// One cached type as one cache flow declares it, the way the catalog holds it after the repository sync: where its records
-/// come from, for an OSDU type the kind and query it is searched with, and for a lookup table the name its key is kept under.
+/// come from, for an OSDU type the kind and query it is searched with, for a lookup table the name its key is kept under, and
+/// the retention the flow declares for the partition's cache.
 /// </summary>
 public sealed record CacheTypeDeclaration(
     string FlowName,
@@ -15,7 +16,8 @@ public sealed record CacheTypeDeclaration(
     IReadOnlyList<ReferenceFieldSpec> Fields,
     CacheChangeMode OnChange,
     CacheOrigin Origin = CacheOrigin.Osdu,
-    string? Key = null)
+    string? Key = null,
+    int RetentionDays = CacheRetention.DefaultDays)
 {
     /// <summary>True for a table or a dictionary, whose rows are not OSDU records.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
@@ -70,6 +72,21 @@ public sealed class CacheDeclaration
         }
 
         return fields;
+    }
+
+    /// <summary>The partition's retention: the longest its synced cache flows declare, or the default when none is synced.</summary>
+    public int RetentionDays => CacheRetention.OfPartition(_byType.Values.SelectMany(declared => declared).Select(d => d.RetentionDays));
+
+    /// <summary>
+    /// The retention a refresh or an import by <paramref name="flowName"/> applies: the longest of <paramref name="declared"/>,
+    /// what the flow's document says now, and what the partition's other synced cache flows declare.
+    /// </summary>
+    public int RetentionFor(string flowName, int declared)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
+        return CacheRetention.For(
+            declared,
+            _byType.Values.SelectMany(d => d).Where(d => !string.Equals(d.FlowName, flowName, StringComparison.Ordinal)).Select(d => d.RetentionDays));
     }
 
     /// <summary>What a change to a type does: approval when any flow declaring it asks for that; <paramref name="undeclared"/> when none declares it.</summary>

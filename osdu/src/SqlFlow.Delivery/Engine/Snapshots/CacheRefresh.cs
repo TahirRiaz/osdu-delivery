@@ -54,7 +54,7 @@ public sealed class CacheRefresher
 
         // Each origin is captured its own way, and everything captured is merged into one version: a flow's refresh writes one
         // version of its partition's cache, whatever its types come from.
-        var builder = new SnapshotBuilder(store, scope, flow.Name, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>());
+        var builder = new SnapshotBuilder(store, scope, flow.Name, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>(), flow.RetentionDays);
         var captured = new List<ReferenceType>(spec.Types.Count);
         var origins = new List<string>();
         IReadOnlyList<SystemPropertyReading> readings = [];
@@ -95,7 +95,7 @@ public sealed class CacheRefresher
             origins.Add(type.Describe());
         }
 
-        var write =await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
+        var write = await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
         var snapshot = write.Snapshot;
         var previousVersion = write.Previous?.Version;
 
@@ -125,7 +125,7 @@ public sealed class CacheRefresher
 
         var outcome = new CacheRefreshOutcome(
             DeliveryOperations.Refresh, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types,
-            snapshot.SystemProperties);
+            snapshot.SystemProperties, write.Retention);
         var moved = write.Changes.Moved;
         _logger.LogInformation(
             "Cache of partition {Scope} refreshed by {Flow}: {Outcome}, {Types} type(s), {Items} record(s); {Moved}. {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
@@ -288,12 +288,12 @@ public sealed class CacheRefresher
 
 /// <summary>
 /// The <c>result</c> of a refresh run: the partition whose cache it merged into, the flow, the version the cache holds after
-/// it and the one it replaced, whether a version was written at all, and per type what was captured and what its changes
-/// reach in the delivered estate.
+/// it and the one it replaced, whether a version was written at all, per type what was captured and what its changes reach
+/// in the delivered estate, and what the partition's retention pruned afterwards.
 /// </summary>
 public sealed record CacheRefreshOutcome(
     string Operation, string Scope, string Flow, string Version, string? PreviousVersion, bool Written, DateTime CapturedUtc,
-    IReadOnlyList<CachedTypeOutcome> Types, IReadOnlyList<SystemProperty> SystemProperties)
+    IReadOnlyList<CachedTypeOutcome> Types, IReadOnlyList<SystemProperty> SystemProperties, CacheRetentionOutcome? Retention = null)
 {
     public long Items => Types.Sum(t => (long)t.Items);
 

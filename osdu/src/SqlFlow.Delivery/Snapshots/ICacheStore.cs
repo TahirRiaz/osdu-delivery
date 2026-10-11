@@ -28,7 +28,8 @@ public sealed record CacheVersionType(
 /// <summary>
 /// A version of a partition's cache as its row describes it, without its records: <c>Scope</c> is the partition whose cache
 /// the version belongs to, and <c>FlowName</c> the cache flow whose capture or import wrote it. <c>SystemProperties</c> are
-/// the partition's own settings the capture found, kept apart from the types.
+/// the partition's own settings the capture found, kept apart from the types. <c>PrunedUtc</c> is when the cache's retention
+/// pruned the version's records (<see cref="CacheRetention"/>), null while they are kept.
 /// </summary>
 public sealed record CacheVersionInfo(
     string Scope,
@@ -43,7 +44,12 @@ public sealed record CacheVersionInfo(
     string FlowName,
     long Items,
     IReadOnlyList<CacheVersionType> Types,
-    IReadOnlyList<SystemProperty> SystemProperties);
+    IReadOnlyList<SystemProperty> SystemProperties,
+    DateTime? PrunedUtc = null)
+{
+    /// <summary>True when the cache's retention pruned the version's records: it can no longer be read or compared.</summary>
+    public bool Pruned => PrunedUtc is not null;
+}
 
 /// <summary>What merging a capture into a partition's cache did.</summary>
 /// <param name="Snapshot">The version written, or the current version when the merge changed no cached content.</param>
@@ -54,13 +60,17 @@ public sealed record CacheVersionInfo(
 /// <paramref name="Previous"/> did, and which it no longer holds. Every type is unchanged when no version was written. A
 /// version is written when anything moved, so this is what tells a type that moved from one that only rode along.
 /// </param>
-public sealed record CacheWrite(ReferenceSnapshot Snapshot, ReferenceSnapshot? Previous, bool Written, CacheTypeChanges Changes);
+public sealed record CacheWrite(ReferenceSnapshot Snapshot, ReferenceSnapshot? Previous, bool Written, CacheTypeChanges Changes)
+{
+    /// <summary>What the partition's retention pruned once the merge was written; null until it is applied.</summary>
+    public CacheRetentionOutcome? Retention { get; init; }
+}
 
 /// <summary>
 /// Where every cache lives (design.md section 6.2): the catalog, one cache per OSDU data partition. Every cache flow that
 /// searches a partition merges its captures into that partition's cache, and every delivery flow that delivers to the
-/// partition renders against it. Versions form one line per partition, the newest always current, and a version is never
-/// rewritten.
+/// partition renders against it. Versions form one line per partition, the newest always current. A version's content never
+/// changes once written; the partition's retention prunes the records of the versions it no longer needs, and keeps their rows.
 /// </summary>
 public interface ICacheStore
 {
@@ -68,6 +78,7 @@ public interface ICacheStore
     Task<string?> CurrentVersionAsync(string scope, CancellationToken ct = default);
 
     /// <summary>One version of the partition's cache with every record it holds, or null when there is no such version.</summary>
+    /// <exception cref="CacheVersionPrunedException">The partition's retention pruned the version's records.</exception>
     Task<ReferenceSnapshot?> LoadAsync(string scope, string version, CancellationToken ct = default);
 
     /// <summary>Every version of the partition's cache, newest first.</summary>
@@ -97,4 +108,14 @@ public interface ICacheStore
         DateTimeOffset capturedUtc,
         IReadOnlyList<SystemPropertyReading>? readings = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Applies the partition's retention (<see cref="CacheRetention"/>) at <paramref name="now"/>, as a refresh or an import by
+    /// <paramref name="flowName"/> does once its merge is written: the longest of <paramref name="retentionDays"/>, which the
+    /// flow declares, and what the partition's other synced cache flows declare. Every version whose records it prunes has
+    /// its change counts recorded first, so the cache's history reads the same before and after. Safe to run beside a merge
+    /// and beside another retention of the same partition, and repeatable: a pass cut short is finished by the next.
+    /// </summary>
+    Task<CacheRetentionOutcome> ApplyRetentionAsync(
+        string scope, string flowName, int retentionDays, DateTimeOffset now, CancellationToken ct = default);
 }

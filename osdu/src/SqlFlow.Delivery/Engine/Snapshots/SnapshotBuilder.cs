@@ -15,7 +15,8 @@ namespace SqlFlow.Delivery.Engine.Snapshots;
 /// The cache capture's engine (design.md section 6.2): captures a cache flow's types from OSDU, or reads them from type
 /// files for offline work, and merges them into the cache of the flow's partition, which writes a version when the cached
 /// content moved. A capture holds every record the flow's queries match with every path the partition keeps for its types,
-/// so what one project captures is complete for every pipeline that reads the partition.
+/// so what one project captures is complete for every pipeline that reads the partition. Every write then applies the
+/// partition's retention (<see cref="CacheRetention"/>), so the cache keeps only the history it needs.
 /// </summary>
 public sealed partial class SnapshotBuilder
 {
@@ -24,24 +25,30 @@ public sealed partial class SnapshotBuilder
     private readonly string _flow;
     private readonly TimeProvider _time;
     private readonly ILogger<SnapshotBuilder> _logger;
+    private readonly int _retentionDays;
 
     /// <param name="store">Where the partition's cache lives.</param>
     /// <param name="scope">The partition whose cache the capture merges into.</param>
     /// <param name="flowName">The cache flow the capture is made for, which the version and the membership record.</param>
-    /// <param name="time">The clock the capture instant is read from.</param>
+    /// <param name="time">The clock the capture instant, and the instant the retention is applied at, are read from.</param>
     /// <param name="logger">Where the capture reports what it found.</param>
-    public SnapshotBuilder(ICacheStore store, string scope, string flowName, TimeProvider time, ILogger<SnapshotBuilder> logger)
+    /// <param name="retentionDays">The retention the cache flow declares (<see cref="CacheDefinition.RetentionDays"/>).</param>
+    public SnapshotBuilder(
+        ICacheStore store, string scope, string flowName, TimeProvider time, ILogger<SnapshotBuilder> logger, int retentionDays = CacheRetention.DefaultDays)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentOutOfRangeException.ThrowIfLessThan(retentionDays, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(retentionDays, CacheRetention.MaxDays);
         _store = store;
         _scope = scope;
         _flow = flowName;
         _time = time;
         _logger = logger;
+        _retentionDays = retentionDays;
     }
 
     /// <summary>Mints a version label from a capture instant: sortable, one per second.</summary>
@@ -204,11 +211,12 @@ public sealed partial class SnapshotBuilder
     }
 
     /// <summary>
-    /// Merges the types into the partition's cache, which writes the next version unless the merge changes no cached content.
-    /// A version label is a timestamp and it enters the render context, so writing one for a capture that found nothing new
-    /// would change the metadata hash of every record built from the cache and deliver them all again for no reason.
-    /// Comparing content makes refreshing a cache as often as anyone likes free. Every producer ends here, whatever the origin
-    /// of the types it captured, so one refresh of a flow writes one version.
+    /// Merges the types into the partition's cache, which writes the next version unless the merge changes no cached content,
+    /// then applies the partition's retention. A version label is a timestamp and it enters the render context, so writing
+    /// one for a capture that found nothing new would change the metadata hash of every record built from the cache and
+    /// deliver them all again for no reason. Comparing content makes refreshing a cache as often as anyone likes free. Every
+    /// producer ends here, whatever the origin of the types it captured, so one refresh of a flow writes one version, and
+    /// every refresh and import weighs the partition's history, whether it wrote a version or not.
     /// </summary>
     public async Task<CacheWrite> WriteAsync(
         IReadOnlyList<ReferenceType> types, CacheCapture capture, IReadOnlyList<SystemPropertyReading> readings, CancellationToken ct = default)
@@ -230,8 +238,53 @@ public sealed partial class SnapshotBuilder
                 _scope, _flow, write.Snapshot.Version);
         }
 
-        return write;
+        return write with { Retention = await RetainAsync(ct).ConfigureAwait(false) };
     }
+
+    /// <summary>
+    /// Applies the partition's retention once the merge is written. The merge stands whatever happens here: a retention that
+    /// fails is logged and reported in the outcome, and the next refresh or import applies it again, finishing what this one
+    /// left. Cancellation still cancels.
+    /// </summary>
+    private async Task<CacheRetentionOutcome> RetainAsync(CancellationToken ct)
+    {
+        try
+        {
+            var outcome = await _store.ApplyRetentionAsync(_scope, _flow, _retentionDays, _time.GetUtcNow(), ct).ConfigureAwait(false);
+            if (outcome.Deferred is { } waiting)
+            {
+                _logger.LogInformation(
+                    "Cache of partition {Scope}: retention of {Days} day(s) pruned nothing yet: {Waiting}.", _scope, outcome.RetentionDays, waiting);
+            }
+            else if (outcome.Pruned.Count > 0 || outcome.RowsRemoved > 0)
+            {
+                _logger.LogInformation(
+                    "Cache of partition {Scope}: retention of {Days} day(s) pruned {Pruned} version(s) ({Versions}) and removed {Rows} stored row(s); {Kept} version(s) keep their records.",
+                    _scope, outcome.RetentionDays, outcome.Pruned.Count, Listed(outcome.Pruned), outcome.RowsRemoved, outcome.Kept);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Cache of partition {Scope}: retention of {Days} day(s) pruned nothing; {Kept} version(s) keep their records.",
+                    _scope, outcome.RetentionDays, outcome.Kept);
+            }
+
+            return outcome;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var reason = HeaderRedaction.RedactMessage(ex.GetBaseException().Message);
+            _logger.LogWarning(
+                ex,
+                "Cache of partition {Scope}: the retention could not be applied after cache flow {Flow} updated the cache, which stands; the next refresh or import applies it again. {Reason}",
+                _scope, _flow, reason);
+            return new CacheRetentionOutcome(_retentionDays, 0, [], 0, reason);
+        }
+    }
+
+    /// <summary>The pruned versions as a log line names them: the first few, and how many more.</summary>
+    private static string Listed(IReadOnlyList<string> versions)
+        => versions.Count <= 5 ? string.Join(", ", versions) : $"{string.Join(", ", versions.Take(5))} and {versions.Count - 5} more";
 }
 
 /// <summary>Reads one type out of the OSDU search index, whole, and caches the declared paths of every record.</summary>

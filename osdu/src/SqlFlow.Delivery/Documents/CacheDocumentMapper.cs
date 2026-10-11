@@ -114,6 +114,7 @@ internal static class CacheMapper
             },
             Types = types,
             OnChange = defaultMode,
+            RetentionDays = CacheRetention.Check(y.RetentionDays, source),
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
         };
     }

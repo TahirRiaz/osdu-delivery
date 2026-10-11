@@ -1,3 +1,4 @@
+using System.Globalization;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
@@ -204,10 +205,32 @@ public sealed class RenderResolver
                     $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', which holds no version yet. Refresh a cache flow that builds it (one naming '{scope}' under partitions, or whose source.headers.data-partition-id is '{scope}') to capture one.");
         }
 
-        var references = await _cache.LoadAsync(scope, version, ct).ConfigureAwait(false)
-            ?? throw new FlowValidationException($"{where}: render.cacheVersion pins version {version} of the cache of partition '{scope}', which the catalog does not hold.");
+        ReferenceSnapshot? references;
+        try
+        {
+            references = await _cache.LoadAsync(scope, version, ct).ConfigureAwait(false);
+        }
+        catch (CacheVersionPrunedException pruned)
+        {
+            // The current version is never pruned, so only a pin can name a pruned one.
+            throw PinnedVersionPruned(where, pruned);
+        }
+
+        if (references is null)
+        {
+            throw new FlowValidationException($"{where}: render.cacheVersion pins version {version} of the cache of partition '{scope}', which the catalog does not hold.");
+        }
+
         return (references, scope, searches ? SystemProperties.Pinned(references.SystemProperties) : []);
     }
+
+    /// <summary>What a flow pinning a version the cache's retention pruned is told: what happened, and the two ways on.</summary>
+    private static FlowValidationException PinnedVersionPruned(string where, CacheVersionPrunedException pruned)
+        => new(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"{where}: render.cacheVersion pins version {pruned.Version} of the cache of partition '{pruned.Scope}', whose records the cache's retention pruned at {pruned.PrunedUtc:yyyy-MM-dd HH:mm:ss}Z, so nothing can render against it. Pin a version the cache still holds ('sqlflow cache list {pruned.Scope}' lists them), or remove render.cacheVersion to render against the current version. A version a synced delivery flow pins is kept from the next refresh on."),
+            pruned);
 
     /// <summary>
     /// The system properties of the version of the partition's cache the flow names, read from the version's row alone:

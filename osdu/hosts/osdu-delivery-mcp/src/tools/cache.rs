@@ -74,7 +74,8 @@ of every other delivery tool."
     #[tool(
         description = "The partition caches (the reference data deliveries resolve ids against), as metadata. Without a partition, lists \
 every cache: its cache flows and their schedules, the types they declare (origin, paths kept, record count, whether \
-a change needs approval) and the current version. With a partition, returns that cache's health: per type, the flows \
+a change needs approval), the current version and retentionDays. \
+With a partition, returns that cache's health: per type, the flows \
 its content passes through with each one's last run, the delivery flows that read it, and its state (fresh, failed \
 or missing, with why), plus `notices` of what needs attention. Use it for 'is the cache fresh', 'why is this type \
 missing', 'what reads this type'. Cached values are never returned. Refresh a cache by running its cache flow with \
@@ -102,8 +103,9 @@ trigger_run."
 
     #[tool(
         description = "The versions of one partition's cache, newest first: when each was captured, the cache flow and \
-run that wrote it, who asked, whether it is current, and the record count per type with whether the type was added, \
-changed or unchanged. history=true returns instead how many records each version changed, added and removed, and \
+run that wrote it, who asked, whether it is current, the record count per type with whether the type was added, \
+changed or unchanged, and prunedUtc once the retention pruned its records (it is then still listed, not readable). \
+history=true returns instead how many records each version changed, added and removed, and \
 which types it moved. Use it for 'when did the cache last change', 'which refresh moved the wellbores', 'which \
 version did a delivery render against' (a submission's render context names it). Counts only: no cached value is \
 returned."

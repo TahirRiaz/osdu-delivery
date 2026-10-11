@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Snapshots;
@@ -49,9 +50,11 @@ public sealed record CacheChangeCounts(long Changed, long Added, long Removed)
 /// One version in a cache's history: the version captured before it, what it changed against that version, and which types
 /// it added, changed or removed. The counts and the types are those of the type in scope when one was named. A version is
 /// written when anything in the partition's cache moved, so <see cref="Types"/> is what says which types moved with it: one
-/// that only rode along is not listed.
+/// that only rode along is not listed. <see cref="BeforePruned"/> says the cache's retention pruned the records of the
+/// version before it, so the records that differ can no longer be listed, while the counts still say how many did.
 /// </summary>
-public sealed record CacheHistoryEntry(CacheVersionInfo Version, string? Before, CacheChangeCounts Changes, IReadOnlyList<CacheHistoryType> Types);
+public sealed record CacheHistoryEntry(
+    CacheVersionInfo Version, string? Before, CacheChangeCounts Changes, IReadOnlyList<CacheHistoryType> Types, bool BeforePruned = false);
 
 /// <summary>
 /// One type a version moved: <see cref="Change"/> is added (the version before did not hold it), changed (it held other
@@ -133,6 +136,17 @@ public static class CacheVersions
         return await query.FirstOrDefaultAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>Refuses a version whose records the cache's retention pruned: what it held can no longer be read.</summary>
+    /// <exception cref="CacheVersionPrunedException">The version is pruned.</exception>
+    public static void ThrowIfPruned(DeliveryCacheVersion version)
+    {
+        ArgumentNullException.ThrowIfNull(version);
+        if (version.PrunedUtc is { } pruned)
+        {
+            throw new CacheVersionPrunedException(version.Scope, version.Version, DateTime.SpecifyKind(pruned, DateTimeKind.Utc));
+        }
+    }
+
     /// <summary>The rows a version of a cache holds: every record whose range covers the version's sequence.</summary>
     public static IQueryable<DeliveryCacheItem> ItemsAt(OsduDbContext db, string scope, int sequence)
     {
@@ -150,7 +164,9 @@ public static class CacheVersions
     /// <remarks>
     /// A type's change is what the version recorded by the type's content hash. A version written before types were hashed
     /// recorded none, and its types are read from what the records and the versions hold instead: a type the version before
-    /// did not list arrived, and one whose records began or ended a range at the version changed.
+    /// did not list arrived, and one whose records began or ended a range at the version changed. A version whose changes a
+    /// retention recorded before it pruned records (<see cref="CountChangesAsync"/>) is counted from that record, since the
+    /// rows it was counted from may be gone.
     /// </remarks>
     public static async Task<IReadOnlyList<CacheHistoryEntry>> HistoryAsync(OsduDbContext db, string scope, string? type, CancellationToken ct = default)
     {
@@ -163,37 +179,22 @@ public static class CacheVersions
         }
 
         var named = string.IsNullOrWhiteSpace(type) ? null : type.Trim();
-        var items = db.DeliveryCacheItems.AsNoTracking().Where(i => i.Scope == scope);
-        if (named is not null)
+        var tally = await TallyAsync(db, scope, named, sequences: null, ct).ConfigureAwait(false);
+
+        var oldest = versions[^1];
+        var recorded = await db.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => v.Scope == scope && v.ChangesJson != null && v.Sequence >= oldest.Sequence)
+            .Select(v => new { v.Sequence, v.Version, v.ChangesJson })
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var row in recorded)
         {
-            items = items.Where(i => i.TypeName == named);
+            tally.Use(row.Sequence, ParseChanges(row.ChangesJson!, scope, row.Version)
+                .Where(c => named is null || string.Equals(c.TypeName, named, StringComparison.OrdinalIgnoreCase)));
         }
-
-        var arrived = Counted(await items
-            .GroupBy(i => new { i.TypeName, i.FromSequence })
-            .Select(g => new { g.Key.TypeName, Sequence = g.Key.FromSequence, Count = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
-        var departed = Counted(await items
-            .Where(i => i.ToSequence != null)
-            .GroupBy(i => new { i.TypeName, Sequence = i.ToSequence!.Value })
-            .Select(g => new { g.Key.TypeName, g.Key.Sequence, Count = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
-
-        // A record that changed at a version ended one row and began another there.
-        var changed = Counted(await items
-            .Join(
-                items.Where(d => d.ToSequence != null),
-                a => new { a.TypeName, a.RecordId, Sequence = (int?)a.FromSequence },
-                d => new { d.TypeName, d.RecordId, Sequence = d.ToSequence },
-                (a, d) => new { a.TypeName, a.FromSequence })
-            .GroupBy(x => new { x.TypeName, x.FromSequence })
-            .Select(g => new { g.Key.TypeName, Sequence = g.Key.FromSequence, Count = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
 
         // The types of the version before each listed one: the listing's next entry, and for the oldest listed, its own
         // predecessor, read when the listing stopped short of the first version.
         var bySequence = versions.ToDictionary(v => v.Sequence);
-        var oldest = versions[^1];
         if (oldest.Sequence > 1 && await ResolveBySequenceAsync(db, scope, oldest.Sequence - 1, ct).ConfigureAwait(false) is { } predecessor)
         {
             bySequence[predecessor.Sequence] = OsduCacheStore.Info(predecessor);
@@ -204,9 +205,111 @@ public static class CacheVersions
             {
                 var before = bySequence.GetValueOrDefault(version.Sequence - 1);
                 return new CacheHistoryEntry(
-                    version, before?.Version, Total(version.Sequence, arrived, departed, changed), TypesMoved(version, before, named, arrived, departed, changed));
+                    version, before?.Version, Total(version.Sequence, tally), TypesMoved(version, before, named, tally), before?.Pruned ?? false);
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// What each of <paramref name="sequences"/> changed against the version before it, counted from the records: the types
+    /// it moved, in ordinal order, each with how many of its records changed, arrived and left. A version that moved no
+    /// record lists none. A retention records this for every version whose rows it is about to prune.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<int, IReadOnlyList<CacheComparisonTypeCount>>> CountChangesAsync(
+        OsduDbContext db, string scope, IReadOnlyCollection<int> sequences, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(sequences);
+        var tally = await TallyAsync(db, scope, type: null, sequences, ct).ConfigureAwait(false);
+        var counts = new Dictionary<int, IReadOnlyList<CacheComparisonTypeCount>>();
+        foreach (var sequence in sequences.Distinct())
+        {
+            counts[sequence] = tally.TypesAt(sequence)
+                .Select(name =>
+                {
+                    var at = CountsOf(name, sequence, tally);
+                    return new CacheComparisonTypeCount(name, at.Changed, at.Added, at.Removed);
+                })
+                .Where(c => c.Changed + c.Added + c.Removed > 0)
+                .ToList();
+        }
+
+        return counts;
+    }
+
+    /// <summary>A version's recorded changes as its row keeps them: <c>[{ "type", "changed", "added", "removed" }]</c>.</summary>
+    public static string ChangesJson(IEnumerable<CacheComparisonTypeCount> changes)
+    {
+        ArgumentNullException.ThrowIfNull(changes);
+        return new JsonArray(changes
+            .Select(c => (JsonNode)new JsonObject { ["type"] = c.TypeName, ["changed"] = c.Changed, ["added"] = c.Added, ["removed"] = c.Removed })
+            .ToArray()).ToJsonString();
+    }
+
+    /// <summary>A version's recorded changes, read back; an entry that is not what <see cref="ChangesJson"/> writes is refused rather than guessed.</summary>
+    private static List<CacheComparisonTypeCount> ParseChanges(string json, string scope, string version)
+    {
+        try
+        {
+            return (JsonNode.Parse(json) as JsonArray ?? [])
+                .Select(node => node is JsonObject entry
+                    && entry["type"]?.GetValue<string>() is { Length: > 0 } name
+                    && entry["changed"]?.GetValue<long>() is { } changed and >= 0
+                    && entry["added"]?.GetValue<long>() is { } added and >= 0
+                    && entry["removed"]?.GetValue<long>() is { } removed and >= 0
+                        ? new CacheComparisonTypeCount(name, changed, added, removed)
+                        : throw new DeliveryException(
+                            $"Version {version} of the cache of partition '{scope}' records a change that is not a type with its counts ({node?.ToJsonString()})."))
+                .ToList();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            throw new DeliveryException($"Version {version} of the cache of partition '{scope}' has recorded changes that are not valid JSON ({ex.Message}).", ex);
+        }
+    }
+
+    /// <summary>
+    /// How many records of each type began a range, ended one, and did both, at each version (each of <paramref name="sequences"/>,
+    /// or every version when it is null): three grouped queries. A record that changed at a version ended one row and began
+    /// another there.
+    /// </summary>
+    private static async Task<ChangeTally> TallyAsync(
+        OsduDbContext db, string scope, string? type, IReadOnlyCollection<int>? sequences, CancellationToken ct)
+    {
+        var items = db.DeliveryCacheItems.AsNoTracking().Where(i => i.Scope == scope);
+        if (type is not null)
+        {
+            items = items.Where(i => i.TypeName == type);
+        }
+
+        var began = items;
+        var ended = items.Where(i => i.ToSequence != null);
+        if (sequences is not null)
+        {
+            var wanted = sequences.Distinct().ToList();
+            began = began.Where(i => wanted.Contains(i.FromSequence));
+            ended = ended.Where(i => wanted.Contains(i.ToSequence!.Value));
+        }
+
+        var arrived = Counted(await began
+            .GroupBy(i => new { i.TypeName, i.FromSequence })
+            .Select(g => new { g.Key.TypeName, Sequence = g.Key.FromSequence, Count = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
+        var departed = Counted(await ended
+            .GroupBy(i => new { i.TypeName, Sequence = i.ToSequence!.Value })
+            .Select(g => new { g.Key.TypeName, g.Key.Sequence, Count = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
+        var changed = Counted(await began
+            .Join(
+                ended,
+                a => new { a.TypeName, a.RecordId, Sequence = (int?)a.FromSequence },
+                d => new { d.TypeName, d.RecordId, Sequence = d.ToSequence },
+                (a, d) => new { a.TypeName, a.FromSequence })
+            .GroupBy(x => new { x.TypeName, x.FromSequence })
+            .Select(g => new { g.Key.TypeName, Sequence = g.Key.FromSequence, Count = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
+        return new ChangeTally(arrived, departed, changed);
     }
 
     /// <summary>A version row by its place in the partition's history, or null when there is none.</summary>
@@ -227,28 +330,24 @@ public static class CacheVersions
     }
 
     /// <summary>How many records of <paramref name="typeName"/> changed, arrived and left at <paramref name="sequence"/>.</summary>
-    private static CacheChangeCounts CountsOf(
-        string typeName, int sequence,
-        Dictionary<(string Type, int Sequence), long> arrived, Dictionary<(string Type, int Sequence), long> departed, Dictionary<(string Type, int Sequence), long> changed)
+    private static CacheChangeCounts CountsOf(string typeName, int sequence, ChangeTally tally)
     {
-        var both = changed.GetValueOrDefault((typeName, sequence));
-        return new CacheChangeCounts(both, arrived.GetValueOrDefault((typeName, sequence)) - both, departed.GetValueOrDefault((typeName, sequence)) - both);
+        var both = tally.Changed.GetValueOrDefault((typeName, sequence));
+        return new CacheChangeCounts(both, tally.Arrived.GetValueOrDefault((typeName, sequence)) - both, tally.Departed.GetValueOrDefault((typeName, sequence)) - both);
     }
 
     /// <summary>
     /// The types <paramref name="version"/> added, changed or removed, in ordinal order: by the change the version recorded
     /// for a type when it recorded one, and otherwise by what the version before listed and what the records' ranges hold.
     /// </summary>
-    private static List<CacheHistoryType> TypesMoved(
-        CacheVersionInfo version, CacheVersionInfo? before, string? named,
-        Dictionary<(string Type, int Sequence), long> arrived, Dictionary<(string Type, int Sequence), long> departed, Dictionary<(string Type, int Sequence), long> changed)
+    private static List<CacheHistoryType> TypesMoved(CacheVersionInfo version, CacheVersionInfo? before, string? named, ChangeTally tally)
     {
         bool InScope(string name) => named is null || string.Equals(name, named, StringComparison.OrdinalIgnoreCase);
         var earlier = before?.Types.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var moved = new List<CacheHistoryType>();
         foreach (var held in version.Types.Where(t => InScope(t.Name)))
         {
-            var counts = CountsOf(held.Name, version.Sequence, arrived, departed, changed);
+            var counts = CountsOf(held.Name, version.Sequence, tally);
             var change = held.Change
                 ?? (earlier is null
                     ? version.Sequence == 1 ? CacheTypeChange.Added : counts.Total > 0 ? CacheTypeChange.Changed : CacheTypeChange.Unchanged
@@ -261,22 +360,62 @@ public static class CacheVersions
 
         foreach (var left in (before?.Types ?? []).Where(t => InScope(t.Name) && !version.Types.Any(held => held.Name.Equals(t.Name, StringComparison.OrdinalIgnoreCase))))
         {
-            moved.Add(new CacheHistoryType(left.Name, CacheHistoryType.Removed, CountsOf(left.Name, version.Sequence, arrived, departed, changed), null, 0));
+            moved.Add(new CacheHistoryType(left.Name, CacheHistoryType.Removed, CountsOf(left.Name, version.Sequence, tally), null, 0));
         }
 
         return moved.OrderBy(t => t.TypeName, StringComparer.Ordinal).ToList();
     }
 
     /// <summary>How many records of every type in scope changed, arrived and left at <paramref name="sequence"/>.</summary>
-    private static CacheChangeCounts Total(
-        int sequence,
-        Dictionary<(string Type, int Sequence), long> arrived, Dictionary<(string Type, int Sequence), long> departed, Dictionary<(string Type, int Sequence), long> changed)
+    private static CacheChangeCounts Total(int sequence, ChangeTally tally)
     {
         static long At(Dictionary<(string Type, int Sequence), long> counted, int sequence)
             => counted.Where(c => c.Key.Sequence == sequence).Sum(c => c.Value);
 
-        var both = At(changed, sequence);
-        return new CacheChangeCounts(both, At(arrived, sequence) - both, At(departed, sequence) - both);
+        var both = At(tally.Changed, sequence);
+        return new CacheChangeCounts(both, At(tally.Arrived, sequence) - both, At(tally.Departed, sequence) - both);
+    }
+
+    /// <summary>
+    /// How many records of each type began a range at each version (<see cref="Arrived"/>), ended one there
+    /// (<see cref="Departed"/>), and did both (<see cref="Changed"/>), keyed by type, ignoring case, and sequence.
+    /// </summary>
+    private sealed record ChangeTally(
+        Dictionary<(string Type, int Sequence), long> Arrived,
+        Dictionary<(string Type, int Sequence), long> Departed,
+        Dictionary<(string Type, int Sequence), long> Changed)
+    {
+        /// <summary>The types any record of which began or ended a range at <paramref name="sequence"/>, in ordinal order.</summary>
+        public IEnumerable<string> TypesAt(int sequence)
+            => Arrived.Keys.Concat(Departed.Keys)
+                .Where(key => key.Sequence == sequence)
+                .Select(key => key.Type)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Counts <paramref name="sequence"/> by what a retention recorded for it instead of by its rows, which the retention
+        /// may since have removed: a changed record began one range and ended another, an added one began one, a removed one
+        /// ended one.
+        /// </summary>
+        public void Use(int sequence, IEnumerable<CacheComparisonTypeCount> recorded)
+        {
+            foreach (var counted in new[] { Arrived, Departed, Changed })
+            {
+                foreach (var key in counted.Keys.Where(key => key.Sequence == sequence).ToList())
+                {
+                    counted.Remove(key);
+                }
+            }
+
+            foreach (var change in recorded)
+            {
+                var key = (change.TypeName, sequence);
+                Arrived[key] = Arrived.GetValueOrDefault(key) + change.Changed + change.Added;
+                Departed[key] = Departed.GetValueOrDefault(key) + change.Changed + change.Removed;
+                Changed[key] = Changed.GetValueOrDefault(key) + change.Changed;
+            }
+        }
     }
 
     /// <summary>Compares a type and a sequence as the history keys them: the type without regard to case.</summary>
@@ -296,6 +435,7 @@ public static class CacheVersions
     /// version holds, and the ones only the earlier version holds. Values compare as the exact text stored (ordered names,
     /// binary collation), so a change of case is a change. Null when the cache holds neither named version.
     /// </summary>
+    /// <exception cref="CacheVersionPrunedException">The cache's retention pruned the records of either version.</exception>
     public static async Task<CacheComparison?> CompareAsync(OsduDbContext db, CacheComparisonQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
@@ -312,6 +452,10 @@ public static class CacheVersions
         {
             return null;
         }
+
+        // A pruned version holds only the rows a kept version shares with it, so a comparison with it would list wrong records.
+        ThrowIfPruned(earlier);
+        ThrowIfPruned(later);
 
         var before = ItemsAt(db, scope, earlier.Sequence);
         var after = ItemsAt(db, scope, later.Sequence);

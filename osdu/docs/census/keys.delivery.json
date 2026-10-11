@@ -1040,7 +1040,7 @@
       "path": "interfaces.<name>.render.cacheVersion",
       "type": "string",
       "required": false,
-      "description": "The version of the target partition's cache the mapping renders with. `current` takes whichever version is current when the run starts and records it in the render context; a version label (`20260908T212727Z`) pins that version, and a run fails before anything renders when the catalog does not hold it. Set here, it overrides the source's value for this interface.",
+      "description": "The version of the target partition's cache the mapping renders with. `current` takes whichever version is current when the run starts and records it in the render context; a version label (`20260908T212727Z`) pins that version, and a run fails before anything renders when the catalog does not hold it, or holds it pruned. The cache's retention keeps the records of every version a synced delivery flow pins; a pin added after the version was pruned is warned about by the repository sync. Set here, it overrides the source's value for this interface.",
       "default": "the source's value, else current"
     },
     {
@@ -1733,7 +1733,7 @@
       "path": "render.cacheVersion",
       "type": "string",
       "required": false,
-      "description": "The version of the target partition's cache the mapping renders with. `current` takes whichever version is current when the run starts and records it in the render context; a version label (`20260908T212727Z`) pins that version, and a run fails before anything renders when the catalog does not hold it.",
+      "description": "The version of the target partition's cache the mapping renders with. `current` takes whichever version is current when the run starts and records it in the render context; a version label (`20260908T212727Z`) pins that version, and a run fails before anything renders when the catalog does not hold it, or holds it pruned. The cache's retention keeps the records of every version a synced delivery flow pins; a pin added after the version was pruned is warned about by the repository sync.",
       "default": "current"
     },
     {

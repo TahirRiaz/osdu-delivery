@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.Snapshots;
 
@@ -20,7 +21,8 @@ namespace SqlFlow.Delivery.Catalog;
 /// partition's cache and moves when anything in it does; each type it holds carries its own content hash, how it compares
 /// with the version before and the version its content dates from, so a type that only rode along with another's change is
 /// told apart, and its records are not even read. Versions never change once written, so the most recently loaded ones are
-/// kept in memory.
+/// kept in memory. The partition's retention (<see cref="ApplyRetentionAsync"/>) prunes the records of the versions the
+/// partition no longer needs, and keeps their rows; a pruned version is refused on every host, whatever it holds in memory.
 /// </summary>
 public sealed class OsduCacheStore : ICacheStore
 {
@@ -30,6 +32,13 @@ public sealed class OsduCacheStore : ICacheStore
     private const int InsertChunk = 2_000;
 
     private const int UpdateChunk = 1_000;
+
+    /// <summary>
+    /// The most stored rows one statement of a retention removes. Each batch is its own short statement, so pruning years of
+    /// history never holds a long lock on the rows every render of the partition reads, and never takes enough row locks for
+    /// SQL Server to lock the whole table instead.
+    /// </summary>
+    private const int PruneChunk = 2_000;
 
     /// <summary>How many loaded versions stay in memory. A run renders against one; the GUI reads a handful.</summary>
     private const int RetainedVersions = 8;
@@ -58,17 +67,25 @@ public sealed class OsduCacheStore : ICacheStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
-        if (Recent(scope, version) is { } known)
-        {
-            return known;
-        }
 
+        // The row is read whether or not the version is in memory: a version the retention pruned is refused alike on every
+        // host, including one that loaded it before it was pruned.
         await using var db = _factory();
         var row = await db.DeliveryCacheVersions.AsNoTracking()
             .FirstOrDefaultAsync(v => v.Scope == scope && v.Version == version, ct).ConfigureAwait(false);
         if (row is null)
         {
             return null;
+        }
+
+        if (row.PrunedUtc is { } pruned)
+        {
+            throw new CacheVersionPrunedException(scope, version, Utc(pruned));
+        }
+
+        if (Recent(scope, version) is { } known)
+        {
+            return known;
         }
 
         var snapshot = await ReadAsync(db, row, ct).ConfigureAwait(false);
@@ -117,7 +134,7 @@ public sealed class OsduCacheStore : ICacheStore
         var rows = await db.DeliveryCacheDefinitions.AsNoTracking()
             .Where(d => d.Scope == scope)
             .OrderBy(d => d.FlowName).ThenBy(d => d.Name).ThenBy(d => d.RepoId)
-            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField })
+            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField, d.RetentionDays })
             .ToListAsync(ct).ConfigureAwait(false);
 
         // A flow is named once per catalog; the sync warns when two repositories declare the same one, and the first row wins here.
@@ -135,7 +152,8 @@ public sealed class OsduCacheStore : ICacheStore
                 ParseFields(row.FieldsJson, row.FlowName, row.Name),
                 row.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase) ? CacheChangeMode.Approve : CacheChangeMode.Auto,
                 CacheOrigins.Parse(row.Origin),
-                row.KeyField));
+                row.KeyField,
+                row.RetentionDays));
         }
 
         return new CacheDeclaration(scope, declarations);
@@ -306,6 +324,214 @@ public sealed class OsduCacheStore : ICacheStore
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// The pass takes no lock, and needs none. It records a version's change counts before it marks the version pruned, and
+    /// both writes skip a row a concurrent pass already wrote, so two passes never record counts read after either removed a
+    /// row. It removes only rows a version up to the current one at its start closed, so a row a concurrent merge writes or
+    /// closes is never among them. Each step is repeatable: a pass cut short leaves versions marked and rows the next pass
+    /// removes. It is housekeeping, so it runs at a low deadlock priority: when it meets a merge, a delivery or a reader of
+    /// the cache in a deadlock, the database rolls back its statement rather than theirs, and the pass starts again.
+    /// </remarks>
+    public async Task<CacheRetentionOutcome> ApplyRetentionAsync(
+        string scope, string flowName, int retentionDays, DateTimeOffset now, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
+        ArgumentOutOfRangeException.ThrowIfLessThan(retentionDays, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(retentionDays, CacheRetention.MaxDays);
+
+        var progress = new RetentionProgress();
+        for (var attempt = 1; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                return await RetainAsync(scope, flowName, retentionDays, now, progress, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < RetentionAttempts && IsDeadlockVictim(ex))
+            {
+                // Waiting a moment, longer each time and never the same for two passes, keeps the pass from meeting the same
+                // writer the same way again.
+                await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(20, 100) * attempt), ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>How many times a retention the database chose as a deadlock victim is started before the deadlock is reported.</summary>
+    private const int RetentionAttempts = 5;
+
+    /// <summary>The SQL Server error of a statement the database rolled back to end a deadlock.</summary>
+    private const int DeadlockVictim = 1205;
+
+    /// <summary>Whether a statement failed because the database chose it as the victim of a deadlock, searched through the causes.</summary>
+    private static bool IsDeadlockVictim(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is SqlException sql && sql.Errors.Cast<SqlError>().Any(e => e.Number == DeadlockVictim))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>What a retention did across its attempts: an attempt the database rolled back keeps what it finished.</summary>
+    private sealed class RetentionProgress
+    {
+        public List<string> Pruned { get; } = [];
+
+        public long RowsRemoved { get; set; }
+    }
+
+    /// <summary>
+    /// One attempt of a retention, on one connection at a low deadlock priority, restored before the connection goes back to
+    /// the pool.
+    /// </summary>
+    private async Task<CacheRetentionOutcome> RetainAsync(
+        string scope, string flowName, int retentionDays, DateTimeOffset now, RetentionProgress progress, CancellationToken ct)
+    {
+        await using var db = _factory();
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync("SET DEADLOCK_PRIORITY LOW;", ct).ConfigureAwait(false);
+            return await RetainOnAsync(db, scope, flowName, retentionDays, now, progress, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (db.Database.GetDbConnection().State == ConnectionState.Open)
+            {
+                await db.Database.ExecuteSqlRawAsync("SET DEADLOCK_PRIORITY NORMAL;", CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>The attempt's work on its connection: weigh the versions, record what the pruned ones changed, mark them, remove their rows.</summary>
+    private async Task<CacheRetentionOutcome> RetainOnAsync(
+        OsduDbContext db, string scope, string flowName, int retentionDays, DateTimeOffset now, RetentionProgress progress, CancellationToken ct)
+    {
+        var days = (await DeclarationAsync(db, scope, ct).ConfigureAwait(false)).RetentionFor(flowName, retentionDays);
+        var rows = await db.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => v.Scope == scope)
+            .Select(v => new { v.Sequence, v.Version, v.CapturedUtc, v.Current, v.PrunedUtc, Counted = v.ChangesJson != null })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var held = rows.Count(v => v.PrunedUtc is null);
+        if (await PinnedVersionsAsync(db, scope, ct).ConfigureAwait(false) is not { } pinned)
+        {
+            return new CacheRetentionOutcome(
+                days, held, [.. progress.Pruned], progress.RowsRemoved,
+                Deferred: "a delivery flow that may read this partition was synced before pinned cache versions were recorded, so the versions it pins are not known yet; the next repository sync records them, and the refresh after it prunes");
+        }
+
+        var plan = CacheRetention.Plan(
+            rows.Select(v => new CacheVersionSpan(v.Sequence, v.Version, Utc(v.CapturedUtc), v.Current, v.PrunedUtc is not null)).ToList(),
+            days, now.UtcDateTime, pinned);
+        if (plan.Current == 0)
+        {
+            return new CacheRetentionOutcome(days, held, [.. progress.Pruned], progress.RowsRemoved);
+        }
+
+        // What each version changed is recorded before any row it was counted from goes, so the history reads the same after.
+        var counted = rows.Where(v => v.Counted).Select(v => v.Sequence).ToHashSet();
+        var uncounted = plan.Counted.Where(sequence => !counted.Contains(sequence)).ToList();
+        if (uncounted.Count > 0)
+        {
+            var changes = await CacheVersions.CountChangesAsync(db, scope, uncounted, ct).ConfigureAwait(false);
+            foreach (var sequence in uncounted)
+            {
+                var json = CacheVersions.ChangesJson(changes.GetValueOrDefault(sequence) ?? []);
+                await db.DeliveryCacheVersions
+                    .Where(v => v.Scope == scope && v.Sequence == sequence && v.ChangesJson == null)
+                    .ExecuteUpdateAsync(set => set.SetProperty(v => v.ChangesJson, json), ct).ConfigureAwait(false);
+            }
+        }
+
+        var pruned = plan.Pruned.Select(v => v.Version).ToList();
+        if (pruned.Count > 0)
+        {
+            var sequences = plan.Pruned.Select(v => v.Sequence).ToList();
+            var at = now.UtcDateTime;
+            await db.DeliveryCacheVersions
+                .Where(v => v.Scope == scope && sequences.Contains(v.Sequence) && v.PrunedUtc == null)
+                .ExecuteUpdateAsync(set => set.SetProperty(v => v.PrunedUtc, at), ct).ConfigureAwait(false);
+            progress.Pruned.AddRange(pruned);
+            Forget(scope, pruned);
+        }
+
+        // Rows go whenever some version is pruned, newly or before: a pass cut short left rows the next one removes.
+        if (progress.Pruned.Count > 0 || rows.Any(v => v.PrunedUtc is not null))
+        {
+            await RemoveUnkeptRowsAsync(db, scope, plan, progress, ct).ConfigureAwait(false);
+        }
+
+        return new CacheRetentionOutcome(days, plan.Kept.Count, [.. progress.Pruned], progress.RowsRemoved);
+    }
+
+    /// <summary>
+    /// The versions of the partition's cache an active delivery flow pins (<c>render.cacheVersion</c>): one bound to the
+    /// partition, and one whose partition is its header's, which may resolve to it. A label is a version of one partition's
+    /// cache, so keeping another partition's version of the same label keeps more than needed and never less. Null when such
+    /// a flow's interface was synced before pins were recorded, so what it pins is not known.
+    /// </summary>
+    private static async Task<IReadOnlySet<string>?> PinnedVersionsAsync(OsduDbContext db, string scope, CancellationToken ct)
+    {
+        var declared = await db.DeliveryInterfaces.AsNoTracking()
+            .Where(i => i.Active && (i.Partition == scope || i.Partition == string.Empty))
+            .Select(i => i.CacheVersion)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (declared.Any(version => version is null))
+        {
+            return null;
+        }
+
+        return declared
+            .Where(version => !string.Equals(version, FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase))
+            .Select(version => version!)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Removes, a batch at a time, every stored row of the partition that no kept version holds: a closed range, ended by the
+    /// current version at the latest, that overlaps no run of kept versions. Each batch is its own statement, and counts in
+    /// <paramref name="progress"/> as soon as it commits.
+    /// </summary>
+    private static async Task RemoveUnkeptRowsAsync(OsduDbContext db, string scope, CacheRetentionPlan plan, RetentionProgress progress, CancellationToken ct)
+    {
+        const string Sql = """
+            DELETE TOP (@chunk) i
+            FROM [osdu].[CacheItem] AS i
+            WHERE i.[Scope] = @scope
+              AND i.[ToSequence] IS NOT NULL
+              AND i.[ToSequence] <= @current
+              AND NOT EXISTS (
+                  SELECT 1 FROM OPENJSON(@kept) WITH ([From] int '$.from', [To] int '$.to') AS k
+                  WHERE i.[FromSequence] <= k.[To] AND i.[ToSequence] > k.[From]);
+            """;
+        var kept = new JsonArray(plan.KeptRuns().Select(run => (JsonNode)new JsonObject { ["from"] = run.From, ["to"] = run.To }).ToArray()).ToJsonString();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var deleted = await db.Database.ExecuteSqlRawAsync(
+                Sql,
+                [
+                    new SqlParameter("@chunk", SqlDbType.Int) { Value = PruneChunk },
+                    new SqlParameter("@scope", SqlDbType.NVarChar, MaxNameLength) { Value = scope },
+                    new SqlParameter("@current", SqlDbType.Int) { Value = plan.Current },
+                    new SqlParameter("@kept", SqlDbType.NVarChar, -1) { Value = kept },
+                ],
+                ct).ConfigureAwait(false);
+            progress.RowsRemoved += deleted;
+            if (deleted < PruneChunk)
+            {
+                return;
+            }
+        }
+    }
+
     /// <summary>How long a merge waits for another merge of the same partition to finish before it gives up.</summary>
     public static readonly TimeSpan PartitionLockWait = TimeSpan.FromMinutes(5);
 
@@ -352,7 +578,8 @@ public sealed class OsduCacheStore : ICacheStore
         return new CacheVersionInfo(
             row.Scope, row.Version, row.Sequence, DateTime.SpecifyKind(row.CapturedUtc, DateTimeKind.Utc), row.Current, row.PreviousVersion,
             row.RunId, row.CapturedBy, row.Origin, row.FlowName, row.Items, ParseTypes(row.TypesJson, row.Scope, row.Version),
-            ParseSystemProperties(row.SystemPropertiesJson, row.Scope, row.Version));
+            ParseSystemProperties(row.SystemPropertiesJson, row.Scope, row.Version),
+            row.PrunedUtc is { } pruned ? Utc(pruned) : null);
     }
 
     /// <summary>The captured values of a record as the catalog stores them: names in ordinal order, each value as captured.</summary>
@@ -436,6 +663,16 @@ public sealed class OsduCacheStore : ICacheStore
             .ToList();
         if (!string.Equals(hashes.Content, row.ContentHash, StringComparison.Ordinal) || altered.Count > 0)
         {
+            // A retention may have pruned the version while its records were read: that is what to say, not that they were altered.
+            var pruned = await db.DeliveryCacheVersions.AsNoTracking()
+                .Where(v => v.Id == row.Id)
+                .Select(v => v.PrunedUtc)
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (pruned is { } at)
+            {
+                throw new CacheVersionPrunedException(scope, row.Version, Utc(at));
+            }
+
             var which = altered.Count == 0 ? string.Empty : $" (the records of {string.Join(", ", altered)} no longer match the hash the version recorded for them)";
             throw new DeliveryException(
                 $"Version {row.Version} of the cache of partition '{scope}' does not match the content hash it was written with{which}: its records were altered after the version was written, so nothing renders against it.");
@@ -811,6 +1048,27 @@ public sealed class OsduCacheStore : ICacheStore
     }
 
     private static string Clip(string text, int length) => text.Length <= length ? text : text[..length];
+
+    /// <summary>An instant the catalog stores without its kind, read back as the UTC instant it was written as.</summary>
+    private static DateTime Utc(DateTime stored) => DateTime.SpecifyKind(stored, DateTimeKind.Utc);
+
+    /// <summary>Drops the named versions of a partition from memory, once their records are pruned.</summary>
+    private void Forget(string scope, IReadOnlyCollection<string> versions)
+    {
+        lock (_gate)
+        {
+            for (var node = _recent.First; node is not null;)
+            {
+                var next = node.Next;
+                if (string.Equals(node.Value.Scope, scope, StringComparison.Ordinal) && versions.Contains(node.Value.Version, StringComparer.Ordinal))
+                {
+                    _recent.Remove(node);
+                }
+
+                node = next;
+            }
+        }
+    }
 
     private ReferenceSnapshot? Recent(string scope, string version)
     {

@@ -390,15 +390,19 @@ internal static class DeliveryVerbs
                     scopes.Add(await ResolvedScopeAsync(engine, target, "sqlflow cache list", ct).ConfigureAwait(false));
                 }
 
-                var listed = new List<(string Scope, IReadOnlyList<CacheVersionInfo> Versions)>();
+                var listed = new List<(string Scope, IReadOnlyList<CacheVersionInfo> Versions, int RetentionDays)>();
                 foreach (var scope in scopes)
                 {
-                    listed.Add((scope, await store.ListVersionsAsync(scope, ct).ConfigureAwait(false)));
+                    listed.Add((
+                        scope,
+                        await store.ListVersionsAsync(scope, ct).ConfigureAwait(false),
+                        (await store.DeclarationAsync(scope, ct).ConfigureAwait(false)).RetentionDays));
                 }
 
                 if (context.Json)
                 {
-                    context.Out.WriteLine(CanonicalJson.Pretty(new JsonArray(listed.SelectMany(l => l.Versions).Select(v => (JsonNode)Describe(v)).ToArray())));
+                    context.Out.WriteLine(CanonicalJson.Pretty(new JsonArray(
+                        listed.SelectMany(l => l.Versions.Select(v => (JsonNode)Describe(v, l.RetentionDays))).ToArray())));
                     return 0;
                 }
 
@@ -409,7 +413,7 @@ internal static class DeliveryVerbs
                         context.Out.WriteLine();
                     }
 
-                    WriteVersions(context, listed[i].Scope, listed[i].Versions);
+                    WriteVersions(context, listed[i].Scope, listed[i].Versions, listed[i].RetentionDays);
                 }
 
                 return 0;
@@ -436,7 +440,7 @@ internal static class DeliveryVerbs
                 // Keyed by the partition the document actually names, resolved, so an offline import lands in the same
                 // cache a capture writes and a render reads.
                 var importScope = await ResolvedScopeAsync(engine, cache.Scope, cache.SourcePath ?? cache.Name, ct).ConfigureAwait(false);
-                var builder = new SnapshotBuilder(store, importScope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
+                var builder = new SnapshotBuilder(store, importScope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>(), cache.RetentionDays);
                 var write = await builder.ImportDirectoryAsync(
                     full, cache.Types, new CacheCapture(null, RunActors.LocalAccount(), $"files under {full}"), ct).ConfigureAwait(false);
                 var records = write.Snapshot.Types.Sum(t => t.Items.Count);
@@ -452,6 +456,7 @@ internal static class DeliveryVerbs
                         ["records"] = records,
                         ["typesMoved"] = new JsonArray(write.Changes.Moved.Select(name => (JsonNode)JsonValue.Create(name)).ToArray()),
                         ["typesRemoved"] = new JsonArray(write.Changes.Removed.Select(name => (JsonNode)JsonValue.Create(name)).ToArray()),
+                        ["retention"] = write.Retention is { } retention ? DescribeRetention(retention) : null,
                     }));
                     return 0;
                 }
@@ -459,6 +464,11 @@ internal static class DeliveryVerbs
                 context.Out.WriteLine(write.Written
                     ? $"cache of partition {importScope}: version {write.Snapshot.Version} written from cache flow {cache.Name}, holding {write.Snapshot.Types.Count} type(s) and {records} record(s), now current; {(write.Changes.Moved.Count == 0 ? "no type changed" : "types moved: " + string.Join(", ", write.Changes.Moved))}"
                     : $"cache of partition {importScope}: the files add nothing version {write.Snapshot.Version} does not already hold, so nothing was written");
+                if (write.Retention is { } applied)
+                {
+                    context.Out.WriteLine(RetentionLine(importScope, applied));
+                }
+
                 return 0;
             }
 
@@ -474,8 +484,39 @@ internal static class DeliveryVerbs
     private static async Task<string> ResolvedScopeAsync(EngineContext engine, string declared, string where, CancellationToken ct)
         => CacheScope.Normalize(await engine.Secrets.ResolveAsync(CacheScope.Normalize(declared, where), ct).ConfigureAwait(false), where);
 
-    /// <summary>The versions of one partition's cache, newest first, and the system properties its current version holds.</summary>
-    private static void WriteVersions(CliVerbContext context, string scope, IReadOnlyList<CacheVersionInfo> versions)
+    /// <summary>What a retention did, as the import's output says it.</summary>
+    private static string RetentionLine(string scope, CacheRetentionOutcome retention)
+    {
+        if (retention.Failure is { } failure)
+        {
+            return $"retention of partition {scope}: not applied ({failure}); the next refresh or import applies it";
+        }
+
+        if (retention.Deferred is { } waiting)
+        {
+            return $"retention of partition {scope}: {retention.RetentionDays} day(s), nothing pruned yet: {waiting}";
+        }
+
+        return retention.Pruned.Count == 0 && retention.RowsRemoved == 0
+            ? $"retention of partition {scope}: {retention.RetentionDays} day(s), nothing to prune; {retention.Kept} version(s) keep their records"
+            : $"retention of partition {scope}: {retention.RetentionDays} day(s), pruned {retention.Pruned.Count} version(s) and {retention.RowsRemoved} stored row(s); {retention.Kept} version(s) keep their records";
+    }
+
+    private static JsonObject DescribeRetention(CacheRetentionOutcome retention) => new()
+    {
+        ["retentionDays"] = retention.RetentionDays,
+        ["kept"] = retention.Kept,
+        ["pruned"] = new JsonArray(retention.Pruned.Select(version => (JsonNode)JsonValue.Create(version)).ToArray()),
+        ["rowsRemoved"] = retention.RowsRemoved,
+        ["failure"] = retention.Failure,
+        ["deferred"] = retention.Deferred,
+    };
+
+    /// <summary>
+    /// The versions of one partition's cache, newest first, each marked when its records are pruned, the partition's
+    /// retention, and the system properties its current version holds.
+    /// </summary>
+    private static void WriteVersions(CliVerbContext context, string scope, IReadOnlyList<CacheVersionInfo> versions, int retentionDays)
     {
         if (versions.Count == 0)
         {
@@ -483,12 +524,15 @@ internal static class DeliveryVerbs
             return;
         }
 
-        context.Out.WriteLine($"partition {scope}:");
+        context.Out.WriteLine(
+            $"partition {scope}: the records of a replaced version are kept {retentionDays} day(s) after it was replaced, then pruned; a pruned version is listed with what it was");
         foreach (var v in versions)
         {
             var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
+            var state = v.Current ? "current" : v.PrunedUtc is not null ? "pruned " : "       ";
+            var pruned = v.PrunedUtc is { } at ? $"; records pruned at {at.ToString("u", CultureInfo.InvariantCulture)}" : string.Empty;
             context.Out.WriteLine(
-                $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}");
+                $"{v.Version}  {state}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}{pruned}");
 
             // Which of its types the version moved, by each type's content hash; a version written before types were hashed
             // recorded none, and says nothing here.
@@ -526,13 +570,15 @@ internal static class DeliveryVerbs
         }
     }
 
-    private static JsonObject Describe(CacheVersionInfo v) => new()
+    private static JsonObject Describe(CacheVersionInfo v, int retentionDays) => new()
     {
         ["partition"] = v.Scope,
         ["flow"] = v.FlowName,
         ["version"] = v.Version,
         ["sequence"] = v.Sequence,
         ["current"] = v.Current,
+        ["prunedUtc"] = v.PrunedUtc?.ToString("O", CultureInfo.InvariantCulture),
+        ["retentionDays"] = retentionDays,
         ["capturedUtc"] = v.CapturedUtc.ToString("O", CultureInfo.InvariantCulture),
         ["capturedBy"] = v.CapturedBy,
         ["runId"] = v.RunId?.ToString("D"),

@@ -87,6 +87,10 @@ public static class DeliveryInterfaceCatalog
                     Route = DeliveryProtocols.Name(flow.Target.Protocol),
                     RouteReason = Clip(flow.RouteReason, 1000),
                     MappingReference = flow.Render.Mapping,
+                    // What the partition's retention keeps for it: a pinned version's records; the current version is always kept.
+                    CacheVersion = flow.Render.CacheVersion.Equals(FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase)
+                        ? FlowRender.CurrentCacheVersion
+                        : Clip(flow.Render.CacheVersion, 64),
                     Kind = kinds.GetValueOrDefault(flow.Render.Mapping, string.Empty),
                     RecordObject = flow.Source.Record.Object,
                     AfterJson = JsonSerializer.Serialize(flow.After, Json),
@@ -119,6 +123,7 @@ public static class DeliveryInterfaceCatalog
                 row.Route = wanted.Route;
                 row.RouteReason = wanted.RouteReason;
                 row.MappingReference = wanted.MappingReference;
+                row.CacheVersion = wanted.CacheVersion;
                 row.Kind = wanted.Kind;
                 row.RecordObject = wanted.RecordObject;
                 row.AfterJson = wanted.AfterJson;
@@ -143,7 +148,45 @@ public static class DeliveryInterfaceCatalog
 
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
         await ReportSharedLedgersAsync(context, repoId, warnings, ct).ConfigureAwait(false);
+        await ReportPrunedPinsAsync(context, repoId, warnings, ct).ConfigureAwait(false);
         return new CatalogSyncCounts(added, updated, unchanged, removed);
+    }
+
+    /// <summary>
+    /// Warns about every interface of this repository that pins a version of a cache whose records the cache's retention
+    /// has pruned: a run of it fails, since nothing can render against the version, until it pins one the cache still holds.
+    /// A version a pin names before it is pruned is kept from the next refresh on, so this is a pin added too late.
+    /// </summary>
+    private static async Task ReportPrunedPinsAsync(OsduDbContext context, Guid repoId, ICollection<string> warnings, CancellationToken ct)
+    {
+        var pins = await context.DeliveryInterfaces.AsNoTracking()
+            .Where(i => i.RepoId == repoId && i.Active && i.CacheVersion != null && i.CacheVersion != FlowRender.CurrentCacheVersion)
+            .Select(i => new { i.FlowName, i.Interface, i.Partition, i.RelativePath, Version = i.CacheVersion! })
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (pins.Count == 0)
+        {
+            return;
+        }
+
+        var labels = pins.Select(p => p.Version).Distinct(StringComparer.Ordinal).ToList();
+        var versions = await context.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => labels.Contains(v.Version))
+            .Select(v => new { v.Scope, v.Version, v.PrunedUtc })
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var pin in pins)
+        {
+            // A flow whose partition is its header's may resolve to any partition holding the label; it is warned about only
+            // when every one of them has pruned it.
+            var held = versions
+                .Where(v => v.Version == pin.Version && (pin.Partition.Length == 0 || string.Equals(v.Scope, pin.Partition, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (held.Count > 0 && held.All(v => v.PrunedUtc is not null))
+            {
+                var partition = pin.Partition.Length == 0 ? string.Empty : $" of partition '{pin.Partition}'";
+                warnings.Add(
+                    $"{pin.RelativePath}: {Describe(pin.FlowName, pin.Interface)} pins version {pin.Version} of the cache{partition} with render.cacheVersion, and the cache's retention has pruned that version's records, so its runs fail. Pin a version the cache still holds ('sqlflow cache list' lists them), or remove render.cacheVersion to render against the current version.");
+            }
+        }
     }
 
     /// <summary>The interfaces that keep <paramref name="ledgerFlowId"/>, the active ones first, then by flow and interface name.</summary>
@@ -188,7 +231,8 @@ public static class DeliveryInterfaceCatalog
     private static bool Same(DeliveryInterface row, DeliveryInterface wanted)
         => row.FlowName == wanted.FlowName && row.Interface == wanted.Interface && row.Partition == wanted.Partition && row.Ordinal == wanted.Ordinal
            && row.LedgerFlowId == wanted.LedgerFlowId && row.LedgerName == wanted.LedgerName && row.Route == wanted.Route
-           && row.RouteReason == wanted.RouteReason && row.MappingReference == wanted.MappingReference && row.Kind == wanted.Kind
+           && row.RouteReason == wanted.RouteReason && row.MappingReference == wanted.MappingReference && row.CacheVersion == wanted.CacheVersion
+           && row.Kind == wanted.Kind
            && row.RecordObject == wanted.RecordObject && row.AfterJson == wanted.AfterJson && row.RelativePath == wanted.RelativePath
            && row.Active == wanted.Active;
 
