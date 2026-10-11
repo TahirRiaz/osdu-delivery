@@ -264,6 +264,10 @@ are delivered again on their flow's next run, and under `onChange: approve` (Log
 page's Deliveries tab until someone approves or rejects the change ([The partition
 cache](../concepts/partition-cache.md)).
 
+Each refresh also prunes the records of the versions the partition no longer needs: a replaced version keeps them for 7
+days, or for the cache flow's `retentionDays`, and stays listed on the History tab with what it changed. Set
+`retentionDays: 30` on the flow to keep a month of history to compare against ([retentionDays](../flow/cache.md#retentiondays)).
+
 Several cache flows may fill one partition, from different projects: a type declared by two of them is one type in the
 cache, holding every path either declares. Two declarations that disagree (another entity type, or one field name from
 two paths) are refused; make them agree or rename one.

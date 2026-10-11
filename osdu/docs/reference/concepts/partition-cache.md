@@ -2,12 +2,15 @@
 id: delivery-concept-partition-cache
 title: "The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery"
 type: concept
-summary: "How a partition's cache works: versions, several cache flows sharing one cache, when a version is written, change tags, approval, rollout, system properties."
+summary: "How a partition's cache works: versions and their retention, several cache flows sharing one cache, change tags, approval, rollout, system properties."
 keywords:
   - partition cache
   - cache version
   - current version
   - cache refresh
+  - cache retention
+  - retentiondays
+  - pruned version
   - several cache flows
   - onchange approve
   - approve a cache change
@@ -32,7 +35,10 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Snapshots/CacheDeclaration.cs
   - osdu/src/SqlFlow.Delivery/Snapshots/CacheOrigin.cs
   - osdu/src/SqlFlow.Delivery/Snapshots/SystemProperty.cs
+  - osdu/src/SqlFlow.Delivery/Snapshots/CacheRetention.cs
   - osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs
+  - osdu/src/SqlFlow.Delivery/Catalog/CacheVersions.cs
+  - osdu/src/SqlFlow.Delivery/Catalog/DeliveryInterfaceCatalog.cs
   - osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs
   - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs
@@ -59,7 +65,8 @@ renders records: the reference data a mapping resolves ids against, the lookup t
 through, the dictionaries and dimension values it reads. The cache is versioned, so every delivered record can say
 exactly which cached values it was built from, and a later change to one of those values can find and redeliver exactly
 the records it reaches. It lives in the module's database (the `osdu` schema), never in a repository: the cache flow
-files define what is cached, and their runs fill it.
+files define what is cached, and their runs fill it. Its history is bounded: every refresh prunes the records of the
+versions the partition no longer needs ([Retention](#retention)).
 
 ## One cache per partition
 
@@ -80,8 +87,9 @@ Each refresh that changes what a partition's cache holds writes a new version of
   sequence is appended (`20261009T012000Z-7`).
 - **The newest version is always current.** Every delivery renders against the current version unless its flow pins an
   earlier one with `render.cacheVersion`.
-- **Every version is kept,** because the render context of a delivered record names the version it was rendered
-  against. A version records the cache flow and run that wrote it, who asked, and where its content came from.
+- **Every version stays listed,** because the render context of a delivered record names the version it was rendered
+  against. A version records the cache flow and run that wrote it, who asked, where its content came from and what it
+  changed. Its records are kept for the partition's [retention](#retention), then pruned.
 - **A version that would change nothing is not written.** A version label enters the render context, so writing one for
   a capture that found nothing new would re-render every record built from the cache. A refresh that finds exactly what
   the current version holds writes nothing, and nothing renders again: refreshing often is free.
@@ -95,6 +103,47 @@ Each refresh that changes what a partition's cache holds writes a new version of
 In the database a version is a row of `osdu.CacheVersion`; the records are kept by version range in `osdu.CacheItem`
 (a record is stored once and a new row is written only when it changes, arrives or leaves); `osdu.CacheMember` says
 which cache flow's last capture holds each record ([the ledger](ledger.md)).
+
+## Retention
+
+A version's records serve whoever reads that version: the Cache page browsing or comparing it, and a delivery flow
+pinning it. A delivered record needs none of them once it is delivered: the values its render read stay with it in the
+ledger (its cache set), and a change tag keeps the values before and after. So every refresh and every import of a
+partition's cache, whether or not it writes a version, ends by pruning the records of the versions the partition no
+longer needs. It keeps the records of:
+
+- **the current version,** which every delivery renders against;
+- **the version the current one replaced,** which a run that resolved the current version just before it moved may still
+  load, and which the latest change is compared with;
+- **every version a delivery flow pins** with `render.cacheVersion`;
+- **every version replaced less than the retention ago.** A version stops being current when the next one is captured,
+  and its retention runs from that instant.
+
+The retention is the cache flow's `retentionDays` ([cache flow](../flow/cache.md#retentiondays)), 7 days when it declares
+none. When several cache flows fill one partition, the partition keeps the longest any of them declares.
+
+Pruning a version removes only the stored rows no kept version shares: a record that did not change since is one row,
+kept for the versions that still hold it. Before any row goes, the version's changes (how many records of each type
+changed, arrived and left) are recorded on its row, so the History tab reads exactly as it did. A pruned version then
+stays listed, marked `pruned` with when, and its records can no longer be read:
+
+| Where | What a pruned version answers |
+| --- | --- |
+| A delivery flow pinning it | The run fails: `render.cacheVersion pins version <v> of the cache of partition '<p>', whose records the cache's retention pruned at <time>, so nothing can render against it. Pin a version the cache still holds ('sqlflow cache list <p>' lists them), or remove render.cacheVersion to render against the current version.` The repository sync warns about such a pin too. |
+| The Cache page | History lists it with its counts; its records and its comparison with the version before are not offered. |
+| The API | `GET /cache/items` and `GET /cache/diff` answer `410 Gone` naming the version and when it was pruned; `GET /cache/versions` and `/cache/history` list it with `prunedUtc`. |
+| `sqlflow cache list` | The version is marked `pruned`, with when. |
+
+Pruning is safe beside everything else that touches the cache. It removes only rows a version up to the current one
+closed, so a merge running beside it loses nothing, and it is repeatable: a pass cut short is finished by the next
+refresh. A version a delivery flow pins is kept from the first refresh after the repository sync records the pin; until
+the sync has recorded the pins of every delivery flow that may read the partition (after an upgrade, until its first
+sync), the refresh prunes nothing and says why. A retention that fails is logged and reported in the run's result; the
+refresh itself stands, and the next one applies the retention again.
+
+In the database, `osdu.CacheDefinition.RetentionDays` holds what each flow declares, `osdu.CacheVersion.PrunedUtc` when
+a version was pruned and `ChangesJson` what it changed, and `osdu.Interface.CacheVersion` the version each delivery
+interface renders against (migration `CacheRetention`, module version 1.40.0).
 
 ## Several cache flows, one cache
 
@@ -129,7 +178,8 @@ another flow lets go of the records only the first one kept.
    the dimension's last build. A type that cannot be read whole fails the refresh before anything is written.
 3. Reads the partition's system properties, when it reached OSDU (below).
 4. Merges the capture into the current version and writes the next version, unless nothing moved.
-5. Compares each type that moved with the version before, and tags the changes that delivered records were built from.
+5. Applies the partition's [retention](#retention): prunes the records of the versions it no longer keeps.
+6. Compares each type that moved with the version before, and tags the changes that delivered records were built from.
 
 A run over several partitions does this for each in turn; a partition that fails leaves the others refreshed.
 
@@ -192,7 +242,8 @@ search that finds no record exactly asks again regardless of case.
 ## Filling a cache without a platform
 
 For work without OSDU, `sqlflow cache import <cache flow> --from-dir <dir>` merges type files into the cache of the
-flow's partition as that flow's capture ([`sqlflow cache`](../cli/cache.md)). The files stand in for what a search of
+flow's partition as that flow's capture, and applies the partition's retention as a refresh does
+([`sqlflow cache`](../cli/cache.md)). The files stand in for what a search of
 the partition would return: every record is an OSDU record of the declared entity type in the flow's partition. A lookup
 table is never imported: it is captured from its table, dictionary or dimension wherever the flow runs.
 
@@ -201,12 +252,14 @@ table is never imported: it is captured from its table, dictionary or dimension 
 - **The Cache page** (OSDU, Build, Cache) shows the cache of the partition picked in the title bar: the cache flow files
   that fill it, with **Cache files** and **Refresh now** (a **Refresh** menu naming the flows when several fill the
   partition, since a refresh captures what one flow declares); and four tabs. **Records** browses what a version holds, a type
-  at a time, with how a mapping reads each row. **History** lists the versions and which types each changed.
+  at a time, with how a mapping reads each row. **History** lists the versions and which types each changed, a pruned
+  version marked as such.
   **Deliveries** lists the changes with what they reach, the approvals waiting, and the records built without something
-  the cache did not hold yet. **Setup** lists the cache flows, the types each declares, and the partition's OSDU feature
-  flags.
+  the cache did not hold yet. **Setup** lists the cache flows, the types each declares, the retention each declares and
+  the one the partition keeps, and the partition's OSDU feature flags.
 - **A cache flow's pipeline page** opens on its **Cache versions** tab.
-- **`sqlflow cache list <partition>`** prints the versions, newest first, and the current version's system properties.
+- **`sqlflow cache list <partition>`** prints the partition's retention, the versions, newest first, each pruned one
+  marked, and the current version's system properties.
 - **The API** (`/api/v1/delivery`): `GET /caches`, `/cache/versions`, `/cache/items`, `/cache/history`, `/cache/diff`,
   `/cache/tags`, `/cache/gaps`, `/cache/streams` (each type's upstream flows, from files to the cache flow, and who reads
   it), and `POST /cache/tags/decide` ([the API](api.md)).

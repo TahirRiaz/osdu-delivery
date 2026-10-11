@@ -224,14 +224,19 @@ Every cache route but `GET /caches` names one partition's cache with `scope` (or
 
 | Route | Policy | Parameters | Answers |
 | --- | --- | --- | --- |
-| `GET /caches` | read | `repoId` | Every partition cache: the cache flows filling it, the types they declare, the current version. |
+| `GET /caches` | read | `repoId` | Every partition cache: the cache flows filling it (each with the `retentionDays` it declares), the types they declare, the current version, and the partition's `retentionDays`. |
 | `GET /cache/streams` | read | `partition` (required) | Where each cached type comes from (the flows upstream of its cache flow), which delivery flows read it, and its state. |
 | `GET /cache/items` | read | `scope`, `type`, `search`, `version`, `page`, `pageSize` | The cached records of one version (the current one by default). |
-| `GET /cache/versions` | read | `scope` | The versions, newest first, with the flow and run that wrote each. |
-| `GET /cache/history` | read | `scope`, `type` | Each version with how many records it changed, added and removed. |
+| `GET /cache/versions` | read | `scope` | The versions, newest first, with the flow and run that wrote each, and `prunedUtc` once the retention pruned a version's records. |
+| `GET /cache/history` | read | `scope`, `type` | Each version with how many records it changed, added and removed, and `beforePruned` when the version before it is pruned. |
 | `GET /cache/diff` | read | `scope`, `from`, `to`, `type`, `change`, `search`, `page`, `pageSize` | What changed between two versions (`to` defaults to the current one). |
 | `GET /cache/tags` | read | `status` (`pending`, `approved`, `rolling`, `rejected`, `applied`), `scope`, `page`, `pageSize` | The cache changes delivered records were built from, and what each reaches. |
 | `GET /cache/gaps` | read | `scope`, `type`, `empty`, `page`, `pageSize` | What delivered records were built without, most records first. |
+
+A version whose records the partition's [retention](partition-cache.md#retention) pruned stays listed by
+`/cache/versions` and `/cache/history`, its counts unchanged. `GET /cache/items` naming it, and `GET /cache/diff` naming
+it on either side, answer `410 Gone` (`Version <v> of the cache of partition '<p>' was pruned at <time> by the cache's
+retention: ...`), which a client tells apart from `404` for a version the cache never held.
 
 See [the partition cache](partition-cache.md).
 

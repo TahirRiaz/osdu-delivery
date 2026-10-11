@@ -105,7 +105,9 @@
         "from-dir",
         "offline reference data",
         "system properties",
-        "refresh the cache"
+        "refresh the cache",
+        "cache retention",
+        "pruned version"
       ],
       "cliCommand": "cache",
       "related": [
@@ -126,6 +128,7 @@
         "osdu/src/SqlFlow.Delivery/Model/CacheDefinition.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/CacheScope.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/ReferenceSnapshot.cs",
+        "osdu/src/SqlFlow.Delivery/Snapshots/CacheRetention.cs",
         "osdu/src/SqlFlow.Delivery/Hosting/OsduModuleDatabase.cs",
         "sqlflow/src/SqlFlow.Core/Runs/RunActors.cs"
       ]
@@ -1548,12 +1551,15 @@
       "path": "concepts/partition-cache.md",
       "title": "The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery",
       "type": "concept",
-      "summary": "How a partition's cache works: versions, several cache flows sharing one cache, when a version is written, change tags, approval, rollout, system properties.",
+      "summary": "How a partition's cache works: versions and their retention, several cache flows sharing one cache, change tags, approval, rollout, system properties.",
       "keywords": [
         "partition cache",
         "cache version",
         "current version",
         "cache refresh",
+        "cache retention",
+        "retentiondays",
+        "pruned version",
         "several cache flows",
         "onchange approve",
         "approve a cache change",
@@ -1580,7 +1586,10 @@
         "osdu/src/SqlFlow.Delivery/Snapshots/CacheDeclaration.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/CacheOrigin.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/SystemProperty.cs",
+        "osdu/src/SqlFlow.Delivery/Snapshots/CacheRetention.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/CacheVersions.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/DeliveryInterfaceCatalog.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",
@@ -2483,7 +2492,7 @@
       "path": "flow/cache.md",
       "title": "Cache flow (flowType: cache): OSDU reference data, lookup tables and dictionaries in a partition's cache",
       "type": "flow-reference",
-      "summary": "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, and the refresh and plan operations.",
+      "summary": "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, and the refresh and plan operations.",
       "keywords": [
         "cache flow",
         "flowtype cache",
@@ -2496,6 +2505,8 @@
         "types[].dictionary",
         "types[].dimension",
         "onchange",
+        "retentiondays",
+        "cache retention",
         "refresh",
         "$cache"
       ],
@@ -2523,6 +2534,7 @@
         "osdu/src/SqlFlow.Delivery/Snapshots/CacheOrigin.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/CacheScope.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/ReferenceSnapshot.cs",
+        "osdu/src/SqlFlow.Delivery/Snapshots/CacheRetention.cs",
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",

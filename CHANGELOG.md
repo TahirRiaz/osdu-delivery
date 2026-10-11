@@ -13,6 +13,24 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A partition's cache keeps a bounded history: every refresh and import prunes the records of the versions it no
+  longer needs.** A cache flow declares `retentionDays` (a whole number from 1 to 36500, 7 when left out), and the
+  partition keeps the longest any of its cache flows declares. The current version, the one it replaced and every version
+  a delivery flow pins with `render.cacheVersion` always keep their records; any other version keeps them for the
+  retention after a newer one replaced it, and is then pruned by the next refresh or `sqlflow cache import`, whether that
+  writes a version or not. A pruned version stays listed with who captured it, when, from where and what it changed: its
+  change counts are recorded before any row goes, so the History tab reads the same, and only the stored rows no kept
+  version shares are removed, a batch at a time. Delivered records are untouched: each keeps the cached values its render
+  read. Reading or comparing a pruned version answers `410 Gone` from the API, a delivery flow pinning one fails naming the
+  version and what to do, and the repository sync warns about such a pin. The pass is safe beside a merge, runs at a low
+  deadlock priority and starts again when chosen as a deadlock victim, is repeatable when cut short, and is reported in a
+  refresh's result and an import's output (`retention`: days, versions kept and pruned, rows removed, or why it failed or
+  waits); a retention that fails leaves the refresh standing. After an upgrade nothing is pruned until the repository sync
+  has recorded which versions delivery flows pin. `osdu.CacheDefinition.RetentionDays`, `osdu.CacheVersion.PrunedUtc` and
+  `ChangesJson`, `osdu.Interface.CacheVersion`, and an index on `osdu.CacheItem` by version (migration `CacheRetention`,
+  module version 1.40.0). The Cache page marks pruned versions on History, leaves them out of the Records version
+  picker, and shows each flow's retention and the partition's on Setup; `sqlflow cache list` marks them too; the editor,
+  the language server and the MCP server document `retentionDays`.
 - **A mapping states business rules beside a property, and a delivery holds, reports or leaves out what breaks them.**
   `$assert` beside a node lists up to 20 assertions in the assertion flows' own words (one condition, `equals` to
   `length`, with `ignoreCase` and `tolerance`), read by the one condition reader the assertion flows use. Each judges the

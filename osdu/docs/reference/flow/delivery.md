@@ -326,7 +326,7 @@ record, so changing one renders the records again; everything else changes only 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `mapping` | string | required | The mapping, pinned as `Name@version` (`WellLog@1.0.0`). A floating reference is refused. |
-| `cacheVersion` | string | `current` | Which version of the target partition's cache the mapping renders with: `current` takes the version current when the run starts; a label (`20261001T010000Z`) pins one. Refused for a flow that names several partitions or serves the registry. |
+| `cacheVersion` | string | `current` | Which version of the target partition's cache the mapping renders with: `current` takes the version current when the run starts; a label (`20261001T010000Z`) pins one, and the cache's [retention](../concepts/partition-cache.md#retention) keeps its records while a synced flow pins it. Refused for a flow that names several partitions or serves the registry. |
 | `parameters` | map | none | Values for the parameters the mapping declares, as literals or `${env:...}` / `${keyvault:...}` references. |
 | `mappings` | string | none | The folder the mappings are read from, relative to the flow file. Left out, the nearest `mappings` folder walking up from the flow file. |
 
@@ -540,6 +540,7 @@ Every message starts with the file. A sample of what `sqlflow validate` refuses:
 | A pinned mapping that is not there | `render.mapping: Mapping 'Wellbore@1.0.0' was not found under '../mappings'. Expected one of: Wellbore@1.0.0.yaml, Wellbore@1.0.0.yml, 1.0.0.yaml, 1.0.0.yml.` |
 | A fan-out without a primary key | `reliability.fanOut spreads a submission over ranges of the record table's identity primary key, and source.record.primaryKey names none. ...` |
 | A header beside `partitions` | `target.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it targets. Remove the header.` |
+| A pinned cache version whose records are pruned | `render.cacheVersion pins version 20261001T010000Z of the cache of partition 'dev', whose records the cache's retention pruned at <time>, so nothing can render against it. Pin a version the cache still holds ('sqlflow cache list dev' lists them), or remove render.cacheVersion to render against the current version. ...` |
 | A pinned cache version with several partitions | `render.cacheVersion pins version 20261001T010000Z, which is a version of one partition's cache, and the flow names 2 partitions, each rendering against its own partition's cache. ...` |
 | `render.cache` | `render.cache is not a setting any more: a flow reads the cache of the partition it delivers to (target.headers.data-partition-id), which every cache flow of that partition fills. Remove render.cache.` |
 | A missing hash column | `the flow decides payload changes by content hash, so source.payloads.curves.hashColumn must name the record column holding it; or take the files' modified times instead with change.payloadDetect: lastModified.` |

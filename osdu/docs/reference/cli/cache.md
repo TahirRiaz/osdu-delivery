@@ -13,6 +13,8 @@ keywords:
   - offline reference data
   - system properties
   - refresh the cache
+  - cache retention
+  - pruned version
 cliCommand: cache
 related:
   - delivery-concept-partition-cache
@@ -31,6 +33,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Model/CacheDefinition.cs
   - osdu/src/SqlFlow.Delivery/Snapshots/CacheScope.cs
   - osdu/src/SqlFlow.Delivery/Snapshots/ReferenceSnapshot.cs
+  - osdu/src/SqlFlow.Delivery/Snapshots/CacheRetention.cs
   - osdu/src/SqlFlow.Delivery/Hosting/OsduModuleDatabase.cs
   - sqlflow/src/SqlFlow.Core/Runs/RunActors.cs
 ---
@@ -84,18 +87,21 @@ it reads anything (`Environment variable 'SQLFLOW_CATALOG_DB' is not set.`).
 
 ## cache list
 
-Prints every version of the partition's cache, newest first: its label, `current` against the current one, how many
-records in how many types, the cache flow that wrote it, when, for whom, and in which run. Under each version, the types
-it moved by their own content hash (`types moved: UnitAlias (changed); 3 unchanged`), or `no type changed`. Then the
-current version's system properties: each one's service, name, state, where the service took it from, and why it is
-unknown.
+Prints the partition's [retention](../concepts/partition-cache.md#retention), then every version of its cache, newest
+first: its label, `current` against the current one and `pruned` against one whose records the retention pruned, how
+many records in how many types, the cache flow that wrote it, when, for whom, in which run, and when its records were
+pruned. Under each version, the types it moved by their own content hash (`types moved: UnitAlias (changed); 3
+unchanged`), or `no type changed`. Then the current version's system properties: each one's service, name, state, where
+the service took it from, and why it is unknown.
 
 ```text
-partition dev:
+partition dev: the records of a replaced version are kept 7 day(s) after it was replaced, then pruned; a pruned version is listed with what it was
 20261009T012000Z  current  4210 record(s) in 4 type(s), written by cache flow welldb-lookups-00-cache at 2026-10-09 01:20:00Z for <who asked> in run <run id>
   types moved: UnitAlias (changed); 3 unchanged
 20261008T012000Z           4209 record(s) in 4 type(s), written by cache flow osdu-reference-00-cache at 2026-10-08 01:20:00Z for <who asked> in run <run id>
   no type changed
+20260929T012000Z  pruned   4209 record(s) in 4 type(s), written by cache flow osdu-reference-00-cache at 2026-09-29 01:20:00Z for <who asked> in run <run id>; records pruned at 2026-10-08 01:20:31Z
+  types moved: UnitOfMeasure (changed); 3 unchanged
 
 system properties of partition dev, as version 20261009T012000Z holds them (settings of the platform, not cached records):
   indexer   featureFlag.keywordLower.enabled  enabled  from <source>
@@ -107,9 +113,10 @@ capture one`; one whose current version read no system properties prints `system
 cache flow of partition dev to read them` (a flow of lookup tables alone reaches no platform and reads none).
 
 With `--json`, the output is one array of versions, each with `partition`, `flow`, `version`, `sequence`, `current`,
-`capturedUtc`, `capturedBy`, `runId`, `origin`, `previousVersion`, `records`, `types` (each `name`, `entityType`,
-`records`, `hash`, `change`, `since`; the last three null for a version written before types were hashed) and
-`systemProperties` (each `service`, `name`, `state`, `source`, `detail`).
+`prunedUtc` (null while its records are kept), `retentionDays` (the partition's), `capturedUtc`, `capturedBy`, `runId`,
+`origin`, `previousVersion`, `records`, `types` (each `name`, `entityType`, `records`, `hash`, `change`, `since`; the last
+three null for a version written before types were hashed) and `systemProperties` (each `service`, `name`, `state`,
+`source`, `detail`).
 
 ## cache import
 
@@ -137,11 +144,16 @@ recorded as written by the cache flow, captured by `cli:<user>@<machine>` with n
 
 ```text
 cache of partition dev: version 20261009T094512Z written from cache flow osdu-reference-00-cache, holding 7 type(s) and 312 record(s), now current; types moved: UnitOfMeasure
+retention of partition dev: 7 day(s), pruned 2 version(s) and 318 stored row(s); 3 version(s) keep their records
 ```
 
 Files that add nothing write nothing: `cache of partition dev: the files add nothing version <version> does not already
-hold, so nothing was written`. With `--json`, an import reports `partition`, `flow`, `version`, `written`, `types`,
-`records`, `typesMoved` and `typesRemoved`.
+hold, so nothing was written`. Either way the import then applies the partition's retention, as a refresh does, and its
+second line says what it pruned: `nothing to prune`; `nothing pruned yet: <what it waits for>`, after an upgrade until
+the repository sync has recorded which versions delivery flows pin; or `not applied (<why>); the next refresh or import
+applies it` when it failed, which leaves the import standing. With `--json`, an import reports `partition`, `flow`,
+`version`, `written`, `types`, `records`, `typesMoved`, `typesRemoved` and `retention` (`retentionDays`, `kept`,
+`pruned`, `rowsRemoved`, `failure`, `deferred`).
 
 Records imported this way are not the platform's: a record delivered against them carries references to whatever the
 files say. Fill the cache of a partition that delivers for real by refreshing its cache flow.

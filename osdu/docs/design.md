@@ -377,11 +377,16 @@ flow that has to stay on an earlier one pins it with `render.cacheVersion`.
 **Where it lives.** In the catalog, and only there (`osdu.CacheVersion`,
 `osdu.CacheItem`, `osdu.CacheMember`, each keyed by the partition). The repository holds the definition and nothing else: OSDU Delivery
 reads git and never writes to it, so no capture is committed and no run writes into the
-copy of the repository it executes from. Every version is kept, because a delivered
-record's render context names the version it was rendered against and the ledger has to be
-able to show what that version held. Items are stored once per partition, by version range: one row per record
+copy of the repository it executes from. Every version stays listed, because a delivered
+record's render context names the version it was rendered against; what the record read of
+it is kept with the record, in its cache set. A version's records are kept while it is
+current, while it is the version the current one replaced, while a delivery flow pins it,
+and for the partition's retention after a newer version replaced it (`retentionDays`, 7 by
+default, the longest any cache flow of the partition declares); every refresh and import then
+prunes them, recording first what the version changed, so the history reads the same.
+Items are stored once per partition, by version range: one row per record
 per run of consecutive versions that held it unchanged, so a refresh writes rows only for
-the records that changed, arrived or left, and keeping every version costs rows in
+the records that changed, arrived or left, and the history kept costs rows in
 proportion to what moved rather than to the size of the cache times the number of captures.
 Each version carries the hash of its whole content, checked every time it is loaded, so a
 version altered after it was written is refused rather than rendered against. A render

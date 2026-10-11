@@ -2,7 +2,7 @@
 id: delivery-flow-cache
 title: "Cache flow (flowType: cache): OSDU reference data, lookup tables and dictionaries in a partition's cache"
 type: flow-reference
-summary: "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, and the refresh and plan operations."
+summary: "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, and the refresh and plan operations."
 keywords:
   - cache flow
   - flowtype cache
@@ -15,6 +15,8 @@ keywords:
   - "types[].dictionary"
   - "types[].dimension"
   - onchange
+  - retentiondays
+  - cache retention
   - refresh
   - "$cache"
 yamlPath: "(root, flowType: cache)"
@@ -40,6 +42,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Snapshots/CacheOrigin.cs
   - osdu/src/SqlFlow.Delivery/Snapshots/CacheScope.cs
   - osdu/src/SqlFlow.Delivery/Snapshots/ReferenceSnapshot.cs
+  - osdu/src/SqlFlow.Delivery/Snapshots/CacheRetention.cs
   - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs
@@ -96,6 +99,8 @@ types:
     onChange: approve
   - kind: "osdu:wks:reference-data--WellLogSamplingDomainType:*"
     fields: [data.Code, data.Name]
+
+retentionDays: 30       # keep a replaced version's records a month; 7 when left out
 
 reliability:
   retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
@@ -160,6 +165,7 @@ key never passes silently.
 | `source` | map | yes | none | Where the types come from: `endpoint`, `auth` and `headers` for OSDU types, `connection` for table types. Required even when empty (`source: {}` for a flow of dictionaries or dimensions only); missing, it fails with `'source' is required.` |
 | `types` | list | yes | none | The types the flow caches, at least one, each from one origin. |
 | `onChange` | `auto` or `approve` | no | `auto` | What a changed cached value does to the records already built from it; a type may override it. See [onChange](#onchange). |
+| `retentionDays` | integer, 1 to 36500 | no | `7` | How many days the partition's cache keeps the records of a version after a newer one replaced it; every refresh and import prunes the rest. See [retentionDays](#retentiondays). |
 | `reliability` | map | no | defaults | The HTTP settings of the OSDU searches, written as on a [delivery flow](delivery.md). |
 | `schedule`, `mode`, `lifecycle` | | no | none | SQLFlow's envelope, as on every flow ([schedule](../../../../sqlflow/docs/reference/flow/schedule.md)); a fire runs a refresh. |
 
@@ -297,11 +303,35 @@ Cache page. Set it for the flow and override it per type. When several cache flo
 its changes wait for approval when any of them says `approve`. [The partition cache](../concepts/partition-cache.md)
 describes the tags and the rollout.
 
+## retentionDays
+
+Every refresh and every import of a partition's cache ends by pruning the records of the versions the partition no
+longer needs, so the module's database holds the current cache and a bounded history rather than every version ever
+captured. `retentionDays` says how long that history is: a version keeps its records for that many days after a newer
+version replaced it.
+
+```yaml
+retentionDays: 30
+```
+
+- **Left out, it is 7.** A whole number from 1 to 36500; `retentionDays: 0` fails with `retentionDays is 0, and it is the
+  number of days the partition's cache keeps the records of a version after a newer one replaced it: a whole number from
+  1 to 36500. Leave it out to keep them 7 days.`, and `retentionDays: 7d` fails as invalid YAML.
+- **Some versions are always kept:** the current version, the one it replaced, and every version a delivery flow pins
+  with `render.cacheVersion`.
+- **The longest wins.** When several cache flows fill one partition, the partition keeps the longest retention any of
+  them declares, so no project's history is pruned sooner than it asked for.
+- **Nothing a delivered record needs is pruned.** A record keeps the cached values its render read in the ledger, and a
+  pruned version stays listed with who captured it, when and what it changed. Only its records go: it can no longer be
+  browsed, compared, or rendered against.
+
+[The partition cache](../concepts/partition-cache.md#retention) describes what is kept and when it goes.
+
 ## Operations
 
 | Operation | What it does |
 | --- | --- |
-| `refresh` | The default: a run with no operation and every scheduled fire refreshes. Captures every declared type and merges it into the partition's cache, writing a version when the cached content moved, then tags what the changes reach. |
+| `refresh` | The default: a run with no operation and every scheduled fire refreshes. Captures every declared type and merges it into the partition's cache, writing a version when the cached content moved, then prunes what the partition's [retention](#retentiondays) no longer keeps and tags what the changes reach. |
 | `plan` | Counts what each type would hold (the records an OSDU search matches, the rows of a table, the entries of a dictionary, the values of a dimension) and writes nothing. |
 
 Any other operation is refused, for example `operation must be one of refresh, plan for 'cache' flows; 'deliver' is
@@ -314,8 +344,10 @@ A refresh writes into the module's database, so it needs it: on a node or the co
 workstation, `sqlflow` reads it through `SQLFLOW_OSDU_DB`, else in the catalog's database (`--db`, by default
 `${env:SQLFLOW_CATALOG_DB}`). The
 run's result lists every type with its origin, record count, `change` (`added`, `changed` or `unchanged`) and content
-hash, and its log names the types that moved. A refresh that finds exactly what the current version holds writes
-nothing, so refreshing as often as you like costs no redelivery.
+hash, and `retention`: the days applied, how many versions keep their records, the versions pruned and the stored rows
+removed. Its log names the types that moved and what the retention pruned. A refresh that finds exactly what the
+current version holds writes no version, so refreshing as often as you like costs no redelivery; it still applies the
+retention.
 
 ## Lineage
 
@@ -351,6 +383,7 @@ serves the registry and a delivery flow that hard-codes `data-partition-id: dev`
 | `source.headers names 'data-partition-id', and the flow names its partitions: ...` | A header beside `partitions`. |
 | `source.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: ...` | A literal secret. |
 | `type '<name>': Dictionary '<dictionary>' was not found under '<folder>'. Expected <dictionary>.yaml or <dictionary>.yml.` | A dictionary type whose file `sqlflow validate` does not find. |
+| `retentionDays is <n>, and it is the number of days ... a whole number from 1 to 36500. Leave it out to keep them 7 days.` | A retention below one day or above a hundred years. |
 
 A refresh can also fail when another cache flow of the same partition declares the same type differently (another entity
 type, a field from another path, or a second declaration of a lookup table): `Cache flow '<flow>' disagrees with another
