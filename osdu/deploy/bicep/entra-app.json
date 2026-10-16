@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "10564105946355179649"
+      "templateHash": "8374530139573069571"
     }
   },
   "parameters": {
@@ -68,6 +68,11 @@
         "uniqueName": "[parameters('uniqueName')]",
         "displayName": "[parameters('displayName')]",
         "signInAudience": "[parameters('signInAudience')]",
+        "owners": {
+          "relationships": [
+            "[deployer().objectId]"
+          ]
+        },
         "spa": {
           "redirectUris": [
             "[parameters('redirectUri')]"
@@ -103,6 +108,11 @@
       "type": "Microsoft.Graph/servicePrincipals@v1.0",
       "properties": {
         "appId": "[reference('application').appId]",
+        "owners": {
+          "relationships": [
+            "[deployer().objectId]"
+          ]
+        },
         "appRoleAssignmentRequired": true
       },
       "dependsOn": [

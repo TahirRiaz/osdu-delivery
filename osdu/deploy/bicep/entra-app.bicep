@@ -14,8 +14,9 @@
 // The role value stays SqlFlow.User: the scope names the platform issues are kept, as the project's naming rule
 // says, and changing it on a live registration would revoke every existing assignment.
 //
-// The deploying principal needs directory write access (Application Administrator or the
-// Application.ReadWrite.All app permission) for the Graph resources, and assigning a GROUP to the role needs
+// The deploying principal needs Microsoft Graph's Application.ReadWrite.OwnedBy (or a directory role that writes
+// applications, such as Application Administrator): it is made an owner of the registration and of its service
+// principal, which that permission requires before it may create or change them. Assigning a GROUP to the role needs
 // Microsoft Entra ID P1. The extension is enabled in bicepconfig.json in this directory.
 //
 // With assignment required and no group id, NO ONE can sign in until members are assigned (here on the next
@@ -60,6 +61,12 @@ resource application 'Microsoft.Graph/applications@v1.0' = {
   uniqueName: uniqueName
   displayName: displayName
   signInAudience: signInAudience
+  // The deploying principal owns the registration, so a permission limited to owned applications can manage it.
+  owners: {
+    relationships: [
+      deployer().objectId
+    ]
+  }
   spa: {
     redirectUris: [
       redirectUri
@@ -92,6 +99,11 @@ resource application 'Microsoft.Graph/applications@v1.0' = {
 
 resource servicePrincipal 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: application.appId
+  owners: {
+    relationships: [
+      deployer().objectId
+    ]
+  }
   // The gate: Entra issues a token only to users assigned an app role on this enterprise application.
   appRoleAssignmentRequired: true
 }

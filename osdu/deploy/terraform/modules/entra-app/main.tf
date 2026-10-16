@@ -10,9 +10,11 @@
 #                       given. Every member of that group (and only them) can sign in.
 #
 # The role value stays SqlFlow.User: changing it on a live registration would revoke every existing assignment. The
-# deploying identity needs directory write access (Application Administrator or Application.ReadWrite.All), and
-# assigning a GROUP to the role needs Microsoft Entra ID P1. With assignment required and no group id, NO ONE can sign
-# in until members are assigned: access is denied until a group is named, never open to the whole tenant.
+# deploying identity needs Microsoft Graph's Application.ReadWrite.OwnedBy (or a directory role that writes
+# applications, such as Application Administrator): it is made an owner of the registration and of its service
+# principal, which that permission requires before it may create or change them. Assigning a GROUP to the role needs
+# Microsoft Entra ID P1. With assignment required and no group id, NO ONE can sign in until members are assigned:
+# access is denied until a group is named, never open to the whole tenant.
 
 locals {
   # A deterministic id for the app role, stable across applies, so a re-run updates the same role rather than churning
@@ -29,9 +31,13 @@ locals {
   redirect_uri = can(regex("^https?://[^/]+$", var.redirect_uri)) ? "${var.redirect_uri}/" : var.redirect_uri
 }
 
+# Who is deploying: the owner of the registration and its service principal.
+data "azuread_client_config" "current" {}
+
 resource "azuread_application" "this" {
   display_name     = var.display_name
   sign_in_audience = var.sign_in_audience
+  owners           = [data.azuread_client_config.current.object_id]
 
   single_page_application {
     redirect_uris = [local.redirect_uri]
@@ -58,6 +64,7 @@ resource "azuread_application" "this" {
 
 resource "azuread_service_principal" "this" {
   client_id = azuread_application.this.client_id
+  owners    = [data.azuread_client_config.current.object_id]
   # The gate: Entra issues a token only to users assigned an app role on this enterprise application.
   app_role_assignment_required = true
 }

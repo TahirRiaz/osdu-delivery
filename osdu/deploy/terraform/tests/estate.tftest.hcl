@@ -97,6 +97,12 @@ mock_provider "azuread" {
       client_id = "44444444-4444-4444-4444-444444444444"
     }
   }
+  # The deploying principal, made owner of the sign-in registration and its service principal: an object id is a UUID.
+  mock_data "azuread_client_config" {
+    defaults = {
+      object_id = "55555555-5555-5555-5555-555555555555"
+    }
+  }
 }
 
 variables {
