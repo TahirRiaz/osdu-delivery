@@ -1,0 +1,348 @@
+using SqlFlow.Core.Connections;
+using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Lineage;
+using SqlFlow.Core.Runs;
+
+namespace SqlFlow.Yaml;
+
+/// <summary>
+/// A database object a flow of a registered kind reads or writes, declared by the document so the estate scan turns it
+/// into a declared lineage fact exactly as it does an ingestion flow's source and target: the server identity comes
+/// from <see cref="ConnectionReference"/> by the same rule, so a registered flow reading the table an ingestion flow
+/// writes lands on the same node and is ordered after it in waves.
+/// </summary>
+public sealed record DeclaredDataObject
+{
+    /// <summary><see cref="LineageRelation.Reads"/> or <see cref="LineageRelation.Writes"/>; the scan refuses any
+    /// other relation.</summary>
+    public required LineageRelation Relation { get; init; }
+
+    /// <summary>The connection reference (<c>${env:...}</c>, <c>${keyvault:...}</c>, <c>@alias</c>) of the server the
+    /// object lives on: the same value the flow's connection declares, never a resolved connection string.</summary>
+    public required string ConnectionReference { get; init; }
+
+    /// <summary>The object's database, or null when the flow does not know it (the graph completes it from the
+    /// server's default database, as for a file flow's target).</summary>
+    public string? Database { get; init; }
+
+    /// <summary>The object's schema, or null when the flow does not know it.</summary>
+    public string? Schema { get; init; }
+
+    /// <summary>The object's name.</summary>
+    public required string Name { get; init; }
+
+    /// <summary>What the object is, when the flow knows; null takes the ingestion default (a read is of an object of
+    /// unknown kind, a write is to a table).</summary>
+    public LineageNodeKind? Kind { get; init; }
+
+    /// <summary>The server's provider, for the server inventory the derived tier connects to.</summary>
+    public DataSourceKind Provider { get; init; } = DataSourceKind.MSSQL;
+
+    /// <summary>A read of a three-part <c>[Database].[Schema].[Object]</c> name (bracket-aware; the rightmost three
+    /// parts are used) on the server <paramref name="connectionReference"/> names.</summary>
+    public static DeclaredDataObject Reads(string connectionReference, string qualifiedName)
+        => FromQualifiedName(LineageRelation.Reads, connectionReference, qualifiedName);
+
+    /// <summary>A write to a three-part <c>[Database].[Schema].[Object]</c> name on the server
+    /// <paramref name="connectionReference"/> names.</summary>
+    public static DeclaredDataObject Writes(string connectionReference, string qualifiedName)
+        => FromQualifiedName(LineageRelation.Writes, connectionReference, qualifiedName);
+
+    /// <summary>A declaration of <paramref name="relation"/> on a three-part name. The name is parsed here (a name with
+    /// fewer than three parts is a <see cref="SqlFlow.Core.SqlFlowException"/>); the relation and the connection
+    /// reference are checked by the estate scan, which reports a refusal against the document's file.</summary>
+    public static DeclaredDataObject FromQualifiedName(LineageRelation relation, string connectionReference, string qualifiedName)
+    {
+        var parsed = RelationalObject.Parse(qualifiedName);
+        return new DeclaredDataObject
+        {
+            Relation = relation,
+            ConnectionReference = connectionReference,
+            Database = parsed.Database,
+            Schema = parsed.Schema,
+            Name = parsed.Name,
+        };
+    }
+}
+
+/// <summary>
+/// A flow document of a kind a host registered (<see cref="IFlowDocumentKind"/>) rather than one the loader builds in.
+/// It declares the header members every consumer of a flow document reads: the estate scan and the catalog sync (name,
+/// kind, batch, the servers it reads and writes, lifecycle, lineage participation), the declared endpoints the proposal
+/// preflight compares, the credential references the secret-hygiene check inspects, and whether a node can run it
+/// from a single-file snapshot. With those, every consumer treats a registered flow like a built-in one without knowing
+/// its kind. The loader stamps the document's schedule, execution mode and lifecycle from the envelope.
+/// </summary>
+public abstract record RegisteredFlowDocument : FlowDocument
+{
+    /// <summary>The flow's name: its pipeline identity and its run-history folder.</summary>
+    public abstract string Name { get; }
+
+    /// <summary>The document's <c>flowType</c> value.</summary>
+    public abstract string Kind { get; }
+
+    /// <summary>The flow's grouping label (<c>batch:</c>), or null when it declares none.</summary>
+    public virtual string? Batch => null;
+
+    /// <summary>The flow's declared lifecycle (the envelope's <c>lifecycle:</c> key, stamped by the loader): production
+    /// unless the document says otherwise. Only production pipelines generate notification events; execution is
+    /// unaffected.</summary>
+    public FlowLifecycle Lifecycle { get; init; } = FlowLifecycle.Production;
+
+    /// <summary>The connection reference (<c>${env:...}</c>, <c>${keyvault:...}</c>) of the server the flow reads
+    /// from, or null when its source is not a server (files, an external API).</summary>
+    public virtual string? SourceConnectionReference => null;
+
+    /// <summary>The connection reference of the server the flow writes to, or null when its target is not a server
+    /// (files, an external API).</summary>
+    public virtual string? TargetConnectionReference => null;
+
+    /// <summary>What the flow reads, as its declared endpoint and pipeline row show it: a location, an object name or
+    /// an endpoint, never a credential. Null when the kind declares no source side.</summary>
+    public virtual string? SourceReference => null;
+
+    /// <summary>What the flow writes to, as its declared endpoint and pipeline row show it. Null when the kind declares
+    /// no target side.</summary>
+    public virtual string? TargetReference => null;
+
+    /// <summary>Every value in the document that is meant to be a credential reference, keyed by what it configures,
+    /// so the loader can warn when one is a literal secret instead. The value itself is never echoed by the warning.</summary>
+    public virtual IEnumerable<KeyValuePair<string, string>> CredentialReferences => [];
+
+    /// <summary>True when the document cannot execute from a bare single-file snapshot because it addresses sibling
+    /// files in the repository tree through a relative local path; such a document runs from a full git
+    /// materialization.</summary>
+    public virtual bool RequiresRepoTree => false;
+
+    /// <summary>
+    /// What an offline check of the document finds wrong that parsing it cannot: a companion file the document names
+    /// that is not on disk where the document says, looked for around <paramref name="documentPath"/> (the document's
+    /// full path) the way a run of the flow looks for it. <c>validate</c> refuses a document with any problem; every
+    /// other consumer (the estate scan, the catalog sync, a node) parses the document as it stands and reports a missing
+    /// companion in its own terms, so such a document keeps its place in lineage and the catalog. One sentence per
+    /// problem, naming the key and the file looked for; empty by default.
+    /// </summary>
+    public virtual IReadOnlyList<string> CheckOffline(string documentPath) => [];
+
+    /// <summary>Whether the flow belongs in the lineage graph: true for a flow that moves catalog data, false for one
+    /// that runs on the estate rather than through it.</summary>
+    public virtual bool ParticipatesInLineage => true;
+
+    /// <summary>The database objects the flow reads and writes. The estate scan turns each into a declared lineage fact
+    /// on the node an ingestion flow naming the same object uses, so the execution plan orders the flow after the flows
+    /// that write what it reads, and before the flows that read what it writes. Empty for a kind that relates to no
+    /// database object; a declaration the scan cannot use skips the document with a warning.</summary>
+    public virtual IReadOnlyList<DeclaredDataObject> DeclaredObjects => [];
+
+    /// <summary>
+    /// Everything the flow contributes to lineage: the database objects it reads and writes, the file locations it reads
+    /// and the file drops it lands, the datasets of external systems it reads and writes, the datasets it reads that
+    /// are derived from other datasets, and the warnings describing them raised. The estate scan calls this once per
+    /// document with the document's own file, the estate it is scanning and the documents of registered kinds it
+    /// found there, so a kind can read the companion documents a flow names from the checkout. A kind that only relates to
+    /// database objects keeps the default, which is <see cref="DeclaredObjects"/>. A declaration the scan cannot use
+    /// skips the document with a warning, and so does a description that throws.
+    /// </summary>
+    public virtual RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return new RegisteredFlowLineage { Objects = DeclaredObjects };
+    }
+}
+
+/// <summary>Where a registered document's lineage is described.</summary>
+/// <param name="DocumentPath">The full path of the document being described.</param>
+/// <param name="EstateRoot">The full path of the estate the scan walks: a document reads companion files from inside it
+/// only.</param>
+public sealed record RegisteredLineageContext(string DocumentPath, string EstateRoot)
+{
+    /// <summary>
+    /// Every document of a registered kind the scan found in the estate, the one being described among them, in path
+    /// order and as the loader parsed them. A flow whose reads depend on what another flow declares (a lookup resolved
+    /// by what a store holds rather than by a name the document writes) describes them from here, without reading
+    /// the estate a second time. Empty when a document is described on its own, outside a scan.
+    /// </summary>
+    public IReadOnlyList<RegisteredEstateDocument> Estate { get; init; } = [];
+
+    /// <summary>The folder the document sits in, which a relative location of the document is relative to.</summary>
+    public string DocumentFolder => Path.GetDirectoryName(DocumentPath) ?? EstateRoot;
+
+    /// <summary>Whether <paramref name="path"/> lies inside the estate, after resolving it to a full path.</summary>
+    public bool Contains(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var full = Path.GetFullPath(path);
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(EstateRoot));
+        return string.Equals(full, root, StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+/// <summary>A document of a registered kind as an estate scan found it.</summary>
+/// <param name="Path">The document's full path.</param>
+/// <param name="Document">The document as the loader parsed it.</param>
+public sealed record RegisteredEstateDocument(string Path, RegisteredFlowDocument Document);
+
+/// <summary>What a registered flow contributes to lineage (<see cref="RegisteredFlowDocument.DescribeLineage"/>).</summary>
+public sealed record RegisteredFlowLineage
+{
+    /// <summary>A flow that contributes nothing.</summary>
+    public static RegisteredFlowLineage Empty { get; } = new();
+
+    /// <summary>The database objects the flow reads and writes.</summary>
+    public IReadOnlyList<DeclaredDataObject> Objects { get; init; } = [];
+
+    /// <summary>The file locations the flow reads, and the file drops it lands.</summary>
+    public IReadOnlyList<DeclaredFileLocation> Files { get; init; } = [];
+
+    /// <summary>The datasets of external systems the flow reads and writes.</summary>
+    public IReadOnlyList<DeclaredDataset> Datasets { get; init; } = [];
+
+    /// <summary>The datasets the flow reads that are themselves derived from other datasets.</summary>
+    public IReadOnlyList<DeclaredDerivation> Derivations { get; init; } = [];
+
+    /// <summary>What the description could not declare and why, one sentence each. The scan reports each against the
+    /// document's file; the declarations above still count.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+/// <summary>
+/// A file location a registered flow reads, or a file drop it lands, declared so the estate scan treats it exactly as it
+/// treats a file ingestion's source and a copy flow's target: a read becomes a file node the flow reads, which a flow
+/// landing that folder is ordered before; a write becomes a drop reconciled with the file ingestions reading it.
+/// </summary>
+public sealed record DeclaredFileLocation
+{
+    /// <summary>The longest location identity a declaration may have once anchored: the width the catalog keeps a
+    /// file node's name in.</summary>
+    public const int MaxLocationLength = 512;
+
+    /// <summary><see cref="LineageRelation.Reads"/> or <see cref="LineageRelation.Writes"/>.</summary>
+    public required LineageRelation Relation { get; init; }
+
+    /// <summary>The folder or file: relative to the declaring document's folder, absolute, a URL, or a reference
+    /// (<c>${...}</c>) kept as written. A <c>{token}</c> renders per run, so the location is cut at the first segment
+    /// carrying one and the rest is left to the drop's contents.</summary>
+    public required string Location { get; init; }
+
+    /// <summary>The file-name glob of the files under <see cref="Location"/> (for example <c>part-*.jsonl*</c>), or
+    /// null for any file.</summary>
+    public string? FilePattern { get; init; }
+}
+
+/// <summary>
+/// A dataset of an external system a registered flow reads or writes: a record type in a partition of a data
+/// platform, a queue, a collection. Its node is identified by the system, the system instance, a namespace, a group and
+/// the dataset's name, and is a <see cref="LineageNodeKind.Dataset"/>. A flow reading a dataset is ordered after the
+/// flows writing it. A read may name its dataset with <c>*</c> wildcards: it reads its own pattern node, and every
+/// dataset of the same system, instance and namespace written in the estate whose name the pattern matches.
+/// </summary>
+public sealed record DeclaredDataset
+{
+    /// <summary>The longest namespace, group or name a dataset may carry.</summary>
+    public const int MaxPartLength = 256;
+
+    /// <summary>The longest instance a dataset may name.</summary>
+    public const int MaxInstanceLength = 256;
+
+    /// <summary>The longest node identity a dataset may have: the width the catalog keeps an object key in.</summary>
+    public const int MaxIdentityLength = 900;
+
+    /// <summary><see cref="LineageRelation.Reads"/> or <see cref="LineageRelation.Writes"/>.</summary>
+    public required LineageRelation Relation { get; init; }
+
+    /// <summary>The system the dataset belongs to: lower-case letters, digits and hyphens, starting with a letter, at
+    /// most 32 characters. It captions the node.</summary>
+    public required string System { get; init; }
+
+    /// <summary>The reference (<c>${env:...}</c>, <c>${keyvault:...}</c>) or the address of the system instance, as the
+    /// flow declares it, or null when the namespace alone identifies the dataset. It is identified the way a server
+    /// connection is, so a literal is never stored or shown.</summary>
+    public string? Instance { get; init; }
+
+    /// <summary>The namespace inside the instance (an account, a partition, a tenant).</summary>
+    public required string Namespace { get; init; }
+
+    /// <summary>The group inside the namespace the dataset is listed under.</summary>
+    public required string Group { get; init; }
+
+    /// <summary>The dataset's name. A read may carry <c>*</c> wildcards.</summary>
+    public required string Name { get; init; }
+
+    /// <summary>The separator of the name's segments, which a wildcard never matches across; null matches the name
+    /// as one segment.</summary>
+    public char? Separator { get; init; }
+
+    /// <summary>True when <see cref="Name"/> carries a wildcard.</summary>
+    public bool IsPattern => Name.Contains('*', StringComparison.Ordinal);
+}
+
+/// <summary>
+/// A dataset a registered flow reads that is itself derived from other datasets, with no flow of its own producing it:
+/// a companion document the flow renders through, a model, a rule set. The derived dataset is a node the flow reads,
+/// and what it is derived from is read by that node, as a view reads its base tables: the graph draws each source into
+/// the derived dataset and the derived dataset into the flow, and the flow is ordered after whatever writes a source.
+/// Every flow reading the same derived dataset shares its node, and the sources they declare for it add up.
+/// </summary>
+public sealed record DeclaredDerivation
+{
+    /// <summary>The derived dataset: a <see cref="LineageRelation.Reads"/> of the flow, named without wildcards.</summary>
+    public required DeclaredDataset Dataset { get; init; }
+
+    /// <summary>The datasets it is derived from, each a <see cref="LineageRelation.Reads"/>. A name may carry
+    /// <c>*</c> wildcards, bound as a flow's own wildcard read is, to every matching dataset the estate writes except
+    /// those written by a flow reading the derived dataset.</summary>
+    public IReadOnlyList<DeclaredDataset> From { get; init; } = [];
+}
+
+/// <summary>
+/// A flow kind a host registers with the loader, keyed by its <c>flowType</c>. Kinds are registered in the host's
+/// composition root, so the YAML layer never depends on the engines that implement them; a registered kind may not
+/// claim a built-in <c>flowType</c>.
+/// </summary>
+public interface IFlowDocumentKind
+{
+    /// <summary>The <c>flowType</c> value that selects this kind (compared case-insensitively).</summary>
+    string FlowType { get; }
+
+    /// <summary>One phrase naming what the kind does, for the loader's unknown-kind message.</summary>
+    string Description { get; }
+
+    /// <summary>Parses the document body; <paramref name="source"/> labels errors (the file path, or "&lt;inline&gt;").
+    /// A failure is a <see cref="SqlFlow.Core.FlowValidationException"/> naming the source.</summary>
+    RegisteredFlowDocument Parse(string yaml, string source);
+
+    /// <summary>The operations a run of this kind can perform, its default first. Empty for a kind with one implicit
+    /// operation, which then accepts no <see cref="RunParameters.Operation"/>.</summary>
+    IReadOnlyList<FlowKindOperation> Operations { get; }
+
+    /// <summary>Validates a run's parameters for a flow of this kind at the trust boundary: its kind arguments
+    /// (<see cref="RunParameters.Operation"/>, already known to be one of <see cref="Operations"/> when set,
+    /// <see cref="RunParameters.Values"/> and <see cref="RunParameters.Payload"/>), and the built-in overrides
+    /// (<see cref="RunParameters.FullLoad"/>, the backfill window, <see cref="RunParameters.FilePattern"/>,
+    /// <see cref="RunParameters.SourceFilter"/>, <see cref="RunParameters.ReprocessFromSourceMin"/>), each of which the
+    /// kind either applies or refuses, never ignores. It is called for every run of the kind, kind arguments or not: a
+    /// trigger, a schedule, the CLI and the executor all call it through
+    /// <see cref="YamlDocumentLoader.ValidateRunParameters"/>. A refusal is a <see cref="SqlFlow.Core.SqlFlowException"/>
+    /// whose message names the offending argument.</summary>
+    void ValidateParameters(RunParameters parameters);
+}
+
+/// <summary>
+/// A family of documents a registered kind owns beside its flows, keyed by a top-level <c>documentType</c> (a
+/// delivery kind's mapping documents, say). The CLI validates such a document under its own type, and the proposal
+/// preflight checks it, instead of reporting it as a flow document with no <c>flowType</c>.
+/// </summary>
+public interface ICompanionDocumentKind
+{
+    /// <summary>The <c>documentType</c> value that selects this family (compared case-insensitively).</summary>
+    string DocumentType { get; }
+
+    /// <summary>One phrase naming what the documents are, for the loader's unknown-type message.</summary>
+    string Description { get; }
+
+    /// <summary>Parses the document and returns its display name; a failure is a
+    /// <see cref="SqlFlow.Core.FlowValidationException"/> naming the source.</summary>
+    string ParseCompanion(string yaml, string source);
+}

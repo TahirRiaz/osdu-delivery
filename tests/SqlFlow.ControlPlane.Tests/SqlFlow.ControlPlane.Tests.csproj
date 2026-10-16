@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA2007;CA1861</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Xunit.SkippableFact" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SqlFlow.ControlPlane\SqlFlow.ControlPlane.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Cli\SqlFlow.Cli.csproj" />
+    <!-- The PowerAI proof-value suite runs its questions through the same query runner the node uses. -->
+    <ProjectReference Include="..\..\src\SqlFlow.SqlServer\SqlFlow.SqlServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The PowerAI proof values, read by PowerAiProofValueTests at run time. The Web SDK already includes
+         the file as Content, so this only sets how it is copied. -->
+    <Content Update="Fixtures\powerai-proof-values.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The one CLI child-process harness, shared with the engine suite so there is a single code path. -->
+    <Compile Include="..\SqlFlow.Core.Tests\Integration\CliBinary.cs" Link="CliBinary.cs" />
+  </ItemGroup>
+
+</Project>
