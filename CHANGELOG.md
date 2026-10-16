@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Deploy workflow applies an environment's Terraform.** Run with "infrastructure", it stopped before the plan,
   saying the environment's resource group did not exist when it did; it now plans and applies
   ([osdu/deploy/README.md](osdu/deploy/README.md)).
+- **The MCP server's image starts.** In 1.0.0 the `osdu-delivery-mcp` image was built on a newer Debian than it runs
+  on, and its server did not start; rebuild the image from this release
+  ([guides/mcp.md](osdu/docs/reference/guides/mcp.md)).
 
 ## [1.0.0] - 2026-10-16
 
