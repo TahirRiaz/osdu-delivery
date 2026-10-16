@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Deploy workflow applies an environment's Terraform.** Run with "infrastructure", it stopped before the plan,
+  saying the environment's resource group did not exist when it did; it now plans and applies
+  ([osdu/deploy/README.md](osdu/deploy/README.md)).
+
 ## [1.0.0] - 2026-10-16
 
 The first release of OSDU Delivery, powered by SQLFlow: subsurface data delivered into an OSDU platform by

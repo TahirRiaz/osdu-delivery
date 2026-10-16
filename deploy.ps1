@@ -737,14 +737,19 @@ function Invoke-Infrastructure {
     Write-Host "   rg:   $Rg"
     Write-Host "   acr:  $Acr"
 
-    # Terraform reads the resource group and the registry; it creates neither.
-    $exists = Invoke-Az @('group', 'exists', '--name', $Rg)
-    if ($exists.ExitCode -ne 0 -or "$($exists.Output)".Trim() -ne 'true') {
+    # Terraform reads the resource group and the registry; it creates neither. The answer is asked for as text: the
+    # Deploy workflow sets AZURE_CORE_OUTPUT to none, under which az group exists prints nothing at all.
+    $exists = Invoke-Az @('group', 'exists', '--name', $Rg, '-o', 'tsv')
+    if ($exists.ExitCode -ne 0) {
+        throw "Could not check that resource group $Rg exists in subscription ${Sub}: $("$($exists.Errors)".Trim())"
+    }
+    if ("$($exists.Output)".Trim() -ne 'true') {
         throw "Resource group $Rg does not exist in subscription $Sub. Create it once: az group create --subscription $Sub --name $Rg --location <region>"
     }
     $registry = Invoke-Az @('acr', 'show', '--name', $Acr, '--resource-group', $Rg, '-o', 'none')
     if ($registry.ExitCode -ne 0) {
-        throw "Container registry $Acr does not exist in $Rg. Create it once: az acr create --subscription $Sub --resource-group $Rg --name $Acr --sku Standard"
+        throw ("Container registry $Acr could not be read in $Rg ($("$($registry.Errors)".Trim())). If it does not exist, " +
+            "create it once: az acr create --subscription $Sub --resource-group $Rg --name $Acr --sku Standard")
     }
 
     Assert-Committed -Paths @('osdu/deploy/terraform') -What "the $Environment plan"
