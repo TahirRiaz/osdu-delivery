@@ -17,7 +17,9 @@
 # Build from the REPOSITORY ROOT:
 #   docker build -f osdu/deploy/docker/mcp.Dockerfile -t osdu-delivery-mcp:latest .
 
-FROM rust:1.94-slim AS build
+# The build stage runs the Debian release the runtime stage runs (bookworm): a binary linked against a newer glibc than
+# the runtime's does not start, and rust:<version>-slim names the newest Debian, not bookworm.
+FROM rust:1.94-slim-bookworm AS build
 WORKDIR /src
 # The server compiles its documentation and the key census into the binary through repository-relative paths, so the
 # build keeps the repository's shape: SQLFlow's server and language engine with the reference pages they embed, and
