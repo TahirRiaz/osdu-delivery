@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An environment deployed by its GitHub identity creates its sign-in registration.** The deploying identity is made
+  an owner of the registration and its service principal, so Microsoft Graph's `Application.ReadWrite.OwnedBy` is
+  all it needs, as the deployment guide says; before, the apply stopped creating the service principal
+  ([osdu/deploy/README.md](osdu/deploy/README.md)).
 - **The Deploy workflow applies an environment's Terraform.** Run with "infrastructure", it stopped before the plan,
   saying the environment's resource group did not exist when it did; it now plans and applies
   ([osdu/deploy/README.md](osdu/deploy/README.md)).
