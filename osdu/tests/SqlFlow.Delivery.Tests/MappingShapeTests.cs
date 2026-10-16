@@ -1,0 +1,188 @@
+using System.Text.Json.Nodes;
+using SqlFlow.Core;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Rendering;
+using SqlFlow.Delivery.Snapshots;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// The shape of the records a mapping renders (osdu/docs/reference/flow/mapping.md, "The record shape"): drawn by the
+/// renderer's own assembly with placeholders in place of row and cache values, so its layout is the layout a render writes.
+/// </summary>
+public class MappingShapeTests
+{
+    private static readonly Dictionary<string, string> Dev = new(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "dev" };
+
+    [Fact]
+    public void Draws_typed_placeholders_static_values_and_one_item_per_repeater()
+    {
+        var mapping = TestSchema.Mapping("""
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy:
+                  - Code = unit
+                  - Name = unit
+                $modifiers: [trim]
+              IsRegular:
+                $from: flag
+                $modifiers:
+                  - equals: regular
+                $required: false
+              When:
+                $from: when
+                $modifiers:
+                  - date: dd.MM.yyyy
+                $when: flag = "REGULAR"
+              Aliases:
+                $from: alias
+              Curves:
+                $forEach: curves
+                $item:
+                  CurveID: { $from: curve_id }
+                  TopDepth: { $from: top }
+            """,
+            record: """
+            tags:
+              Source: "{$param.dataPartition}-test"
+            """);
+
+        var shape = MappingRenderer.Shape(mapping, TestSchema.Build(), Dev);
+        var document = shape.Document;
+
+        Assert.Equal(["id", "kind"], document.Select(p => p.Key).Take(2));
+        Assert.Equal("data", document.Last().Key);
+        Assert.Equal("dev:work-product-component--Thing:<delivery key from test, dataset.name>", document["id"]!.GetValue<string>());
+        Assert.Equal(TestSchema.Kind, document["kind"]!.GetValue<string>());
+        Assert.Equal("owners@x", document["acl"]!["owners"]![0]!.GetValue<string>());
+        Assert.Equal("dev-test", document["tags"]!["Source"]!.GetValue<string>());
+
+        var data = document["data"]!;
+        Assert.Equal("<string from dataset.name>", data["Name"]!.GetValue<string>());
+        Assert.Equal("<number from dataset.depth>", data["Depth"]!.GetValue<string>());
+        Assert.Equal("<string from cache.UnitOfMeasure.id by Code/Name = (dataset.unit | trim)>", data["Unit"]!.GetValue<string>());
+        Assert.Equal("<boolean from dataset.flag | equals(regular), optional>", data["IsRegular"]!.GetValue<string>());
+        Assert.Equal("<date-time string from dataset.when | date(dd.MM.yyyy), when flag = \"REGULAR\">", data["When"]!.GetValue<string>());
+        Assert.Equal("<string from dataset.alias>", Assert.Single(data["Aliases"]!.AsArray())!.GetValue<string>());
+
+        var curve = Assert.Single(data["Curves"]!.AsArray())!;
+        Assert.Equal("<string from dataset.curves.curve_id>", curve["CurveID"]!.GetValue<string>());
+        Assert.Equal("<number from dataset.curves.top>", curve["TopDepth"]!.GetValue<string>());
+        Assert.Equal(["osdu.data.Curves: one item per row of dataset.curves; a record without any is held"], shape.Notes);
+    }
+
+    [Fact]
+    public void A_parameter_without_a_value_shows_its_token_where_a_render_would_refuse_to_start()
+    {
+        var mapping = TestSchema.Mapping(record: "tags: { Source: \"{$param.dataPartition}-test\" }");
+        var none = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var shape = MappingRenderer.Shape(mapping, TestSchema.Build(), none);
+        Assert.StartsWith("{$param.dataPartition}:work-product-component--Thing:", shape.Document["id"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Equal("{$param.dataPartition}-test", shape.Document["tags"]!["Source"]!.GetValue<string>());
+        Assert.Contains(shape.Notes, n => n.StartsWith("parameter 'dataPartition' has no value", StringComparison.Ordinal));
+
+        var context = TestSchema.Context() with { Parameters = none };
+        Assert.Throws<FlowValidationException>(() => new MappingRenderer(mapping, TestSchema.Build(), TestSchema.References(), context));
+    }
+
+    [Fact]
+    public void A_partition_that_is_not_an_id_segment_is_drawn_and_noted()
+    {
+        var shape = MappingRenderer.Shape(
+            TestSchema.Mapping(), TestSchema.Build(), new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = "bad partition" });
+
+        Assert.StartsWith("bad partition:", shape.Document["id"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.Contains(shape.Notes, n => n.Contains("not a valid OSDU id segment", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_replace_reading_a_cached_table_is_drawn_with_the_table_it_reads()
+    {
+        var shape = MappingRenderer.Shape(TestSchema.Mapping("""
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.CurveClasses
+                    field: curve_family
+                    otherwise: ~
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy: Code = unit
+                $modifiers:
+                  - replace: $cache.UnitAlias
+            """), TestSchema.Build(), Dev);
+
+        Assert.Equal(
+            "<string from dataset.unit | replace from $cache.CurveClasses (its key to curve_family), otherwise ~>",
+            shape.Document["data"]!["Symbol"]!.GetValue<string>());
+        Assert.Equal(
+            "<string from cache.UnitOfMeasure.id by Code = (dataset.unit | replace from $cache.UnitAlias)>",
+            shape.Document["data"]!["Unit"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void A_single_value_on_an_object_is_noted_and_left_out_as_a_render_holds_it()
+    {
+        var shape = MappingRenderer.Shape(TestSchema.Mapping("Nested: { $from: name }"), TestSchema.Build(), Dev);
+
+        Assert.Null(shape.Document["data"]!["Nested"]);
+        Assert.Contains("osdu.data.Nested: a single value from dataset.name cannot be written where the template takes an object", shape.Notes);
+    }
+
+    /// <summary>
+    /// Every property the records kept for a sample mapping's rows carry is in the shape and the shape has nothing they do
+    /// not (<see cref="SampleRecordTests"/> renders those rows): between them the rows fill every entry of the sample
+    /// mappings, so the two layouts must agree path for path.
+    /// </summary>
+    [Theory]
+    [InlineData("WellLog@1.4.0")]
+    [InlineData("Wellbore@1.0.0")]
+    public void The_shape_of_a_sample_mapping_lays_out_what_its_rows_render(string reference)
+    {
+        var mapping = new DeliveryDocumentLoader().LoadMapping(Path.Combine(Samples.FixtureMappings, reference + ".yaml"));
+        var shape = MappingRenderer.Shape(mapping, Samples.SampleTemplate(mapping.Kind), SampleRecordTests.Parameters);
+
+        var rendered = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var name in RenderedRecord.Names(reference))
+        {
+            rendered.UnionWith(Paths(JsonNode.Parse(RenderedRecord.Expected(reference, name))));
+        }
+
+        Assert.Equal(rendered, Paths(shape.Document));
+        Assert.DoesNotContain(shape.Notes, n => n.StartsWith("parameter", StringComparison.Ordinal));
+        Assert.StartsWith(Samples.SamplePartition + ":" + mapping.EntityType + ":<delivery key", shape.Document["id"]!.GetValue<string>(), StringComparison.Ordinal);
+    }
+
+    private static SortedSet<string> Paths(JsonNode? node)
+    {
+        var paths = new SortedSet<string>(StringComparer.Ordinal);
+        Collect(node, string.Empty, paths);
+        return paths;
+    }
+
+    private static void Collect(JsonNode? node, string path, SortedSet<string> paths)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (name, child) in obj)
+                {
+                    Collect(child, path.Length == 0 ? name : path + "." + name, paths);
+                }
+
+                break;
+            case JsonArray array:
+                foreach (var item in array)
+                {
+                    Collect(item, path + "[]", paths);
+                }
+
+                break;
+            default:
+                paths.Add(path);
+                break;
+        }
+    }
+}

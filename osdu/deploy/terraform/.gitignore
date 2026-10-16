@@ -1,0 +1,24 @@
+# Providers and modules terraform init downloads.
+.terraform/
+
+# State holds every secret this configuration writes: it lives in the remote backend, never here.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+
+# A variables file may hold secrets; only the example and the environments (which hold none: their secrets are
+# TF_VAR_* variables) are committed.
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
+!environments/*.tfvars
+
+# Local overrides and saved plans (a plan file holds secrets too).
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+tfplan

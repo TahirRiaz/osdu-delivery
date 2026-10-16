@@ -1,0 +1,50 @@
+# Pre-ingestion: the well database's curve metadata files into the pre layer.
+#
+# One row per curve of a log, the index curve MD first, as the export writes it. The curve values themselves are never
+# loaded: they stay in the parquet files under ../data/curves, which the delivery streams to the wellbore DDMS.
+name: welldb-welllog-01-curves-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/curves-meta
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: WellLogCurve
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: log_id, type: varchar(50) }
+    - { name: curve_ordinal, type: int }
+    # The index curve carries no version and no update time, and the well database leaves some curves without a
+    # business value: an empty cell is the absence of one rather than the empty string.
+    - { name: curve_version, expr: "NULLIF(@ColName, '')", type: varchar(50) }
+    - { name: business_value, expr: "NULLIF(@ColName, '')", type: varchar(100) }
+    # Kept as the ISO 8601 text the export gives; the mapping writes it as the RFC 3339 date-time the template names.
+    - { name: update_date, expr: "NULLIF(@ColName, '')", type: varchar(30) }
+    # The depths are numbers each curve item carries (TopDepth, BaseDepth). Inferred, a file whose curves all start at
+    # depth 0 (the index curve of every log does) types index_min as bit, since 0 and 1 read as a boolean, and every
+    # record would then be held for carrying false where the template takes a number. A decimal holds every digit a depth
+    # is written with and widens a column a run inferred as a decimal before; an empty cell is no depth rather than 0.
+    - { name: index_min, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+    - { name: index_max, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-welllog

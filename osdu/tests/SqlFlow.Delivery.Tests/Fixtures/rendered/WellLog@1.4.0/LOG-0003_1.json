@@ -1,0 +1,97 @@
+{
+  "acl": {
+    "owners": [
+      "data.welldb.owners@dev.dataservices.energy"
+    ],
+    "viewers": [
+      "data.welldb.viewers@dev.dataservices.energy"
+    ]
+  },
+  "data": {
+    "ActivityType": "HYBRID",
+    "Curves": [
+      {
+        "BaseDepth": 1826.3616,
+        "CurveDescription": "Measured depth",
+        "CurveID": "MD",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Local-Measured%20Depth:",
+        "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Reference:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:Local-DEPTH:",
+        "Mnemonic": "MD",
+        "TopDepth": 1787.9568
+      },
+      {
+        "BaseDepth": 1826.3616,
+        "CurveDescription": "Gamma Ray",
+        "CurveID": "GR",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+        "CurveVersion": "1",
+        "DateStamp": "2021-11-14T14:34:55Z",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Gamma%20Ray:",
+        "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:GammaRay:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:Local-GR:",
+        "Mnemonic": "GR",
+        "TopDepth": 1787.9568
+      },
+      {
+        "BaseDepth": 1825.4472,
+        "CurveDescription": "Deep resistivity",
+        "CurveID": "RD",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:ohm.m:",
+        "CurveVersion": "1",
+        "DateStamp": "2021-11-14T14:34:55Z",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep:",
+        "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Resistivity:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:Local-RD:",
+        "Mnemonic": "RD",
+        "TopDepth": 1789.176
+      }
+    ],
+    "IsRegular": true,
+    "LogActivity": "C",
+    "LogRun": "C",
+    "LogSource": "WELLDB",
+    "LogVersion": "1",
+    "Name": "COMPOSITE",
+    "ReferenceCurveID": "MD",
+    "SamplingDomainTypeID": "dev:reference-data--WellLogSamplingDomainType:Depth:",
+    "SamplingInterval": 0.1524,
+    "SamplingStart": 1787.9568,
+    "SamplingStop": 1826.3616,
+    "Source": "WELLDB",
+    "TechnicalAssurances": [
+      {
+        "TechnicalAssuranceTypeID": "dev:reference-data--TechnicalAssuranceType:Unevaluated:"
+      }
+    ],
+    "VerticalMeasurement": {
+      "VerticalMeasurement": 27.7,
+      "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:",
+      "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:"
+    },
+    "WellLogTypeID": "dev:reference-data--LogType:Interpreted:",
+    "WellboreID": "dev:master-data--Wellbore:Wellbore-B-2-A:"
+  },
+  "id": "dev:work-product-component--WellLog:153e652e5863517d97c115d8af3f28a7",
+  "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
+  "legal": {
+    "legaltags": [
+      "dev-osdu-default-legal"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "tags": {
+    "DeliveredBy": "osdu-delivery",
+    "LogStatus": "FINAL",
+    "SourceProject": "PROJECT_A",
+    "WellLogNativeUID": "LOG-0003/1"
+  }
+}

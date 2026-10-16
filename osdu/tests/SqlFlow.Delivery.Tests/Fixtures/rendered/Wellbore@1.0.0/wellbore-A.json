@@ -1,0 +1,34 @@
+{
+  "acl": {
+    "owners": [
+      "data.welldb.owners@dev.dataservices.energy"
+    ],
+    "viewers": [
+      "data.welldb.viewers@dev.dataservices.energy"
+    ]
+  },
+  "data": {
+    "FacilityDescription": "Sample wellbore A",
+    "FacilityID": "srn:master-data/Wellbore:A",
+    "FacilityName": "SAMPLE-WELLBORE-A",
+    "NameAliases": [
+      {
+        "AliasName": "WB-A",
+        "AliasNameTypeID": "dev:reference-data--AliasNameType:UniqueIdentifier:"
+      }
+    ]
+  },
+  "id": "dev:master-data--Wellbore:8186728109c950ab9391404fbd59a195",
+  "kind": "osdu:wks:master-data--Wellbore:1.3.0",
+  "legal": {
+    "legaltags": [
+      "dev-osdu-default-legal"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "tags": {
+    "DeliveredBy": "osdu-delivery"
+  }
+}

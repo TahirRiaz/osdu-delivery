@@ -1,0 +1,205 @@
+# The full OSDU Delivery stack for local and parity deployments: SQL Server, the control plane, one scalable node,
+# and the GUI. Copy .env.example to .env and set the secrets and the OSDU partition's values first.
+#
+# Two databases: the metadata, and the data the flows work in, which is where the volume is. The flows name both in
+# three-part names, so keep these names.
+#   OsduDelivery  all of the metadata in one database: SQLFlow's catalog schema (pipelines, runs, schedules,
+#                 lineage, sources, users) and the delivery module's `osdu` schema (the record ledger, mappings,
+#                 templates and caches) beside it
+#   OsduData      the data: what pre-ingestion lands from the source systems, and the keyed ingestion tables the
+#                 OSDU flows read, each in a schema of its own (${env:OSDU_DATA_DB})
+#
+# One OSDU partition, `dev` (the one the sample estate's flows name): the control plane registers it when it starts
+# and gives the runs bound to it its values (osdu/docs/reference/concepts/partitions.md, Configured partitions). It
+# is not ready without a partition to work against.
+#
+#   docker compose up -d --build mssql dbinit controlplane gui
+#   # mint a node-scoped token from the control plane, put it in .env as SQLFLOW_NODE_TOKEN
+#   docker compose up -d --build worker
+#   docker compose up -d --scale worker=3        # more compute, no other change
+#
+# GUI:            http://localhost:8081  (sign in with the bootstrap admin from .env)
+# Control plane:  http://localhost:5000  (OpenAPI at /openapi/v1.json)
+# MCP server:     http://localhost:8787/mcp  (optional: --profile mcp)
+#
+# The node takes work from the control plane's dispatcher over HTTP, authenticated with a personal access token
+# minted with the `node` scope. That token can only be minted once the control plane is running, which is why a
+# first start is two steps.
+#
+# Production ingress layouts route /api/* and the GUI under ONE host instead (see osdu/deploy/k8s), which drops
+# the CORS configuration used here.
+
+name: osdu-delivery
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+      MSSQL_PID: Developer
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' -b"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    # Published for host-side tooling only; the stack talks to it on the compose network.
+    ports:
+      - "14333:1433"
+
+  controlplane:
+    build:
+      # The repository root: the host publishes from osdu/hosts and references both osdu/src and sqlflow/src.
+      context: ../../..
+      dockerfile: osdu/deploy/docker/control-plane.Dockerfile
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      # The metadata database. Startup applies SQLFlow's migrations to the catalog schema and then the delivery
+      # module's to the `osdu` schema beside it, and verifies both against this build. The module is given no
+      # connection of its own here, which is what keeps its schema in this database. An estate that has to keep
+      # them apart (Azure SQL reaches across no two databases) sets Osdu:Database:Connection or SQLFLOW_OSDU_DB
+      # to a database of its own, before the first migrate; it cannot be moved afterwards.
+      ControlPlane__Catalog__ConnectionReference: "Server=mssql;Database=OsduDelivery;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      ControlPlane__Jwt__SigningKey: ${SQLFLOW_JWT_SIGNING_KEY:?set SQLFLOW_JWT_SIGNING_KEY in .env}
+      ControlPlane__Jwt__BootstrapSecret: ${SQLFLOW_BOOTSTRAP_SECRET:?set SQLFLOW_BOOTSTRAP_SECRET in .env}
+      ControlPlane__Bootstrap__AdminUsername: ${SQLFLOW_ADMIN_USERNAME:-admin}
+      ControlPlane__Bootstrap__AdminPasswordReference: ${SQLFLOW_ADMIN_PASSWORD:?set SQLFLOW_ADMIN_PASSWORD in .env}
+      # A fresh SQL Server has no catalog; this stack lets bootstrap create it. The default refuses, so a
+      # mistyped connection never provisions against the wrong server.
+      ControlPlane__Bootstrap__AllowCreate: "true"
+      # The GUI is a separate origin in this compose layout.
+      ControlPlane__Cors__AllowedOrigins__0: http://localhost:8081
+      # Compute belongs to the worker service; this replica is API + scheduler + sync only.
+      ControlPlane__Worker__Enabled: "false"
+      # The OSDU partition this stack delivers to, named by its data-partition-id: registered when the control plane
+      # starts, and its values are what the runs bound to it resolve their flows' ${env:...} references with. To
+      # deliver to another partition, rename dev here and in the flows that name it. The client secret is a reference,
+      # never the secret: the control plane refuses to start with a secret's value here. ${env:OSDU_CLIENT_SECRET}
+      # leaves it to the environment of whoever resolves it, this container's and the worker's, both given it below.
+      Osdu__Partitions__dev__Default: "true"
+      Osdu__Partitions__dev__Description: The partition the sample estate's flows deliver to
+      Osdu__Partitions__dev__Properties__OSDU_URL: ${OSDU_URL:?set OSDU_URL in .env}
+      Osdu__Partitions__dev__Properties__OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:?set OSDU_TOKEN_URL in .env}
+      Osdu__Partitions__dev__Properties__OSDU_SCOPE: ${OSDU_SCOPE:?set OSDU_SCOPE in .env}
+      Osdu__Partitions__dev__Properties__OSDU_CLIENT_ID: ${OSDU_CLIENT_ID:?set OSDU_CLIENT_ID in .env}
+      Osdu__Partitions__dev__Properties__OSDU_CLIENT_SECRET: $${env:OSDU_CLIENT_SECRET}
+      # Under whose access and legal terms the partition's records are delivered: the sample mappings fill acl.owners,
+      # acl.viewers and legal.legaltags from these, so one estate's documents serve every partition it runs against.
+      Osdu__Partitions__dev__Properties__OSDU_ACL_OWNER: ${OSDU_ACL_OWNER:?set OSDU_ACL_OWNER in .env}
+      Osdu__Partitions__dev__Properties__OSDU_ACL_VIEWER: ${OSDU_ACL_VIEWER:?set OSDU_ACL_VIEWER in .env}
+      Osdu__Partitions__dev__Properties__OSDU_LEGAL_TAG: ${OSDU_LEGAL_TAG:?set OSDU_LEGAL_TAG in .env}
+      # A person's reads of a flow (a probe of its target, a record read back from OSDU, its rows read from the
+      # ingestion tables, a preview, a scope's values, the explorer) run here under the flow's own credentials, so the
+      # references the flows use resolve here as they do on the worker. Keep this list and the worker's the same. The
+      # control plane never delivers: runs, value checks and removals stay on the worker.
+      OSDU_DATA_DB: "Server=mssql;Database=OsduData;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      OSDU_CLIENT_SECRET: ${OSDU_CLIENT_SECRET:-}
+      SQLFLOW_DELIVERY_PRIVATE_NETWORKS: ${SQLFLOW_DELIVERY_PRIVATE_NETWORKS:-}
+    ports:
+      - "5000:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # The data database. The control plane creates the metadata database on first start; SQLFlow creates schemas and
+  # tables inside a database but never a database, so this one is created here, once. Running it again changes
+  # nothing.
+  dbinit:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        /opt/mssql-tools18/bin/sqlcmd -S mssql -U sa -P "$$MSSQL_SA_PASSWORD" -C -b -Q
+        "IF DB_ID('OsduData') IS NULL CREATE DATABASE [OsduData];"
+    restart: "no"
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: osdu/deploy/docker/worker.Dockerfile
+    depends_on:
+      mssql:
+        condition: service_healthy
+      dbinit:
+        condition: service_completed_successfully
+      controlplane:
+        condition: service_healthy
+    environment:
+      # The node polls the control plane's dispatcher for work over the node protocol, authenticated with a
+      # personal access token minted with the `node` scope (an admin: POST /api/v1/me/tokens with scopes
+      # ["node"]). It opens no catalog connection: the run's definition, its YAML, its lineage context and its
+      # trace all travel over that protocol.
+      SQLFLOW_URL: http://controlplane:8080
+      SQLFLOW_TOKEN: ${SQLFLOW_NODE_TOKEN:?mint a node-scoped token from the control plane and set SQLFLOW_NODE_TOKEN in .env}
+      # The delivery engine reads and writes the `osdu` ledger per record while it plans and delivers, and a node
+      # has no catalog connection at all, so the metadata database is reached through its own reference here. It
+      # is the same database the control plane's catalog is in, since that is where the `osdu` schema lives; a
+      # deployment gives this tier a login with rights on schema `osdu` alone.
+      SQLFLOW_OSDU_DB: "Server=mssql;Database=OsduDelivery;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # The metadata database again, under the name the control plane reads it by: the flows that build and read the
+      # osdu schema's dimension tables and views name it (${env:SQLFLOW_CATALOG_DB}); the node itself never opens it.
+      SQLFLOW_CATALOG_DB: "Server=mssql;Database=OsduDelivery;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # The data database the flows work in: pre-ingestion lands the source files there, the ingestion flows load the
+      # keyed tables, and the OSDU flows read them.
+      OSDU_DATA_DB: "Server=mssql;Database=OsduData;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      # The OSDU endpoint, credentials, ACLs and legal tag come with each run, from the partition it is bound to (the
+      # control plane's Osdu__Partitions__...). Only the client secret is the node's own: the partition refers to it
+      # as ${env:OSDU_CLIENT_SECRET}, resolved here when a run needs it. A plan run needs none, so it can stay empty.
+      OSDU_CLIENT_SECRET: ${OSDU_CLIENT_SECRET:-}
+      # Serve a pool by listing it here; empty takes untargeted runs only.
+      SQLFLOW_WORKER_POOL: ${SQLFLOW_WORKER_POOL:-}
+      SQLFLOW_GIT_TOKEN: ${SQLFLOW_GIT_TOKEN:-}
+      # The private ranges the delivery engine may reach (CIDR, comma separated); empty reaches public addresses only.
+      SQLFLOW_DELIVERY_PRIVATE_NETWORKS: ${SQLFLOW_DELIVERY_PRIVATE_NETWORKS:-}
+    restart: unless-stopped
+
+  gui:
+    build:
+      # The repository root as well: the OSDU GUI compiles the vendored sqlflow/gui sources in place.
+      context: ../../..
+      dockerfile: osdu/deploy/docker/gui.Dockerfile
+    environment:
+      SQLFLOW_API_BASE_URL: http://localhost:5000
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+  # The MCP server, for AI assistants: SQLFlow's, composed with the delivery module. Optional, so it sits behind a
+  # profile: docker compose --profile mcp up -d --build mcp
+  # It holds no credential. A client sends its own token (a personal access token from the GUI's token page) as
+  # Authorization: Bearer on every request, and the server forwards it to the control plane, which enforces its
+  # scopes. It answers from metadata alone (osdu/docs/reference/guides/mcp.md).
+  # MCP endpoint: http://localhost:8787/mcp   Probe: http://localhost:8787/healthz
+  mcp:
+    profiles: ["mcp"]
+    build:
+      # The repository root: the server compiles the documentation under osdu/docs and sqlflow/docs into its binary.
+      context: ../../..
+      dockerfile: osdu/deploy/docker/mcp.Dockerfile
+    depends_on:
+      controlplane:
+        condition: service_healthy
+    environment:
+      SQLFLOW_CONTROL_PLANE_URL: http://controlplane:8080
+      # Results carry links into the GUI; this is where a browser reaches it in this layout.
+      SQLFLOW_GUI_URL: http://localhost:8081
+    ports:
+      - "8787:8080"
+    restart: unless-stopped
+
+volumes:
+  mssql-data:

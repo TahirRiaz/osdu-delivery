@@ -1,0 +1,324 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "9354237782121804585"
+    }
+  },
+  "definitions": {
+    "secretEnvironmentVariable": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "metadata": {
+            "description": "The environment variable."
+          }
+        },
+        "secretName": {
+          "type": "string",
+          "metadata": {
+            "description": "The Key Vault secret holding its value."
+          }
+        }
+      },
+      "metadata": {
+        "description": "A variable a node reads from the vault."
+      }
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region. Defaults to the resource group location."
+      }
+    },
+    "name": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-worker",
+      "metadata": {
+        "description": "Name of the Container App (and the prefix for its managed identity). Deploy one app per pool, e.g. osdu-delivery-worker-onprem."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource id of an existing Container Apps managed environment to host the app. The app runs on its Consumption workload profile."
+      }
+    },
+    "image": {
+      "type": "string",
+      "metadata": {
+        "description": "Container image reference, e.g. myregistry.azurecr.io/osdu-delivery-worker:<tag>"
+      }
+    },
+    "keyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of an existing Key Vault holding the node token and the secrets secretEnv names; the app identity is granted Key Vault Secrets User on it."
+      }
+    },
+    "controlPlaneUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "The control plane base URL the node polls for work over the node protocol (https://<control-plane-fqdn>). Every call is outbound from the node, and the scale rule reads the pool's replica target from the same host."
+      }
+    },
+    "nodeTokenSecretName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Key Vault secret name holding the node credential the node presents to the control plane, and the scale rule to the scale-target endpoint: the token the deployment generates into the vault (osdu-delivery-node-token) and the control plane accepts (ControlPlane:Bootstrap:NodeTokenReference)."
+      }
+    },
+    "pool": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The pool this deployment serves (single pool name, used for both SQLFLOW_WORKER_POOL and the scale-target query). Empty takes untargeted runs only."
+      }
+    },
+    "privateNetworks": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The private ranges (CIDR, comma separated) the nodes may reach, for an environment integrated into a VNet whose OSDU, storage accounts or proxy resolve to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable."
+      }
+    },
+    "secretEnv": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/secretEnvironmentVariable"
+      },
+      "defaultValue": [],
+      "metadata": {
+        "description": "Environment variables a node itself reads from the vault, beside its node token: SQLFLOW_OSDU_DB, the ledger's connection, which a node opens and its runs do not carry. Everything a run reads besides is handed to the run by the control plane."
+      }
+    },
+    "acrName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Name of a container registry in THIS resource group: the template grants the app identity AcrPull on it and configures the pull. Leave empty for a public registry, or one you authorize yourself via acrLoginServer."
+      }
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set."
+      }
+    },
+    "maxReplicas": {
+      "type": "int",
+      "defaultValue": 10,
+      "minValue": 1,
+      "metadata": {
+        "description": "Upper bound for scale out."
+      }
+    },
+    "cpu": {
+      "type": "string",
+      "defaultValue": "1.0",
+      "metadata": {
+        "description": "vCPU per replica, as a string for exact decimals. Must form a valid Container Apps consumption pair with memory."
+      }
+    },
+    "memory": {
+      "type": "string",
+      "defaultValue": "2.0Gi",
+      "metadata": {
+        "description": "Memory per replica, paired with cpu."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+        "type": "string"
+      },
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags set on the app and its identity."
+      }
+    }
+  },
+  "variables": {
+    "copy": [
+      {
+        "name": "secretEnvSecrets",
+        "count": "[length(parameters('secretEnv'))]",
+        "input": {
+          "name": "[format('secret-env-{0}', copyIndex('secretEnvSecrets'))]",
+          "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('secretEnv')[copyIndex('secretEnvSecrets')].secretName)]",
+          "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+        }
+      },
+      {
+        "name": "secretEnvVars",
+        "count": "[length(parameters('secretEnv'))]",
+        "input": {
+          "name": "[parameters('secretEnv')[copyIndex('secretEnvVars')].name]",
+          "secretRef": "[format('secret-env-{0}', copyIndex('secretEnvVars'))]"
+        }
+      }
+    ],
+    "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
+    "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+    "vaultUri": "[format('https://{0}{1}/', parameters('keyVaultName'), environment().suffixes.keyvaultDns)]",
+    "nodeTokenSecrets": [
+      {
+        "name": "node-token",
+        "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('nodeTokenSecretName'))]",
+        "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+      }
+    ],
+    "privateNetworksEnv": "[if(empty(parameters('privateNetworks')), createArray(), createArray(createObject('name', 'SQLFLOW_DELIVERY_PRIVATE_NETWORKS', 'value', parameters('privateNetworks'))))]",
+    "scaleRules": [
+      {
+        "name": "replica-target",
+        "custom": {
+          "type": "metrics-api",
+          "metadata": {
+            "url": "[format('{0}/api/v1/node/scale-target?pool={1}', parameters('controlPlaneUrl'), uriComponent(parameters('pool')))]",
+            "valueLocation": "replicas",
+            "targetValue": "1",
+            "authMode": "bearer"
+          },
+          "auth": [
+            {
+              "secretRef": "node-token",
+              "triggerParameter": "token"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "resources": {
+    "identity": {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-id', parameters('name'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    "keyVault": {
+      "existing": true,
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[parameters('keyVaultName')]"
+    },
+    "keyVaultAccess": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), variables('keyVaultSecretsUserRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]",
+        "principalId": "[reference('identity').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "identity"
+      ]
+    },
+    "acr": {
+      "existing": true,
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[if(empty(parameters('acrName')), 'unused', parameters('acrName'))]"
+    },
+    "acrPull": {
+      "condition": "[not(empty(parameters('acrName')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName')))]",
+      "name": "[guid(resourceGroup().id, parameters('acrName'), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+        "principalId": "[reference('identity').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "identity"
+      ]
+    },
+    "app": {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))]": {}
+        }
+      },
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference('acr').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference('acr').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+          "secrets": "[concat(variables('nodeTokenSecrets'), variables('secretEnvSecrets'))]"
+        },
+        "template": {
+          "terminationGracePeriodSeconds": 600,
+          "containers": [
+            {
+              "name": "worker",
+              "image": "[parameters('image')]",
+              "resources": {
+                "cpu": "[json(parameters('cpu'))]",
+                "memory": "[parameters('memory')]"
+              },
+              "env": "[concat(createArray(createObject('name', 'SQLFLOW_URL', 'value', parameters('controlPlaneUrl')), createObject('name', 'SQLFLOW_WORKER_POOL', 'value', parameters('pool')), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference('identity').clientId), createObject('name', 'SQLFLOW_TOKEN', 'secretRef', 'node-token')), variables('privateNetworksEnv'), variables('secretEnvVars'))]"
+            }
+          ],
+          "scale": {
+            "minReplicas": 0,
+            "maxReplicas": "[parameters('maxReplicas')]",
+            "rules": "[variables('scaleRules')]"
+          }
+        }
+      },
+      "dependsOn": [
+        "acr",
+        "acrPull",
+        "identity",
+        "keyVaultAccess"
+      ]
+    }
+  },
+  "outputs": {
+    "identityClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "The client id of the node identity (grant it access to the payload storage and the credentials its pool's flows touch beyond this estate's vault)."
+      },
+      "value": "[reference('identity').clientId]"
+    },
+    "identityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "The principal (object) id of the node identity, for role assignments made outside this template."
+      },
+      "value": "[reference('identity').principalId]"
+    },
+    "identityName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the node identity: the user to create in each database it uses under Entra authentication (CREATE USER [<name>] FROM EXTERNAL PROVIDER)."
+      },
+      "value": "[format('{0}-id', parameters('name'))]"
+    }
+  }
+}

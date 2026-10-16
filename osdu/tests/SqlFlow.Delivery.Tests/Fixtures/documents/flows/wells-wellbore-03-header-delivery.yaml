@@ -1,0 +1,61 @@
+# Flow: wells-wellbore-03-header-delivery
+#
+# The wellbore master data the well logs reference (osdu/docs/reference/concepts/overview.md, The chain: pre, ing, then
+# the OSDU flow). It reads the ingestion tables the wellbore chain loads, renders each row with the Wellbore mapping and
+# delivers the records through the plain storage protocol: no payload files, so nothing is streamed beside the document.
+flowType: delivery
+name: wells-wellbore-03-header-delivery
+batch: wells
+
+# The partition the flow delivers to, as the sample estate names it; dev keeps the ledger the flow kept before it named it.
+partitions:
+  - name: dev
+    keepLedger: true
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.Wellbore
+    key: [facility_name]
+    primaryKey: RecId
+  datasets:
+    aliases:
+      object: OsduData.silver.WellboreAlias
+      join:
+        facility_name: facility_name
+      orderBy: [alias_name]
+  lastModified: update_date
+  work: ../.work/wellbore
+
+render:
+  mapping: Wellbore@1.0.0
+
+change:
+  detect: renderedHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
+
+reliability:
+  concurrency: 8
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  skipStatusCodes: [409]
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+schedule:
+  cron: "30 * * * *"
+
+verify:
+  reconcile: false

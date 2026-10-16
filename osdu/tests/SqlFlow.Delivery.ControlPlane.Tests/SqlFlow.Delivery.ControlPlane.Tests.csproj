@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA2007;CA1861</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.ControlPlane\SqlFlow.ControlPlane.csproj" />
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Catalog\SqlFlow.Catalog.csproj" />
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Sources\SqlFlow.Sources.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery\SqlFlow.Delivery.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery.ControlPlane\SqlFlow.Delivery.ControlPlane.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SQLFlow's in-memory control plane host and its test database helpers, linked rather than copied so the module's
+         API suites boot the host exactly as SQLFlow's own suites do. -->
+    <Compile Include="..\..\..\sqlflow\tests\SqlFlow.ControlPlane.Tests\ControlPlaneAppFactory.cs" Link="Host\ControlPlaneAppFactory.cs" />
+    <Compile Include="..\..\..\sqlflow\tests\SqlFlow.ControlPlane.Tests\CapturingLoggerProvider.cs" Link="Host\CapturingLoggerProvider.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The delivery suite's own fixtures, linked rather than copied: the in-memory ingestion tables a run reads, the
+         sample well logs they hold, and the SQL Server test database of the module with the collection its tests run in
+         (xUnit reads a collection's definition only from the assembly whose tests join it, so it is compiled in here too).
+         One fixture, two suites, so the API tests run a flow against exactly what the engine tests run it against. -->
+    <Compile Include="..\SqlFlow.Delivery.Tests\TestSupport.cs" Link="Fixtures\TestSupport.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\OsduTestDatabase.cs" Link="Fixtures\OsduTestDatabase.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\SqlServerSuite.cs" Link="Fixtures\SqlServerSuite.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\MemoryIngestionTables.cs" Link="Fixtures\MemoryIngestionTables.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="Fixtures\SampleWellLogs.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="Fixtures\PandasMetadata.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\SampleEstate.cs" Link="Fixtures\SampleEstate.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\MetricsCapture.cs" Link="Fixtures\MetricsCapture.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\RepositoryRoot.cs" Link="Fixtures\RepositoryRoot.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Where the repository is, baked in when the suite is built: a suite built into an artifacts folder outside the
+         repository cannot find it by walking up from its own binaries (RepositoryRoot). -->
+    <AssemblyMetadata Include="RepositoryRoot" Value="$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\'))" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The sample estate the submission and template suites run against, copied next to the binaries so the suites
+         work wherever the build output lands. The data files come too: a submission lands its records beside them. -->
+    <Content Include="..\..\samples\welldb\flows\**" Link="samples\welldb\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\mappings\**" Link="samples\welldb\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\cache\**" Link="samples\welldb\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\data\**" Link="samples\welldb\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\schedules.yaml" Link="samples\welldb\schedules.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Beside the source folder, not inside it: a template and a cache both live in the module's database, so neither
+         is repository content. These files stand in for what a capture against OSDU would have written. -->
+    <Content Include="..\..\samples\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\cache-records\**" Link="samples\cache-records\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The delivery suite's test-only documents, schemas and cache records for the kinds the sample estate does not
+         deliver, which the shared sample cache and templates include. -->
+    <Content Include="..\SqlFlow.Delivery.Tests\Fixtures\**" Link="Fixtures\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Linked a second time, into the fixture mappings folder, for MappingYaml's fallback; a None item copies the same
+         way a Content item does, and the SDK only flags two Content items sharing a source as duplicates. -->
+    <None Include="..\..\samples\welldb\mappings\**" Link="Fixtures\documents\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

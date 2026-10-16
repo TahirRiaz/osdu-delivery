@@ -1,0 +1,828 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "flowType": "dimension",
+  "strictKeys": true,
+  "includeEnvelope": true,
+  "generatedFrom": "osdu/docs/reference/flow/dimension.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 122,
+  "keys": [
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "description": "Optional grouping label (the source system) the platform files the flow's pipeline and runs under. A blank value counts as none."
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing what the dimensions are for."
+    },
+    {
+      "path": "dimensions",
+      "type": "list",
+      "required": true,
+      "description": "The dimensions, at least one and at most 100, names unique ignoring case. Each reads every distinct value of one attribute of one kind's records, however many there are."
+    },
+    {
+      "path": "dimensions[]",
+      "type": "object",
+      "required": true,
+      "description": "One dimension: the attribute whose distinct values it holds (`kind`, `query`, `path`), each exactly as the index holds it (a key), where a key's human-friendly label is read (`label`), how each key is cleaned into the value it belongs to (`clean`), and what the two columns of its table that hold the key and the value are named (`columns`)."
+    },
+    {
+      "path": "dimensions[].attributes",
+      "type": "map",
+      "required": false,
+      "description": "Further facts of each key, each under a name. A path, or a list of paths, is read from the record the key names, the way its label is: `attributes: { Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName'], SpudDate: data.SpudDate }`; `{ collect: <path> }` collects the values of the dimension's own records instead (`Source: { collect: data.Source }`), a dimension collecting one; `{ path: <path>, keep: key }` keeps each value exactly as the record holds it, so the column joins to the dimension keyed by it. At most 20; a name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and none of `value`, `keys`, `key`, `key_id`, `records`, `filter`, `label`, `id`, `partition` (the columns a dimension's table and a cached dimension's rows have already), nor the name of the dimension's own key or value column (`columns`). Each is a column of the dimension's table, `osdu.dim_<dimension>`, which gains the column of a new attribute on the next run. A build keeps each key's values (at most 256 characters each) with where it read them, indexed: values and keys are looked up by them (`attr=Country:United States`), an attribute lists its values narrowed by the other picks of a cascade, a search picks keys (and for a collected attribute, records) by them, the table lists them a column each, and a cached dimension carries the ones its `fields` name. A value that is itself a record reference is kept as the code its id ends with, its escapes decoded, unless the attribute keeps the key."
+    },
+    {
+      "path": "dimensions[].attributes.<name>",
+      "type": "list",
+      "required": false,
+      "description": "One attribute. A path of the record the key names, or a list of paths, each but the last reading the references the next records are found by, at most 3; every reference is followed, and the first record reached that holds a value at the last path gives the attribute's value. A path's segment holding objects can filter them: `[Property=text]` keeps those whose property equals the text, `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those whose property ends with it ignoring case (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`). Or settings naming one of `path` and `collect`, with `keep`: `{ path: data.WellboreID, keep: key }` reads it as the bare form does and keeps each value exactly as the record holds it, so the column joins to the dimension keyed by it; `{ collect: <path> }` collects it from the dimension's own records.",
+      "freeForm": true
+    },
+    {
+      "path": "dimensions[].attributes.<name>.path",
+      "type": "list",
+      "required": false,
+      "description": "The path, or list of paths, the attribute is read through, exactly as the bare form gives them: `WellboreID: { path: data.WellboreID, keep: key }`. Write it to give the attribute a `keep` beside its paths; an attribute that keeps nothing needs no settings. One of `path` and `collect`, never both."
+    },
+    {
+      "path": "dimensions[].attributes.<name>.keep",
+      "type": "string",
+      "required": false,
+      "allowed": ["value", "key", "id"],
+      "default": "value",
+      "description": "How each value is kept. `value` (the default) shows it as a value: a record reference becomes the code its id ends with, its escapes decoded (`dev:master-data--Wellbore:WB-0001:` is `WB-0001`). `key` keeps the text exactly as the record holds it, the text the key column of a dimension keyed by the same path holds (`dim_WellLog.WellboreID = dim_Wellbore.WellboreID`). `id` keeps a reference as the id of the record it names (its version, or the trailing colon of the latest, taken off), the text the key column of a dimension keyed by `id` holds. `key` and `id` are what join dimension tables. A value longer than the 256 characters a dimension keeps is cut under `value` and left out under `key` and `id`, since a key cut joins to nothing."
+    },
+    {
+      "path": "dimensions[].elements",
+      "type": "map",
+      "required": false,
+      "description": "The objects of a nested array of each record, a row each in the dimension's table beside the key of the record holding them, each object's fields on its row: `elements: { path: data.Curves, fields: { Mnemonic: Mnemonic, CurveUnitID: { path: CurveUnit, keep: id } } }` on a dimension keyed by a log's `id` makes a row per curve. The table gains an `element` column numbering each key's objects from 1, in the order of the records' ids and then of the objects in each record; a key whose records hold none is one row with no element, which a view leaves out with `where: element IS NOT NULL`. Read in one pass over the records through the search cursor, at most 5,000,000 objects a build. A field keeps at most 4,000 characters, where an attribute keeps 256. Not with a collected attribute, since both make a row per value. Attributes and fields together are at most 20 columns."
+    },
+    {
+      "path": "dimensions[].elements.path",
+      "type": "string",
+      "required": true,
+      "description": "The array, as a path from the record's root, written as a label's path is: every array on the way is stepped into (`data.Curves.Columns` makes a row of every object of every curve's `Columns`), and any segment can filter the objects it holds (`data.GeoContexts[GeoTypeID$=:Field:]`). What the path ends at is the element: an object, whose fields are read inside it, or a plain value, which the field `@` reads."
+    },
+    {
+      "path": "dimensions[].elements.fields",
+      "type": "map",
+      "required": true,
+      "description": "The columns read from each element, each under its name, named as an attribute is and unlike every attribute and the `element` column. Each is a path inside the element (`CurveUnit`, `Quantity.Code`, `Values[Type=Top].Depth`), `@` for the element itself, or settings `{ path, keep, up, many }`."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One field: a path inside the element, written as a label's path is, `@` for the element itself, or settings `{ path, keep, up, many }` (`CurveUnitID: { path: CurveUnit, keep: id }`).",
+      "freeForm": true
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.keep",
+      "type": "string",
+      "required": false,
+      "allowed": ["value", "key", "id"],
+      "default": "value",
+      "description": "How the field's value is kept, as an attribute's `keep` says: `id` makes the column join to the dimension keyed by the id of the record it names. A field keeps at most 4,000 characters: a longer value is cut under `value` and left out under `key` and `id`."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.up",
+      "type": "integer",
+      "required": false,
+      "default": "0",
+      "description": "How many objects up the element's path the field is read from: 0 the element, 1 the object holding its array, as many as the path has segments for the record itself. `LogVersion: { path: LogVersion, up: 1 }` beside `path: data.Curves` reads the log's `data.LogVersion` onto every curve's row. Not with `@`."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.many",
+      "type": "string",
+      "required": false,
+      "allowed": ["first", "join"],
+      "default": "first",
+      "description": "How a field whose path reaches several values in one element is kept: `first`, the first that is not empty; `join`, every one that is not empty, each once, in order, joined by `; `."
+    },
+    {
+      "path": "dimensions[].attributes.<name>.collect",
+      "type": "string",
+      "required": false,
+      "description": "The path of the dimension's own records whose values the attribute collects: `Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore every source its logs hold, with how many logs hold each, the logs holding none under the `unlabelled` value. A path search can match exactly, as `path` is. As many distinct values as the dimension keeps keys (`maxValues`): a build reads few a read per value, many in one pass over the records. One collected attribute per dimension, so each row of the dimension's table is a key and one collected value. A search picking a collected value finds the records holding it, not every record of the keys holding it; a pick of the `unlabelled` value excludes every value, so it is refused past 1,000 values."
+    },
+    {
+      "path": "dimensions[].clean",
+      "type": "list",
+      "required": false,
+      "description": "The steps each key (or its label, when `label` read one) is cleaned by, in order, at most 20; the value is trimmed at the end. Written as a step's name (`trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators`) or as a step with its settings (`replace`, `map`). Left out, each key's label, or the key itself, is its value, trimmed; a key that names an OSDU record and has no label starts as the code its id ends with, its escapes decoded (`dev:reference-data--UnitOfMeasure:us%2Fft:` is `us/ft`), so a value is ready for a drop-down."
+    },
+    {
+      "path": "dimensions[].clean[]",
+      "type": "object",
+      "required": false,
+      "description": "One step: `trim` (white space removed at both ends), `collapseSpaces` (every run of white space one space), `upper` and `lower` (case by the invariant culture), `nfc` and `nfkc` (Unicode normalization), `foldSeparators` (letters and digits kept, every run of anything else one hyphen, lower-cased), `replace` (written `{ replace: { pattern, with } }`) and `map` (written `{ map: <dictionary> }` or `{ map: { dictionary, field, otherwise } }`). A step that leaves nothing, or a value longer than 256 characters, leaves the key out of every value with the reason kept on it.",
+      "freeForm": true
+    },
+    {
+      "path": "dimensions[].clean[].map",
+      "type": "object",
+      "required": false,
+      "description": "A dictionary document of the repository looked up, found as `dictionaries/<name>.yaml` above the flow: a listed value is replaced by the entry's value, matched exactly, or ignoring case when that finds one entry. Written as the dictionary's name, or with its settings."
+    },
+    {
+      "path": "dimensions[].clean[].map.dictionary",
+      "type": "string",
+      "required": true,
+      "description": "The dictionary's name: a letter followed by letters, digits, `_` or `-`."
+    },
+    {
+      "path": "dimensions[].clean[].map.field",
+      "type": "string",
+      "required": false,
+      "description": "The entry's field that gives the clean value. Left out, the one field an entry holds beside its key (`value` for a dictionary of pairs)."
+    },
+    {
+      "path": "dimensions[].clean[].map.otherwise",
+      "type": "string",
+      "required": false,
+      "description": "What a value the dictionary does not list comes to: left out, it goes on as it is; `~`, the key is left out of every value; a text, it becomes that text. An entry that lists a value with no value leaves it out as well."
+    },
+    {
+      "path": "dimensions[].clean[].replace",
+      "type": "object",
+      "required": false,
+      "description": "A regular expression replaced in the value. Run by .NET's non-backtracking engine, in time linear in the value: a backreference, a lookaround or an atomic group is refused when the flow is loaded."
+    },
+    {
+      "path": "dimensions[].clean[].replace.pattern",
+      "type": "string",
+      "required": true,
+      "description": "The regular expression whose matches are replaced."
+    },
+    {
+      "path": "dimensions[].clean[].replace.with",
+      "type": "string",
+      "required": true,
+      "description": "What each match is replaced by; `$1` names the first group. Write `''` to remove the matches."
+    },
+    {
+      "path": "dimensions[].columns",
+      "type": "object",
+      "required": false,
+      "description": "The names of the two columns of the dimension's table, `osdu.dim_<dimension>`, that hold each key and its value, when not the ones the dimension reads by. Left out, the key's column is named after the property `path` ends with (`data.WellboreID` is `WellboreID`), and the value's after the property the last `label` path ends with (`data.FacilityName` is `FacilityName`), or after the dimension itself when it reads no label (its name, whatever is not a letter, a digit or an underscore made an underscore). Where the two would be the same (a dimension `Source` reading `data.Source` with no label), the value's column keeps the name and the key's takes `Key` at its end: `Source` and `SourceKey`. Name one when a name is one every table has already (`path: id`) or an attribute's, when it reads badly, or to keep a name through a change of `path` or `label`. A name is a letter, then letters, digits and underscores, at most 64; none of `id`, `partition`, `key_id`, `records`, `filter`; and unlike the other and every attribute, ignoring case. The page, the table export and the CLI show the two columns under these names. A build renames the columns of a table that holds them under other names where they are, keeping every row and its number."
+    },
+    {
+      "path": "dimensions[].columns.key",
+      "type": "string",
+      "required": false,
+      "description": "The name of the column that holds each key, exactly as the index holds it. Not `value`, the word the value's column is asked for by whatever it is named. Left out, the property `path` ends with, with `Key` at its end where the value's column has that name (`SourceKey` beside `Source`). Not the name of the value's column."
+    },
+    {
+      "path": "dimensions[].columns.value",
+      "type": "string",
+      "required": false,
+      "description": "The name of the column that holds each key's value: its label, cleaned. Not `key`, the word the key's column is asked for by whatever it is named. Left out, the property the last `label` path ends with, or the dimension's name when it reads no label."
+    },
+    {
+      "path": "dimensions[].countRecords",
+      "type": "boolean",
+      "required": false,
+      "description": "Count each value's records exactly, with one count of the search per value whose keys could share a record. Where the attribute repeats in a record (a list, an array of objects) the index counts keys held, not records, so without this such a value's count is the sum of its keys' and marked as not exact.",
+      "default": "false"
+    },
+    {
+      "path": "dimensions[].description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing the dimension."
+    },
+    {
+      "path": "dimensions[].kind",
+      "type": "string",
+      "required": true,
+      "description": "The kind whose records are read, `authority:source:entityType:version`, wildcards allowed per segment (`osdu:wks:master-data--Wellbore:*`). For a property of `data`, a build reads the saved template of every kind the pattern matches in the partition, and every one must index the property the same way."
+    },
+    {
+      "path": "dimensions[].label",
+      "type": "list",
+      "required": false,
+      "description": "Where a key's human-friendly label is read, for a key that names an OSDU record (a reference such as `data.WellboreID`): a path of the record the key names (`label: data.FacilityName`), or a list of paths, each but the last reading the reference the next record is found by (`label: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]`), at most 3. Every reference a step reads is followed (at most 20 a key), and the first record reached that holds a value at the last path gives it; a path's segment holding objects can filter them, as an attribute's can (`[data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']`). A build finds the records by id through the search service, 500 ids a search, and cleans the label into the key's value; a key that names no record, a record the search does not hold, and one holding nothing at the path, have no label: such a key is valued by the code its id ends with, its escapes decoded (`us%2Fft` shows as `us/ft`), and the build's notes say how many and why. The key stays the id, so its filter and its value's filter find the records holding it. Left out, each key is cleaned into its value itself."
+    },
+    {
+      "path": "dimensions[].maxValues",
+      "type": "integer",
+      "required": false,
+      "description": "The most distinct values the dimension keeps, between 1 and 5000000: a build that finds more fails before it writes anything, since it holds the values in memory while it groups them.",
+      "default": "1000000"
+    },
+    {
+      "path": "dimensions[].name",
+      "type": "string",
+      "required": true,
+      "description": "The dimension's name: a letter or digit followed by letters, digits, `.`, `_` and `-`, at most 100 characters. A run, a page, a filter and a cache type name the dimension by it, and so does its table in the database, `osdu.dim_<name>`. So it must be unique among the dimensions of every flow, not only this one: a second flow declaring a dimension of the same name is refused when it builds."
+    },
+    {
+      "path": "dimensions[].partitions",
+      "type": "list",
+      "required": false,
+      "description": "The partitions of the flow the dimension is built in, when not all of them; left out, it is built in every partition the flow builds in."
+    },
+    {
+      "path": "dimensions[].partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the dimension is built in, one the flow names (or, for a flow building in every registered partition, any partition)."
+    },
+    {
+      "path": "dimensions[].path",
+      "type": "string",
+      "required": true,
+      "description": "The attribute, as a path from the record's root: any property search can match exactly. A property of `data` (`data.FacilityName`, `data.Curves.Mnemonic` inside a nested array, a value inside a flattened array, a list of values), or a property of the record itself: `id`, `kind`, `type`, `namespace`, `authority`, `source`, `version`, `createUser`, `modifyUser`, `createTime`, `modifyTime`, `collaborationId`, `acl.viewers`, `acl.owners`, `legal.legaltags`, `legal.otherRelevantDataCountries`, `legal.status`, `ancestry.parents`, `index.statusCode`, or a tag as `tags.<name>`. An array of objects without an `x-osdu-indexing` hint, an object and a value inside a nested array inside another are refused: search holds no exact value there."
+    },
+    {
+      "path": "dimensions[].query",
+      "type": "string",
+      "required": false,
+      "description": "Optional Lucene query narrowing the records read, with `{parameter}` and `{partition}` tokens. Left out, every record of the kind is read. The filters of keys and values select by key alone: combine them with this query where a search should read the same records (a composed search does)."
+    },
+    {
+      "path": "dimensions[].unlabelled",
+      "type": "string",
+      "required": false,
+      "description": "The value of whatever is not read, cleaned like a label: `unlabelled: Not specified`, so a drop-down lists it under one value, as an application does. It values a key whose label is not read (it names no record, the search does not hold the record, or the record holds nothing where the label is read), and its filter finds exactly their records; an attribute a key has none of; and a collected attribute's records holding none of its values. At most 256 characters, for a dimension that reads a label or attributes. Left out, a key without a label is valued by the code its id ends with, its escapes decoded, and a key holds no value of an attribute it has none of."
+    },
+    {
+      "path": "flowType",
+      "type": "enum(dimension)",
+      "required": true,
+      "description": "The document kind: `dimension`, the distinct values attributes of OSDU records hold, each kept exactly as the search index holds it (a key: the text, or the id a reference names) and grouped under a human-friendly value (the label read from the record a key names, cleaned), with the search filter each key and each value stands for. The loader chooses the reader by it and refuses a document that declares no `flowType` or `documentType`.",
+      "enumValues": [
+        "dimension"
+      ]
+    },
+    {
+      "path": "incremental",
+      "type": "object",
+      "required": false,
+      "description": "How a build loads the flow's dimensions after their first full load. Left out, every build loads every dimension in full: every key the index holds read, labelled and cleaned, and what it no longer finds removed. Declared, a build loads incrementally: it reads the records that changed in a window (by `dateColumns`) and reads again, whole, every key they hold now or held before (kept by each record's unique key, `keyColumns`) and every key whose label or attributes were read through a record that changed; a key read again that no record holds is removed. A record that left the index cannot be seen, so the keys only it held stay until a full load: the first build, one after the declaration or query changed, one after `fullLoadAfterHours`, one a run asks for with `fullLoad`, and one where more than a quarter of the records or keys changed."
+    },
+    {
+      "path": "incremental.keyColumns",
+      "type": "list",
+      "required": true,
+      "description": "The properties whose values together identify one record, its unique key: `[id]` for an OSDU record. A full load keeps the keys each record holds by it, so an incremental load reads again what a changed record held before. Each a property a record holds once, at most 3, none twice; a record holding no single value at one is not kept.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.keyColumns[]",
+      "type": "string",
+      "required": false,
+      "description": "One property of a record's unique key, as a path: `id`, or a `data` property each record holds once.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.dateColumns",
+      "type": "list",
+      "required": false,
+      "description": "When a record last changed: the first of these dates it holds. OSDU sets `modifyTime` only from a record's second version on, so a record never modified is read by its `createTime`. Each a date a record holds once, at most 3, none twice.",
+      "default": "[modifyTime, createTime]",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.dateColumns[]",
+      "type": "string",
+      "required": false,
+      "description": "One date a record's change time is read from, as a path: `modifyTime`, `createTime`, or a `data` date each record holds once.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.lagMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "How far behind now a window ends, in minutes, so records the indexer has not caught up with are read by the next build; a window also begins this far before the last one ended. From 0 to 1440.",
+      "default": "5",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.fullLoadAfterHours",
+      "type": "integer",
+      "required": false,
+      "description": "A build loads a dimension in full when its last full load completed more than this many hours ago, so keys only records that left the index held are removed and counts they made settled. From 1 to 8784. Left out, a dimension is loaded in full only when a run asks for it or a build has to.",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "incremental.fullLoad",
+      "type": "boolean",
+      "required": false,
+      "description": "Every build loads every dimension in full, as without the block, keeping its settings for when this is taken out. A single run asks for one with SQLFlow's `fullLoad` instead.",
+      "default": "false",
+      "appliesWhen": "incremental is declared."
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The dimension flow's name: its pipeline identity, and the name its dimensions are kept under. A flow that builds in partitions keeps its dimensions per partition, shown as `name@partition`."
+    },
+    {
+      "path": "parameters",
+      "type": "map",
+      "required": false,
+      "description": "Optional: the flow's parameters, by name. `{name}` tokens are usable in a dimension's `query`; `{partition}` is always the partition the run builds in, so no parameter may be called `partition`. Values come from `--set name=value`, the run's values, or the schedule's `values`."
+    },
+    {
+      "path": "parameters.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One parameter; `<name>` is the name its `{name}` tokens use. A run supplying a value for a name the flow does not declare is refused."
+    },
+    {
+      "path": "parameters.<name>.default",
+      "type": "string",
+      "required": false,
+      "description": "The value used when a run supplies none."
+    },
+    {
+      "path": "parameters.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Text describing what the parameter is for."
+    },
+    {
+      "path": "parameters.<name>.required",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, a run that supplies no value, for a parameter without a default, fails with \"parameter 'name' is required\". A scheduled fire supplies only the schedule's `values`, so give it one there.",
+      "default": "false"
+    },
+    {
+      "path": "partitions",
+      "type": "list",
+      "required": false,
+      "description": "The OSDU data partitions the flow builds dimensions in, hard-coded: each by its `data-partition-id` written literally, never a reference, at least one, at most 64, none twice. A run builds in one of them: the one it names, else the registry's default when the flow names it, else the flow's only one; `*` is refused. Left out, with no `data-partition-id` header, the flow builds in every registered partition. Each partition keeps dimensions of its own."
+    },
+    {
+      "path": "partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the flow builds dimensions in, by its `data-partition-id`."
+    },
+    {
+      "path": "reliability",
+      "type": "object",
+      "required": false,
+      "description": "The HTTP settings (timeout, retry, rate limit, TLS, URL allowlist and response size), and `concurrency`: how much a build asks of the search at once. `reliability.parallelInterfaces` is refused."
+    },
+    {
+      "path": "reliability.batchRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: rendered documents per work batch file. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.batchSize",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: records claimed per ledger round trip when retrying records. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "50"
+    },
+    {
+      "path": "reliability.concurrency",
+      "type": "integer",
+      "required": false,
+      "description": "How much a build asks of the search at once: the ranges of a field's values, the searches that read labels and attributes, and the cursors of a pass over the records a collected attribute is read from. At least 1; 1 asks one thing at a time.",
+      "default": "8"
+    },
+    {
+      "path": "reliability.fanOut",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the member runs a large submission spreads over. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.fanOutMinRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: below this many records a submission never fans out. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "1000"
+    },
+    {
+      "path": "reliability.leaseSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: how long a worker's lease on a record lasts. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "300"
+    },
+    {
+      "path": "reliability.maxRequestBodyBytes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the target's declared request body ceiling (0 = not declared). The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.maxResponseBytes",
+      "type": "integer",
+      "required": false,
+      "description": "The largest response body read, in bytes. A larger response fails the request with a message naming this setting.",
+      "default": "67108864"
+    },
+    {
+      "path": "reliability.parallelInterfaces",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery source's setting: how many of its interfaces run at once. An assertion flow runs no interfaces, so the loader refuses it here."
+    },
+    {
+      "path": "reliability.rateLimitRps",
+      "type": "number",
+      "required": false,
+      "description": "The most requests per second the flow sends to the platform; 0 means unlimited. Token requests are not limited.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.renderParallelism",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: renderers in the intake pipeline on one node, 0 to 256 (0 takes half the machine's processors, at least one). The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.retry",
+      "type": "object",
+      "required": false,
+      "description": "How one request is repeated inline. Only requests that are safe to repeat are repeated, on 408, 425, 429, 503 and 504 and on a transport failure; 500 and 502 are not replayed."
+    },
+    {
+      "path": "reliability.retry.attempts",
+      "type": "integer",
+      "required": false,
+      "description": "The most attempts one request gets, the first included.",
+      "default": "4"
+    },
+    {
+      "path": "reliability.retry.backoff",
+      "type": "enum(exponential|fixed)",
+      "required": false,
+      "description": "The wait between attempts: `exponential` doubles `baseDelayMs` per attempt, `fixed` waits `baseDelayMs` each time; both are capped at `maxDelayMs`.",
+      "enumValues": [
+        "exponential",
+        "fixed"
+      ],
+      "default": "exponential"
+    },
+    {
+      "path": "reliability.retry.baseDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The first wait between attempts, in milliseconds.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.retry.honorRetryAfter",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether a `Retry-After` the service sends is honoured. A requested wait within `maxDelayMs` becomes the floor of the backoff; a longer one is never shortened, so the request stops instead of waiting it out.",
+      "default": "true"
+    },
+    {
+      "path": "reliability.retry.maxDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The longest wait between attempts, in milliseconds.",
+      "default": "30000"
+    },
+    {
+      "path": "reliability.retry.recordBaseDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the first wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "1"
+    },
+    {
+      "path": "reliability.retry.recordMaxDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the longest wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; a dimension flow does not use it.",
+      "default": "60"
+    },
+    {
+      "path": "reliability.skipStatusCodes",
+      "type": "list",
+      "required": false,
+      "description": "A delivery flow's setting: statuses that hold a record instead of retrying it. The loader accepts it as on a delivery flow; a dimension flow does not use it."
+    },
+    {
+      "path": "reliability.skipStatusCodes[]",
+      "type": "integer",
+      "required": false,
+      "description": "One HTTP status code."
+    },
+    {
+      "path": "reliability.timeoutSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long one HTTP request may take, in seconds.",
+      "default": "100"
+    },
+    {
+      "path": "reliability.urlAllowlist",
+      "type": "list",
+      "required": false,
+      "description": "The hosts requests may reach (an SSRF guard), checked on every request and every redirect hop. Empty allows any host the deployment's network policy reaches; token requests are not checked against it."
+    },
+    {
+      "path": "reliability.urlAllowlist[]",
+      "type": "string",
+      "required": false,
+      "description": "A host name, or `*.suffix` to match the bare domain and any subdomain of it. Compared ignoring case."
+    },
+    {
+      "path": "reliability.verifyTls",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether the platform's TLS certificate is verified. `false` also needs `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true` on the node, or the run is refused.",
+      "default": "true"
+    },
+    {
+      "path": "source",
+      "type": "object",
+      "required": true,
+      "description": "The OSDU platform the dimensions are read from. A build only reads: nothing is ever written to OSDU."
+    },
+    {
+      "path": "source.aggregationSize",
+      "type": "integer",
+      "required": false,
+      "description": "How many groups the platform's aggregation returns: its `AGGREGATION_SIZE`, 1000 unless its operators changed it, between 10 and 10000. A build pages past it by value ranges, taking a range answered with fewer groups as complete, so this must not be more than the platform's setting; less only asks more often.",
+      "default": "1000"
+    },
+    {
+      "path": "source.auth",
+      "type": "object",
+      "required": false,
+      "description": "How requests to the OSDU platform authenticate, written as `target.auth` is on a delivery flow. Secrets are references only: ${env:NAME} or ${keyvault:vault/secret}. Left out, requests carry no credentials (type `none`).",
+      "appliesWhen": "Optional; written as `target.auth` on a delivery flow."
+    },
+    {
+      "path": "source.auth.headerName",
+      "type": "string",
+      "required": false,
+      "description": "The header an `apiKeyHeader` auth sends the key in.",
+      "appliesWhen": "source.auth.type is apiKeyHeader, which needs it."
+    },
+    {
+      "path": "source.auth.secondarySecretRef",
+      "type": "string",
+      "required": false,
+      "description": "The secondary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}): the username for `basic`, the client id for `oauth2ClientCredentials` (sent as `client_id` unless the token body names one).",
+      "appliesWhen": "source.auth.type is basic or oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.secretRef",
+      "type": "string",
+      "required": false,
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one). A literal is refused when the flow is read.",
+      "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token",
+      "type": "object",
+      "required": false,
+      "description": "The OAuth2 token endpoint: where a token is requested and how it is read from the answer. One token serves the run and is requested again shortly before it expires.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials, which needs it."
+    },
+    {
+      "path": "source.auth.token.applyPrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the access token in the `Authorization` header.",
+      "default": "\"Bearer \"",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.basicAuthClient",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, the client id and secret are sent as an HTTP Basic `Authorization` header on the token request instead of in its form body.",
+      "default": "false",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body",
+      "type": "map",
+      "required": false,
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here. A field named as a secret (`client_secret`, `password`, `refresh_token`, `client_assertion`, ...) holds a reference only; a literal there is refused when the flow is read. `client_id`, `scope` and `audience` may be literals.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent. A field named as a secret must be a reference.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.discoveryUrl",
+      "type": "string",
+      "required": false,
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
+    },
+    {
+      "path": "source.auth.token.tokenPath",
+      "type": "string",
+      "required": false,
+      "description": "The path of the access token in the token endpoint's JSON answer.",
+      "default": "access_token",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.url",
+      "type": "string",
+      "required": false,
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
+    },
+    {
+      "path": "source.auth.type",
+      "type": "enum(none|bearer|apiKeyHeader|basic|oauth2ClientCredentials)",
+      "required": false,
+      "description": "The auth scheme: `none`, `bearer` (a token as a reference), `apiKeyHeader` (a key in a named header), `basic` (username and password) or `oauth2ClientCredentials` (a token requested from `token`). Read ignoring case.",
+      "enumValues": [
+        "none",
+        "bearer",
+        "apiKeyHeader",
+        "basic",
+        "oauth2ClientCredentials"
+      ],
+      "default": "none"
+    },
+    {
+      "path": "source.auth.valuePrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the secret in the header value of a `bearer` or `apiKeyHeader` auth. An OAuth2 token takes `token.applyPrefix` instead.",
+      "default": "\"Bearer \" for bearer; nothing for apiKeyHeader",
+      "appliesWhen": "source.auth.type is bearer or apiKeyHeader."
+    },
+    {
+      "path": "source.endpoint",
+      "type": "string",
+      "required": true,
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`. Written literally, its user info and query may carry no credential: one that does is refused when the flow is read."
+    },
+    {
+      "path": "source.headers",
+      "type": "map",
+      "required": false,
+      "description": "Headers sent with every request. A flow that names its partitions, or builds in every registered one, may not name `data-partition-id` here: each run sets it to the partition it builds in. A flow that names neither builds in the partition this header names."
+    },
+    {
+      "path": "source.headers.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret}). A header that carries a credential (`Authorization`, an API or subscription key, a token, any `x-api-*` header) holds a reference, after its scheme when it has one (`Bearer ${env:NAME}`); a literal is refused when the flow is read."
+    },
+    {
+      "path": "source.paging",
+      "type": "enum(cursor|createTime)",
+      "required": false,
+      "description": "How a read of every record a search matches pages through them. `cursor` (the default) pages the search service's cursor (POST /query_with_cursor), a context the service holds between pages and moves on with each, so a read that loses a page reads the search again from its first page. `createTime` pages the plain search (POST /query) in the order of each record's createTime and then its id, each page asked from the last record handed out: the service holds nothing between pages, a page that fails is asked again from where the read stopped, and a read that comes back short reads again only the batch of about 10,000 records it is short in. Either way a search is read whole or the read fails.",
+      "default": "cursor",
+      "enumValues": [
+        "cursor",
+        "createTime"
+      ]
+    },
+    {
+      "path": "source.queryPath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's offset search, which aggregates a dimension's values and counts records (openapi search v2, POST /query).",
+      "default": "/api/search/v2/query"
+    },
+    {
+      "path": "source.searchPath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's cursor search, which a build scans the records of a range through when an aggregation cannot answer it (openapi search v2, POST /query_with_cursor).",
+      "default": "/api/search/v2/query_with_cursor"
+    },
+    {
+      "path": "target",
+      "type": "object",
+      "required": false,
+      "description": "Where the pipelines that read the flow's dimension tables and views find them: the module's database, named by the connection those pipelines name it by. With it, the flow's lineage declares that it writes every `osdu.dim_<dimension>` table and every `osdu.v_dim_<view>` view, so a pipeline reading one is ordered after the flow. Required when the flow declares `views`."
+    },
+    {
+      "path": "target.connection",
+      "type": "string",
+      "required": true,
+      "description": "The module's database, as a `${env:NAME}` or `${keyvault:vault/secret}` reference, or a SQL Server connection string whose password is one, written exactly as the pipelines reading the tables and views write it: SQLFlow tells two servers apart by the reference as written. A build and a plan open it and ask the server which database it is; one that reaches another database than the module's own is refused before anything is built, naming the reference and never what it resolves to."
+    },
+    {
+      "path": "views",
+      "type": "list",
+      "required": false,
+      "description": "Views over the flow's dimension tables, at most 50, names unique ignoring case. Each puts dimensions of this flow side by side at the grain of one of them (`from`), joined on the keys they share (`join`), with the columns the document lists (`columns`), each an expression converted to a data type. A build writes each as `osdu.v_dim_<name>` after the flow's dimensions, checks it in the run's partition, and drops a view the flow no longer declares. Needs `target.connection`."
+    },
+    {
+      "path": "views[]",
+      "type": "object",
+      "required": true,
+      "description": "One view: `name`, `from`, optional `description`, `join`, `columns` and `where`. Every view begins with `partition` and `id`, the number of the `from` row each of its rows stands for, which is its key."
+    },
+    {
+      "path": "views[].name",
+      "type": "string",
+      "required": true,
+      "description": "The view's name: a letter, then letters, digits and underscores, at most 64, unique among the views of a database ignoring case. The view is `osdu.v_dim_<name>`. A name another flow's view holds, or an object no build made, is refused when the build writes it."
+    },
+    {
+      "path": "views[].description",
+      "type": "string",
+      "required": false,
+      "description": "What the view holds, at most 1,000 characters, shown with it."
+    },
+    {
+      "path": "views[].from",
+      "type": "string",
+      "required": true,
+      "description": "The dimension of this flow whose rows the view's rows are: a row of the view for each row of its table, every join a left join that meets at most one row."
+    },
+    {
+      "path": "views[].join",
+      "type": "list",
+      "required": false,
+      "description": "The joins, at most 32, read in order, so one can follow another and none comes back on itself: `{ on: <column>, to: <dimension>, as: <alias> }`. Each compares the partition and the key exactly (the key's hash, then the text under a binary collation), so ids that differ only in case never meet."
+    },
+    {
+      "path": "views[].join[]",
+      "type": "object",
+      "required": false,
+      "description": "One join. Refused when the document is read: `to` not a dimension of the flow; `on` not a key (a key's column, or an attribute or element field kept as `key` or `id`); keys that would not meet (a key's column or a `keep: key` column joins the dimension keyed by the same path, a `keep: id` column a dimension keyed by `id`, two dimensions keyed by `id` read kinds of one entity type); and a dimension with `elements` or a collected attribute, whose table holds several rows a key and would repeat the view's rows."
+    },
+    {
+      "path": "views[].join[].on",
+      "type": "string",
+      "required": true,
+      "description": "The column joined on: a column of the `from` dimension's table, bare (`CurveUnitID`), or of an earlier join's, by its alias (`WellLog.SamplingDomainTypeID`)."
+    },
+    {
+      "path": "views[].join[].to",
+      "type": "string",
+      "required": true,
+      "description": "The dimension of this flow joined to. A dimension can be joined twice under two aliases."
+    },
+    {
+      "path": "views[].join[].as",
+      "type": "string",
+      "required": false,
+      "description": "The alias the joined dimension's columns are named by in expressions (`Unit.Name`), and the prefix of its columns in a view that lists none (`Unit_Name`). Left out, the dimension's name. A letter, then letters, digits and underscores, at most 64, unique among the view's joins."
+    },
+    {
+      "path": "views[].columns",
+      "type": "map",
+      "required": false,
+      "description": "The view's columns after `partition` and `id`, each under its name, in order, at most 256: an expression alone (`Curve: Mnemonic`), or `{ expression, dataType, description }`. A name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and neither `partition` nor `id`. Left out, the view holds every column of `from` but its numbers, partition and filter, then every column of each join prefixed by its alias and an underscore, with the joined row's number as `<alias>_id`, all as their tables hold them."
+    },
+    {
+      "path": "views[].columns.<name>",
+      "type": "string",
+      "required": false,
+      "freeForm": true,
+      "description": "One column: a T-SQL scalar expression over the view's tables, read by SQL Server's own parser and written into the view by the module, or settings `{ expression, dataType, description }`. Columns are named bare for `from`'s, `alias.column` for a join's. The expression uses numbers, `'text'`, `N'text'`, `NULL`, the operators `+ - * / %`, comparisons, `AND`, `OR`, `NOT`, `IS NULL`, `LIKE`, `IN`, `BETWEEN`, `CASE`, and the functions `COALESCE`, `NULLIF`, `ISNULL`, `IIF`, `TRY_CAST`, `TRY_CONVERT`, `CAST`, `CONVERT` (no style), `LEFT`, `RIGHT`, `SUBSTRING`, `LEN`, `UPPER`, `LOWER`, `TRIM`, `LTRIM`, `RTRIM`, `REPLACE`, `CHARINDEX`, `CONCAT`, `CONCAT_WS`, `ABS`, `ROUND`, `FLOOR`, `CEILING`, `POWER`, `SQRT`, `EXP`, `LOG`, `LOG10`, `SIGN`, `DATEADD`, `DATEDIFF`, `DATEPART`, `YEAR`, `MONTH`, `DAY`, `EOMONTH`; anything else (a subquery, a variable, a window, `COLLATE`, `GETDATE()`) is refused. Every column of a dimension's table is text but `id`, `key_id`, `records` and `element`, and an implicit conversion is refused: convert first (`TRY_CAST(TopDepth AS float)`). A division by zero, a root or a logarithm outside its domain and a negative length are null. An expression that starts with `[` is quoted in YAML."
+    },
+    {
+      "path": "views[].columns.<name>.expression",
+      "type": "string",
+      "required": true,
+      "description": "The T-SQL scalar expression the column is computed by, at most 4,000 characters, as the bare form gives it."
+    },
+    {
+      "path": "views[].columns.<name>.dataType",
+      "type": "string",
+      "required": false,
+      "allowed": ["bit", "tinyint", "smallint", "int", "bigint", "decimal(p,s)", "numeric(p,s)", "float", "real", "date", "time(n)", "datetime2(n)", "datetimeoffset(n)", "uniqueidentifier", "nvarchar(n)", "nvarchar(max)"],
+      "description": "The type the value is converted to, by the module's conversion, which never fails a read: a value it cannot convert is null, and each build counts them with examples. A whole number reads `7`, `7.0` and `7E0` but no fraction; a decimal reads an exponent; a date is read as ISO 8601 alone, whatever the reading session's date format, and `datetime2` is the instant in UTC; `bit` reads `true`, `false`, `1`, `0`; `nvarchar(n)` is null for a longer text rather than cut. `varchar`, `char`, `datetime` and `smalldatetime` are refused. Left out, the column keeps its expression's type. Quote a type with a comma in a flow mapping: `dataType: \"decimal(18,3)\"`."
+    },
+    {
+      "path": "views[].columns.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "What the column holds, at most 1,000 characters, shown with the view."
+    },
+    {
+      "path": "views[].where",
+      "type": "string",
+      "required": false,
+      "description": "The condition a row of the view is kept by, a T-SQL condition over the same columns and with the same operators and functions as a column's expression, at most 4,000 characters: `element IS NOT NULL` keeps the rows of a dimension with `elements` that hold an element, leaving out the one row a key whose records hold none has; `Log.Source = 'SMDA'` keeps the rows whose joined log says so. A value alone (`element`) is refused: compare it. Left out, the view holds a row for every row of `from`. The check counts the rows the condition keeps."
+    }
+  ]
+}

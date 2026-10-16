@@ -1,0 +1,459 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "15894664579577347775"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region. Defaults to the resource group location."
+      }
+    },
+    "name": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-control-plane",
+      "metadata": {
+        "description": "Name of the Container App (and the prefix for its managed identity)."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource id of an existing Container Apps managed environment to host the app. The app runs on its Consumption workload profile."
+      }
+    },
+    "image": {
+      "type": "string",
+      "metadata": {
+        "description": "Container image reference, e.g. myregistry.azurecr.io/osdu-delivery-control-plane:<tag>"
+      }
+    },
+    "keyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of an existing Key Vault holding the catalog connection, the JWT signing key and the initial admin's password; the app identity is granted Key Vault Secrets User on it."
+      }
+    },
+    "catalogConnectionSecretName": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-catalog-db",
+      "metadata": {
+        "description": "Key Vault secret name for the catalog ADO.NET connection string."
+      }
+    },
+    "osduConnectionSecretName": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-osdu-db",
+      "metadata": {
+        "description": "Key Vault secret name for the OSDU Delivery module database connection string, which startup migrates and verifies after the catalog. Point it at a secret holding the catalog connection to keep the `osdu` schema in the catalog database."
+      }
+    },
+    "jwtSigningKeySecretName": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-jwt-signing-key",
+      "metadata": {
+        "description": "Key Vault secret name for the JWT signing key (at least 32 bytes): the one the deployment generates into the vault."
+      }
+    },
+    "jwtIssuer": {
+      "type": "string",
+      "defaultValue": "sqlflow-control-plane",
+      "metadata": {
+        "description": "JWT issuer the control plane validates."
+      }
+    },
+    "jwtAudience": {
+      "type": "string",
+      "defaultValue": "sqlflow",
+      "metadata": {
+        "description": "JWT audience the control plane validates."
+      }
+    },
+    "workerEnabled": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Run the in-process worker inside the control plane (single-app mode). Set false when dedicated nodes (worker.bicep) take the work, so the API replica does API work only."
+      }
+    },
+    "corsAllowedOrigins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "defaultValue": [],
+      "metadata": {
+        "description": "Browser origins allowed to call the API, e.g. the gui.bicep app URL. Leave empty when the GUI is same-origin behind a path-splitting front, or when only non-browser clients call the API."
+      }
+    },
+    "bootstrapAdminPasswordSecretName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Key Vault secret name for the initial admin's password: the one the deployment generates into the vault. When set, bootstrap provisioning creates that admin on first start; leave empty to skip user bootstrap."
+      }
+    },
+    "bootstrapAdminUsername": {
+      "type": "string",
+      "defaultValue": "admin",
+      "metadata": {
+        "description": "Username for the bootstrap admin. Only used when bootstrapAdminPasswordSecretName is set."
+      }
+    },
+    "settings": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+        "type": "string"
+      },
+      "defaultValue": {},
+      "metadata": {
+        "description": "The estate's configuration, by environment variable name: the OSDU partitions the control plane registers when it starts (Osdu__Partitions__<id>__...), the values every run resolves with (Osdu__Properties__<NAME>), the repositories it syncs (ControlPlane__Bootstrap__Repositories__<name>__...) and the node credential's vault reference (ControlPlane__Bootstrap__NodeTokenReference). A secret never goes here; a setting that needs one holds a ${keyvault:<vault>/<secret>} reference."
+      }
+    },
+    "privateNetworks": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The private ranges (CIDR, comma separated) the reads of a flow may reach, for an environment integrated into a VNet whose OSDU or ingestion database resolves to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). The same value the worker app takes. Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable."
+      }
+    },
+    "proxyKnownNetworks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "defaultValue": [],
+      "metadata": {
+        "description": "CIDRs of the ingress hops to trust for X-Forwarded-* headers. Leave empty to keep proxy trust off; per-client rate limiting then keys on the ingress hop address instead of the real client."
+      }
+    },
+    "azureAdAllowedTenantIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "defaultValue": [],
+      "metadata": {
+        "description": "Microsoft Entra tenant (directory) ids allowed to sign in to the GUI. Set together with azureAdClientId to offer \"Sign in with Microsoft\" on the login page; leave empty for local username/password only. Multiple tenants are supported: the app registration itself must be multi-tenant, and each additional tenant's admin must consent to it."
+      }
+    },
+    "azureAdClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Client id of the SPA app registration users sign in with (its redirect URI must be the GUI origin). Set together with azureAdAllowedTenantIds to enable SSO."
+      }
+    },
+    "azureAdDefaultRole": {
+      "type": "string",
+      "defaultValue": "viewer",
+      "metadata": {
+        "description": "Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards)."
+      }
+    },
+    "assistantEnabled": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable the GUI chat assistant (/api/v1/chat), with every agent run presenting a short-lived token delegated from the calling user to the MCP server. Requires the Foundry and MCP parameters below; the app identity signs in to the Foundry account (no key), so grant it Cognitive Services OpenAI User there (ai-foundry.bicep agentPrincipalIds)."
+      }
+    },
+    "assistantFoundryProjectEndpoint": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The Foundry project endpoint the assistant runs against (https://<account>.services.ai.azure.com/api/projects/<project>). Required when assistantEnabled."
+      }
+    },
+    "assistantFoundryModelDeploymentName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The model deployment the assistant runs on. Required when assistantEnabled."
+      }
+    },
+    "assistantFoundryTranscriptionDeploymentName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional audio-transcription deployment in the same account; empty leaves voice input on the browser's built-in speech recognition."
+      }
+    },
+    "assistantMcpServerUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The deployed MCP server endpoint (https://<mcp host>/mcp, the mcpUrl output of mcp.bicep), the assistant's tool source. Required when assistantEnabled."
+      }
+    },
+    "aiContextEnabled": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Turn AI context on (ControlPlane:AiContext:Enabled): questions starting with ! run read-only queries over the approved AI contexts, on the nodes."
+      }
+    },
+    "acrName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Name of a container registry in THIS resource group: the template grants the app identity AcrPull on it and configures the pull. Leave empty for a public registry, or one you authorize yourself via acrLoginServer."
+      }
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set."
+      }
+    },
+    "minReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "Minimum replicas. Keep at 1 so the API is warm (a trigger never waits on a cold start)."
+      }
+    },
+    "maxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "metadata": {
+        "description": "Maximum replicas. Keep at 1: the run queue is owned by exactly one replica (the dispatch lease), so an extra replica adds no dispatch capacity and refuses every node call that lands on it (503, retried by the node), which only slows hand-outs."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+        "type": "string"
+      },
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags set on the app and its identity."
+      }
+    }
+  },
+  "variables": {
+    "copy": [
+      {
+        "name": "corsEnv",
+        "count": "[length(parameters('corsAllowedOrigins'))]",
+        "input": {
+          "name": "[format('ControlPlane__Cors__AllowedOrigins__{0}', copyIndex('corsEnv'))]",
+          "value": "[parameters('corsAllowedOrigins')[copyIndex('corsEnv')]]"
+        }
+      },
+      {
+        "name": "proxyNetworkEnv",
+        "count": "[length(parameters('proxyKnownNetworks'))]",
+        "input": {
+          "name": "[format('ControlPlane__Proxy__KnownNetworks__{0}', copyIndex('proxyNetworkEnv'))]",
+          "value": "[parameters('proxyKnownNetworks')[copyIndex('proxyNetworkEnv')]]"
+        }
+      },
+      {
+        "name": "azureAdTenantEnv",
+        "count": "[length(parameters('azureAdAllowedTenantIds'))]",
+        "input": {
+          "name": "[format('ControlPlane__AzureAd__AllowedTenantIds__{0}', copyIndex('azureAdTenantEnv'))]",
+          "value": "[parameters('azureAdAllowedTenantIds')[copyIndex('azureAdTenantEnv')]]"
+        }
+      },
+      {
+        "name": "settingsEnv",
+        "count": "[length(items(parameters('settings')))]",
+        "input": {
+          "name": "[items(parameters('settings'))[copyIndex('settingsEnv')].key]",
+          "value": "[items(parameters('settings'))[copyIndex('settingsEnv')].value]"
+        }
+      }
+    ],
+    "mcpServerUrlChecked": "[if(or(empty(parameters('assistantMcpServerUrl')), equals(take(parameters('assistantMcpServerUrl'), 8), 'https://')), parameters('assistantMcpServerUrl'), fail('assistantMcpServerUrl must be an https:// URL.'))]",
+    "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6",
+    "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+    "vaultUri": "[format('https://{0}{1}/', parameters('keyVaultName'), environment().suffixes.keyvaultDns)]",
+    "baseSecrets": [
+      {
+        "name": "catalog-db",
+        "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('catalogConnectionSecretName'))]",
+        "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+      },
+      {
+        "name": "osdu-db",
+        "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('osduConnectionSecretName'))]",
+        "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+      },
+      {
+        "name": "jwt-signing-key",
+        "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('jwtSigningKeySecretName'))]",
+        "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+      }
+    ],
+    "bootstrapSecrets": "[if(empty(parameters('bootstrapAdminPasswordSecretName')), createArray(), createArray(createObject('name', 'bootstrap-admin-password', 'keyVaultUrl', format('{0}secrets/{1}', variables('vaultUri'), parameters('bootstrapAdminPasswordSecretName')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+    "bootstrapEnv": "[if(empty(parameters('bootstrapAdminPasswordSecretName')), createArray(), createArray(createObject('name', 'ControlPlane__Bootstrap__AdminUsername', 'value', parameters('bootstrapAdminUsername')), createObject('name', 'ControlPlane__Bootstrap__AdminPasswordReference', 'secretRef', 'bootstrap-admin-password')))]",
+    "privateNetworksEnv": "[if(empty(parameters('privateNetworks')), createArray(), createArray(createObject('name', 'SQLFLOW_DELIVERY_PRIVATE_NETWORKS', 'value', parameters('privateNetworks'))))]",
+    "proxyEnv": "[if(empty(parameters('proxyKnownNetworks')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Proxy__Enabled', 'value', 'true')), variables('proxyNetworkEnv')))]",
+    "entraEnv": "[if(or(empty(parameters('azureAdAllowedTenantIds')), empty(parameters('azureAdClientId'))), createArray(), concat(variables('azureAdTenantEnv'), createArray(createObject('name', 'ControlPlane__AzureAd__ClientId', 'value', parameters('azureAdClientId')), createObject('name', 'ControlPlane__AzureAd__DefaultRole', 'value', parameters('azureAdDefaultRole')))))]",
+    "assistantEnv": "[if(not(parameters('assistantEnabled')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Assistant__Enabled', 'value', 'true'), createObject('name', 'ControlPlane__Assistant__Foundry__ProjectEndpoint', 'value', parameters('assistantFoundryProjectEndpoint')), createObject('name', 'ControlPlane__Assistant__Foundry__ModelDeploymentName', 'value', parameters('assistantFoundryModelDeploymentName')), createObject('name', 'ControlPlane__Assistant__Mcp__ServerUrl', 'value', variables('mcpServerUrlChecked'))), if(empty(parameters('assistantFoundryTranscriptionDeploymentName')), createArray(), createArray(createObject('name', 'ControlPlane__Assistant__Foundry__TranscriptionDeploymentName', 'value', parameters('assistantFoundryTranscriptionDeploymentName'))))))]",
+    "aiContextEnv": "[if(not(parameters('aiContextEnabled')), createArray(), createArray(createObject('name', 'ControlPlane__AiContext__Enabled', 'value', 'true')))]"
+  },
+  "resources": {
+    "identity": {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-id', parameters('name'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    "keyVault": {
+      "existing": true,
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[parameters('keyVaultName')]"
+    },
+    "keyVaultAccess": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), variables('keyVaultSecretsUserRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]",
+        "principalId": "[reference('identity').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "identity"
+      ]
+    },
+    "acr": {
+      "existing": true,
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[if(empty(parameters('acrName')), 'unused', parameters('acrName'))]"
+    },
+    "acrPull": {
+      "condition": "[not(empty(parameters('acrName')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName')))]",
+      "name": "[guid(resourceGroup().id, parameters('acrName'), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+        "principalId": "[reference('identity').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "identity"
+      ]
+    },
+    "app": {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))]": {}
+        }
+      },
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "auto"
+          },
+          "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference('acr').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference('acr').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
+          "secrets": "[concat(variables('baseSecrets'), variables('bootstrapSecrets'))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "control-plane",
+              "image": "[parameters('image')]",
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1.0Gi"
+              },
+              "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_OSDU_DB', 'secretRef', 'osdu-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference('identity').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'), variables('assistantEnv'), variables('aiContextEnv'), variables('privateNetworksEnv'), variables('settingsEnv'))]",
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/health/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 30
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/health/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 30
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('minReplicas')]",
+            "maxReplicas": "[parameters('maxReplicas')]"
+          }
+        }
+      },
+      "dependsOn": [
+        "acr",
+        "acrPull",
+        "identity",
+        "keyVaultAccess"
+      ]
+    }
+  },
+  "outputs": {
+    "controlPlaneBaseUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "The control plane base URL: point CLI remotes (SQLFLOW_URL), the nodes and any external scheduler at this."
+      },
+      "value": "[format('https://{0}', reference('app').configuration.ingress.fqdn)]"
+    },
+    "identityClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "The client id of the app identity (grant it access to flow secrets beyond this estate's vault)."
+      },
+      "value": "[reference('identity').clientId]"
+    },
+    "identityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "The principal (object) id of the app identity, for role assignments made outside this template."
+      },
+      "value": "[reference('identity').principalId]"
+    },
+    "identityName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the app identity: the user to create in each database it uses under Entra authentication (CREATE USER [<name>] FROM EXTERNAL PROVIDER)."
+      },
+      "value": "[format('{0}-id', parameters('name'))]"
+    }
+  }
+}

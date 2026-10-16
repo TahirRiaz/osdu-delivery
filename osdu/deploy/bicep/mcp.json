@@ -1,0 +1,228 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "2301968438565146797"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region. Defaults to the resource group location."
+      }
+    },
+    "name": {
+      "type": "string",
+      "defaultValue": "osdu-delivery-mcp",
+      "metadata": {
+        "description": "Name of the Container App."
+      }
+    },
+    "managedEnvironmentId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource id of an existing Container Apps managed environment to host the app. The app runs on its Consumption workload profile."
+      }
+    },
+    "image": {
+      "type": "string",
+      "metadata": {
+        "description": "Container image reference, e.g. myregistry.azurecr.io/osdu-delivery-mcp:latest"
+      }
+    },
+    "controlPlaneUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Base URL of the control plane the MCP tools proxy, e.g. https://osdu-delivery-control-plane.<env-domain>."
+      }
+    },
+    "guiUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Public base URL of the GUI, e.g. https://osdu-delivery-gui.<env-domain>. Tool results carry deep links into it (a record's page, a submission's, a run's) so an assistant can hand the reader something to open. Empty emits root-relative links, which only resolve for a client rendering inside the GUI itself."
+      }
+    },
+    "allowedHosts": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "The host names the server answers on, comma separated (SQLFLOW_MCP_HTTP_ALLOWED_HOSTS): its own ingress FQDN, osdu-delivery-mcp.<env-domain>. A request naming any other host is refused, which keeps a rebound DNS name from reaching it. Empty accepts any host."
+      }
+    },
+    "acrName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Name of a container registry in THIS resource group: the template grants the app identity AcrPull on it and configures the pull. Leave empty for a public registry, or one you authorize yourself via acrLoginServer."
+      }
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Login server of a registry outside this resource group (grant AcrPull to the app identity yourself). Ignored when acrName is set."
+      }
+    },
+    "cpu": {
+      "type": "string",
+      "defaultValue": "0.25",
+      "metadata": {
+        "description": "vCPU per replica; the server is a thin authenticated proxy, so the smallest consumption pair suffices."
+      }
+    },
+    "memory": {
+      "type": "string",
+      "defaultValue": "0.5Gi",
+      "metadata": {
+        "description": "Memory per replica, paired with cpu."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+        "type": "string"
+      },
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags set on the app and its identity."
+      }
+    }
+  },
+  "variables": {
+    "acrPullRoleId": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+    "allowedHostsEnv": "[if(empty(parameters('allowedHosts')), createArray(), createArray(createObject('name', 'SQLFLOW_MCP_HTTP_ALLOWED_HOSTS', 'value', parameters('allowedHosts'))))]"
+  },
+  "resources": {
+    "identity": {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-id', parameters('name'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    "acr": {
+      "existing": true,
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[if(empty(parameters('acrName')), 'unused', parameters('acrName'))]"
+    },
+    "acrPull": {
+      "condition": "[not(empty(parameters('acrName')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName')))]",
+      "name": "[guid(resourceGroup().id, parameters('acrName'), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('acrPullRoleId'))]",
+        "principalId": "[reference('identity').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "identity"
+      ]
+    },
+    "app": {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))]": {}
+        }
+      },
+      "properties": {
+        "managedEnvironmentId": "[parameters('managedEnvironmentId')]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "http",
+            "allowInsecure": false
+          },
+          "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference('acr').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference('acr').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]"
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "osdu-delivery-mcp",
+              "image": "[parameters('image')]",
+              "resources": {
+                "cpu": "[json(parameters('cpu'))]",
+                "memory": "[parameters('memory')]"
+              },
+              "env": "[concat(createArray(createObject('name', 'SQLFLOW_CONTROL_PLANE_URL', 'value', parameters('controlPlaneUrl')), createObject('name', 'SQLFLOW_MCP_HTTP_BIND', 'value', '0.0.0.0:8080'), createObject('name', 'SQLFLOW_GUI_URL', 'value', parameters('guiUrl'))), variables('allowedHostsEnv'))]",
+              "probes": [
+                {
+                  "type": "Startup",
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 2,
+                  "periodSeconds": 3,
+                  "failureThreshold": 10
+                },
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": 8080
+                  },
+                  "periodSeconds": 15,
+                  "failureThreshold": 3
+                },
+                {
+                  "type": "Readiness",
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": 8080
+                  },
+                  "periodSeconds": 10,
+                  "failureThreshold": 3
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "dependsOn": [
+        "acr",
+        "acrPull",
+        "identity"
+      ]
+    }
+  },
+  "outputs": {
+    "mcpUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "The MCP endpoint URL to register with clients (the control plane's Assistant:Mcp:ServerUrl)."
+      },
+      "value": "[format('https://{0}/mcp', reference('app').configuration.ingress.fqdn)]"
+    },
+    "identityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "The principal (object) id of the app identity, for role assignments made outside this template."
+      },
+      "value": "[reference('identity').principalId]"
+    }
+  }
+}

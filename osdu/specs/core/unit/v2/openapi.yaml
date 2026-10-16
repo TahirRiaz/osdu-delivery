@@ -1,0 +1,2866 @@
+openapi: 3.1.0
+info:
+  title: Unit Service API
+  description: Unit Service that provides a set of APIs
+  contact:
+    name: OSDU Data Platform Team
+    email: dps@OSDU.org
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  version: 2.0.0
+servers:
+- url: /api/unit
+security:
+- Authorization: []
+tags:
+- name: UoM Catalog (DEPRECATED)
+  description: UoM Catalog endpoints are <b>DEPRECATED</b>
+- name: Measurements (DEPRECATED)
+  description: Measurements endpoints are <b>DEPRECATED</b>
+- name: Units (DEPRECATED)
+  description: Units endpoints are <b>DEPRECATED</b>
+- name: Unit Systems (DEPRECATED)
+  description: Unit Systems endpoints are <b>DEPRECATED</b>
+- name: Conversions (DEPRECATED)
+  description: Conversions endpoints are <b>DEPRECATED</b>
+paths:
+  /v2/unitsystem:
+    post:
+      tags:
+      - Unit Systems (DEPRECATED)
+      summary: Get all Units assigned to the UnitSystem
+      description: Get all unit assignments for the given unit system essence.
+      operationId: postUnitSystem
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitSystemRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnitSystem"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit:
+    get:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get all Units
+      description: Get all units defined in this catalog.
+      operationId: getUnits
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+    post:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get a specific Unit
+      description: GetGet a specific unit instance given either a persistable reference
+        string or unit essence JSON structure.
+      operationId: postUnit
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/unitsystem/{unitSystemName}:
+    post:
+      tags:
+      - Unit Systems (DEPRECATED)
+      summary: Get a unique Unit for the given Measurement in the named UnitSystem
+      description: "'Get a unique unit given a unit system name and a measurement\
+        \ persistable reference string or measurement essence Json structure. Example:\
+        \ Unit system: English; measurement essence: { \"ancestry\": \"Length\", \"\
+        type\": \"UM\" }'"
+      operationId: postUnitBySystemAndMeasurement
+      parameters:
+      - name: unitSystemName
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeasurementRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/search:
+    post:
+      tags:
+      - Units (DEPRECATED)
+      summary: Search Units by keyword(s)
+      description: "'Search units by keywords. Valid keywords are: ''name'', ''namespace'',\
+        \ ''source'', ''symbol'', ''type'' (unit parameterization type Abcd or ScaleOffset),\
+        \ ''state''.'"
+      operationId: postSearchUnits
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/measurement:
+    post:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get all Units for a Measurement
+      description: Get all units given either a measurement's persistable reference
+        string or a measurement essence JSON structure.
+      operationId: postUnitsByMeasurement
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeasurementRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/measurement/preferred:
+    post:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get preferred Units for a Measurement
+      description: Get the preferred units given a measurement persistable reference
+        string or measurement essence JSON structure.
+      operationId: postPreferredUnitsByMeasurement
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeasurementRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/measurement:
+    get:
+      tags:
+      - Measurements (DEPRECATED)
+      summary: Get all Measurements
+      description: Get all measurements defined in this catalog.
+      operationId: getMeasurements
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+    post:
+      tags:
+      - Measurements (DEPRECATED)
+      summary: Get a specific Measurement
+      description: Get a specific measurement given a persistable reference string
+        or measurement essence structure.
+      operationId: postMeasurement
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeasurementRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Measurement"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/measurement/search:
+    post:
+      tags:
+      - Measurements (DEPRECATED)
+      summary: Search Measurements by keyword(s)
+      description: "'Search measurements by keywords. Valid keywords are: ''name'',\
+        \ ''namespace'', ''source'', ''ancestry'', ''code'', ''dimensionCode'', ''unitQuantityCode'',\
+        \ ''dimensionAnalysis'', ''state'', ''baseMeasurement''.'"
+      operationId: postSearchMeasurements
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/conversion/scale:
+    post:
+      tags:
+      - Conversions (DEPRECATED)
+      summary: Get ScaleOffset Unit conversion parameters given two Units
+      description: Get the scale/offset unit parameters given the 'fromUnit' and 'toUnit'.
+        The 'fromUnit' and 'toUnit' definitions can either be passed as persistable
+        reference strings (JSON serialized Unit essence) or as Unit essence structures.
+      operationId: postConversionScaleOffset
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversionScaleOffsetRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversionResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/conversion/abcd:
+    post:
+      tags:
+      - Conversions (DEPRECATED)
+      summary: Get Abcd Unit conversion parameters given two Units
+      description: Get the Energistics style unit parameters given the 'fromUnit'
+        and 'toUnit'. The 'fromUnit' and 'toUnit' definitions can either be passed
+        as persistable reference strings (JSON serialized Unit essence) or as Unit
+        essence structures.
+      operationId: postConversionABCD
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConversionABCDRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversionResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/catalog/search:
+    post:
+      tags:
+      - UoM Catalog (DEPRECATED)
+      summary: Search Catalog by keyword(s)
+      description: "'Search units, measurements, etc. by keywords. Valid keywords\
+        \ are: ''name'', ''namespace'', ''source'', ''symbol'', ''type'' (unit parameterization\
+        \ type Abcd or ScaleOffset), ''ancestry'', ''code'', ''dimensionCode'', ''unitQuantityCode'',\
+        \ ''dimensionAnalysis'', ''state'', ''baseMeasurement''.'"
+      operationId: postSearch
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unitsystem/{name}:
+    get:
+      tags:
+      - Unit Systems (DEPRECATED)
+      summary: Get all Units assigned to the UnitSystem name
+      description: Get all unit assignments for the given unit system.
+      operationId: getUnitSystem
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnitSystem"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unitsystem/list:
+    get:
+      tags:
+      - Unit Systems (DEPRECATED)
+      summary: Get all UnitSystem info
+      description: "Get all known unit systems as info (name, description, ancestry,\
+        \ persistableReference) as declared in this catalog."
+      operationId: getUnitSystemInfoList
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response containing the list of UnitSystemInfo
+            structures
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnitSystemInfoResponse"
+        "400":
+          description: Bad input format - offset/limit out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/unitsystem/{unitSystemName}/{ancestry}:
+    get:
+      tags:
+      - Unit Systems (DEPRECATED)
+      summary: Get a unique Unit for the given Measurement ancestry in the named UnitSystem
+      description: "Get a unique unit given a unit system name and dot separated measurement\
+        \ ancestry, e.g. Time_Per_Length.Acoustic_Slowness."
+      operationId: getUnitBySystemAndMeasurement
+      parameters:
+      - name: unitSystemName
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: ancestry
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/symbol/{symbol}:
+    get:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get Units by symbol
+      description: "'Get all units given a specific symbol. Example: ''F'': ''F''\
+        \ is defined in multiple namespaces belonging to different measurements.'"
+      operationId: getUnitsBySymbol
+      parameters:
+      - name: symbol
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/symbol/{namespaces}/{symbol}:
+    get:
+      tags:
+      - Units (DEPRECATED)
+      summary: "Get a unique Unit by Namespace,Symbol"
+      description: "'Get single, unique unit given a namespace or namespace list and\
+        \ a symbol. Example: namespace=''LIS,RP66,ECL'', symbol=''F'' returns the\
+        \ LIS Foot.'"
+      operationId: getUnitBySymbol
+      parameters:
+      - name: namespaces
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: symbol
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unit"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/measurement/{ancestry}:
+    get:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get all Units for a Measurement by ancestry
+      description: "Get all units given dot separated ancestry, e.g. Time_Per_Length.Acoustic_Slowness."
+      operationId: getUnitsByMeasurement
+      parameters:
+      - name: ancestry
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/measurement/preferred/{ancestry}:
+    get:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get preferred Units for a Measurement by ancestry
+      description: "Get the preferred units given dot separated ancestry, e.g. Time_Per_Length.Acoustic_Slowness."
+      operationId: getPreferredUnitsByMeasurement
+      parameters:
+      - name: ancestry
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/unit/maps:
+    get:
+      tags:
+      - Units (DEPRECATED)
+      summary: Get Unit maps between namespaces
+      description: Get the UnitMapItems defined between namespaces in this catalog.
+      operationId: getUnitMaps
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/measurement/{ancestry}:
+    get:
+      tags:
+      - Measurements (DEPRECATED)
+      summary: Get a specific Measurement by ancestry
+      description: Get a specific measurement given dot separated measurement ancestry.
+      operationId: getMeasurement
+      parameters:
+      - name: ancestry
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Measurement"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/measurement/maps:
+    get:
+      tags:
+      - Measurements (DEPRECATED)
+      summary: Get the Measurement maps between namespaces
+      description: Get the measurement maps between two namespaces as defined in this
+        catalog.
+      operationId: getMeasurementMaps
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/conversion/scale/{namespaces}/{fromSymbol}/{toSymbol}:
+    get:
+      tags:
+      - Conversions (DEPRECATED)
+      summary: Get ScaleOffset Unit conversion parameters given two unit specifications
+      description: "'Get the scale/offset unit parameters given the ''from'' and ''to''\
+        \ unit symbols and the namespace(-list) to disambiguate the unit symbols.\
+        \ Example for a prioritized namespaces list: ''LIS,RP66,ECL,Energistics_UoM''\
+        \ - this will prioritize the units in the LIS namespace over other namespaces.'"
+      operationId: getConversionScaleOffsetBySymbols
+      parameters:
+      - name: namespaces
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: fromSymbol
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: toSymbol
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversionResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/conversion/abcd/{namespaces}/{fromSymbol}/{toSymbol}:
+    get:
+      tags:
+      - Conversions (DEPRECATED)
+      summary: Get Abcd Unit conversion parameters given two Unit specifications
+      description: "'Get the Energistics style unit parameters given the ''from''\
+        \ and ''to'' unit symbols and the namespace(-list) to disambiguate the unit\
+        \ symbols. Example for a prioritized namespaces list: ''LIS,RP66,ECL,Energistics_UoM''\
+        \ - this will prioritize the units in the LIS namespace over other namespaces.'"
+      operationId: getConversionABCDBySymbols
+      parameters:
+      - name: namespaces
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: fromSymbol
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: toSymbol
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversionResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/catalog:
+    get:
+      tags:
+      - UoM Catalog (DEPRECATED)
+      summary: Get the entire Catalog
+      description: Get the Units of Measure Catalog summary. The response contains
+        empty lists and corresponding list counts. Use the specific endpoints to obtain
+        the list contents as required.
+      operationId: getCatalog
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/catalog/mapstates:
+    get:
+      tags:
+      - UoM Catalog (DEPRECATED)
+      summary: Get the map and/or deprecation states
+      description: Get the defined states for deprecation and cross-namespace mappings
+        as defined in this catalog.
+      operationId: getMapStates
+      parameters:
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+  /v2/catalog/lastmodified:
+    get:
+      tags:
+      - UoM Catalog (DEPRECATED)
+      summary: Gets the Catalog's last modified date
+      description: Gets the last modification date of the catalog.
+      operationId: getLastModified
+      parameters:
+      - name: data-partition-id
+        in: header
+        description: Tenant Id
+        required: true
+      responses:
+        "200":
+          description: A successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogLastModified"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "403":
+          description: User not authorized to perform the action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "409":
+          description: A LegalTag with the given name already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "502":
+          description: Bad Gateway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppError"
+      deprecated: true
+      security:
+      - Authorization: []
+components:
+  schemas:
+    UnitSystemEssenceImpl:
+      type: object
+      description: A unit system essence
+      properties:
+        ancestry:
+          type: string
+          description: The full ancestry of this unit system.
+    UnitSystemRequest:
+      type: object
+      description: Request to get all unit assignments for the given unit system
+      properties:
+        essence:
+          $ref: "#/components/schemas/UnitSystemEssenceImpl"
+          description: A unit system essence
+        persistableReference:
+          type: string
+          description: The unit system's persistable reference string
+    ABCD:
+      type: object
+      properties:
+        a:
+          type: number
+          format: double
+        c:
+          type: number
+          format: double
+        b:
+          type: number
+          format: double
+        d:
+          type: number
+          format: double
+    Measurement:
+      type: object
+      properties:
+        name:
+          type: string
+        lastModified:
+          type: string
+        description:
+          type: string
+        unitQuantityCode:
+          type: string
+        essenceJson:
+          type: string
+        childMeasurementEssenceJsons:
+          type: array
+          items:
+            type: string
+        unitEssenceJsons:
+          type: array
+          items:
+            type: string
+        preferredUnitEssenceJsons:
+          type: array
+          items:
+            type: string
+        parentEssenceJson:
+          type: string
+        dimensionAnalysis:
+          type: string
+        code:
+          type: string
+        dimensionCode:
+          type: string
+        essence:
+          $ref: "#/components/schemas/MeasurementEssence"
+        baseMeasurement:
+          type: boolean
+        baseMeasurementEssenceJson:
+          type: string
+        deprecationInfo:
+          $ref: "#/components/schemas/MeasurementDeprecationInfo"
+        namespace:
+          type: string
+    MeasurementDeprecationInfo:
+      type: object
+      properties:
+        state:
+          type: string
+        remarks:
+          type: string
+        supersededByUnitMeasurement:
+          type: string
+    MeasurementEssence:
+      type: object
+      properties:
+        type:
+          type: string
+        ancestry:
+          type: string
+    ScaleOffset:
+      type: object
+      properties:
+        offset:
+          type: number
+          format: double
+        scale:
+          type: number
+          format: double
+    Unit:
+      type: object
+      properties:
+        name:
+          type: string
+        lastModified:
+          type: string
+        source:
+          type: string
+        description:
+          type: string
+        essenceJson:
+          type: string
+        displaySymbol:
+          type: string
+        essence:
+          $ref: "#/components/schemas/UnitEssence"
+        deprecationInfo:
+          $ref: "#/components/schemas/UnitDeprecationInfo"
+        namespace:
+          type: string
+    UnitAssignment:
+      type: object
+      properties:
+        lastModified:
+          type: string
+        measurement:
+          $ref: "#/components/schemas/Measurement"
+        unit:
+          $ref: "#/components/schemas/Unit"
+    UnitDeprecationInfo:
+      type: object
+      properties:
+        state:
+          type: string
+        supersededByUnit:
+          type: string
+        remarks:
+          type: string
+    UnitEssence:
+      type: object
+      properties:
+        type:
+          type: string
+        symbol:
+          type: string
+        abcd:
+          $ref: "#/components/schemas/ABCD"
+        scaleOffset:
+          $ref: "#/components/schemas/ScaleOffset"
+        baseMeasurementEssence:
+          $ref: "#/components/schemas/MeasurementEssence"
+    UnitSystem:
+      type: object
+      properties:
+        name:
+          type: string
+        offset:
+          type: integer
+          format: int32
+        lastModified:
+          type: string
+        source:
+          type: string
+        description:
+          type: string
+        unitAssignmentCount:
+          type: integer
+          format: int32
+        referenceUnitSystem:
+          type: string
+        unitAssignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitAssignment"
+        unitAssignmentCountInResponse:
+          type: integer
+          format: int32
+        unitAssignmentCountTotal:
+          type: integer
+          format: int32
+        ancestry:
+          type: string
+        persistableReference:
+          type: string
+    AppError:
+      type: object
+      description: Standard error response returned by OSDU services.
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: HTTP status code.
+          example: 400
+        reason:
+          type: string
+          description: Short error reason.
+          example: Bad Request
+        message:
+          type: string
+          description: Detailed error message.
+          example: Invalid record format.
+    ABCDImpl:
+      type: object
+      description: Energistics standard parameterization y = (A+Bx)/(C+Dx)
+      properties:
+        a:
+          type: string
+          format: double
+          description: Coefficient A in the Energistics unit parameterization y =
+            (A+Bx)/(C+Dx)
+        b:
+          type: string
+          format: double
+          description: Coefficient B in the Energistics unit parameterization y =
+            (A+Bx)/(C+Dx)
+        c:
+          type: string
+          format: double
+          description: Coefficient C in the Energistics unit parameterization y =
+            (A+Bx)/(C+Dx)
+        d:
+          type: string
+          format: double
+          description: Coefficient D in the Energistics unit parameterization y =
+            (A+Bx)/(C+Dx)
+    ScaleOffsetImpl:
+      type: object
+      description: Unit in y = scale*(x-offset) parameterization
+      properties:
+        scale:
+          type: string
+          format: double
+          description: The offset in y = scale*(x-offset)
+        offset:
+          type: string
+          format: double
+          description: The scale in y = scale*(x-offset)
+    UnitEssenceImpl:
+      type: object
+      description: The essence of a unit parameterization
+      properties:
+        abcd:
+          $ref: "#/components/schemas/ABCDImpl"
+          description: Energistics standard parameterization y = (A+Bx)/(C+Dx)
+        scaleOffset:
+          $ref: "#/components/schemas/ScaleOffsetImpl"
+        symbol:
+          type: string
+          description: Unit in y = scale*(x-offset) parameterization
+        baseMeasurement:
+          $ref: "#/components/schemas/MeasurementEssence"
+        type:
+          type: string
+          description: "The type string for this unit essence, either 'USO' for ScaleOffset\
+            \ or 'UAD' for Abcd"
+    UnitRequest:
+      type: object
+      description: Request to get a single unit instance given an essence.
+      properties:
+        persistableReference:
+          type: string
+          description: "The persistable reference string for the unit; optional, only\
+            \ one 'persistableReference' or 'essence' must be defined"
+        essence:
+          $ref: "#/components/schemas/UnitEssenceImpl"
+          description: The essence of a unit parameterization
+    MeasurementEssenceImpl:
+      type: object
+      description: The essence of a measurement definition
+      properties:
+        baseMeasurementCode:
+          type: string
+          writeOnly: true
+        ancestry:
+          type: string
+          description: "The measurement ancestry, i.e. the parent codes separated\
+            \ by a period symbol."
+        type:
+          type: string
+          description: The type string for this measurement
+    MeasurementRequest:
+      type: object
+      description: Request to get a specific measurement given a persistable reference
+        string or measurement essence structure.
+      properties:
+        essence:
+          $ref: "#/components/schemas/MeasurementEssenceImpl"
+          description: The essence of a measurement definition
+        persistableReference:
+          type: string
+    SearchRequest:
+      type: object
+      description: Request to containing a Lucene style query string.
+      properties:
+        query:
+          type: string
+          description: The Lucene style query string with keywords
+    MapState:
+      type: object
+      properties:
+        state:
+          type: string
+        source:
+          type: string
+        description:
+          type: string
+    MeasurementMapItem:
+      type: object
+      properties:
+        state:
+          type: string
+        toMeasurement:
+          $ref: "#/components/schemas/Measurement"
+        fromNamespace:
+          type: string
+        toNamespace:
+          type: string
+        fromMeasurement:
+          $ref: "#/components/schemas/Measurement"
+        note:
+          type: string
+    QueryResult:
+      type: object
+      properties:
+        offset:
+          type: integer
+          format: int32
+        count:
+          type: integer
+          format: int32
+        units:
+          type: array
+          items:
+            $ref: "#/components/schemas/Unit"
+        measurements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Measurement"
+        unitMapItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitMapItem"
+        measurementMapItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeasurementMapItem"
+        mapStates:
+          type: array
+          items:
+            $ref: "#/components/schemas/MapState"
+        totalCount:
+          type: integer
+          format: int32
+    UnitMapItem:
+      type: object
+      properties:
+        state:
+          type: string
+        fromNamespace:
+          type: string
+        toNamespace:
+          type: string
+        fromUnit:
+          $ref: "#/components/schemas/Unit"
+        toUnit:
+          $ref: "#/components/schemas/Unit"
+        note:
+          type: string
+    ConversionScaleOffsetRequest:
+      type: object
+      description: A scale offset unit conversion request. The requested units are
+        either passed as persistable reference strings (JSON serialized Unit 'essence')
+        or as Unit essence structure.
+      properties:
+        fromUnit:
+          $ref: "#/components/schemas/UnitEssenceImpl"
+          description: The essence of a unit parameterization
+        toUnit:
+          $ref: "#/components/schemas/UnitEssenceImpl"
+          description: The essence of a unit parameterization
+        fromUnitPersistableReference:
+          type: string
+          description: The persistable reference string (JSON serialized Unit 'essence')
+            representing toe 'from Unit'. Either 'fromUnitPersistableReference' or
+            'fromUnit' must be populated.
+        toUnitPersistableReference:
+          type: string
+          description: The persistable reference string (JSON serialized Unit 'essence')
+            representing toe 'to Unit'. Either 'toUnitPersistableReference' or 'toUnit'
+            must be populated.
+    ConversionResult:
+      type: object
+      properties:
+        abcd:
+          $ref: "#/components/schemas/ABCD"
+        scaleOffset:
+          $ref: "#/components/schemas/ScaleOffset"
+        fromUnit:
+          $ref: "#/components/schemas/Unit"
+        toUnit:
+          $ref: "#/components/schemas/Unit"
+    ConversionABCDRequest:
+      type: object
+      description: an Energistics Abcd style unit conversion request. The requested
+        units are either passed as persistable reference strings (JSON serialized
+        Unit 'essence') or as Unit essence structure
+      properties:
+        fromUnit:
+          $ref: "#/components/schemas/UnitEssenceImpl"
+          description: The essence of a unit parameterization
+        toUnit:
+          $ref: "#/components/schemas/UnitEssenceImpl"
+        fromUnitPersistableReference:
+          type: string
+          description: The persistable reference string (JSON serialized Unit 'essence')
+            representing toe 'from Unit'. Either 'fromUnitPersistableReference' or
+            'fromUnit' must be populated.
+        toUnitPersistableReference:
+          type: string
+          description: The persistable reference string (JSON serialized Unit 'essence')
+            representing toe 'to Unit'. Either 'toUnitPersistableReference' or 'toUnit'
+            must be populated.
+    UnitSystemInfo:
+      type: object
+      description: A container for UnitSystem properties
+      properties:
+        name:
+          type: string
+          description: The unit system name
+        description:
+          type: string
+          description: The unit system description
+        ancestry:
+          type: string
+          description: "The unit system ancestry, i.e. names separated by '.'"
+        persistableReference:
+          type: string
+          description: The unit system's persistable reference string.
+    UnitSystemInfoResponse:
+      type: object
+      description: The unit system info structures
+      properties:
+        unitSystemInfoList:
+          type: array
+          description: The array of unit system names
+          items:
+            $ref: "#/components/schemas/UnitSystemInfo"
+        totalCount:
+          type: string
+          description: The total number of elements in the list defined in the catalog
+        offset:
+          type: string
+          description: The offset into the list as requested
+        count:
+          type: integer
+          format: int32
+    Catalog:
+      type: object
+      properties:
+        units:
+          type: array
+          items:
+            $ref: "#/components/schemas/Unit"
+        lastModified:
+          type: string
+        unitSystemInfos:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitSystemInfo"
+        totalUnitCount:
+          type: integer
+          format: int32
+        totalMeasurementCount:
+          type: integer
+          format: int32
+        totalUnitSystemCount:
+          type: integer
+          format: int32
+        totalUnitMapCount:
+          type: integer
+          format: int32
+        totalMeasurementMapCount:
+          type: integer
+          format: int32
+        totalMapStateCount:
+          type: integer
+          format: int32
+        measurements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Measurement"
+        unitMaps:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitMap"
+        measurementMaps:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeasurementMap"
+        mapStates:
+          type: array
+          items:
+            $ref: "#/components/schemas/MapState"
+    MeasurementMap:
+      type: object
+      properties:
+        measurementMapItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeasurementMapItem"
+        fromNamespace:
+          type: string
+        toNamespace:
+          type: string
+        measurementMapItemCount:
+          type: integer
+          format: int32
+    UnitMap:
+      type: object
+      properties:
+        unitMapItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnitMapItem"
+        fromNamespace:
+          type: string
+        toNamespace:
+          type: string
+        unitMapItemCount:
+          type: integer
+          format: int32
+    CatalogLastModified:
+      type: object
+      properties:
+        lastModified:
+          type: string
+  securitySchemes:
+    Authorization:
+      type: http
+      name: Authorization
+      in: header
+      scheme: bearer
+      bearerFormat: Authorization

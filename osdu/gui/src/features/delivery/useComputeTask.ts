@@ -1,0 +1,47 @@
+import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
+import { datasourceApi } from "@/api/endpoints";
+import type { ComputeTask } from "@/api/types";
+
+const TERMINAL = new Set(["succeeded", "failed", "cancelled", "skipped"]);
+
+/** How long one poll waits on the control plane for the task to finish before it answers with the task as it stands. */
+const WAIT_MS = 10_000;
+
+/**
+ * The query that polls one compute task a node runs for the delivery pages (a removal, a value check) until it has
+ * finished, through SQLFlow's compute task endpoint. Each request long-polls, so the result arrives in
+ * one round trip once a node has produced it. Shared by {@link useComputeTask} and by a page that polls several at once.
+ */
+export function computeTaskQuery(taskId: string | null): UseQueryOptions<ComputeTask> {
+  return {
+    queryKey: ["compute-tasks", taskId],
+    queryFn: ({ signal }) => {
+      if (taskId === null) {
+        throw new Error("There is no compute task to poll.");
+      }
+
+      return datasourceApi.task(taskId, WAIT_MS, signal);
+    },
+    enabled: taskId !== null,
+    refetchInterval: (query) => {
+      const task = query.state.data;
+      return task !== undefined && TERMINAL.has(task.status) ? false : 250;
+    },
+  };
+}
+
+/** Polls one compute task to its end; see {@link computeTaskQuery}. */
+export function useComputeTask(taskId: string | null) {
+  return useQuery(computeTaskQuery(taskId));
+}
+
+/** The task's result as indented JSON, once a node produced one; null before that, and for a task that reported none. */
+export function taskResultJson(task: ComputeTask | undefined): string | null {
+  return task === undefined || task.result === null || task.result === undefined
+    ? null
+    : JSON.stringify(task.result, null, 2);
+}
+
+export function isTerminalTask(task: ComputeTask | undefined): boolean {
+  return task !== undefined && TERMINAL.has(task.status);
+}

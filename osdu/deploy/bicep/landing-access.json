@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "1234496764797119795"
+    }
+  },
+  "parameters": {
+    "accountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of an existing storage account in the resource group this template is deployed to."
+      }
+    },
+    "workerPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Principal (object) id of the worker identity, granted Storage Blob Data Contributor on the account."
+      }
+    },
+    "controlPlanePrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Principal (object) id of the control plane identity, granted Storage Blob Data Reader on the account."
+      }
+    }
+  },
+  "variables": {
+    "storageBlobDataContributorRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "storageBlobDataReaderRoleId": "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('accountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('accountName')), parameters('workerPrincipalId'), variables('storageBlobDataContributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataContributorRoleId'))]",
+        "principalId": "[parameters('workerPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('accountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('accountName')), parameters('controlPlanePrincipalId'), variables('storageBlobDataReaderRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataReaderRoleId'))]",
+        "principalId": "[parameters('controlPlanePrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ]
+}

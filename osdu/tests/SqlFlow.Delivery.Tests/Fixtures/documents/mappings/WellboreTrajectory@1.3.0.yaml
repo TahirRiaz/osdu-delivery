@@ -1,0 +1,124 @@
+# Mapping: Directional surveys into the WellboreTrajectory 1.3.0 template (osdu/docs/reference/flow/mapping.md).
+#
+# One record per survey. The dataset is the survey's metadata rows, and its child dataset "stations" holds one row per
+# station property the survey carries (measured depth, inclination, azimuth); the station values themselves are
+# streamed to the wellbore DDMS as bulk data, one column per property, named as the property is here. The DDMS refuses
+# bulk columns the record does not list under AvailableTrajectoryStationProperties, and reads the property whose type is
+# MD as the reference its first and last values must agree with TopDepthMeasuredDepth and BaseDepthMeasuredDepth on
+# (osdu/specs/wellbore-ddms/INTEGRATION.md section 4.3). An edit beyond the comments makes the next run read every row in
+# scope again and send the records whose document changes, so a `plan` run shows what a change would send before
+# anything is sent (osdu/docs/reference/flow/mapping.md, When a mapping changes).
+documentType: mapping
+name: WellboreTrajectory
+version: 1.3.0
+template:
+  kind: osdu:wks:work-product-component--WellboreTrajectory:1.3.0
+  version: bfbc5973bbdeb7ec
+description: Directional surveys (one record per survey) with their station properties; the stations are streamed as bulk data.
+
+dataset:
+  system: wells
+  # The delivery key is UUIDv5 over (source system, source project, survey id): one record per survey.
+  key: [source_project, survey_id]
+  label: "{wellbore_uwi} / {survey_name} ({survey_id})"
+  # The wellbore and survey an operator holds this trajectory by, indexed by the ledger for the Records page.
+  identity: [wellbore_uwi, survey_id]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+# The wellbores a record belongs to are looked up on the platform as each record needs one, never captured into the
+# cache: they are business data, a partition holds hundreds of thousands of them and gains more every day, and a record
+# names one. Each lookup asks for the one wellbore whose name, or one of whose aliases, is exactly the incoming value,
+# written the way the pinned Wellbore schema has the platform index those properties
+# (osdu/docs/reference/flow/mapping-lookups.md, How each line is asked).
+searches:
+  Wellbore:
+    kind: "osdu:wks:master-data--Wellbore:*"
+    schema:
+      kind: osdu:wks:master-data--Wellbore:1.3.0
+      version: 58d6bdbd9d066a06
+    description: The partition's wellbores, found by name or by any of their aliases.
+
+record:
+  # Access and legal: every record carries them.
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+
+  # The survey.
+  data:
+    Name:
+      $from: survey_name
+      $modifiers: [trim]
+    SurveyReferenceIdentifier: { $from: survey_id }
+    SurveyType:
+      $from: survey_type
+      $required: false
+    SurveyVersion:
+      $from: survey_version
+      $required: false
+    WellboreID:
+      $search: Wellbore
+      $findBy:
+        - data.FacilityName = wellbore_uwi
+        - data.NameAliases.AliasName = wellbore_uwi
+    TopDepthMeasuredDepth: { $from: top_md }
+    BaseDepthMeasuredDepth: { $from: base_md }
+
+    # The vertical reference, carried in one column as a value and a unit ("23.5 M").
+    VerticalMeasurement:
+      VerticalMeasurement:
+        $from: elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 1 }
+      VerticalMeasurementUnitOfMeasureID:
+        $cache: UnitOfMeasure.id
+        $findBy:
+          - ID = elev_meas_ref
+          - Code = elev_meas_ref
+          - Name = elev_meas_ref
+          - id = elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 2 }
+          - replace: $cache.DepthUnitAlias
+      VerticalMeasurementTypeID: "{$param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
+
+    # The station properties: one item per row of the stations child dataset, whose columns a bare name reads under
+    # $item. Name is the bulk column's label.
+    AvailableTrajectoryStationProperties:
+      $forEach: stations
+      $item:
+        Name: { $from: station_property }
+        TrajectoryStationPropertyTypeID:
+          $cache: TrajectoryStationPropertyType.id
+          $findBy:
+            - Code = property_type
+            - Name = property_type
+            - ID = property_type
+        StationPropertyUnitID:
+          $cache: UnitOfMeasure.id
+          $findBy:
+            - ID = property_unit
+            - Code = property_unit
+            - Name = property_unit
+            - id = property_unit
+          $modifiers:
+            # The source's spelling becomes the partition's unit code through the curve unit map: DEG becomes dega.
+            - replace: $cache.UnitAlias

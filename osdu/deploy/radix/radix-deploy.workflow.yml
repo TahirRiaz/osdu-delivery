@@ -1,0 +1,132 @@
+# A SAMPLE GitHub workflow for the Radix deploy method: GitHub runs only the workflows under .github/workflows, so this
+# file does nothing where it is. To deploy with Radix instead of the Terraform on Container Apps, copy it to
+# .github/workflows/radix-deploy.yml and set the repository variable DEPLOY_METHOD to `radix` (which also keeps the
+# Terraform Deploy workflow from running); every job checks that variable.
+#
+# Builds the four OSDU Delivery images from osdu/deploy/docker, pushes them to the registry, and deploys them to one
+# Radix environment of the osdu-delivery application (osdu/deploy/radix/radixconfig.yaml): GitHub signs in to Azure with
+# OIDC, pushes to the Azure Container Registry, and asks Radix for a deploy pipeline job.
+#
+# Every deploy is pinned to the commit it was built from: each image is tagged with the commit and with the environment
+# (dev, test, or latest for prod), and the deploy names the commit's tag for every component and the commit itself, so
+# Radix runs exactly these images and the control plane tells a rollout (new commit: its workers are replaced) from a
+# restart (same commit: they are kept).
+#
+# Manual only. It needs the repository variable RADIX_REGISTRY_NAME (the registry radixconfig.yaml pulls from, without
+# .azurecr.io), and, as repository or environment secrets, AZURE_CLIENT_ID and AZURE_TENANT_ID of an identity with a
+# federated credential for this repository, AcrPush on the registry, and administrator access to the Radix application
+# (osdu/docs/reference/guides/radix.md).
+name: Deploy to Radix
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: The Radix environment to deploy to.
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+        default: dev
+
+permissions: {}
+
+concurrency:
+  group: radix-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY_NAME: ${{ vars.RADIX_REGISTRY_NAME }}
+  RADIX_APPLICATION: osdu-delivery
+
+jobs:
+  images:
+    name: Build and push ${{ matrix.image }}
+    if: vars.DEPLOY_METHOD == 'radix'
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
+    permissions:
+      contents: read # Required to checkout the repository
+      id-token: write # Required to login to Azure using OIDC
+    strategy:
+      fail-fast: true
+      matrix:
+        image:
+          - control-plane
+          - gui
+          - mcp
+          - worker
+    env:
+      AZURE_CORE_OUTPUT: none
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        env:
+          AZURE_CORE_OUTPUT: json
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          # Pushing needs only AcrPush on the registry, no access to a subscription.
+          allow-no-subscriptions: true
+
+      - name: Login to ACR
+        run: az acr login --name "$REGISTRY_NAME"
+
+      - name: Build and push
+        env:
+          IMAGE: ${{ matrix.image }}
+          ENVIRONMENT_TAG: ${{ inputs.environment == 'prod' && 'latest' || inputs.environment }}
+        run: |
+          set -euo pipefail
+          repository="${REGISTRY_NAME}.azurecr.io/osdu-delivery-${IMAGE}"
+          # Every Dockerfile builds from the repository root (osdu/deploy/README.md).
+          docker buildx build --push \
+            --file "osdu/deploy/docker/${IMAGE}.Dockerfile" \
+            --tag "${repository}:${GITHUB_SHA}" \
+            --tag "${repository}:${ENVIRONMENT_TAG}" \
+            .
+
+  deploy:
+    name: Deploy to Radix
+    needs: images
+    if: vars.DEPLOY_METHOD == 'radix'
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read # Required to checkout the repository
+      id-token: write # Required to login to Azure using OIDC
+    steps:
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Install radix-cli and login to Radix
+        uses: equinor/radix-github-actions@e80f8b60d4b433cf7e7b207765cd8df61ce0f73a # v2.0.3
+        with:
+          azure_client_id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - name: Deploy
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          rx create pipeline-job deploy \
+            --application "$RADIX_APPLICATION" \
+            --environment "$ENVIRONMENT" \
+            --commitID "$GITHUB_SHA" \
+            --image-tag-name "controlplane=${GITHUB_SHA},gui=${GITHUB_SHA},mcp=${GITHUB_SHA},worker=${GITHUB_SHA}" \
+            --follow

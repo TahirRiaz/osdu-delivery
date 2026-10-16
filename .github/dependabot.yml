@@ -1,0 +1,83 @@
+# Version updates for what OSDU Delivery pins itself, once a week, grouped so each ecosystem opens one pull request for
+# its minor and patch moves. A pull request goes through CI and review like any other, and lands by rebase.
+#
+# Nothing under sqlflow/ is updated here: the vendored SQLFlow moves only with a subtree pull (CONTRIBUTING.md,
+# "Updating the vendored SQLFlow"). No entry names a directory there, and the two ecosystems that reach into it through
+# osdu/ are held to what osdu/ declares: NuGet updates only the packages osdu/Directory.Packages.props pins itself
+# (the others it imports from sqlflow/Directory.Packages.props), and Cargo updates only the MCP host's own lock file.
+#
+# Every pull request carries Dependabot's own labels: `dependencies` and its ecosystem's (`github_actions`,
+# `javascript`, `.NET`, `rust`), which Dependabot creates when the repository lacks them. Its commits start `osdu:`,
+# as the repository's do.
+version: 2
+updates:
+  # The actions the workflows in .github/workflows use.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: osdu
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # The OSDU GUI. It compiles the vendored sqlflow/gui sources in place with these packages, so CI builds both GUIs on
+  # every update. A major version opens a pull request of its own.
+  - package-ecosystem: npm
+    directory: /osdu/gui
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: osdu
+    groups:
+      gui:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The packages the OSDU projects use and SQLFlow does not, pinned in osdu/Directory.Packages.props. Dependabot reads
+  # projects, not props files, so it starts from OsduDelivery.sln; the allow list keeps it to the packages pinned in
+  # osdu/, since every other pin is SQLFlow's, which a module never moves (osdu/Directory.Packages.props). A package
+  # added to that file is added here too.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: osdu
+    allow:
+      - dependency-name: OpenTelemetry.Extensions.Hosting
+      - dependency-name: OpenTelemetry.Exporter.OpenTelemetryProtocol
+      - dependency-name: OpenTelemetry.Exporter.Console
+      - dependency-name: Azure.Monitor.OpenTelemetry.Exporter
+    groups:
+      telemetry:
+        patterns:
+          - "*"
+
+  # The MCP server's host. Its manifest keeps the versions of SQLFlow's server library, which it depends on by path
+  # (osdu/hosts/osdu-delivery-mcp/Cargo.toml), so only its lock file moves: a version that needs a manifest change
+  # comes with the SQLFlow that needs it.
+  - package-ecosystem: cargo
+    directory: /osdu/hosts/osdu-delivery-mcp
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: lockfile-only
+    commit-message:
+      prefix: osdu
+    groups:
+      mcp-host:
+        patterns:
+          - "*"

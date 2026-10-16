@@ -1,0 +1,31 @@
+# Ingestion: the typed curve dictionary view into the keyed table the lookups cache flow reads.
+#
+# One row per mnemonic. A newer file replaces a mnemonic's row, so the table always holds the dictionary as its latest
+# file has it, and welldb-lookups-00-cache captures it whole into the partition's cache as CurveDictionary.
+flowType: ing
+name: welldb-curvedictionary-02-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_CurveDictionary
+
+target:
+  server: osduData
+  object: OsduData.silver.CurveDictionary
+  identityColumn: RecId
+
+load:
+  keyColumns: [mnemonic]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-cache

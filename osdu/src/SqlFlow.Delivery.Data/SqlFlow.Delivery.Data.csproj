@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.Data</RootNamespace>
+    <Description>The OSDU module's database: every OSDU table, view and index in the dedicated osdu schema, its EF Core context, migrations with their own history table, and the schema version. No foreign key or navigation reaches SQLFlow's catalog.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlFlow.Delivery.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,67 @@
+# Mapping: a source system's wellbores into the Wellbore 1.3.0 template (osdu/docs/reference/flow/mapping.md).
+#
+# The master data the well logs hang off: what a source system holds about a wellbore, plus its alternative names as
+# the child dataset "aliases". Nothing here streams payload files.
+documentType: mapping
+name: Wellbore
+version: 1.0.0
+template:
+  kind: osdu:wks:master-data--Wellbore:1.3.0
+  version: 58d6bdbd9d066a06
+description: Wellbore master data (one record per wellbore) with its alternative names.
+
+dataset:
+  system: wells
+  # The wellbore's name is what the source system knows it by and what every well log references, so it is the key
+  # (osdu/docs/reference/flow/mapping.md, dataset: the record table's key, label and identity). Both halves derive the
+  # same delivery key from it with no coordination.
+  key: [facility_name]
+  label: "{facility_name}"
+  # The names an operator holds a wellbore by, indexed by the ledger for the Records page.
+  identity: [facility_name]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+
+  data:
+    FacilityName:
+      $from: facility_name
+      $modifiers: [trim]
+      $description: The wellbore's name, which is also the dataset key.
+    FacilityDescription:
+      $from: facility_description
+      $modifiers: [trim]
+      $required: false
+    FacilityID:
+      $from: facility_id
+      $required: false
+      $description: The source system's own identifier for the wellbore, carried as provenance.
+
+    # Alternative names: one alias per row of the aliases child dataset. A wellbore without aliases is still delivered.
+    NameAliases:
+      $forEach: aliases
+      $required: false
+      $item:
+        AliasName: { $from: alias_name }
+        AliasNameTypeID: "{$param.dataPartition}:reference-data--AliasNameType:UniqueIdentifier:"

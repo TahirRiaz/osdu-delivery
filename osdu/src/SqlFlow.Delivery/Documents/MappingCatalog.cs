@@ -1,0 +1,215 @@
+using SqlFlow.Core;
+using SqlFlow.Delivery.Model;
+
+namespace SqlFlow.Delivery.Documents;
+
+/// <summary>
+/// Locates pinned mappings on disk. A mapping <c>WellLog@1.4.0</c> is the file <c>WellLog@1.4.0.yaml</c> (or
+/// <c>WellLog/1.4.0.yaml</c>) under the mappings directory. The file must declare the same name and version it is
+/// filed under, so a reference always resolves to exactly the artifact that was reviewed.
+/// </summary>
+public sealed class MappingCatalog
+{
+    private readonly string _directory;
+    private readonly DeliveryDocumentLoader _loader;
+
+    public MappingCatalog(string directory, DeliveryDocumentLoader loader)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        ArgumentNullException.ThrowIfNull(loader);
+        _directory = directory;
+        _loader = loader;
+    }
+
+    public string Directory => _directory;
+
+    public MappingDefinition Load(string reference) => Load(reference, path => path);
+
+    /// <summary>
+    /// Loads the mapping <paramref name="reference"/> pins, naming every file and folder in its messages as
+    /// <paramref name="shown"/> gives it (a path relative to the repository, say). The reference names a file under the
+    /// directory and nothing else: a name or version carrying a path is refused before any file is looked at.
+    /// </summary>
+    public MappingDefinition Load(string reference, Func<string, string> shown)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        ArgumentNullException.ThrowIfNull(shown);
+        var at = reference.IndexOf('@', StringComparison.Ordinal);
+        if (at <= 0 || at == reference.Length - 1)
+        {
+            throw new FlowValidationException($"Mapping reference '{reference}' must be pinned as 'Name@version'.");
+        }
+
+        var name = reference[..at];
+        var version = reference[(at + 1)..];
+        if (NamesAPath(name) || NamesAPath(version))
+        {
+            throw new FlowValidationException(
+                $"Mapping reference '{reference}' names a path; a mapping is named by its name and version alone, without '/', '\\' or '..'.");
+        }
+
+        var candidates = new[]
+        {
+            Path.Combine(_directory, $"{name}@{version}.yaml"),
+            Path.Combine(_directory, $"{name}@{version}.yml"),
+            Path.Combine(_directory, name, $"{version}.yaml"),
+            Path.Combine(_directory, name, $"{version}.yml"),
+        };
+
+        var path = candidates.FirstOrDefault(File.Exists)
+            ?? throw new FlowValidationException(
+                $"Mapping '{reference}' was not found under '{shown(_directory)}'. Expected one of: {string.Join(", ", candidates.Select(Path.GetFileName))}.");
+
+        var mapping = _loader.LoadMapping(path, shown(path));
+        if (!mapping.Name.Equals(name, StringComparison.Ordinal) || !mapping.Version.Equals(version, StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{shown(path)}: declares '{mapping.Reference}' but is filed as '{reference}'. The file name and the document must agree.");
+        }
+
+        return mapping;
+    }
+
+    private static bool NamesAPath(string part)
+        => part.Contains('/', StringComparison.Ordinal) || part.Contains('\\', StringComparison.Ordinal) || part.Contains("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(part);
+
+    public IReadOnlyList<string> List()
+    {
+        if (!System.IO.Directory.Exists(_directory))
+        {
+            return [];
+        }
+
+        return System.IO.Directory.EnumerateFiles(_directory, "*.y*ml", SearchOption.AllDirectories)
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(n => n is not null && n.Contains('@', StringComparison.Ordinal))
+            .Cast<string>()
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+    }
+}
+
+/// <summary>Resolves a flow's declared parameters against supplied values and substitutes tokens.</summary>
+public static class FlowParameters
+{
+    /// <summary>
+    /// Returns the effective parameter values: supplied values, then defaults; throws when a required parameter is
+    /// missing or an undeclared one is supplied.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> Resolve(FlowDefinition flow, IReadOnlyDictionary<string, string>? supplied)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, supplied);
+    }
+
+    /// <summary>The same resolution over any declared parameter set (a retrieval flow's, say); <paramref name="where"/> names the document in errors.</summary>
+    public static IReadOnlyDictionary<string, string> Resolve(IReadOnlyDictionary<string, FlowParameter> parameters, string where, IReadOnlyDictionary<string, string>? supplied)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, parameter) in parameters)
+        {
+            if (supplied is not null && supplied.TryGetValue(name, out var v))
+            {
+                values[name] = v;
+            }
+            else if (parameter.Default is not null)
+            {
+                values[name] = parameter.Default;
+            }
+            else if (parameter.Required)
+            {
+                throw new FlowValidationException($"{where}: parameter '{name}' is required. Supply it with --set {name}=value or the run's values.");
+            }
+        }
+
+        if (supplied is not null)
+        {
+            foreach (var name in supplied.Keys)
+            {
+                if (!parameters.ContainsKey(name))
+                {
+                    throw new FlowValidationException($"{where}: parameter '{name}' is not declared under parameters.");
+                }
+            }
+        }
+
+        return values;
+    }
+
+    /// <summary>Substitutes <c>{name}</c> tokens in a string from the resolved values.</summary>
+    public static string Substitute(string text, IReadOnlyDictionary<string, string> values)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(values);
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\{(?<name>[A-Za-z0-9_]+)\}", m =>
+            values.TryGetValue(m.Groups["name"].Value, out var v) ? v : m.Value);
+    }
+
+    /// <summary>The work root the intake writes batches under: <c>source.work</c> with its tokens substituted, resolved against the flow file.</summary>
+    public static string WorkLocation(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        return ResolvePath(flow, flow.Source.Work, values, "source.work");
+    }
+
+    /// <summary>
+    /// The scope predicate's values: each column <c>source.record.scope</c> names, with the value of the parameter it binds.
+    /// Throws when a bound parameter has no value, which a resolved parameter set never lacks.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> ScopeValues(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentNullException.ThrowIfNull(values);
+        var scope = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (column, parameter) in flow.Source.Record.Scope)
+        {
+            scope[column] = values.TryGetValue(parameter, out var value)
+                ? value
+                : throw new FlowValidationException(
+                    $"{flow.SourcePath ?? flow.Name}: source.record.scope binds column '{column}' to parameter '{parameter}', which has no value for this run.");
+        }
+
+        return scope;
+    }
+
+    /// <summary>
+    /// A location a flow declares (a work root or a payload root), its tokens substituted and resolved: a
+    /// storage URI as written, a rooted path as it is, a relative path against the flow file's folder. A parameter value that
+    /// would climb out of the declared location (a separator or '..') is refused, because these locations bound what a run
+    /// may read and write.
+    /// </summary>
+    public static string ResolvePath(FlowDefinition flow, string declared, IReadOnlyDictionary<string, string> values, string what)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentException.ThrowIfNullOrWhiteSpace(declared);
+        ArgumentNullException.ThrowIfNull(values);
+        var where = flow.SourcePath ?? flow.Name;
+        foreach (var token in FlowMapper.Tokens(declared))
+        {
+            if (values.TryGetValue(token, out var value)
+                && (value.Contains('/', StringComparison.Ordinal) || value.Contains('\\', StringComparison.Ordinal) || value.Contains("..", StringComparison.Ordinal)))
+            {
+                throw new FlowValidationException(
+                    $"{where}: parameter '{token}' is substituted into {what}, a location, so its value must not contain '/', '\\' or '..'.");
+            }
+        }
+
+        var text = Substitute(declared, values).Trim();
+        if (text.Contains("://", StringComparison.Ordinal))
+        {
+            return text.TrimEnd('/');
+        }
+
+        if (Path.IsPathRooted(text))
+        {
+            return Path.GetFullPath(text);
+        }
+
+        var baseDirectory = flow.SourcePath is { } path
+            ? Path.GetDirectoryName(Path.GetFullPath(path)) ?? System.IO.Directory.GetCurrentDirectory()
+            : System.IO.Directory.GetCurrentDirectory();
+        return Path.GetFullPath(Path.Combine(baseDirectory, text));
+    }
+}

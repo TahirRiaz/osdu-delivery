@@ -1,0 +1,55 @@
+# Mapping: a source system's documents into the Document 1.0.0 template (osdu/docs/reference/flow/mapping.md).
+#
+# A work product component whose content is a file: the record carries what the source system knows about the document,
+# and the file itself travels beside it. The route registers each file as a dataset and writes the record with its
+# dataset list, so nothing here fills osdu.data.Datasets.
+documentType: mapping
+name: Document
+version: 1.0.0
+template:
+  kind: osdu:wks:work-product-component--Document:1.0.0
+  version: 5c6898ebc6775f6e
+description: Documents (one record per document) delivered with the file that is their content.
+
+dataset:
+  system: wells
+  # The source system's own document number: what it is filed under there, and what the delivery key derives from.
+  key: [doc_id]
+  label: "{doc_title}"
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+
+  data:
+    Name:
+      $from: doc_title
+      $modifiers: [trim]
+      $description: The document's title, as the source system files it.
+    Description:
+      $from: doc_description
+      $modifiers: [trim]
+      $required: false
+    Source:
+      $value: welldb
+      $description: The system the document came from, carried as provenance.

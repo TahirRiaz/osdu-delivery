@@ -1,0 +1,28 @@
+{
+  "acl": {
+    "owners": [
+      "data.welldb.owners@dev.dataservices.energy"
+    ],
+    "viewers": [
+      "data.welldb.viewers@dev.dataservices.energy"
+    ]
+  },
+  "data": {
+    "Description": "Geological observations over the logged interval.",
+    "Name": "Well report Wellbore A-1",
+    "Source": "welldb"
+  },
+  "id": "dev:work-product-component--Document:4e8fd15d4b6d585c8af23ee818efa8c9",
+  "kind": "osdu:wks:work-product-component--Document:1.0.0",
+  "legal": {
+    "legaltags": [
+      "dev-osdu-default-legal"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "tags": {
+    "DeliveredBy": "osdu-delivery"
+  }
+}

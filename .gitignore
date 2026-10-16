@@ -1,0 +1,57 @@
+## .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+artifacts/
+*.user
+*.suo
+.vs/
+
+## GUIs (sqlflow/gui and osdu/gui)
+**/gui/node_modules/
+**/gui/dist/
+**/gui/.tsbuild/
+**/gui/.env.local
+**/gui/playwright-report/
+**/gui/test-results/
+**/gui/tsconfig.tsbuildinfo
+**/gui/e2e/.fixtures/
+.playwright-mcp/
+
+## Rider / VS Code
+.idea/
+.vscode/
+
+## Test results
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+coverage/
+*.cobertura.xml
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Local secrets / env (never commit)
+*.env
+.env
+appsettings.*.local.json
+secrets.json
+
+## SQLFlow run artifacts, model state, the live OSDU action log and local secrets (.sqlflow/env)
+.sqlflow/
+
+## A delivery flow's own work area (source.work), where a local run stages rendered documents: a run artifact, not source.
+**/.work/
+
+# The clean build context deploy.ps1 extracts from a git archive of HEAD.
+.deploy-ctx/

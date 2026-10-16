@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SqlFlow.Delivery.Worker.Host</RootNamespace>
+    <Description>An OSDU Delivery compute node: SQLFlow's node runtime with the OSDU module installed, taking work from the control plane over the node protocol.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery.Cli\SqlFlow.Delivery.Cli.csproj" />
+  </ItemGroup>
+
+</Project>

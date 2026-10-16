@@ -1,0 +1,15 @@
+-- OSDU Delivery: the database users its apps (and the people sql_admins names) sign in as, under Entra authentication
+-- (each app as its own managed identity, no password anywhere), on a server this configuration does not administer.
+-- Run as an Entra administrator of ${server}, connected to each database below in turn (Azure SQL Database does not
+-- switch databases with USE); every statement can run again. Until they have run, the control plane reports its first
+-- start-up step as failed and retries it, and a worker cannot start.
+%{ for database in databases ~}
+
+-- ${database.name}: ${database.purpose}
+%{ for user in database.users ~}
+IF USER_ID(N'${replace(user.name, "'", "''")}') IS NULL CREATE USER [${replace(user.name, "]", "]]")}] FROM EXTERNAL PROVIDER;
+%{ endfor ~}
+%{ for statement in database.statements ~}
+${statement}
+%{ endfor ~}
+%{ endfor ~}

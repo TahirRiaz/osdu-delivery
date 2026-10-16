@@ -1,0 +1,596 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Reflection;
+using System.Text.Json;
+using Parquet;
+using Parquet.Schema;
+
+namespace SqlFlow.Delivery.Storage;
+
+/// <summary>The dimensions of a parquet file: its rows, and its top-level scalar columns.</summary>
+public readonly record struct ParquetShape(long Rows, int Columns)
+{
+    /// <summary>Cells in the file, which is what a bulk service budgets against.</summary>
+    public long Values => Model.WellboreDdmsBulkLimits.Values(Rows, Columns);
+
+    /// <summary>
+    /// The labels a dataframe reader gives the rows, or null when the footer cannot tell them: a multi-level index, a
+    /// stored index column whose labels are not numbers, or pandas metadata that does not parse.
+    /// </summary>
+    public ParquetRowIndex? RowIndex { get; init; }
+
+    /// <summary>The data columns, without a stored index column.</summary>
+    public IReadOnlyList<string> ColumnNames { get; init; } = [];
+
+    /// <summary>
+    /// What a dataframe reader would refuse about the file's pandas metadata, or null when it would read it. A footer
+    /// with no pandas entry reads fine, with the rows numbered from zero; an entry that is there but incomplete does
+    /// not, and a bulk service that reads a chunk as a dataframe then refuses the whole upload as malformed.
+    /// </summary>
+    public string? PandasDefect { get; init; }
+}
+
+/// <summary>
+/// The row labels of a parquet file as a dataframe reader such as pandas gives them, which is how the wellbore DDMS
+/// reads a bulk chunk: the lowest and the highest label, and where the labels come from.
+/// </summary>
+/// <param name="First">The lowest label.</param>
+/// <param name="Last">The highest label.</param>
+/// <param name="Source">Where the labels come from.</param>
+public readonly record struct ParquetRowIndex(double First, double Last, ParquetRowIndexSource Source)
+{
+    /// <summary>True when the two ranges share at least one label.</summary>
+    public bool Overlaps(ParquetRowIndex other) => First <= other.Last && other.First <= Last;
+
+    /// <summary>True when both ranges run between the same two labels.</summary>
+    public bool SameLabels(ParquetRowIndex other) => First.Equals(other.First) && Last.Equals(other.Last);
+}
+
+/// <summary>Where a parquet file's row labels come from.</summary>
+public enum ParquetRowIndexSource
+{
+    /// <summary>No pandas metadata, or an empty index list: a reader numbers the rows from zero.</summary>
+    Implicit,
+
+    /// <summary>A pandas RangeIndex, described by its start and step in the file's metadata.</summary>
+    Range,
+
+    /// <summary>An index stored as a column that the pandas metadata names.</summary>
+    Column,
+}
+
+/// <summary>
+/// The parquet files the delivery domain touches without parsing their rows: a payload chunk's footer, measured against
+/// the target's bulk ceilings and the other chunks of its session, a forward-only stream made seekable, the values a
+/// parquet column type reads as, and the writers the sample estate and the tests use.
+/// </summary>
+public static class ParquetFiles
+{
+    /// <summary>The key-value metadata entry a pandas writer (pyarrow, fastparquet) leaves in the footer.</summary>
+    public const string PandasMetadataKey = "pandas";
+
+    /// <summary>The typed column reader for each CLR type and nullability, built once.</summary>
+    private static readonly ConcurrentDictionary<(Type Clr, bool Nullable), Func<ParquetRowGroupReader, DataField, int, CancellationToken, Task<Array>>> ColumnReaders = new();
+
+    /// <summary>The typed column writer for each array element type, built once.</summary>
+    private static readonly ConcurrentDictionary<Type, Func<global::Parquet.ParquetRowGroupWriter, DataField, Array, CancellationToken, Task>> ColumnWriters = new();
+
+    /// <summary>
+    /// Parquet needs a seekable stream (the footer is at the end). A forward-only stream is spilled to a temporary
+    /// file that is deleted when the returned stream closes: disk, never memory, so a file of any size reads in bounded
+    /// memory. Stores that can seek natively (local files, blobs through the range reader) never come here.
+    /// </summary>
+    public static async Task<Stream> EnsureSeekableAsync(Stream stream, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (stream.CanSeek)
+        {
+            return stream;
+        }
+
+        var path = Path.Combine(Path.GetTempPath(), "osdu-delivery-spill-" + Guid.NewGuid().ToString("N") + ".parquet");
+        var spill = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1 << 16, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+        try
+        {
+            await using (stream.ConfigureAwait(false))
+            {
+                await stream.CopyToAsync(spill, ct).ConfigureAwait(false);
+            }
+
+            spill.Position = 0;
+            return spill;
+        }
+        catch
+        {
+            await spill.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The shape of a file from its footer: the schema's top-level scalar columns, the row counts the row group
+    /// headers declare, and the labels a dataframe reader gives the rows. The labels come from the pandas metadata the
+    /// writer left (a stored index column's statistics, or a range's start and step); a file without that metadata
+    /// numbers its rows from zero. Only a stored index column whose row groups carry no statistics is read, and only
+    /// that column, so the cost stays the footer whatever the file holds. This is how a payload chunk is measured
+    /// against the target's bulk ceilings, and against the other chunks of its session, without parsing it
+    /// (osdu/docs/reference/flow/ddms.md, The Wellbore DDMS (wellboreDdmsV3)).
+    /// </summary>
+    public static async Task<ParquetShape> ReadShapeAsync(Stream seekable, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(seekable);
+        await using var reader = await ParquetReader.CreateAsync(seekable, leaveStreamOpen: true, cancellationToken: ct).ConfigureAwait(false);
+        var fields = reader.Schema.Fields.OfType<DataField>().ToList();
+        var index = PandasIndex.From(reader.CustomMetadata);
+        var indexField = index.Column is null ? null : fields.Find(f => string.Equals(f.Name, index.Column, StringComparison.Ordinal));
+
+        // A metadata entry naming a column the file does not have leaves the labels unknown.
+        var labelled = index.Kind != PandasIndexKind.Column || indexField is not null;
+        long rows = 0;
+        var low = double.PositiveInfinity;
+        var high = double.NegativeInfinity;
+        for (var group = 0; group < reader.RowGroupCount; group++)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var rowGroup = reader.OpenRowGroupReader(group);
+            rows += rowGroup.RowCount;
+            if (indexField is null || !labelled || rowGroup.RowCount == 0)
+            {
+                continue;
+            }
+
+            if (await LabelBoundsAsync(rowGroup, indexField, ct).ConfigureAwait(false) is { } bounds)
+            {
+                low = Math.Min(low, bounds.Low);
+                high = Math.Max(high, bounds.High);
+            }
+            else
+            {
+                labelled = false;
+            }
+        }
+
+        return new ParquetShape(rows, fields.Count)
+        {
+            RowIndex = labelled && rows > 0 ? index.Labels(rows, low, high) : null,
+            ColumnNames = fields.Where(f => !ReferenceEquals(f, indexField)).Select(f => f.Name).ToList(),
+            PandasDefect = PandasDefect(reader.CustomMetadata),
+        };
+    }
+
+    /// <summary>
+    /// What a dataframe reader would refuse about a footer's pandas entry, or null when it would read it. Reading a
+    /// chunk as a dataframe is how a bulk service takes it, so a file this names is refused by the service rather than
+    /// ingested, whatever its rows hold.
+    /// <para>
+    /// The entry itself is optional: a file without one reads with its rows numbered from zero. An entry that is there
+    /// has to carry the <c>columns</c> descriptors and describe every stored column it names as the index. Without the
+    /// descriptors the reader cannot say what any column holds, and without the index's own descriptor it cannot lift
+    /// that column out of the frame; either way it raises instead of returning rows.
+    /// </para>
+    /// </summary>
+    public static string? PandasDefect(IReadOnlyDictionary<string, string> metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        if (!metadata.TryGetValue(PandasMetadataKey, out var json) || string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return "its pandas metadata is not valid JSON";
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return "its pandas metadata is not an object";
+            }
+
+            if (!root.TryGetProperty("columns", out var columns) || columns.ValueKind != JsonValueKind.Array)
+            {
+                return "its pandas metadata carries no 'columns' descriptors";
+            }
+
+            if (!root.TryGetProperty("index_columns", out var index) || index.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var entry in index.EnumerateArray())
+            {
+                // A range index is described where it stands; only a name refers to a column the file stores.
+                if (entry.ValueKind != JsonValueKind.String || entry.GetString() is not { } name || Describes(columns, name))
+                {
+                    continue;
+                }
+
+                return $"its pandas metadata names '{name}' as the index without describing it in 'columns'";
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>True when one of the pandas column descriptors is the named column's.</summary>
+    private static bool Describes(JsonElement columns, string name)
+    {
+        foreach (var descriptor in columns.EnumerateArray())
+        {
+            if (descriptor.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if ((descriptor.TryGetProperty("field_name", out var stored) && stored.ValueKind == JsonValueKind.String && stored.ValueEquals(name))
+                || (descriptor.TryGetProperty("name", out var label) && label.ValueKind == JsonValueKind.String && label.ValueEquals(name)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The column a pandas writer stored a dataframe's single index in, as the footer's metadata names it, or null when the
+    /// file stores no index column (no pandas metadata, a range index, or an index of several levels).
+    /// </summary>
+    public static string? PandasIndexColumn(IReadOnlyDictionary<string, string> metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        var index = PandasIndex.From(metadata);
+        return index.Kind == PandasIndexKind.Column ? index.Column : null;
+    }
+
+    /// <summary>
+    /// Collapses the parquet CLR types to the small set the renderer understands. A float is read as the number it was
+    /// written as (12.3, not the 12.300000190734863 its bits widen to), a decimal and an unsigned 64-bit value keep their
+    /// exact value, and a NaN is read as a missing value, which is how numpy and pandas store one.
+    /// </summary>
+    public static object? Normalize(object? value) => value switch
+    {
+        null => null,
+        string s => s,
+        bool b => b,
+        byte or sbyte or short or ushort or int or uint or long => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+        ulong ul => ul <= long.MaxValue ? (long)ul : (decimal)ul,
+        float f => float.IsNaN(f) ? null : Rendering.NumberValues.Widen(f),
+        double d => double.IsNaN(d) ? null : d,
+        decimal m => m,
+        DateTime dt => new DateTimeOffset(dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Utc) : dt.ToUniversalTime()),
+        DateTimeOffset dto => dto.ToUniversalTime(),
+        DateOnly d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        TimeSpan ts => ts.ToString("c", CultureInfo.InvariantCulture),
+        Guid g => g,
+        byte[] bytes => Convert.ToBase64String(bytes),
+        _ => value.ToString(),
+    };
+
+    /// <summary>Writes rows as one row group, for the sample estate and the tests.</summary>
+    public static Task WriteAsync(Stream target, IReadOnlyList<(string Name, Type ClrType)> columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, CancellationToken ct = default)
+        => WriteAsync(target, columns, rows, null, ct);
+
+    /// <summary>
+    /// Writes rows as one row group with the given key-value metadata in the footer, such as the pandas entry a
+    /// dataframe writer leaves to say which column is the index.
+    /// </summary>
+    public static async Task WriteAsync(
+        Stream target, IReadOnlyList<(string Name, Type ClrType)> columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> rows,
+        IReadOnlyDictionary<string, string>? metadata, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(columns);
+        ArgumentNullException.ThrowIfNull(rows);
+
+        var fields = columns.Select(c => new DataField(c.Name, MakeNullable(c.ClrType))).ToArray();
+        var schema = new ParquetSchema(fields.Cast<Field>().ToArray());
+        await using var writer = await ParquetWriter.CreateAsync(schema, target, WriteOptions(), cancellationToken: ct).ConfigureAwait(false);
+        if (metadata is not null)
+        {
+            writer.CustomMetadata = metadata;
+        }
+
+        using var rowGroup = writer.CreateRowGroup();
+        for (var i = 0; i < fields.Length; i++)
+        {
+            await WriteColumnValuesAsync(rowGroup, fields[i], ColumnValues(columns[i], rows), ct).ConfigureAwait(false);
+        }
+    }
+
+    internal static Type MakeNullable(Type type)
+        => type.IsValueType && Nullable.GetUnderlyingType(type) is null ? typeof(Nullable<>).MakeGenericType(type) : type;
+
+    /// <summary>How every parquet file this module writes is written: Snappy-compressed, as pandas writes by default.</summary>
+    internal static ParquetOptions WriteOptions() => new() { CompressionMethod = CompressionMethod.Snappy };
+
+    /// <summary>
+    /// One column's values across the rows, as an array of the column's nullable CLR type: a missing or null cell is
+    /// a null, and any other value is converted to the column's type.
+    /// </summary>
+    internal static Array ColumnValues((string Name, Type ClrType) column, IReadOnlyList<IReadOnlyDictionary<string, object?>> rows)
+    {
+        var clr = MakeNullable(column.ClrType);
+        var array = Array.CreateInstance(clr, rows.Count);
+        for (var r = 0; r < rows.Count; r++)
+        {
+            var v = rows[r].TryGetValue(column.Name, out var raw) ? raw : null;
+            array.SetValue(v is null ? null : Convert.ChangeType(v, Nullable.GetUnderlyingType(clr) ?? clr, CultureInfo.InvariantCulture), r);
+        }
+
+        return array;
+    }
+
+    /// <summary>
+    /// Reads one column of a row group whole, as an array of the column's CLR type: the nullable type for an optional
+    /// value column, the type itself for a required one, and strings or byte arrays for those. A column that repeats
+    /// its values within a row has no single value per row, and is refused.
+    /// </summary>
+    internal static async Task<Array> ReadColumnValuesAsync(ParquetRowGroupReader rowGroup, DataField field, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(rowGroup);
+        ArgumentNullException.ThrowIfNull(field);
+        if (field.IsArray)
+        {
+            throw new InvalidDataException($"the parquet column {field.Path} repeats its values within a row, where one value per row is read");
+        }
+
+        var count = checked((int)rowGroup.RowCount);
+        var read = ColumnReaders.GetOrAdd((field.ClrType, field.IsNullable), static key => ColumnReader(key.Clr, key.Nullable));
+        return await read(rowGroup, field, count, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes one column of a row group from an array of the column's CLR type, nullable or not, or of strings or byte
+    /// arrays, in the schema's column order.
+    /// </summary>
+    internal static Task WriteColumnValuesAsync(global::Parquet.ParquetRowGroupWriter rowGroup, DataField field, Array values, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(rowGroup);
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(values);
+        switch (values)
+        {
+            case string[] strings:
+                return rowGroup.WriteAsync(field, strings);
+            case byte[][] bytes:
+                return rowGroup.WriteAsync(field, bytes);
+        }
+
+        var element = values.GetType().GetElementType()
+            ?? throw new ArgumentException("the column's values are not a one-dimensional array", nameof(values));
+        var write = ColumnWriters.GetOrAdd(element, static type => ColumnWriter(type));
+        return write(rowGroup, field, values, ct);
+    }
+
+    private static Func<ParquetRowGroupReader, DataField, int, CancellationToken, Task<Array>> ColumnReader(Type clr, bool nullable)
+    {
+        // A text or binary column read from a file names its values as views over the file's buffers; they are read
+        // as strings and byte arrays, which outlive the read.
+        if (clr == typeof(string) || clr == typeof(ReadOnlyMemory<char>))
+        {
+            return ReadStringsAsync;
+        }
+
+        if (clr == typeof(byte[]) || clr == typeof(ReadOnlyMemory<byte>))
+        {
+            return ReadBytesAsync;
+        }
+
+        var worker = nullable ? nameof(ReadNullableAsync) : nameof(ReadRequiredAsync);
+        return typeof(ParquetFiles).GetMethod(worker, BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(clr)
+            .CreateDelegate<Func<ParquetRowGroupReader, DataField, int, CancellationToken, Task<Array>>>();
+    }
+
+    private static Func<global::Parquet.ParquetRowGroupWriter, DataField, Array, CancellationToken, Task> ColumnWriter(Type element)
+    {
+        var (worker, clr) = Nullable.GetUnderlyingType(element) is { } underlying
+            ? (nameof(WriteNullableAsync), underlying)
+            : (nameof(WriteRequiredAsync), element);
+        return typeof(ParquetFiles).GetMethod(worker, BindingFlags.NonPublic | BindingFlags.Static)!
+            .MakeGenericMethod(clr)
+            .CreateDelegate<Func<global::Parquet.ParquetRowGroupWriter, DataField, Array, CancellationToken, Task>>();
+    }
+
+    private static async Task<Array> ReadStringsAsync(ParquetRowGroupReader rowGroup, DataField field, int count, CancellationToken ct)
+    {
+        var values = new string?[count];
+        await rowGroup.ReadAsync(field, values.AsMemory(), null, ct).ConfigureAwait(false);
+        return values;
+    }
+
+    private static async Task<Array> ReadBytesAsync(ParquetRowGroupReader rowGroup, DataField field, int count, CancellationToken ct)
+    {
+        var values = new byte[]?[count];
+        await rowGroup.ReadAsync(field, values.AsMemory(), null, ct).ConfigureAwait(false);
+        return values;
+    }
+
+    private static async Task<Array> ReadNullableAsync<T>(ParquetRowGroupReader rowGroup, DataField field, int count, CancellationToken ct)
+        where T : struct
+    {
+        var values = new T?[count];
+        await rowGroup.ReadAsync<T>(field, values.AsMemory(), null, ct).ConfigureAwait(false);
+        return values;
+    }
+
+    private static async Task<Array> ReadRequiredAsync<T>(ParquetRowGroupReader rowGroup, DataField field, int count, CancellationToken ct)
+        where T : struct
+    {
+        var values = new T[count];
+        await rowGroup.ReadAsync<T>(field, values.AsMemory(), null, ct).ConfigureAwait(false);
+        return values;
+    }
+
+    private static Task WriteNullableAsync<T>(global::Parquet.ParquetRowGroupWriter rowGroup, DataField field, Array values, CancellationToken ct)
+        where T : struct
+        => rowGroup.WriteAsync<T>(field, new ReadOnlyMemory<T?>((T?[])values), null, null, ct);
+
+    private static Task WriteRequiredAsync<T>(global::Parquet.ParquetRowGroupWriter rowGroup, DataField field, Array values, CancellationToken ct)
+        where T : struct
+        => rowGroup.WriteAsync<T>(field, new ReadOnlyMemory<T>((T[])values), null, null, ct);
+
+    /// <summary>
+    /// The lowest and highest label a stored index column holds in one row group: from the row group's statistics,
+    /// or from that one column when the writer kept none. Null when a label is not a number.
+    /// </summary>
+    private static async Task<(double Low, double High)?> LabelBoundsAsync(ParquetRowGroupReader rowGroup, DataField field, CancellationToken ct)
+    {
+        var statistics = rowGroup.GetStatistics(field);
+        if (statistics is not null && Number(statistics.MinValue) is { } min && Number(statistics.MaxValue) is { } max)
+        {
+            return (min, max);
+        }
+
+        var column = await ReadColumnValuesAsync(rowGroup, field, ct).ConfigureAwait(false);
+        double? low = null;
+        double? high = null;
+        foreach (var value in column)
+        {
+            if (value is null)
+            {
+                continue;
+            }
+
+            if (Number(value) is not { } label)
+            {
+                return null;
+            }
+
+            low = low is { } l ? Math.Min(l, label) : label;
+            high = high is { } h ? Math.Max(h, label) : label;
+        }
+
+        return low is { } lowest && high is { } highest ? (lowest, highest) : null;
+    }
+
+    private static double? Number(object? value) => value switch
+    {
+        byte or sbyte or short or ushort or int or uint or long or ulong => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+        float f when float.IsFinite(f) => f,
+        double d when double.IsFinite(d) => d,
+        decimal m => (double)m,
+        _ => null,
+    };
+
+    private enum PandasIndexKind
+    {
+        Implicit,
+        Range,
+        Column,
+        Unknown,
+    }
+
+    /// <summary>What a file's pandas metadata says its index is (pandas' <c>index_columns</c> entry).</summary>
+    private readonly record struct PandasIndex(PandasIndexKind Kind, string? Column, double Start, double Step)
+    {
+        private static readonly PandasIndex Implicit = new(PandasIndexKind.Implicit, null, 0, 1);
+
+        private static readonly PandasIndex Unknown = new(PandasIndexKind.Unknown, null, 0, 0);
+
+        public static PandasIndex From(IReadOnlyDictionary<string, string> metadata)
+        {
+            if (!metadata.TryGetValue(PandasMetadataKey, out var json) || string.IsNullOrWhiteSpace(json))
+            {
+                return Implicit;
+            }
+
+            JsonDocument document;
+            try
+            {
+                document = JsonDocument.Parse(json);
+            }
+            catch (JsonException)
+            {
+                // A reader that cannot parse the entry cannot say what the labels are either. The labels stay unknown,
+                // which leaves the session to the committed-row check rather than guessing an index for the chunk.
+                return Unknown;
+            }
+
+            using (document)
+            {
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("index_columns", out var columns)
+                    || columns.ValueKind != JsonValueKind.Array
+                    || columns.GetArrayLength() == 0)
+                {
+                    return Implicit;
+                }
+
+                if (columns.GetArrayLength() > 1)
+                {
+                    return Unknown;
+                }
+
+                var only = columns[0];
+                if (only.ValueKind == JsonValueKind.String)
+                {
+                    return new PandasIndex(PandasIndexKind.Column, only.GetString(), 0, 0);
+                }
+
+                return only.ValueKind == JsonValueKind.Object
+                    && only.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String && kind.ValueEquals("range")
+                    && only.TryGetProperty("start", out var start) && start.TryGetDouble(out var first)
+                    && only.TryGetProperty("step", out var step) && step.TryGetDouble(out var stride) && stride != 0
+                        ? new PandasIndex(PandasIndexKind.Range, null, first, stride)
+                        : Unknown;
+            }
+        }
+
+        public ParquetRowIndex? Labels(long rows, double low, double high) => Kind switch
+        {
+            PandasIndexKind.Implicit => new ParquetRowIndex(0, rows - 1, ParquetRowIndexSource.Implicit),
+            PandasIndexKind.Range => new ParquetRowIndex(
+                Math.Min(Start, Start + (Step * (rows - 1))), Math.Max(Start, Start + (Step * (rows - 1))), ParquetRowIndexSource.Range),
+            PandasIndexKind.Column when low <= high => new ParquetRowIndex(low, high, ParquetRowIndexSource.Column),
+            _ => null,
+        };
+    }
+}
+
+/// <summary>Writes a parquet file one row group at a time, so a file of any size never sits in memory whole.</summary>
+public sealed class ParquetRowGroupWriter : IAsyncDisposable
+{
+    private readonly ParquetWriter _writer;
+    private readonly DataField[] _fields;
+    private readonly IReadOnlyList<(string Name, Type ClrType)> _columns;
+
+    private ParquetRowGroupWriter(ParquetWriter writer, DataField[] fields, IReadOnlyList<(string Name, Type ClrType)> columns)
+    {
+        _writer = writer;
+        _fields = fields;
+        _columns = columns;
+    }
+
+    public static async Task<ParquetRowGroupWriter> CreateAsync(Stream target, IReadOnlyList<(string Name, Type ClrType)> columns, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(columns);
+        var fields = columns.Select(c => new DataField(c.Name, ParquetFiles.MakeNullable(c.ClrType))).ToArray();
+        var schema = new ParquetSchema(fields.Cast<Field>().ToArray());
+        var writer = await ParquetWriter.CreateAsync(schema, target, ParquetFiles.WriteOptions(), cancellationToken: ct).ConfigureAwait(false);
+        return new ParquetRowGroupWriter(writer, fields, columns);
+    }
+
+    public async Task WriteRowGroupAsync(IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        using var rowGroup = _writer.CreateRowGroup();
+        for (var i = 0; i < _fields.Length; i++)
+        {
+            await ParquetFiles.WriteColumnValuesAsync(rowGroup, _fields[i], ParquetFiles.ColumnValues(_columns[i], rows), ct).ConfigureAwait(false);
+        }
+    }
+
+    public ValueTask DisposeAsync() => _writer.DisposeAsync();
+}

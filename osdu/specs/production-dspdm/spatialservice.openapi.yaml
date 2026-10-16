@@ -1,0 +1,20 @@
+prettyPrint: true
+cacheTTL: 0
+openAPI:
+  servers:
+    - url: /services/dev-businessapi/msp
+    - url: /services/qa-businessapi/msp
+    - url: /services/businessapi/msp    
+    - url: http://localhost:8080/msp
+  info:
+    version: '1.0'
+    title: 'PDM Domain APIs for Spatial Data'
+    description: Production Data Management (PDM) deals with the storage and utilizeing of spatial data for production entities.These apis are designed to enable user to effortless to access spatial data associated with given entities, facilitate applications or workflows to present gegraphical locations and build geometric models.This is the first version of spatial data API, coordinate system conversion is not supported. All the spatial data under one organization should use same coordinate system.
+  components:
+    securitySchemes:
+      bearerAuth:
+        type: http
+        scheme: bearer
+        bearerFormat: JWT
+  security:
+    - bearerAuth: []

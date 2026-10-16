@@ -1,0 +1,143 @@
+# The control plane tier: the API, the scheduler, the managed sync and the run dispatcher, behind the ingress.
+# It runs ONE replica on purpose. The run queue lives in this process and is owned by exactly one replica at a
+# time (the dispatch lease in the catalog); a second replica would add no dispatch capacity and would refuse every
+# node call that landed on it (503 with a retry hint, which the nodes retry), so it only slows hand-outs. Compute
+# scales separately (worker-pool.yaml), so this replica does API work only (Worker__Enabled=false). A rolling
+# update briefly overlaps two replicas; the old one releases the lease on its graceful stop and the nodes retry
+# through the overlap.
+#
+# Startup applies SQLFlow's catalog migrations and then the OSDU module's, and refuses to serve against a database
+# newer than this build or a catalog older than the module requires, naming the migration.
+#
+# A flow's reads run here: what a person asks of a flow and waits on (a probe of its target, a record read back from
+# OSDU, its rows read from the ingestion tables, a preview, a scope's values, the explorer) runs in this replica under
+# the flow's own credentials, so it is given the same flow references the worker pods are. It never delivers; runs,
+# value checks and removals stay on the nodes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osdu-delivery-controlplane
+  namespace: osdu-delivery
+  labels:
+    app: osdu-delivery-controlplane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osdu-delivery-controlplane
+  template:
+    metadata:
+      labels:
+        app: osdu-delivery-controlplane
+    spec:
+      containers:
+        - name: controlplane
+          image: osdu-delivery-control-plane:latest # replace with your registry tag
+          ports:
+            - containerPort: 8080
+          env:
+            # The metadata database: SQLFlow's catalog schema, and the delivery module's `osdu` schema beside it.
+            # Startup migrates and verifies both. The module is given no connection of its own, which is what
+            # keeps its schema here; an estate that must separate them sets Osdu__Database__Connection as well.
+            - name: ControlPlane__Catalog__ConnectionReference
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: catalog-connection }
+            - name: ControlPlane__Jwt__SigningKey
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: jwt-signing-key }
+            - name: ControlPlane__Jwt__BootstrapSecret
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: bootstrap-secret }
+            - name: ControlPlane__Bootstrap__AdminUsername
+              value: admin
+            - name: ControlPlane__Bootstrap__AdminPasswordReference
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: admin-password }
+            # API-only replica: compute is the worker deployments' job.
+            - name: ControlPlane__Worker__Enabled
+              value: "false"
+            # Honor X-Forwarded-For/Proto from the ingress ONLY. Set this to your cluster's pod/ingress CIDR;
+            # without it every client shares the ingress IP for rate limiting and login throttling.
+            - name: ControlPlane__Proxy__Enabled
+              value: "true"
+            - name: ControlPlane__Proxy__KnownNetworks__0
+              value: "10.0.0.0/8"
+            # Same-host ingress path-split means the GUI is same-origin: no CORS entries needed. Add
+            # ControlPlane__Cors__AllowedOrigins__0 only if the GUI is served from another host.
+            # Entra SSO: put entra-tenant-id and entra-client-id in the osdu-delivery-secrets secret and the login
+            # page offers "Sign in with Microsoft" alongside local username/password. Both keys are optional here,
+            # so an estate that leaves them out of the secret simply runs local sign-in only (no restart-time
+            # failure). The SPA app registration's redirect URI must be the GUI origin, and must itself be a
+            # multi-tenant registration if more than one tenant is ever allowed. To trust more than one tenant,
+            # add further ControlPlane__AzureAd__AllowedTenantIds__1, __2, ... entries alongside this one.
+            - name: ControlPlane__AzureAd__AllowedTenantIds__0
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: entra-tenant-id, optional: true }
+            - name: ControlPlane__AzureAd__ClientId
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: entra-client-id, optional: true }
+            - name: ControlPlane__AzureAd__DefaultRole
+              value: viewer
+            # The private ranges (CIDR, comma separated) a flow's reads may reach, as on the worker pods.
+            - name: SQLFLOW_DELIVERY_PRIVATE_NETWORKS
+              value: ""
+            # The OSDU partition this deployment delivers to, named by its data-partition-id (rename dev to yours): the
+            # control plane registers it when it starts, and the runs bound to it resolve their flows' ${env:...}
+            # references with these values (osdu/docs/reference/concepts/partitions.md, Configured partitions). It is
+            # not ready without a partition; a second one is another set of these under its own name, with exactly one
+            # Default. A secret is a reference, never its value: the control plane refuses to start otherwise.
+            # ${env:OSDU_CLIENT_SECRET} leaves the client secret to the environment of whoever resolves it, this pod's
+            # and the worker pods', both mounted from osdu-delivery-secrets; on a cluster whose pods sign in to Azure,
+            # ${keyvault:<vault>/<secret>} reads it from a Key Vault instead, and neither mounts it.
+            - name: Osdu__Partitions__dev__Default
+              value: "true"
+            - name: Osdu__Partitions__dev__Description
+              value: "The OSDU partition this deployment delivers to"
+            - name: Osdu__Partitions__dev__Properties__OSDU_URL
+              value: "https://your-osdu-host"
+            - name: Osdu__Partitions__dev__Properties__OSDU_TOKEN_URL
+              value: "https://login.microsoftonline.com/your-tenant/oauth2/v2.0/token"
+            - name: Osdu__Partitions__dev__Properties__OSDU_SCOPE
+              value: "api://your-osdu-app/.default"
+            - name: Osdu__Partitions__dev__Properties__OSDU_CLIENT_ID
+              value: "your-osdu-client-id"
+            - name: Osdu__Partitions__dev__Properties__OSDU_CLIENT_SECRET
+              value: "${env:OSDU_CLIENT_SECRET}"
+            - name: Osdu__Partitions__dev__Properties__OSDU_ACL_OWNER
+              value: "data.default.owners@dev.dataservices.energy"
+            - name: Osdu__Partitions__dev__Properties__OSDU_ACL_VIEWER
+              value: "data.default.viewers@dev.dataservices.energy"
+            - name: Osdu__Partitions__dev__Properties__OSDU_LEGAL_TAG
+              value: "dev-default-legal-tag"
+            # Every ${env:...} reference the flows use that no partition supplies, as worker-pool.yaml mounts it: a
+            # person's reads of a flow resolve it here as a run resolves it on a node. Keep the two lists the same.
+            - name: OSDU_DATA_DB
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: data-connection }
+            - name: OSDU_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-client-secret }
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osdu-delivery-controlplane
+  namespace: osdu-delivery
+spec:
+  selector:
+    app: osdu-delivery-controlplane
+  ports:
+    - port: 80
+      targetPort: 8080

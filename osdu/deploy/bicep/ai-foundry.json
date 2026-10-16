@@ -1,0 +1,296 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "4865953497104263511"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region. Defaults to the resource group location."
+      }
+    },
+    "name": {
+      "type": "string",
+      "metadata": {
+        "description": "Account name, which is also the endpoint subdomain (lowercase letters, digits, hyphens; globally unique)."
+      }
+    },
+    "projectName": {
+      "type": "string",
+      "defaultValue": "osdu-delivery",
+      "metadata": {
+        "description": "Name of the Foundry project created under the account."
+      }
+    },
+    "projectDisplayName": {
+      "type": "string",
+      "defaultValue": "[parameters('projectName')]",
+      "metadata": {
+        "description": "Display name of the project. Defaults to the project name."
+      }
+    },
+    "userPrincipalIds": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Principal (object) ids granted the Cognitive Services User role on the account, e.g. the managed identities of apps that will call models."
+      }
+    },
+    "agentPrincipalIds": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Principal (object) ids granted the Cognitive Services OpenAI User role on the account: model inference, including the Responses API the chat assistant drives its MCP tool through. The control plane identity goes here when the assistant is on."
+      }
+    },
+    "modelName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Model to deploy under the account, e.g. gpt-5.1 (pick one the region still accepts for new deployments). Empty deploys no model."
+      }
+    },
+    "modelFormat": {
+      "type": "string",
+      "defaultValue": "OpenAI",
+      "metadata": {
+        "description": "Publisher format of the model, e.g. OpenAI."
+      }
+    },
+    "modelVersion": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Model version to pin. Empty lets the service pick the current default version."
+      }
+    },
+    "modelDeploymentName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Name of the model deployment. Defaults to the model name; the control plane references this name."
+      }
+    },
+    "modelSkuName": {
+      "type": "string",
+      "defaultValue": "GlobalStandard",
+      "metadata": {
+        "description": "Deployment SKU: GlobalStandard suits chat workloads; use Standard for data-residency-bound regions."
+      }
+    },
+    "modelCapacity": {
+      "type": "int",
+      "defaultValue": 30,
+      "minValue": 1,
+      "metadata": {
+        "description": "Deployment capacity in thousands of tokens per minute."
+      }
+    },
+    "transcriptionModelName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional audio-transcription model deployed beside the chat model (e.g. gpt-4o-mini-transcribe or whisper), for the GUI chat assistant's voice input. Empty deploys none."
+      }
+    },
+    "transcriptionModelVersion": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Version of the transcription model. Empty lets the service pick the current default version."
+      }
+    },
+    "transcriptionModelCapacity": {
+      "type": "int",
+      "defaultValue": 30,
+      "minValue": 1,
+      "metadata": {
+        "description": "Capacity for the transcription deployment, in thousands of tokens per minute."
+      }
+    },
+    "disableLocalAuth": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Disable key-based auth so only Entra identities can call the endpoint."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+        "type": "string"
+      },
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags set on the account and its project."
+      }
+    }
+  },
+  "variables": {
+    "cognitiveServicesUserRoleId": "a97b65f3-24c7-4388-baec-2e87135dc908",
+    "cognitiveServicesOpenAIUserRoleId": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+    "effectiveModelDeploymentName": "[if(empty(parameters('modelDeploymentName')), parameters('modelName'), parameters('modelDeploymentName'))]"
+  },
+  "resources": {
+    "account": {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2025-06-01",
+      "name": "[parameters('name')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "AIServices",
+      "sku": {
+        "name": "S0"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "customSubDomainName": "[parameters('name')]",
+        "allowProjectManagement": true,
+        "publicNetworkAccess": "Enabled",
+        "disableLocalAuth": "[parameters('disableLocalAuth')]"
+      }
+    },
+    "project": {
+      "type": "Microsoft.CognitiveServices/accounts/projects",
+      "apiVersion": "2025-06-01",
+      "name": "[format('{0}/{1}', parameters('name'), parameters('projectName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "displayName": "[parameters('projectDisplayName')]"
+      },
+      "dependsOn": [
+        "account"
+      ]
+    },
+    "modelDeployment": {
+      "condition": "[not(empty(parameters('modelName')))]",
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2025-06-01",
+      "name": "[format('{0}/{1}', parameters('name'), variables('effectiveModelDeploymentName'))]",
+      "sku": {
+        "name": "[parameters('modelSkuName')]",
+        "capacity": "[parameters('modelCapacity')]"
+      },
+      "properties": {
+        "model": "[union(createObject('format', parameters('modelFormat'), 'name', parameters('modelName')), if(empty(parameters('modelVersion')), createObject(), createObject('version', parameters('modelVersion'))))]"
+      },
+      "dependsOn": [
+        "account",
+        "project"
+      ]
+    },
+    "transcriptionDeployment": {
+      "condition": "[not(empty(parameters('transcriptionModelName')))]",
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2025-06-01",
+      "name": "[format('{0}/{1}', parameters('name'), parameters('transcriptionModelName'))]",
+      "sku": {
+        "name": "[parameters('modelSkuName')]",
+        "capacity": "[parameters('transcriptionModelCapacity')]"
+      },
+      "properties": {
+        "model": "[union(createObject('format', parameters('modelFormat'), 'name', parameters('transcriptionModelName')), if(empty(parameters('transcriptionModelVersion')), createObject(), createObject('version', parameters('transcriptionModelVersion'))))]"
+      },
+      "dependsOn": [
+        "account",
+        "modelDeployment",
+        "project"
+      ]
+    },
+    "userAccess": {
+      "copy": {
+        "name": "userAccess",
+        "count": "[length(parameters('userPrincipalIds'))]"
+      },
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), parameters('userPrincipalIds')[copyIndex()], variables('cognitiveServicesUserRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesUserRoleId'))]",
+        "principalId": "[parameters('userPrincipalIds')[copyIndex()]]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "account"
+      ]
+    },
+    "agentAccess": {
+      "copy": {
+        "name": "agentAccess",
+        "count": "[length(parameters('agentPrincipalIds'))]"
+      },
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('name'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('name')), parameters('agentPrincipalIds')[copyIndex()], variables('cognitiveServicesOpenAIUserRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesOpenAIUserRoleId'))]",
+        "principalId": "[parameters('agentPrincipalIds')[copyIndex()]]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "account"
+      ]
+    }
+  },
+  "outputs": {
+    "endpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "The account endpoint callers use (token-authenticated when granted Cognitive Services User)."
+      },
+      "value": "[reference('account').endpoint]"
+    },
+    "projectEndpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "The Foundry project endpoint, the address the control plane's assistant connects to."
+      },
+      "value": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', parameters('name'), parameters('projectName'))]"
+    },
+    "accountName": {
+      "type": "string",
+      "metadata": {
+        "description": "The account name, for later model deployments or diagnostics."
+      },
+      "value": "[parameters('name')]"
+    },
+    "projectName": {
+      "type": "string",
+      "metadata": {
+        "description": "The project name under the account."
+      },
+      "value": "[parameters('projectName')]"
+    },
+    "modelDeploymentName": {
+      "type": "string",
+      "metadata": {
+        "description": "The model deployment name the control plane references, or empty when no model was deployed."
+      },
+      "value": "[if(empty(parameters('modelName')), '', variables('effectiveModelDeploymentName'))]"
+    },
+    "transcriptionDeploymentName": {
+      "type": "string",
+      "metadata": {
+        "description": "The audio-transcription deployment name, or empty when none was deployed."
+      },
+      "value": "[parameters('transcriptionModelName')]"
+    }
+  }
+}

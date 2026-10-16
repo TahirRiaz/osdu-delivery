@@ -1,0 +1,9 @@
+/*
+  The OSDU Delivery stylesheet: SQLFlow's design system as it is, with both source trees named for Tailwind, so the
+  classes the OSDU pages use are generated next to the ones SQLFlow's pages use.
+*/
+
+@import "../../../sqlflow/gui/src/index.css";
+
+@source "./";
+@source "../../../sqlflow/gui/src";

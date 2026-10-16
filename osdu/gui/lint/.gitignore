@@ -1,0 +1,2 @@
+# The lint workspace's own install: packages npm cannot hoist into the GUI's node_modules, TypeScript 6 among them.
+node_modules/

@@ -1,0 +1,86 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. No secret goes in this file, and none reaches Terraform: the
+# deployment generates the JWT signing key, the initial admin's password and the node credential into the estate's
+# vault, and the secrets only a person has (each partition's OSDU client secret, a private repository's token, a
+# connection string elsewhere) are put in the vault by hand under the names given below.
+
+resource_group_name = "<existing resource group>"
+# subscription_id   = "<subscription id>"   # or ARM_SUBSCRIPTION_ID
+
+# The images: this repository's, built from osdu/deploy/docker in a registry in this resource group and tagged with the
+# commit they were built from. The environments in environments/ are applied with deploy-<env>.ps1 -Infrastructure,
+# which builds them and passes image_tag; applying this file by hand, give the tag (or name each image instead).
+acr_name  = "<registry name>"
+image_tag = "<commit the images were built from>"
+# control_plane_image = "<registry>.azurecr.io/osdu-delivery-control-plane:<tag>"
+
+# SQL. The apps sign in as their own managed identities. A server created here is administered by the estate's setup
+# identity, which creates the apps' database users inside every deployment; the people (or groups) below own every
+# database. The flows name the databases in three-part names, so keep the names they use: OsduDelivery (the catalog and
+# the osdu schema) and the data databases below.
+sql_admins = [
+  { name = "<group display name>", object_id = "<group object id>", type = "group" },
+]
+catalog_database_name = "OsduDelivery"
+#
+# Or an existing server or Managed Instance whose databases already exist (nothing SQL is created): an Entra
+# administrator of it runs terraform output -raw sql_setup_script once, database by database. For a VNet-only
+# instance, also set infrastructure_subnet_id so the apps reach its VNet.
+# existing_sql_server      = "<mi>.<dns-zone>.database.windows.net"
+# infrastructure_subnet_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<subnet>"
+
+# The SQL databases the flows read and write, given to every run by the name a flow spells in ${env:NAME}: a database on
+# the estate's server (created here unless create = false; access write or read), or one elsewhere whose whole
+# connection string a person puts in the vault (secret_name).
+sql_connections = {
+  OSDU_DATA_DB = { database = "OsduData" }
+  # ARCHIVE_DB = { database = "OsduArchive", access = "read" }
+  # PARTNER_DB = { secret_name = "partner-db-connection" }
+}
+
+# The storage account the flows read their source files from, given to every run as LANDING_URL
+# (abfss://<container>@<account>.dfs.core.windows.net): created here, or an existing one adopted (its container must
+# exist), and granted to the apps' identities.
+landing_storage = {}
+# landing_storage = { existing_account_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Storage/storageAccounts/<account>", container = "landing" }
+
+# The flow repositories the control plane syncs. A private one names the vault secret holding its token (a GitHub
+# fine-grained token with read access to the repository's contents), which a person puts there.
+repositories = {
+  flows = {
+    remote_url = "https://github.com/<owner>/<repository>.git"
+    # credential_secret_name = "github-flows-token"
+  }
+}
+
+# The chat assistant: the MCP server and a Foundry model turn it on together.
+mcp_enabled           = true
+ai_foundry_name       = "<globally unique account name>"
+ai_foundry_model_name = "<model that serves the Responses API, e.g. gpt-5.1>"
+ai_context_enabled    = false
+
+# Who may sign in: members of this group (assignment is required).
+azure_ad_allowed_group_object_id = "<security group object id>"
+
+# The OSDU partitions this deployment delivers to: at least one, and with several, exactly one default. The control
+# plane registers them when it starts, with the values their runs resolve. Each client secret is put in the vault by
+# hand as osdu-<data-partition-id>-client-secret, or client_secret_name names the secret that holds it.
+osdu_partitions = {
+  dev = {
+    default     = true
+    description = "<what the partition is for>"
+    url         = "https://<platform host>"
+    token_url   = "https://login.microsoftonline.com/<tenant id>/oauth2/v2.0/token"
+    scope       = "<OSDU resource>/.default"
+    client_id   = "<client id>"
+    acl_owner   = "data.default.owners@<partition>.<domain>"
+    acl_viewer  = "data.default.viewers@<partition>.<domain>"
+    legal_tag   = "<partition>-<legal tag>"
+    # properties = { OSDU_LOGTYPE_ACL_OWNER = "...", OSDU_LOGTYPE_ACL_VIEWER = "..." }
+  }
+}
+
+# Further values every run of every partition resolves with, by the name a flow spells: a setting, or a
+# ${keyvault:<vault>/<secret>} reference to a secret a person puts in the vault.
+properties = {
+  # REGION = "westeurope"
+}

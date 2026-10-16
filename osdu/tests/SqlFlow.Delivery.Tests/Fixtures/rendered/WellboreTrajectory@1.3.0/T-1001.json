@@ -1,0 +1,54 @@
+{
+  "acl": {
+    "owners": [
+      "data.welldb.owners@dev.dataservices.energy"
+    ],
+    "viewers": [
+      "data.welldb.viewers@dev.dataservices.energy"
+    ]
+  },
+  "data": {
+    "AvailableTrajectoryStationProperties": [
+      {
+        "Name": "MD",
+        "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:m:",
+        "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:MD:"
+      },
+      {
+        "Name": "INC",
+        "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:dega:",
+        "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:Inclination:"
+      },
+      {
+        "Name": "AZI",
+        "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:dega:",
+        "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:AzimuthTN:"
+      }
+    ],
+    "BaseDepthMeasuredDepth": 1004,
+    "Name": "GYRO_2026",
+    "SurveyReferenceIdentifier": "T-1001",
+    "SurveyType": "Gyro",
+    "SurveyVersion": "1",
+    "TopDepthMeasuredDepth": 1000,
+    "VerticalMeasurement": {
+      "VerticalMeasurement": 23.5,
+      "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:",
+      "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:"
+    },
+    "WellboreID": "dev:master-data--Wellbore:OSDU-DEV-1-A:"
+  },
+  "id": "dev:work-product-component--WellboreTrajectory:49485e2853ba548c98ec2dfad6ab530b",
+  "kind": "osdu:wks:work-product-component--WellboreTrajectory:1.3.0",
+  "legal": {
+    "legaltags": [
+      "dev-osdu-default-legal"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "tags": {
+    "DeliveredBy": "osdu-delivery"
+  }
+}
