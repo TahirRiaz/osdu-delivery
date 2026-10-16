@@ -18,14 +18,12 @@ related:
   - concept-control-plane
   - flow-overview
 sourceRefs:
-  - docs/architecture.md
   - src/SqlFlow.Execution/DocumentExecutor.cs
   - src/SqlFlow.Execution/SqlFlowEngineServices.cs
   - src/SqlFlow.SqlServer/Ingestion/WithoutDatabaseIngestion.cs
   - src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs
   - src/SqlFlow.Cli/Program.cs
   - src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs
-  - docs/environment-variables.md
 ---
 
 # Architecture: lightweight vs full mode and the single execution pathway
@@ -47,7 +45,7 @@ Lightweight mode is the default the CLI composes. Its provider choices are visib
 
 Full mode does not replace the engine; it layers the shadow catalog (`sqlflow db migrate|sync|status`), the control plane, the scheduler, and lineage on top of it, and swaps in DB-backed providers where the lightweight defaults are null objects.
 
-Per docs/architecture.md (current status), the following are implemented today: the stateless engine end-to-end, the control/compute split (SqlFlow.ControlPlane plus SqlFlow.Node with the durable run queue, scheduler, node registry, and managed git sync), identity (catalog-backed users plus Microsoft Entra ID single sign-on with JIT provisioning and first-run bootstrap), and the React GUI over the control plane API (dashboard, runs, fleet, pipelines, schedules, repo sources, lineage explorer, search, user administration). The DB-is-source-of-truth sync model (`apply`/`export` with optimistic concurrency) described in the same document is roadmap, not shipped behavior.
+The following are implemented today: the stateless engine end-to-end, the control/compute split (SqlFlow.ControlPlane plus SqlFlow.Node with the durable run queue, scheduler, node registry, and managed git sync), identity (catalog-backed users plus Microsoft Entra ID single sign-on with JIT provisioning and first-run bootstrap), and the React GUI over the control plane API (dashboard, runs, fleet, pipelines, schedules, repo sources, lineage explorer, search, user administration). A DB-is-source-of-truth sync model (`apply`/`export` with optimistic concurrency) is roadmap, not shipped behavior.
 
 ## Control plane vs compute workers
 

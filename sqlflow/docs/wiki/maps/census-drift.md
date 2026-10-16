@@ -23,7 +23,6 @@ rawRefs:
 related:
   - wiki-ignored-yaml-keys
   - wiki-api-resume-and-watermarks
-  - wiki-design-doc-drift
 updated: 2026-09-09
 ---
 

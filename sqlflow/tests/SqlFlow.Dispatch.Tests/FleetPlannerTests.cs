@@ -5,7 +5,8 @@ using Xunit;
 namespace SqlFlow.Dispatch.Tests;
 
 /// <summary>
-/// The managed fleet's rules, one snapshot at a time (docs/managed-workers-plan.md): every managed pool keeps at least
+/// The managed fleet's rules, one snapshot at a time (docs/reference/guides/deployment.md, Managed workers): every
+/// managed pool keeps at least
 /// its minimum, demand starts only what free slots do not cover, idle surplus leaves after its idle time, a worker due
 /// for replacement is replaced before it stops taking work, nothing is stopped while it can still leave by itself or
 /// while the launcher's picture is stale, and nothing a takeover cannot know is held against a worker.

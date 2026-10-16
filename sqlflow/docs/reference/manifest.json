@@ -590,14 +590,12 @@
         "flow-overview"
       ],
       "sourceRefs": [
-        "docs/architecture.md",
         "src/SqlFlow.Execution/DocumentExecutor.cs",
         "src/SqlFlow.Execution/SqlFlowEngineServices.cs",
         "src/SqlFlow.SqlServer/Ingestion/WithoutDatabaseIngestion.cs",
         "src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs",
         "src/SqlFlow.Cli/Program.cs",
-        "src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs",
-        "docs/environment-variables.md"
+        "src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs"
       ]
     },
     {
@@ -2953,8 +2951,7 @@
         "src/SqlFlow.Dispatch/ManagedWorkers/FleetPlanner.cs",
         "src/SqlFlow.Dispatch/ManagedWorkers/ManagedFleet.cs",
         "src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs",
-        "src/SqlFlow.Cli/Program.cs",
-        "docs/adf-dropin.md"
+        "src/SqlFlow.Cli/Program.cs"
       ]
     },
     {
@@ -3028,8 +3025,7 @@
         "src/SqlFlow.Yaml/YamlDocumentParts.cs",
         "src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs",
         "src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs",
-        "src/SqlFlow.Cli/Program.cs",
-        "docs/environment-variables.md"
+        "src/SqlFlow.Cli/Program.cs"
       ]
     },
     {
@@ -3069,8 +3065,7 @@
         "schemas/sqlflow.flow.schema.json",
         ".vscode/settings.json",
         "samples/quickstart/orders.flow.yaml",
-        "samples/csv/README.md",
-        "docs/environment-variables.md"
+        "samples/csv/README.md"
       ]
     },
     {
@@ -3752,8 +3747,7 @@
       ],
       "related": [
         "wiki-ignored-yaml-keys",
-        "wiki-api-resume-and-watermarks",
-        "wiki-design-doc-drift"
+        "wiki-api-resume-and-watermarks"
       ],
       "sourceRefs": [
         "src/SqlFlow.Core/Acquire/AcquireFlow.cs",
@@ -3794,35 +3788,6 @@
       ]
     },
     {
-      "id": "wiki-design-doc-drift",
-      "corpus": "wiki",
-      "path": "maps/design-doc-drift.md",
-      "title": "Design document drift map: which docs under docs/ can still be trusted",
-      "type": "map",
-      "summary": "Which documents under docs/ are historical design intent and which are current, the drift each declares, and how the api prose gap was closed.",
-      "keywords": [
-        "drift",
-        "design documents",
-        "historical",
-        "superseded",
-        "acquisition",
-        "api flow",
-        "documentation map"
-      ],
-      "related": [
-        "wiki-string-first-landing",
-        "wiki-census-drift",
-        "wiki-semantic-layer-is-the-allow-list",
-        "wiki-dispatch-in-control-plane"
-      ],
-      "sourceRefs": [
-        "src/SqlFlow.Catalog/CatalogEntities.cs",
-        "src/SqlFlow.ControlPlane/Api/QuestionExampleEndpoints.cs",
-        "src/SqlFlow.ControlPlane/Api/SemanticExampleAdminEndpoints.cs",
-        "gui/src/features/chat/AnswerConfirmation.tsx"
-      ]
-    },
-    {
       "id": "wiki-dispatch-in-control-plane",
       "corpus": "wiki",
       "path": "decisions/dispatch-in-control-plane.md",
@@ -3841,9 +3806,7 @@
         "KEDA",
         "portability"
       ],
-      "related": [
-        "wiki-design-doc-drift"
-      ],
+      "related": [],
       "sourceRefs": [
         "src/SqlFlow.Dispatch/Dispatcher.cs",
         "src/SqlFlow.Dispatch/DispatchState.cs",
@@ -3960,7 +3923,8 @@
         "orchestration"
       ],
       "related": [
-        "wiki-pattern-catalog"
+        "wiki-pattern-catalog",
+        "wiki-dispatch-in-control-plane"
       ],
       "sourceRefs": []
     },
@@ -4532,7 +4496,6 @@
         "no-tracking"
       ],
       "related": [
-        "wiki-design-doc-drift",
         "wiki-powerbi-model-entity-resolution",
         "wiki-ai-contexts-are-files-an-admin-approves",
         "wiki-assistant-tool-sets-by-question"
@@ -4570,9 +4533,7 @@
         "empty string",
         "null"
       ],
-      "related": [
-        "wiki-design-doc-drift"
-      ],
+      "related": [],
       "sourceRefs": [
         "src/SqlFlow.Sources/FileSourceReaderBase.cs",
         "src/SqlFlow.Core/Engine/TypeInferencer.cs",

@@ -88,7 +88,7 @@ When a flow finds no files or seems to read from the wrong place:
 
 **The three layers.**
 
-- **Raw sources (immutable, never edited to fit the wiki):** the code under `src/`, the historical design documents directly under `docs/`, and the git history. Read them; do not rewrite them. If a raw document is wrong, record that in the wiki, do not silently correct the raw document.
+- **Raw sources (immutable, never edited to fit the wiki):** the code under `src/` and the git history. Read them; do not rewrite them to fit the wiki.
 - **The wiki (`docs/wiki/`, yours entirely):** interlinked markdown you create, update, and cross-reference.
 - **The schema (this section):** the conventions and workflows below. Co-evolve it with the human as the wiki grows; when a convention here stops fitting, change it here rather than quietly diverging.
 

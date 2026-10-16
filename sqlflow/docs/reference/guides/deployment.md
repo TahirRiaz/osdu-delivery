@@ -45,7 +45,6 @@ sourceRefs:
   - src/SqlFlow.Dispatch/ManagedWorkers/ManagedFleet.cs
   - src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs
   - src/SqlFlow.Cli/Program.cs
-  - docs/adf-dropin.md
 ---
 
 # Deploying: docker compose, Kubernetes, and ADF integration

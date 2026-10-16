@@ -24,7 +24,7 @@ triage.
 
 SQLFlow never stores secrets in pipeline YAML. Connection strings and secrets are supplied by
 reference and resolved at runtime, on every platform .NET runs on. The canonical contract lives in
-[docs/environment-variables.md](docs/environment-variables.md):
+[docs/reference/concepts/environment-variables.md](docs/reference/concepts/environment-variables.md):
 
 - A bare connection name in a document resolves `${env:SQLFLOW_CONN_<NAME>}` by convention, so
   enterprise documents carry no references at all, let alone values.

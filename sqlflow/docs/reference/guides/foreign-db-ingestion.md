@@ -30,7 +30,6 @@ sourceRefs:
   - src/SqlFlow.Yaml/YamlIngestionFlowLoader.cs
   - src/SqlFlow.SqlServer/Ingestion/IncrementalWindowResolver.cs
   - src/SqlFlow.Cli/Program.cs
-  - docs/environment-variables.md
 ---
 
 # MySQL, PostgreSQL, and Oracle sources into SQL Server
@@ -58,7 +57,7 @@ Accepted `provider` tokens (case-insensitive): `mssql` (also `sqlserver`), `azdb
 <file>: 'connections.<name>.provider' has unknown provider '<value>'. Allowed: mssql, azdb, mysql, postgres, oracle.
 ```
 
-The bare-alias environment convention also works in the map form: a `provider` with no `connection:` keeps the provider and resolves the conventional variable `SQLFLOW_CONN_<NAME>` (docs/environment-variables.md):
+The bare-alias environment convention also works in the map form: a `provider` with no `connection:` keeps the provider and resolves the conventional variable `SQLFLOW_CONN_<NAME>` ([environment variables](../concepts/environment-variables.md)):
 
 ```yaml
 connections:

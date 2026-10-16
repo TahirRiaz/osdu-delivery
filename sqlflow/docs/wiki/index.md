@@ -44,9 +44,6 @@ to narrow a search to one kind of page.
   pipelines, mapping each recurring problem to the construct that solves it. **Start here.**
 - [Census drift map](maps/census-drift.md) - nine key paths the engine accepts that
   `keys.api.json` does not declare, and the enum value it documents one version behind.
-- [Design document drift map](maps/design-doc-drift.md) - which documents under `docs/` describe
-  shipped behavior, which are historical design intent, and where the unbannered gaps are, including
-  the PowerAI retrieval design's stale "still to build" claims.
 
 ### Patterns: acquisition
 
@@ -148,9 +145,6 @@ Code-first, end-to-end. Each one is a runnable shape with generic table and colu
   and the plain SQL assertions a model will not write for you.
 - [Seeing what a flow will do](narratives/recipe-inspect-and-debug.md) - the read-only ladder, and
   the ordered checklist when a flow loads nothing.
-
-[docs/flattener-memory-postmortem.md](../flattener-memory-postmortem.md) is an existing postmortem
-that has not been ingested into this wiki.
 
 ## Coverage
 

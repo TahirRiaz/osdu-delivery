@@ -13,8 +13,6 @@ keywords:
   - includeRowNumber
   - schema overrides
   - defaultColDataType
-rawRefs:
-  - docs/flattener-memory-postmortem.md
 referenceRefs:
   - concept-json-xml-flattening
   - concept-file-source-pipeline
@@ -58,8 +56,9 @@ the vendor's document structure.
 `$.items[?(@.type=='X')]`. When the shape needs a filter, land everything and express the filter in
 the typed view instead.
 
-**Watch the grain when a document is large.** Exploding a big document is where memory goes; the
-[flattener memory postmortem](../../flattener-memory-postmortem.md) is the recorded case.
+**Watch the grain when a document is large.** Exploding a big document is where memory goes: a single
+settlement document that explodes to a million rows once took the XML flattener to ~12 GB and an
+OutOfMemoryException (2026-08-20), which is why a flattened row is now a bare array of values.
 
 ## CSV dialects
 

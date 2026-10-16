@@ -20,6 +20,7 @@ referenceRefs:
   - concept-control-plane
 related:
   - wiki-pattern-catalog
+  - wiki-dispatch-in-control-plane
 updated: 2026-09-09
 ---
 

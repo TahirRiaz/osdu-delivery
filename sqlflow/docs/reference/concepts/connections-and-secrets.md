@@ -200,7 +200,7 @@ A relational document's own `connections:` block is a separate, per-document reg
 The check runs on every document load through `DocumentLoader.Load` (src/SqlFlow.Execution/DocumentLoader.cs), which is the one load path both `sqlflow validate` and `sqlflow run` go through, so an embedded credential warns on the first local check, before a commit. The warning names the alternatives and never echoes the value:
 
 ```text
-WARN  <file>: connection '<name>' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare '<name>:' (which resolves ${env:SQLFLOW_CONN_<NAME>}); put local values in the git-ignored .sqlflow/env file. See docs/environment-variables.md.
+WARN  <file>: connection '<name>' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare '<name>:' (which resolves ${env:SQLFLOW_CONN_<NAME>}); put local values in the git-ignored .sqlflow/env file. See docs/reference/concepts/environment-variables.md.
 ```
 
 CLI flags that take a connection reference warn too: `sqlflow db --db`, `sqlflow healthcheck --source`, `sqlflow detect-unique-key --source`, `sqlflow runs cancel --db` (the direct-catalog break-glass route), and `sqlflow user reset-password --db` each print a warning when the flag value embeds a credential, because a literal on the command line lands in shell history. The warnings recommend the canonical variable (`${env:SQLFLOW_CATALOG_DB}` or `${env:SQLFLOW_SOURCE}`), an explicit `${env:NAME}` or `${keyvault:vault/secret}` reference, and the git-ignored `.sqlflow/env` file for local values.

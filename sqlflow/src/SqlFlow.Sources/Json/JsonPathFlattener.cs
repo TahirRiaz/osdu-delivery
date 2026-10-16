@@ -319,9 +319,8 @@ public sealed class JsonPathFlattener
     /// element of every exploded array. It previously carried its own column-name list and a case-insensitive
     /// dictionary, both deep-copied on every clone, so a wide row cost roughly an order of magnitude more
     /// than its values need. The XML flattener had the same defect and a single settlement document that
-    /// explodes to a million rows took it to ~12 GB and an OutOfMemoryException (2026-08-20); see
-    /// docs/flattener-memory-postmortem.md. Column names are per-record facts, so they live on the plan and a
-    /// row is a bare array. Keep it that way: do not reintroduce per-row name storage.
+    /// explodes to a million rows took it to ~12 GB and an OutOfMemoryException (2026-08-20). Column names are
+    /// per-record facts, so they live on the plan and a row is a bare array. Keep it that way: do not reintroduce per-row name storage.
     /// </summary>
     private sealed class OrderedRow
     {

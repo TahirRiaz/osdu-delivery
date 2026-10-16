@@ -28,14 +28,10 @@ sourceRefs:
   - src/SqlFlow.Node/NodeTraceFeed.cs
   - src/SqlFlow.ControlPlane/Dispatch/NodeProtocolEndpoints.cs
   - src/SqlFlow.ControlPlane/Dispatch/DispatchService.cs
-rawRefs:
-  - docs/dispatch-design.md
 referenceRefs:
   - concept-control-plane
   - cli-worker
   - guide-deployment
-related:
-  - wiki-design-doc-drift
 updated: 2026-09-11
 ---
 
@@ -119,8 +115,8 @@ row by an operator safe rather than a race.
 
 ## Three decisions changed while it shipped
 
-The design document, [dispatch-design.md](../../dispatch-design.md), was written and implemented on
-the same day, and its status line records what it says here:
+The design was written and implemented on the same day, and three of its decisions changed while it
+shipped:
 
 1. **The break-glass `sqlflow runs cancel --db` path stayed.** The design deleted it; reconcile makes a
    direct catalog cancel safe, so removing it would have cost an operator a tool for nothing.

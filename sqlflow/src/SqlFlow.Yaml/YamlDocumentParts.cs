@@ -45,7 +45,7 @@ internal static class YamlDocumentParts
     /// <summary>Maps the document's <c>connections:</c> block. Each value is either a plain string (SQL Server,
     /// the back-compatible form), a map with 'provider' and 'connection' keys, or NOTHING: a bare alias
     /// resolves <c>${env:SQLFLOW_CONN_&lt;NAME&gt;}</c> by the canonical convention, so an enterprise document
-    /// can stay entirely reference-free (see docs/environment-variables.md).</summary>
+    /// can stay entirely reference-free (see docs/reference/concepts/environment-variables.md).</summary>
     public static Dictionary<string, DataSource> MapConnections(Dictionary<string, object>? block, string source)
     {
         var connections = new Dictionary<string, DataSource>(StringComparer.OrdinalIgnoreCase);

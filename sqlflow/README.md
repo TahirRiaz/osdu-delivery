@@ -68,7 +68,8 @@ YAML ──▶ [ model ] ──▶ infer source schema ──▶ introspect targ
 A standalone flow is stateless between runs: the target table (via `incremental`) is the only
 state, so a re-run reasons from the live schema and watermark rather than from stored history. A
 flow synced into the shadow catalog additionally gets run history, lineage, and scheduling backed
-by the catalog database. See [docs/architecture.md](docs/architecture.md).
+by the catalog database. See
+[docs/reference/concepts/architecture-and-execution.md](docs/reference/concepts/architecture-and-execution.md).
 
 ## Repository layout
 

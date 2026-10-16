@@ -301,9 +301,7 @@ Sequenced, each step landing before the next starts. Strikethrough marks what ha
    match, reachable as the `find_similar_questions` MCP tool; the `user-confirmed` half is
    `CatalogSemanticExample` (Section 8), written through `POST /api/v1/powerai/questions/confirm` and the
    `confirm_question` MCP tool, and searched by the SAME `QuestionSearch.FindSimilarAsync` pass rather than a
-   second one. See
-   [docs/powerai-question-retrieval-design.md](powerai-question-retrieval-design.md) for the design and what
-   each step landed.
+   second one.
 7. ~~**Wire the learning loop.**~~ **Done.** The store and the write path already existed, reachable over MCP,
    so a model that was TOLD to confirm an answer could record it; what was missing was the part that makes it
    happen reliably rather than opportunistically. The GUI now carries its own accept/correct/reject row under
@@ -464,8 +462,8 @@ limitations, below) will need to read; cutting it now would mean re-adding it on
   registered as a one-part name with no database, while the default-database pass fills the
   connection's catalog into exactly those facts first, so the two identities never met for any
   connection string that names a database, which is all of them. Both are fixed and covered by
-  tests. See
-  [docs/powerai-model-entity-resolution-design.md](powerai-model-entity-resolution-design.md).
+  tests. See the decision record
+  [docs/wiki/decisions/powerbi-model-entity-resolution.md](docs/wiki/decisions/powerbi-model-entity-resolution.md).
 
   **What that leaves**: one report, one source shape. `Sql.Database` is the only recognized shape,
   and the proof rests on a single file whose model reads a single SQL Server database.
@@ -594,9 +592,7 @@ In roughly the order it would need to land, since each depends on groundwork the
    match with the SQL that already answers it, the terms that matched, and a score-derived confidence
    rather than an LLM's self-rating. All of it is off by default behind `ControlPlane:AiContext:Enabled`,
    and it adds no vendor beyond the Anthropic key: an embedding-based version was built first and removed
-   for that reason, which
-   [docs/powerai-question-retrieval-design.md](powerai-question-retrieval-design.md) records along with
-   what the switch traded away. The store: `CatalogSemanticExample` (Section 8) holds the flat
+   for that reason. The store: `CatalogSemanticExample` (Section 8) holds the flat
    question/query/objects/provenance/confidence/timestamp/user row, `POST /api/v1/powerai/questions/confirm`
    (`QuestionExampleEndpoints`, "operate" scope) writes it, and `confirm_question` exposes that to every
    assistant surface. The SAME search reads both halves and ranks them together, so a confirmed example

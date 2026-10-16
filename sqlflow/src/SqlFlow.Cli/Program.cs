@@ -2651,7 +2651,7 @@ internal static class Program
             ${keyvault:vault/secret}) or just a bare connection name, which resolves the canonical
             ${env:SQLFLOW_CONN_<NAME>}. Local development values go in the git-ignored .sqlflow/env file
             (KEY=VALUE, found next to the document or in any parent folder); the process environment always
-            wins, on every OS .NET runs on. See docs/environment-variables.md.
+            wins, on every OS .NET runs on. See docs/reference/concepts/environment-variables.md.
 
             paths/flatten/discover work for JSON and XML; the format is taken from the file extension
             (or --pattern for a folder). Flatten rule flags map to each format's option keys.

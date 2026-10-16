@@ -125,6 +125,5 @@ The estate's shape, for calibration:
 | --- | --- |
 | A misspelled or misplaced key is silently ignored | [ignored-yaml-keys](../incidents/ignored-yaml-keys.md) |
 | The key census is behind the engine on nine paths | [census-drift](census-drift.md) |
-| A design document under `docs/` may be historical | [design-doc-drift](design-doc-drift.md) |
 | `ids_from` cannot see retired entities | [api-fanout](../patterns/api-fanout.md) |
 | A node-local watermark dies on redeploy | [api-resume-and-watermarks](../patterns/api-resume-and-watermarks.md) |

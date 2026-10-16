@@ -5,7 +5,7 @@ namespace SqlFlow.Core.Connections;
 /// <c>SQLFLOW_CONN_&lt;NAME&gt;</c>, uppercased, every non-alphanumeric character folded to '_'. One rule for
 /// every document kind and every platform .NET runs on (names are strictly uppercase because environment
 /// variables are case-sensitive on Linux). The YAML loaders apply it to bare aliases; the secret-hygiene
-/// warning names it; docs/environment-variables.md documents it. Nothing else may restate it.
+/// warning names it; docs/reference/concepts/environment-variables.md documents it. Nothing else may restate it.
 /// </summary>
 public static class ConnectionConvention
 {

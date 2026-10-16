@@ -33,7 +33,6 @@ referenceRefs:
   - flow-subscribers
   - guide-chat-assistant
 related:
-  - wiki-design-doc-drift
   - wiki-powerbi-model-entity-resolution
   - wiki-ai-contexts-are-files-an-admin-approves
   - wiki-assistant-tool-sets-by-question

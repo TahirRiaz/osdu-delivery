@@ -30,7 +30,7 @@ description: Watches order volume and revenue for missing or abnormal loads.
 # ---- CONNECTIONS --------------------------------------------------------------
 # Named here, referenced below by 'server:'. Secrets never rest in this file.
 # The canonical enterprise form is the BARE name, which resolves the well-known
-# variable ${env:SQLFLOW_CONN_DWH} (see docs/environment-variables.md); local
+# variable ${env:SQLFLOW_CONN_DWH} (see docs/reference/concepts/environment-variables.md); local
 # values go in the git-ignored .sqlflow/env file, CI injects real variables.
 #   dwh:
 # An explicit ${env:NAME} reference and passwordless literals also work:

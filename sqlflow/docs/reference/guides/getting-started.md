@@ -32,7 +32,6 @@ sourceRefs:
   - .vscode/settings.json
   - samples/quickstart/orders.flow.yaml
   - samples/csv/README.md
-  - docs/environment-variables.md
 ---
 
 # Getting started: first run and authoring your first flow
@@ -234,7 +233,7 @@ export SQLFlowSinkConStr="Server=localhost,1433;Database=TestDB;User ID=...;Pass
 dotnet run --project src/SqlFlow.Cli -- run samples/csv/csv-basic.flow.yaml
 ```
 
-docs/environment-variables.md declares `SQLFLOW_TEST_DB` the canonical spelling for this repository's test sink, with the legacy `SQLFlowSinkConStr` name still honored.
+[Environment variables](../concepts/environment-variables.md) declares `SQLFLOW_TEST_DB` the canonical spelling for this repository's test sink, with the legacy `SQLFlowSinkConStr` name still honored.
 
 ## See also
 

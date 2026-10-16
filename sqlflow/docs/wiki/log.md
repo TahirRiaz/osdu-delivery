@@ -30,7 +30,7 @@ taxonomy.
 
 Sources: the nine documents directly under `docs/`, read for their drift banners and status.
 
-Wrote [maps/design-doc-drift.md](maps/design-doc-drift.md). Finding worth surfacing: `flowType: api`
+Wrote `maps/design-doc-drift.md`. Finding worth surfacing: `flowType: api`
 has a key census (`docs/reference/flow/keys.api.json`) but no reference prose page, so the
 unbannered `docs/acquisition.md` is the only prose describing it and is load-bearing rather than
 historical. Every other design document under `docs/` carries an explicit banner deferring to
@@ -265,8 +265,8 @@ The mechanism is documented in the reference page `concept-semantic-layer`.
 
 ## [2026-09-15] ingest | PowerAI retrieval design drift
 
-Mapped [docs/powerai-question-retrieval-design.md](../powerai-question-retrieval-design.md) into the
-[design document drift map](maps/design-doc-drift.md). Its status line, Section 7, and Section 8 step 6
+Mapped `docs/powerai-question-retrieval-design.md` into the
+design document drift map. Its status line, Section 7, and Section 8 step 6
 still describe the confirmed-example table and the GUI confirmation row as unbuilt; the code shows both
 (`CatalogQuestionExample`, `AnswerConfirmation.tsx`), plus the admin Saved answers page added the same
 day. The raw document is left as written. The map now links the semantic layer decision page, which had
@@ -317,7 +317,7 @@ still described landed work as open: the retrieval design (the GUI confirmation 
 table now lives in the semantic layer as `CatalogSemanticExample`), the SQL-resolution handoff (the end-to-end
 `db sync` was run on 2026-09-13 and found the two seam bugs), and the model-entity resolution design (step 5,
 the SQL-backed sample report, is done). Only status lines and step markers changed; the design text stays as
-the record. Updated [the design document drift map](maps/design-doc-drift.md) to say the retrieval document's
+the record. Updated the design document drift map to say the retrieval document's
 three stale claims are now corrected in place.
 
 ## [2026-09-17] ingest | MCP tool consolidation and the capitals convention
@@ -404,3 +404,10 @@ session dedicated mode."): only `!data`, a bare `!`, `!exit` and `!estate` move 
 control plane, the MCP server and the GUI share; every session answers only its mode's tools; the assistant no longer
 switches in words or ends data mode itself, and the run that was asked again in the other mode is gone. The surfaces
 are documented in `guide-chat-assistant`, `guide-slack-assistant` and `concept-semantic-layer`.
+
+## [2026-10-14] lint | The design documents under docs/ are removed
+
+The historical design documents, plans, the handoff and the postmortem that sat directly under `docs/` are removed:
+what shipped is documented in `docs/reference/` and here. The design document drift map went with them, since it
+tracked only those documents, and the pages that named a removed document in `rawRefs` or linked it now stand on
+the reference pages and the code. The raw sources are now the code under `src/` and the git history.

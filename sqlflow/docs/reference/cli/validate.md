@@ -101,7 +101,7 @@ Before the document loads, the CLI applies the nearest git-ignored `.sqlflow/env
 Every load runs the embedded-credential check from src/SqlFlow.Core/Secrets/SecretHygiene.cs. A connection value that is not a `${...}` reference and not an `@alias`, and that contains any of the secret-bearing keywords `password=`, `pwd=`, `client secret=`, `clientsecret=`, `secret=`, `accesskey=`, `access key=`, or `sharedaccesskey=` (compared case-insensitively), produces a warning on stderr:
 
 ```text
-WARN  <file>: connection '<alias>' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare '<alias>:' (which resolves ${env:SQLFLOW_CONN_<ALIAS>}); put local values in the git-ignored .sqlflow/env file. See docs/environment-variables.md.
+WARN  <file>: connection '<alias>' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare '<alias>:' (which resolves ${env:SQLFLOW_CONN_<ALIAS>}); put local values in the git-ignored .sqlflow/env file. See docs/reference/concepts/environment-variables.md.
 ```
 
 The credential value itself is never echoed, and the warning does not change the exit code: the document still validates and the command still exits 0. The check covers the document-level `connections:` of ingestion, export, stored-procedure, health-check, and source-control documents, plus a file flow's `target.connection`.
@@ -156,7 +156,7 @@ sqlflow validate leaky.flow.yaml
 ```
 
 ```text
-WARN  leaky.flow.yaml: connection 'target' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare 'target:' (which resolves ${env:SQLFLOW_CONN_TARGET}); put local values in the git-ignored .sqlflow/env file. See docs/environment-variables.md.
+WARN  leaky.flow.yaml: connection 'target' embeds a credential in the document. Files under source control must carry references instead: use ${env:NAME}, ${keyvault:vault/secret}, or a bare 'target:' (which resolves ${env:SQLFLOW_CONN_TARGET}); put local values in the git-ignored .sqlflow/env file. See docs/reference/concepts/environment-variables.md.
 OK  'leaky' is valid (source: csv, target: [dbo].[Orders]).
 ```
 

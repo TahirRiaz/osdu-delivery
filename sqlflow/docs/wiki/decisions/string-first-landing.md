@@ -21,8 +21,6 @@ referenceRefs:
   - concept-type-inference
   - concept-pre-ingestion-transform
   - concept-provenance-and-row-keys
-related:
-  - wiki-design-doc-drift
 updated: 2026-09-09
 ---
 

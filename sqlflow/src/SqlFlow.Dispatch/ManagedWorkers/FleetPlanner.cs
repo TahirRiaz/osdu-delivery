@@ -98,7 +98,8 @@ public sealed record FleetPlan(
 
 /// <summary>
 /// Turns a snapshot of the fleet into the starts, drains and stops that bring every managed pool to what it needs. Pure:
-/// the same snapshot always gives the same plan, so every rule is tested on its own (docs/managed-workers-plan.md).
+/// the same snapshot always gives the same plan, so every rule is tested on its own (docs/reference/guides/deployment.md,
+/// Managed workers: the control plane starts its own workers).
 /// </summary>
 /// <remarks>
 /// The invariants the rules keep: a managed pool's minimum is at least 1, and nothing is drained or stopped for being

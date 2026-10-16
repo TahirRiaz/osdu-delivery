@@ -21,8 +21,9 @@ and read a connection string from the `SQLFLOW_TEST_DW` environment variable.
 
 ## Development principles
 
-This project follows the architecture in [docs/architecture.md](docs/architecture.md). The two rules
-that matter most for contributors:
+This project follows the architecture in
+[docs/reference/concepts/architecture-and-execution.md](docs/reference/concepts/architecture-and-execution.md). The
+two rules that matter most for contributors:
 
 1. **Keep concerns separated.** `Core` holds the model, abstractions, and the engine - it has no
    SQL Server, YAML, or I/O dependencies. SQL Server specifics live in `SqlFlow.SqlServer`, etc.

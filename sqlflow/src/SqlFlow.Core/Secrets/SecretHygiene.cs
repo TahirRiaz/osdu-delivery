@@ -111,5 +111,5 @@ public static class SecretHygiene
         => $"WARN  {source}: connection '{connectionName}' embeds a credential in the document. Files under " +
            $"source control must carry references instead: use ${{env:NAME}}, ${{keyvault:vault/secret}}, or a " +
            $"bare '{connectionName}:' (which resolves ${{env:{Connections.ConnectionConvention.EnvironmentVariable(connectionName)}}}); " +
-           "put local values in the git-ignored .sqlflow/env file. See docs/environment-variables.md.";
+           "put local values in the git-ignored .sqlflow/env file. See docs/reference/concepts/environment-variables.md.";
 }
