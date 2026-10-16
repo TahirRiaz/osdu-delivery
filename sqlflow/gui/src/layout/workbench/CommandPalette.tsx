@@ -1,0 +1,78 @@
+import { useEffect } from "react";
+import { Search } from "lucide-react";
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
+import { useAuth } from "../../auth/AuthContext";
+import { navGroups, navListing } from "../nav";
+import { useMenuNavigate } from "./useMenuNavigate";
+
+interface CommandPaletteProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+/**
+ * The command palette (Ctrl+K, or VS Code muscle memory Ctrl+Shift+P): every nav destination grouped
+ * as in the side bar (a group's sections headed by the group and the section), plus the catalog search hand-off.
+ */
+export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+  const navigate = useMenuNavigate();
+  const { hasScope } = useAuth();
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isPaletteKey = (event.ctrlKey || event.metaKey)
+        && (event.key.toLowerCase() === "k" || (event.shiftKey && event.key.toLowerCase() === "p"));
+      if (isPaletteKey) {
+        event.preventDefault();
+        onOpenChange(!open);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onOpenChange]);
+
+  const go = (to: string) => {
+    onOpenChange(false);
+    navigate(to);
+  };
+
+  return (
+    <CommandDialog open={open} onOpenChange={onOpenChange} title="Command palette" description="Go to a page or search the catalog">
+      <CommandInput placeholder="Go to a page or search the catalog" />
+      <CommandList>
+        <CommandEmpty>No matching pages.</CommandEmpty>
+        {navGroups
+          .filter((group) => group.requiresScope === undefined || hasScope(group.requiresScope))
+          .flatMap((group) => navListing(group).map((part) => {
+            const heading = part.section === null ? group.label : `${group.label} · ${part.section.label}`;
+            return (
+              <CommandGroup key={`${group.id}:${part.section?.id ?? ""}`} heading={heading}>
+                {part.items.map((item) => (
+                  <CommandItem key={item.to} value={`${heading} ${item.label}`} onSelect={() => go(item.to)}>
+                    <item.icon />
+                    {item.label}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            );
+          }))}
+        <CommandSeparator />
+        <CommandGroup heading="Catalog">
+          <CommandItem value="search objects columns definitions" onSelect={() => go("/search")}>
+            <Search />
+            Search objects, columns, definitions
+          </CommandItem>
+        </CommandGroup>
+      </CommandList>
+    </CommandDialog>
+  );
+}

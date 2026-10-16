@@ -1,0 +1,98 @@
+# Compute: `sqlflow worker` pods scaled on the control plane's replica target by KEDA, not on traffic (workers
+# expose nothing and never sit behind the ingress). This manifest is the template for ONE pool: copy it per pool,
+# set SQLFLOW_WORKER_POOL and the ScaledObject's ?pool= query parameter. A freshly scaled pod needs no pre-synced state and no catalog
+# connection: it polls the control plane, is handed a run with its definition, fetches the snapshotted YAML (or
+# materializes the pinned commit from git), executes, streams the trace, and reports back over the node protocol.
+#
+# Requires KEDA installed in the cluster (https://keda.sh): the metrics-api scaler reads the pool's replica target
+# from the control plane (GET /api/v1/node/scale-target), authenticated with the same node token the workers use,
+# so no catalog credential reaches this tier at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqlflow-worker-default
+  namespace: sqlflow
+  labels:
+    app: sqlflow-worker-default
+spec:
+  replicas: 1 # KEDA overrides this between minReplicaCount and maxReplicaCount
+  selector:
+    matchLabels:
+      app: sqlflow-worker-default
+  template:
+    metadata:
+      labels:
+        app: sqlflow-worker-default
+    spec:
+      terminationGracePeriodSeconds: 600 # let an in-flight run finish; an interrupted one is requeued anyway
+      containers:
+        - name: worker
+          image: sqlflow-worker:latest # replace with your registry tag
+          env:
+            # The node polls the control plane's dispatcher for work over the node protocol; the run queue lives
+            # there, never in the catalog. The token is a personal access token minted with the 'node' scope.
+            - name: SQLFLOW_URL
+              value: http://sqlflow-controlplane
+            - name: SQLFLOW_TOKEN
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: node-token }
+            # Empty = untargeted runs only. For a pooled worker set the pool name here AND in the ScaledObject's
+            # ?pool= parameter below.
+            - name: SQLFLOW_WORKER_POOL
+              value: ""
+            - name: SQLFLOW_GIT_TOKEN
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: git-token }
+            # Every ${env:...} reference the pool's flows use resolves HERE, on the node, never in the control
+            # plane. Mount one entry per reference; sink-connection covers the samples' SQLFlowSinkConStr.
+            - name: SQLFlowSinkConStr
+              valueFrom:
+                secretKeyRef: { name: sqlflow-secrets, key: sink-connection }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: sqlflow-node-auth
+  namespace: sqlflow
+spec:
+  secretTargetRef:
+    # The node token: the workers' credential to the control plane, reused by the scaler for the scale-target
+    # endpoint (node scope). Mint it once the control plane is up and add it to sqlflow-secrets.
+    - parameter: token
+      name: sqlflow-secrets
+      key: node-token
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sqlflow-worker-default
+  namespace: sqlflow
+spec:
+  scaleTargetRef:
+    name: sqlflow-worker-default
+  minReplicaCount: 0   # scale to zero when nothing is eligible and no node is busy
+  maxReplicaCount: 10
+  cooldownPeriod: 300  # keep a warm worker for five minutes after the work drains
+  pollingInterval: 15
+  triggers:
+    - type: metrics-api
+      metadata:
+        # The control plane answers the pool's replica target itself: the GREATEST of demanded work, the pool's
+        # always-on floor, and an active manual override, so the GUI's fleet controls steer this pool without the
+        # control plane ever calling the orchestrator. Demand is the pool's ELIGIBLE queued runs (a member behind a
+        # lower wave, a group at its cap, or a run of a pipeline already executing asks for no replica, because no
+        # node could take it) divided by what one node of the pool executes at once (the nodes report it on every
+        # poll, so nothing here has to match a constant in the node runtime), plus the nodes currently busy (a
+        # queued-only count reads zero the moment the fleet takes a batch, which would let KEDA scale in
+        # mid-execution and kill pods carrying live runs). The endpoint is computed from the catalog journal, so
+        # every control-plane replica answers the same number. For a pooled copy of this manifest, set
+        # ?pool=<pool> in the url and SQLFLOW_WORKER_POOL in the Deployment above.
+        url: "http://sqlflow-controlplane/api/v1/node/scale-target?pool="
+        valueLocation: "replicas"
+        targetValue: "1"
+        authMode: "bearer"
+      authenticationRef:
+        name: sqlflow-node-auth

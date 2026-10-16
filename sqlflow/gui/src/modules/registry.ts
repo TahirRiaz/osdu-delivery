@@ -1,0 +1,485 @@
+// The GUI module contract: how a module built on top of this GUI adds pages, navigation, per-kind panels, search
+// categories, dashboard tiles and branding without editing the pages it extends. A module build calls renderApp with its
+// modules; SQLFlow's own entry registers none, so the product renders exactly as it ships. Registration happens once,
+// before the first render, and every contribution is validated then, so a conflicting module fails at startup with a
+// message that names it instead of rendering a half-wired page.
+
+import type { ComponentType, ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
+import { setModuleRequestHeaders } from "../api/client";
+import type { PipelineDetail, RunDetail, RunSummary, SearchCategory } from "../api/types";
+import type { Column } from "../components/DataTable";
+import { extendNavigation } from "../layout/nav";
+import { registerCensus, type CensusSource } from "../lib/lsp/sqlflowLsp";
+import { installModuleBranding, type BrandingContribution } from "./branding";
+
+/**
+ * Where a module's page renders: inside the workbench like every page, or in a window of its own, with nothing of the
+ * workbench around it (no activity bar, side bar, tabs or status bar), for a view opened beside the workbench on a
+ * second screen or as a pop-out.
+ */
+export type ModuleRouteFrame = "workbench" | "window";
+
+/** A page a module adds, rendered signed-in before the catch-all route: in the workbench unless it asks for a window. */
+export interface ModuleRoute {
+  /** The router path, absolute (`/reports/:reportId`). */
+  path: string;
+  /** The page; pass a `lazyRoute(...)` component so the page's code loads with the page. */
+  component: ComponentType;
+  /** A scope the session must hold; without it the route redirects to the dashboard, like the admin pages. */
+  requiredScope?: string;
+  /**
+   * Where the page renders; the workbench when absent. A window page holds the whole viewport and lays itself out in it,
+   * and still needs a session: signed out, it goes to the login page like every other.
+   */
+  frame?: ModuleRouteFrame;
+}
+
+/** A navigation group a module adds to the activity bar, side bar and command palette. */
+export interface ModuleNavGroup {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  requiresScope?: string;
+  /** Anchored at the bottom of the activity bar, beside Settings. */
+  bottom?: boolean;
+  /** The id of the group this one follows; omitted, it goes after the last top group. */
+  after?: string;
+  /**
+   * Labelled sections the group's entries are listed under, in the side bar and the command palette, in this order;
+   * omitted, the entries are one list. Ids are unique within the group.
+   */
+  sections?: readonly ModuleNavSection[];
+}
+
+/** A labelled part of a module's navigation group. */
+export interface ModuleNavSection {
+  id: string;
+  label: string;
+}
+
+/** A navigation entry a module adds to an existing group or to one of its own groups. */
+export interface ModuleNavItem {
+  /** The id of the group the entry belongs to (`operate`, `workspace`, or a group a module adds). */
+  group: string;
+  label: string;
+  to: string;
+  icon: LucideIcon;
+  testId: string;
+  /** The `to` of the entry this one follows within its group; omitted, it is appended to the group. */
+  after?: string;
+  /** The id of a section its group declares; omitted, the entry is listed before the group's first section. */
+  section?: string;
+  /**
+   * Paths below the root the entry owns besides its own: pages reached from it rather than from the menu, which light
+   * the entry while they are shown and take its title unless a detail title names them. A path another entry has fails.
+   */
+  owns?: readonly string[];
+}
+
+/** The initial tab and title bar title of a detail route, before the page reports a richer one through useTabTitle. */
+export interface ModuleDetailTitle {
+  pattern: RegExp;
+  title: (match: RegExpMatchArray) => string;
+}
+
+/** Everything one module adds to the navigation, as the navigation model receives it. */
+export interface ModuleNavigation {
+  moduleId: string;
+  groups: readonly ModuleNavGroup[];
+  items: readonly ModuleNavItem[];
+  detailTitles: readonly ModuleDetailTitle[];
+}
+
+/** A tab a kind adds to the pipeline detail page, ahead of the built-in tabs. */
+export interface PipelineTabContribution {
+  /** The tab's value, which is also what `?tab=` names. */
+  value: string;
+  label: string;
+  testId: string;
+  render: (pipeline: PipelineDetail) => ReactNode;
+}
+
+/** A tab a kind adds to the run detail page, after the built-in tabs. */
+export interface RunTabContribution {
+  value: string;
+  label: string;
+  testId: string;
+  render: (run: RunDetail) => ReactNode;
+}
+
+/** What a kind adds to the run detail page of its runs. */
+export interface RunDetailContribution {
+  /** Buttons beside Trace in the header. */
+  headerActions?: (run: RunDetail) => ReactNode;
+  /** Id chips after the built-in ones (run, repo, pipeline, group, commit). */
+  headerMeta?: (run: RunDetail) => ReactNode;
+  /** Detail pairs shown in place of the built-in row counts (rows loaded, inserted, updated, deleted). */
+  headerDetails?: (run: RunDetail) => ReactNode;
+  /** A card above the tabs: what the run was asked to do and what it reported. */
+  card?: (run: RunDetail) => ReactNode;
+  tabs?: readonly RunTabContribution[];
+  /** Built-in tabs that say nothing about this kind's runs (`files`, `statements`, `surrogate-keys`, `assertions`, `health-metrics`). */
+  hiddenTabs?: readonly string[];
+}
+
+/** The kind's part of a trigger request, as its fields report it. */
+export interface TriggerBodyContribution {
+  values?: Record<string, string>;
+  payload?: Record<string, unknown>;
+  /** The first problem with what the fields hold, which keeps the dialog from submitting; null when they are valid. */
+  error: string | null;
+}
+
+/** The props the trigger dialog gives a kind's fields. */
+export interface TriggerFieldsProps {
+  flowKind: string;
+  /**
+   * The pipeline the run is launched for, when the dialog knows it: the flow the launching context passed, or the one picked
+   * and resolved from the repository's pipelines. Null while no single flow is resolved. Fields that offer choices the flow
+   * itself declares read them through it, so an operator picks from what the flow allows instead of typing it.
+   */
+  pipelineId: string | null;
+  /** The operation picked in the dialog, from the kinds the control plane registers; null when it offers none. */
+  operation: string | null;
+  /** The values of the run being repeated, or of the launching context; empty for a fresh launch. */
+  initialValues: Readonly<Record<string, string>>;
+  /** The payload of the run being repeated, or of the launching context; null for a fresh launch. */
+  initialPayload: Readonly<Record<string, unknown>> | null;
+  /** Reports the kind's part of the request body whenever what the fields hold changes, and once when they mount. */
+  onChange: (body: TriggerBodyContribution) => void;
+}
+
+/** What a kind adds to the trigger dialog: its fields, which also contribute their part of the request body. */
+export interface TriggerContribution {
+  Fields: ComponentType<TriggerFieldsProps>;
+}
+
+/**
+ * The colour a flow kind wears, a slot of the validated chart palette (DESIGN.md 3.4) or the neutral text tone. SQLFlow's
+ * own kinds take theirs by what they do with data: blue brings it in, violet loads and shapes tables, orange sends it
+ * out, and neutral checks and orchestrates (DESIGN.md 3.5). Magenta is left for a module's kinds, which may take any of
+ * the others too, so that the kinds one estate chains read apart. Green, yellow and red are not offered, because they
+ * read as a status (DESIGN.md 3.2), and neither is aqua, which on the dark theme reads as green.
+ */
+export type FlowKindTone = "blue" | "violet" | "orange" | "magenta" | "neutral";
+
+export const FLOW_KIND_TONES: readonly FlowKindTone[] = ["blue", "violet", "orange", "magenta", "neutral"];
+
+/** How a flow kind is shown wherever a pipeline or run of it is. */
+export interface FlowKindIdentity {
+  /** The kind's name, short enough for a chip in a table row: "Ingestion", "Health check". */
+  label: string;
+  icon: LucideIcon;
+  tone: FlowKindTone;
+}
+
+/** Everything a module adds for one flow kind (a `flowType` the control plane registers). */
+export interface FlowKindContribution {
+  kind: string;
+  /**
+   * How the kind is shown wherever a pipeline or run of it is: its name, icon and colour (flowKinds.ts describes
+   * SQLFlow's own kinds the same way). Without it the kind is shown by its value with a neutral icon.
+   */
+  identity?: FlowKindIdentity;
+  pipelineTabs?: readonly PipelineTabContribution[];
+  /** The tab a pipeline of this kind opens on when the URL names none; the YAML tab otherwise. */
+  defaultPipelineTab?: string;
+  /** Built-in pipeline tabs that say nothing about this kind (`transforms`, `files`). */
+  hiddenPipelineTabs?: readonly string[];
+  /**
+   * Built-in facts of the pipeline header that say nothing about this kind: `sourceServer`, `targetServer`, `batch`,
+   * `wave`. The average file size needs no entry: it profiles the Files tab's history, so it goes with that tab.
+   */
+  hiddenPipelineFacts?: readonly string[];
+  /** Detail pairs the kind adds to the pipeline header, after its source and target: where its flows deliver, say. */
+  pipelineFacts?: (pipeline: PipelineDetail) => ReactNode;
+  /** Extra columns on run lists of this kind: the pipeline's Runs tab, and the runs board filtered to the kind. */
+  runColumns?: readonly Column<RunSummary>[];
+  run?: RunDetailContribution;
+  trigger?: TriggerContribution;
+}
+
+/** A category a module adds to the combined search, read from the category of the same key in its result. */
+export interface SearchCategoryContribution {
+  key: string;
+  render: (props: { query: string; category: SearchCategory<unknown> }) => ReactNode;
+}
+
+/** A tile a module adds to the dashboard's headline grid. */
+export interface DashboardTileContribution {
+  id: string;
+  component: ComponentType;
+}
+
+/**
+ * A control a module adds to the workbench title bar, between the brand and the command palette: a context every page of
+ * the module reads (the environment it works in, say), or a fact the whole workbench should see. It renders on the
+ * title bar's dark ground, inside the router and the signed-in session, so it may read the URL and call the API; one that
+ * has nothing to show renders nothing. Controls appear in registration order.
+ */
+export interface TitleBarContribution {
+  /** Unique across modules; names the control in registration errors. */
+  id: string;
+  component: ComponentType;
+}
+
+/**
+ * A header a module adds to every authenticated call the workbench makes to the control plane: a selection its title bar
+ * control holds (the scope every one of its pages is read in, say), which the module's endpoints read. `value` is read as
+ * each call is made, so a new selection reaches the next call; null or blank leaves the header out of that call. A module
+ * cannot replace a header SQLFlow sets itself (`Accept`, `Authorization`, `Content-Type`), and two modules cannot add the
+ * same one.
+ */
+export interface RequestHeaderContribution {
+  /** The header's name, an HTTP token (letters, digits and `!#$%&'*+-.^_`|~`), unique across modules regardless of case. */
+  name: string;
+  value: () => string | null;
+}
+
+/**
+ * How a module asks the workbench's side bar to start. It applies only to a person who has never opened or closed the
+ * side bar in this browser: once they have, their choice stands, whatever a module asks.
+ */
+export interface SideBarContribution {
+  /**
+   * Starts the side bar closed on a first visit, with the activity bar beside it to open it, for a product whose pages
+   * want the width more than the menu; absent or false, it starts open, as SQLFlow ships.
+   */
+  closedOnFirstVisit?: boolean;
+}
+
+/** The headers SQLFlow sets on its calls itself, which no module may replace. */
+const RESERVED_HEADERS = new Set(["accept", "authorization", "content-type"]);
+
+/** What an HTTP header name may be made of (RFC 9110 section 5.1, a token). */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * A key census file a module supplies for a flow kind it adds (`flowType`) or a document of its own (`documentType`), so
+ * the YAML editor documents, colours and checks those documents as it does SQLFlow's own flows. The file is SQLFlow's
+ * census format (`docs/reference/flow/keys*.json`) with the kind it describes at its top level.
+ */
+export type CensusContribution = CensusSource;
+
+/** A module: the unit a build registers. */
+export interface GuiModule {
+  /** Names the module in registration errors. */
+  id: string;
+  routes?: readonly ModuleRoute[];
+  navGroups?: readonly ModuleNavGroup[];
+  navItems?: readonly ModuleNavItem[];
+  detailTitles?: readonly ModuleDetailTitle[];
+  kinds?: readonly FlowKindContribution[];
+  searchCategories?: readonly SearchCategoryContribution[];
+  dashboardTiles?: readonly DashboardTileContribution[];
+  /** The product's branding; at most one registered module may set it. */
+  branding?: BrandingContribution;
+  /** Key census files for the module's flow kinds and documents, which the YAML editor analyses them against. */
+  census?: readonly CensusContribution[];
+  /** Controls the module adds to the workbench title bar. */
+  titleBar?: readonly TitleBarContribution[];
+  /** Headers the module adds to every authenticated call to the control plane. */
+  requestHeaders?: readonly RequestHeaderContribution[];
+  /** How the workbench's side bar starts for a person new to it; at most one registered module may say. */
+  sideBar?: SideBarContribution;
+}
+
+interface Registered {
+  routes: readonly ModuleRoute[];
+  kinds: ReadonlyMap<string, FlowKindContribution>;
+  searchCategories: readonly SearchCategoryContribution[];
+  dashboardTiles: readonly DashboardTileContribution[];
+  titleBar: readonly TitleBarContribution[];
+  sideBarClosedOnFirstVisit: boolean;
+}
+
+const NONE: Registered = {
+  routes: [], kinds: new Map(), searchCategories: [], dashboardTiles: [], titleBar: [], sideBarClosedOnFirstVisit: false,
+};
+
+let registered: Registered | null = null;
+
+function claim(seen: Map<string, string>, key: string, moduleId: string, what: string): void {
+  const owner = seen.get(key);
+  if (owner !== undefined) {
+    throw new Error(`GUI module '${moduleId}' adds ${what} '${key}', which module '${owner}' already adds.`);
+  }
+
+  seen.set(key, moduleId);
+}
+
+/**
+ * Installs the modules of this build. Runs once, before the app renders: the navigation, routes and per-kind panels are
+ * read while rendering, so a module registered later would never be seen.
+ */
+export function registerModules(modules: readonly GuiModule[]): void {
+  if (registered !== null) {
+    throw new Error("GUI modules are already registered; registerModules runs once, before the app renders.");
+  }
+
+  const moduleIds = new Set<string>();
+  const routePaths = new Map<string, string>();
+  const kindOwners = new Map<string, string>();
+  const categoryOwners = new Map<string, string>();
+  const tileOwners = new Map<string, string>();
+  const censusOwners = new Map<string, string>();
+  const titleBarOwners = new Map<string, string>();
+  const headerOwners = new Map<string, string>();
+  const requestHeaders: RequestHeaderContribution[] = [];
+  const routes: ModuleRoute[] = [];
+  const kinds = new Map<string, FlowKindContribution>();
+  const searchCategories: SearchCategoryContribution[] = [];
+  const dashboardTiles: DashboardTileContribution[] = [];
+  const titleBar: TitleBarContribution[] = [];
+  let sideBarOwner: string | null = null;
+  let sideBarClosedOnFirstVisit = false;
+
+  for (const module of modules) {
+    if (module.id.trim() === "") {
+      throw new Error("A GUI module needs a non-blank id.");
+    }
+
+    if (moduleIds.has(module.id)) {
+      throw new Error(`The GUI module '${module.id}' is registered twice.`);
+    }
+
+    moduleIds.add(module.id);
+
+    for (const route of module.routes ?? []) {
+      if (!route.path.startsWith("/")) {
+        throw new Error(`GUI module '${module.id}' adds the route '${route.path}', which is not an absolute path.`);
+      }
+
+      claim(routePaths, route.path, module.id, "the route");
+      routes.push(route);
+    }
+
+    for (const kind of module.kinds ?? []) {
+      claim(kindOwners, kind.kind, module.id, "the flow kind");
+      if (kind.identity !== undefined) {
+        if (kind.identity.label.trim() === "") {
+          throw new Error(`GUI module '${module.id}' names the flow kind '${kind.kind}' with a blank label.`);
+        }
+
+        if (!FLOW_KIND_TONES.includes(kind.identity.tone)) {
+          throw new Error(
+            `GUI module '${module.id}' gives the flow kind '${kind.kind}' the tone '${String(kind.identity.tone)}'; `
+            + `the tones are ${FLOW_KIND_TONES.join(", ")}.`,
+          );
+        }
+      }
+
+      const tabValues = new Set<string>();
+      for (const tab of kind.pipelineTabs ?? []) {
+        if (tabValues.has(tab.value)) {
+          throw new Error(`GUI module '${module.id}' adds the pipeline tab '${tab.value}' to kind '${kind.kind}' twice.`);
+        }
+
+        tabValues.add(tab.value);
+      }
+
+      kinds.set(kind.kind, kind);
+    }
+
+    for (const category of module.searchCategories ?? []) {
+      claim(categoryOwners, category.key, module.id, "the search category");
+      searchCategories.push(category);
+    }
+
+    for (const tile of module.dashboardTiles ?? []) {
+      claim(tileOwners, tile.id, module.id, "the dashboard tile");
+      dashboardTiles.push(tile);
+    }
+
+    for (const control of module.titleBar ?? []) {
+      if (control.id.trim() === "") {
+        throw new Error(`GUI module '${module.id}' adds a title bar control with a blank id.`);
+      }
+
+      claim(titleBarOwners, control.id, module.id, "the title bar control");
+      titleBar.push(control);
+    }
+
+    for (const header of module.requestHeaders ?? []) {
+      if (!HEADER_NAME.test(header.name)) {
+        throw new Error(`GUI module '${module.id}' adds the request header '${header.name}', which is not an HTTP header name.`);
+      }
+
+      if (RESERVED_HEADERS.has(header.name.toLowerCase())) {
+        throw new Error(`GUI module '${module.id}' adds the request header '${header.name}', which SQLFlow sets on every call itself.`);
+      }
+
+      claim(headerOwners, header.name.toLowerCase(), module.id, "the request header");
+      requestHeaders.push(header);
+    }
+
+    if (module.sideBar?.closedOnFirstVisit !== undefined) {
+      if (sideBarOwner !== null) {
+        throw new Error(
+          `GUI module '${module.id}' says how the side bar starts on a first visit, which module '${sideBarOwner}' already says.`,
+        );
+      }
+
+      sideBarOwner = module.id;
+      sideBarClosedOnFirstVisit = module.sideBar.closedOnFirstVisit;
+    }
+
+    for (const census of module.census ?? []) {
+      const kind = census.flowType?.trim() ? `flowType '${census.flowType.trim()}'` : `documentType '${census.documentType?.trim() ?? ""}'`;
+      claim(censusOwners, kind, module.id, "the key census for");
+      registerCensus(census);
+    }
+  }
+
+  extendNavigation(modules.map((module) => ({
+    moduleId: module.id,
+    groups: module.navGroups ?? [],
+    items: module.navItems ?? [],
+    detailTitles: module.detailTitles ?? [],
+  })));
+  installModuleBranding(modules.flatMap((module) => (
+    module.branding === undefined ? [] : [{ moduleId: module.id, branding: module.branding }]
+  )));
+
+  setModuleRequestHeaders(requestHeaders);
+  registered = { routes, kinds, searchCategories, dashboardTiles, titleBar, sideBarClosedOnFirstVisit };
+}
+
+/** The pages the registered modules add in one frame: the workbench (the default) or a window of their own. */
+export function moduleRoutes(frame: ModuleRouteFrame = "workbench"): readonly ModuleRoute[] {
+  return (registered ?? NONE).routes.filter((route) => (route.frame ?? "workbench") === frame);
+}
+
+/** What a registered module adds for this flow kind, if any. */
+export function kindContribution(kind: string | null | undefined): FlowKindContribution | undefined {
+  return kind === null || kind === undefined ? undefined : (registered ?? NONE).kinds.get(kind);
+}
+
+/** The flow kinds the registered modules contribute to, in registration order. */
+export function contributedKinds(): readonly string[] {
+  return [...(registered ?? NONE).kinds.keys()];
+}
+
+/** The search categories the registered modules add, in registration order. */
+export function moduleSearchCategories(): readonly SearchCategoryContribution[] {
+  return (registered ?? NONE).searchCategories;
+}
+
+/** The dashboard tiles the registered modules add, in registration order. */
+export function moduleDashboardTiles(): readonly DashboardTileContribution[] {
+  return (registered ?? NONE).dashboardTiles;
+}
+
+/** The title bar controls the registered modules add, in registration order. */
+export function moduleTitleBarItems(): readonly TitleBarContribution[] {
+  return (registered ?? NONE).titleBar;
+}
+
+/**
+ * Whether the workbench's side bar starts closed for a person who has never opened or closed it in this browser: true
+ * only when a registered module asks for it, so SQLFlow's own build starts it open.
+ */
+export function sideBarClosedOnFirstVisit(): boolean {
+  return (registered ?? NONE).sideBarClosedOnFirstVisit;
+}
