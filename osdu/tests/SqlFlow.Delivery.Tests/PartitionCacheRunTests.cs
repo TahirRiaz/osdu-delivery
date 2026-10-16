@@ -142,15 +142,17 @@ public sealed class PartitionCacheRunTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task Each_partition_resolves_with_its_own_configuration_and_one_that_fails_leaves_the_others_refreshed()
     {
-        // The value set for no partition names a database nothing answers on; the test partition's own value names the real
-        // one. The test partition resolves with its own, and the dev partition, with the unreachable one, fails alone.
+        // The value set for no partition names a database nothing answers on; the test partition's own value is its own
+        // reference, which hands the name back to the node's environment, where the real database is (a supplied value never
+        // carries a written-out credential, and the test server's connection string may hold a password). The test partition
+        // resolves with its own, and the dev partition, with the unreachable one, fails alone.
         var unreachable = "Server=tcp:127.0.0.1,1;Database=none;Integrated Security=true;TrustServerCertificate=true;Connect Timeout=1";
         var payload = new DeliveryRunPayload
         {
             References = new Dictionary<string, string>(StringComparer.Ordinal) { [Variable] = unreachable },
             PartitionReferences = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase)
             {
-                [Test] = new Dictionary<string, string>(StringComparer.Ordinal) { [Variable] = OsduTestServer.ConnectionString },
+                [Test] = new Dictionary<string, string>(StringComparer.Ordinal) { [Variable] = $"${{env:{Variable}}}" },
             },
         };
 
