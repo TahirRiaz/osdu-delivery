@@ -1,12 +1,22 @@
 @echo off
 REM ============================================================================
-REM  OSDU Delivery local dev. Run this instead of deploying to try something.
+REM  OSDU Delivery local dev, on Windows (./dev.sh on macOS and Linux). Run this instead of deploying to try something.
 REM
 REM      dev.bat          start the GUI and the control plane
-REM      dev.bat api      control plane only (no GUI window)
+REM      dev.bat api      control plane only (no GUI window, so no Node.js needed)
 REM      dev.bat managed  managed workers: the control plane starts and stops its own worker
 REM                       processes (the 'process' launcher) instead of running an in-process node.
 REM                       Combine with api: dev.bat managed api
+REM      dev.bat setup    ask the setup questions again (the SQL Server, OSDU, a repository), then start
+REM      dev.bat check    say what this machine has and what it is missing, test the OSDU sign-in,
+REM                       and start nothing
+REM
+REM  First start: with no .sqlflow\env yet, the setup asks for what it cannot know, offers to create
+REM  the databases (or start SQL Server in Docker), writes .sqlflow\env from dev.env.example, and
+REM  registers the partition. Every start then checks the machine and the file and prints what is set
+REM  and what is missing, with the fix for each, and stops only when a start would fail. Both are the
+REM  command line's 'sqlflow dev' verb (osdu\docs\reference\cli\dev.md); this file only finds .NET,
+REM  builds the command line, and starts what the check cleared.
 REM
 REM  What comes up:
 REM      GUI            http://localhost:5173   (Vite, hot-reloads on save)
@@ -14,58 +24,34 @@ REM      Control plane  http://localhost:5000   (API + scheduler + dispatcher + 
 REM      Workers        with 'managed': SqlFlow.Delivery.Worker.Host processes the control plane
 REM                     starts, named worker-<pool>-<id>, ended with it
 REM
-REM  Everything RUNS here; every resource is the REAL Azure estate: the same catalog,
-REM  the same databases, the same storage. Sign in with your normal OSDU Delivery
-REM  login, because it is literally the same user table.
+REM  Everything runs here, against the databases and the OSDU partition .sqlflow\env names. Flows read
+REM  and WRITE them exactly as a deployed estate does.
 REM
-REM  Azure calls go through your 'az login' (SQLFLOW_AZURE_AUTH=cli), so ${keyvault:...}
-REM  refs in flow YAML resolve with no extra config.
+REM  If .sqlflow\env names a catalog a deployed estate also uses, you share that estate's work: this
+REM  process's in-process node can take runs the estate's workers would have run, and its scheduler
+REM  competes to fire schedules (every claim is compare-and-swap, so nothing runs twice). Close the
+REM  window when you are done. Starting dev.bat again stops whatever the last run left behind.
 REM
-REM  ---------------------------------------------------------------------------
-REM  READ THIS ONCE: you share the estate with the cloud.
-REM
-REM  The catalog is shared, so this process's in-process node can take runs the cloud
-REM  fleet would have run, and its scheduler competes to fire schedules. Every claim is
-REM  compare-and-swap, so nothing double-fires or double-runs. But it does mean:
-REM    - a run you trigger may execute here (good: breakpoints) or in the cloud (race).
-REM    - if you leave this running overnight, YOUR MACHINE may run the nightly.
-REM  Close the window when you are done. Starting dev.bat again kills whatever the last
-REM  run left behind, so you never end up with two of these racing each other.
-REM
-REM  Flows read and WRITE the real cloud databases and the real OSDU partition the flow
-REM  declares, exactly as the estate does.
-REM  ---------------------------------------------------------------------------
-REM
-REM  Migrations: pending SQLFlow catalog and OSDU module migrations from THIS checkout are
-REM  applied before startup (the deployed containers do the same for themselves). F5 alone
-REM  does NOT migrate: run dev.bat once after pulling or authoring a migration, then debug.
-REM
-REM  Config: .sqlflow\env (git-ignored). Rebuild it with osdu\tools\dev-setup.ps1.
+REM  Migrations: pending SQLFlow catalog and OSDU module migrations from THIS checkout are applied
+REM  before startup (the deployed containers do the same for themselves). F5 alone does NOT migrate:
+REM  run dev.bat once after pulling or authoring a migration, then debug.
 REM ============================================================================
 setlocal
 
 cd /d "%~dp0"
-REM --- Arguments: 'api' and 'managed', in any order ---
+REM --- Arguments: 'api', 'managed', 'setup' and 'check', in any order ---
 set "_api="
 set "_managed="
+set "_setup="
+set "_check="
 for %%a in (%*) do (
     if /i "%%~a"=="api" set "_api=1"
     if /i "%%~a"=="managed" set "_managed=1"
+    if /i "%%~a"=="setup" set "_setup=1"
+    if /i "%%~a"=="check" set "_check=1"
 )
-
-REM --- Stop whatever the last run left behind, before anything builds ---
-REM A control plane from an earlier run keeps its DLL open, so the 'dotnet run' below fails
-REM its build with "the file is locked by another process" and you end up debugging the OLD
-REM binary. A surviving in-process node also keeps taking runs behind your back. So: kill the
-REM port owners, kill a control plane that crashed off its port but still holds the bin\ lock
-REM (F5 sessions included), and kill the GUI window a previous dev.bat spawned.
-call :stopport 5000 "control plane"
-call :stopport 5173 "GUI"
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.Delivery.ControlPlane.Host.exe' -and $_.CommandLine -like '*SqlFlow.Delivery.ControlPlane.Host*' } | ForEach-Object { Write-Host ('Stopping previous control plane (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-REM Workers a managed control plane started end with it when it stops cleanly, but a killed one leaves them
-REM polling; they would hold the worker host's bin\ open and take runs for a control plane that is gone.
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.Delivery.Worker.Host.exe' -and $_.CommandLine -like '*SqlFlow.Delivery.Worker.Host*' } | ForEach-Object { Write-Host ('Stopping previous managed worker (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-taskkill /f /t /fi "WINDOWTITLE eq OSDU Delivery GUI*" >nul 2>&1
+set "_apiflag="
+if defined _api set "_apiflag=--api"
 
 REM --- .NET SDK on PATH ---
 REM A runtime-only Program Files install shadows a per-user SDK (user PATH comes after system PATH),
@@ -85,60 +71,100 @@ if %errorlevel% neq 0 (
         set "PATH=%USERPROFILE%\.dotnet;%PATH%"
     )
 )
+REM Without .NET nothing else can run, the check included, so this one is said here.
 dotnet --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [X] No .NET SDK matching global.json was found. Install it from https://aka.ms/dotnet/download
-    echo     ^(winget install Microsoft.DotNet.SDK.9^), then start dev.bat again.
+    echo [X] No .NET SDK matching global.json ^(9.0.100 or later^) was found.
+    echo     Install it:  winget install Microsoft.DotNet.SDK.9
+    echo     then open a NEW terminal and start dev.bat again. The setup then checks the rest a local run
+    echo     needs ^(SQL Server or Docker, Node.js 22 or later for the GUI^) and says how to get each.
     exit /b 1
 )
 
-REM --- Azure login is what routes Key Vault and storage to the cloud ---
-REM 'call' is REQUIRED: az on Windows is az.cmd, and invoking a .cmd from a .bat without 'call'
-REM transfers control and never comes back, so the rest of this script silently never runs.
-REM Not logged in is not a dead end: az login opens the browser sign-in right here, so one file
-REM carries a fresh machine (or an expired token) all the way to a running estate.
-call az account show >nul 2>&1
+REM --- Node on PATH ---
+REM Node is usually installed AFTER VS Code (or this terminal) was started, and a running process
+REM never picks up a PATH change. So the terminal, and every window it spawns, has no npm until it
+REM is restarted. Rather than demand a restart, find Node and add it for this script and its children.
+REM The check reports whether it was found.
+where npm >nul 2>&1
 if errorlevel 1 (
-    echo Not logged in to Azure; opening the sign-in ...
-    call az login
-    call az account show >nul 2>&1
-    if errorlevel 1 (
-        echo [X] Azure sign-in did not complete. Run 'az login' and start dev.bat again.
-        exit /b 1
-    )
+    if exist "%ProgramFiles%\nodejs\npm.cmd" set "PATH=%PATH%;%ProgramFiles%\nodejs"
+)
+where npm >nul 2>&1
+if errorlevel 1 (
+    if exist "%ProgramFiles(x86)%\nodejs\npm.cmd" set "PATH=%PATH%;%ProgramFiles(x86)%\nodejs"
+)
+where npm >nul 2>&1
+if errorlevel 1 (
+    if exist "%LOCALAPPDATA%\Programs\nodejs\npm.cmd" set "PATH=%PATH%;%LOCALAPPDATA%\Programs\nodejs"
 )
 
-REM --- The env file is generated, so a missing one is generated, not reported ---
-REM dev-setup.ps1 reads the live container app secrets through the az login above, which is why
-REM the login step comes first. Regenerate by hand after a secret rotation (see its own header).
-if not exist ".sqlflow\env" (
-    echo .sqlflow\env is missing; generating it from the live estate ...
-    powershell -NoProfile -ExecutionPolicy Bypass -File osdu\tools\dev-setup.ps1
-    if not exist ".sqlflow\env" (
-        echo [X] osdu\tools\dev-setup.ps1 did not produce .sqlflow\env. Fix its output above and retry.
-        exit /b 1
-    )
+REM --- The command line: the setup, the check, the env file's settings and the migrations ---
+REM Built once here and run from its output folder. A control plane left running does not lock it.
+echo Building the OSDU Delivery command line (the first build takes a minute) ...
+dotnet build osdu\hosts\SqlFlow.Delivery.Cli.Host -v q -nologo
+if errorlevel 1 (
+    echo [X] The command line did not build. Fix the build above and start dev.bat again.
+    exit /b 1
 )
+set "_cli=%~dp0osdu\hosts\SqlFlow.Delivery.Cli.Host\bin\Debug\net9.0\SqlFlow.Delivery.Cli.Host.exe"
+
+REM --- 'check': the report alone, with an OSDU sign-in; nothing is stopped or started ---
+REM Outside a parenthesised block, so %errorlevel% is read after the check ran: exit 0 ready, 2 not ready.
+if not defined _check goto :prepare
+"%_cli%" dev check --test-osdu %_apiflag%
+exit /b %errorlevel%
+
+:prepare
+
+REM --- The setup when there is no env file (or it was asked for), else the check ---
+REM Exit codes: 0 ready, 2 something a start needs is missing (the report says what), 1 stopped.
+if defined _setup goto :setup
+if not exist ".sqlflow\env" goto :setup
+"%_cli%" dev check --prepare %_apiflag%
+if errorlevel 1 exit /b 1
+goto :checked
+
+:setup
+if not exist ".sqlflow\env" echo .sqlflow\env is missing, so this is a first start: a few questions set this machine up.
+"%_cli%" dev setup %_apiflag%
+if errorlevel 1 exit /b 1
+
+:checked
+REM --- Stop whatever the last run left behind ---
+REM A control plane from an earlier run keeps its DLL open, so the 'dotnet run' below fails its build
+REM with "the file is locked by another process" and you end up debugging the OLD binary. A surviving
+REM in-process node also keeps taking runs behind your back. So: kill the port owners, kill a control
+REM plane that crashed off its port but still holds the bin\ lock (F5 sessions included), and kill
+REM the GUI window a previous dev.bat spawned. This waits until the check passed, so a start that
+REM would fail never takes down one that works.
+call :stopport 5000 "control plane"
+call :stopport 5173 "GUI"
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.Delivery.ControlPlane.Host.exe' -and $_.CommandLine -like '*SqlFlow.Delivery.ControlPlane.Host*' } | ForEach-Object { Write-Host ('Stopping previous control plane (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+REM Workers a managed control plane started end with it when it stops cleanly, but a killed one leaves them
+REM polling; they would hold the worker host's bin\ open and take runs for a control plane that is gone.
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.Delivery.Worker.Host.exe' -and $_.CommandLine -like '*SqlFlow.Delivery.Worker.Host*' } | ForEach-Object { Write-Host ('Stopping previous managed worker (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+taskkill /f /t /fi "WINDOWTITLE eq OSDU Delivery GUI*" >nul 2>&1
 
 REM --- Load .sqlflow\env into this process ---
-REM The control plane does NOT read .sqlflow\env itself: that loader is for flow directories and
-REM the engine, not the host. So push the values in as real environment variables.
-REM 'delims==' splits on the FIRST '=' only, so connection strings (full of '=' and ';') survive;
-REM the findstr drops comment lines and blank lines.
-for /f "usebackq tokens=1,* delims==" %%a in (`findstr /v /r /c:"^#" ".sqlflow\env" ^| findstr /r /c:"="`) do set "%%a=%%b"
+REM The control plane builds its configuration from the process environment before it reads .sqlflow\env
+REM itself, so its ControlPlane__* settings reach it only this way. 'dev env' prints the file's settings as
+REM the hosts read them (surrounding quotes taken off, the first of a name set twice), and the check has
+REM refused any value cmd's set could not carry, so the two never disagree.
+for /f "usebackq delims=" %%l in (`call "%_cli%" dev env`) do set "%%l"
 
 REM --- Apply pending migrations, up front and visibly ---
 REM The deployed containers migrate themselves at startup, but the local HOST runs with
-REM ApplyMigrations=false so an F5 or a stray local run can never mutate the shared catalog
-REM implicitly. Starting dev.bat is the explicit moment your checkout meets the shared databases,
-REM so its pending migrations are applied here through the CLI's guarded 'db migrate' (it upgrades
-REM an EXISTING database only and refuses to provision anything, so a wrong connection string can
-REM never create a stray database). It covers SQLFlow's catalog and the OSDU module's osdu schema.
+REM ApplyMigrations=false so an F5 or a stray local run never mutates the catalog implicitly. Starting
+REM dev.bat is the explicit moment your checkout meets the databases, so its pending migrations are
+REM applied here through the command line's guarded 'db migrate' (it upgrades an EXISTING database only
+REM and refuses to provision anything, so a wrong connection string can never create a stray database).
+REM It covers SQLFlow's catalog and the OSDU module's osdu schema.
 echo Applying pending migrations (SQLFlow catalog, then the OSDU module) ...
-dotnet run --project osdu\hosts\SqlFlow.Delivery.Cli.Host -- db migrate
+"%_cli%" db migrate
 if errorlevel 1 (
     echo [!] Migration failed. The control plane still starts, but any surface that needs the new
-    echo     schema will error until:  dotnet run --project osdu\hosts\SqlFlow.Delivery.Cli.Host -- db migrate
+    echo     schema will error until:  "%_cli%" db migrate
 )
 
 REM --- Managed workers: the control plane starts its own worker processes ---
@@ -163,29 +189,6 @@ if defined _managed (
 
 if defined _api goto :api
 
-REM --- Node on PATH ---
-REM Node is usually installed AFTER VS Code (or this terminal) was started, and a running process
-REM never picks up a PATH change. So the terminal, and every window it spawns, has no npm until it
-REM is restarted. Rather than demand a restart, find Node and add it for this script and its children.
-where npm >nul 2>&1
-if errorlevel 1 (
-    if exist "%ProgramFiles%\nodejs\npm.cmd" set "PATH=%PATH%;%ProgramFiles%\nodejs"
-)
-where npm >nul 2>&1
-if errorlevel 1 (
-    if exist "%ProgramFiles(x86)%\nodejs\npm.cmd" set "PATH=%PATH%;%ProgramFiles(x86)%\nodejs"
-)
-where npm >nul 2>&1
-if errorlevel 1 (
-    if exist "%LOCALAPPDATA%\Programs\nodejs\npm.cmd" set "PATH=%PATH%;%LOCALAPPDATA%\Programs\nodejs"
-)
-where npm >nul 2>&1
-if errorlevel 1 (
-    echo [X] npm not found. Install Node ^(winget install OpenJS.NodeJS.LTS^), then open a NEW terminal.
-    echo     Or run:  dev.bat api    to start the control plane without the GUI.
-    exit /b 1
-)
-
 REM --- GUI deps: install on first run AND whenever the lock file moved on ---
 REM npm writes node_modules\.package-lock.json on every install; when the repo's package-lock.json
 REM is newer than that stamp (a pulled or newly added dependency), the tree is stale and Vite would
@@ -209,9 +212,9 @@ start "OSDU Delivery GUI" cmd /k "cd /d %~dp0osdu\gui && npm run dev -- --open"
 
 :api
 echo.
-echo   GUI:      http://localhost:5173     (your normal OSDU Delivery login)
+echo   GUI:      http://localhost:5173
 echo   API:      http://localhost:5000
-echo   Catalog:  the REAL catalog. Your in-process node shares the estate's work.
+echo   Catalog:  the one .sqlflow\env names (dev.bat check says which, and what it holds)
 if defined _managed echo   Workers:  managed: the control plane starts worker processes itself (see the Nodes page).
 echo   Ctrl+C    stops the control plane. The GUI has its own window.
 echo.
@@ -220,7 +223,7 @@ REM (SQLFlow's, with the framework categories at Warning, reaches only a built h
 REM through the project reference). So every request and every EF Core command logs at Information
 REM here unless these two are set; do not "fix" this by adding an appsettings.json to the host project,
 REM that would replace the platform's file in the output and change what the deployed containers run
-REM with (see HANDOVER.md).
+REM with.
 set "Logging__LogLevel__Microsoft.AspNetCore=Warning"
 set "Logging__LogLevel__Microsoft.EntityFrameworkCore=Warning"
 dotnet run --project osdu\hosts\SqlFlow.Delivery.ControlPlane.Host --urls http://localhost:5000

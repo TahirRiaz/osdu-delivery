@@ -41,7 +41,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs
   - osdu/deploy/bicep/entra-app.bicep
   - osdu/deploy/bicep/main.bicep
-  - osdu/tools/dev-setup.ps1
+  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevSetupWizard.cs
+  - dev.env.example
   - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlanePolicies.cs
   - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlaneHost.cs
   - sqlflow/src/SqlFlow.ControlPlane/Api/RequestActor.cs
@@ -124,10 +125,11 @@ exception: asked for or scheduled, it is recorded as a `probe` activity under wh
 
 ## Local development
 
-A developer's control plane started against an estate's own catalog shares that estate's user table, so a local sign-in
-is the same account and role as the deployed GUI. `osdu/tools/dev-setup.ps1` writes the estate's JWT signing key, issuer
-and audience into the git-ignored `.sqlflow/env`, which makes a token minted by the deployed GUI valid locally and the
-other way round, and deliberately configures no bootstrap admin, so a local start never re-provisions the estate's admin.
+A local run (`dev.bat`, `./dev.sh`) signs its own session tokens: the setup generates a signing key for this machine
+alone into the git-ignored `.sqlflow/env`, so a token a local control plane issues is valid there and nowhere else, and
+configures a first admin, created at the first start when the catalog has no user of that name and never reset after
+([sqlflow dev](../cli/dev.md)). A local control plane started against a catalog that already has users needs no first
+admin, and signs in with those users' accounts and roles.
 
 ## See also
 

@@ -14,7 +14,7 @@ namespace SqlFlow.Delivery.Cli;
 /// inventory flow kinds (so SQLFlow's own <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them),
 /// the ledger, templates and caches over the module's database, and the module's own verbs: <c>check</c>,
 /// <c>preview</c>, <c>values</c>, <c>records</c>, <c>config</c>, <c>partition</c>, <c>cache</c>, <c>template</c>,
-/// <c>assertions</c>, <c>dimensions</c> and <c>inventory</c>.
+/// <c>assertions</c>, <c>dimensions</c>, <c>inventory</c> and <c>dev</c>, which sets a checkout up for a local run.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -344,6 +344,14 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Subcommands = ["list", "show", "records", "lookup", "runs", "export", "removals", "removal"],
             ValueOptions = ["--partition", "--finding", "--after", "--limit", "--out", "--outcome"],
+        },
+        new CliVerb("dev", LocalSetup.DevVerbs.Usage, LocalSetup.DevVerbs.DevAsync)
+        {
+            Subcommands = ["setup", "check", "env"],
+            ValueOptions = ["--env-file"],
+            Flags = ["--api", "--test-osdu", "--prepare"],
+            // It sets the env file up and checks it, so it reads the file itself: one the CLI would refuse still reaches it.
+            ReadsLocalEnvFile = true,
         },
     ];
 

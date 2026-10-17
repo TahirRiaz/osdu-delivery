@@ -27,6 +27,7 @@ related:
   - delivery-cli-preview
   - delivery-cli-records
   - delivery-cli-template
+  - delivery-cli-dev
 sourceRefs:
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs
@@ -93,6 +94,10 @@ flows are plain SQLFlow and are only sketched here; the OSDU steps are shown in 
   an existing legal tag, and the owner and viewer entitlement groups the records will carry.
 
 ## Step 1: say where everything is
+
+On a checkout of OSDU Delivery, `dev.bat setup` (Windows) or `./dev.sh setup` (macOS, Linux) writes this file for you,
+asking for each value and testing the OSDU client, and creates the databases of step 2
+([sqlflow dev](../cli/dev.md)); what follows is the same by hand.
 
 Secrets never go into a document. The documents name references such as `${env:OSDU_URL}`, and the values come from the
 environment. For local work, put them in a git-ignored `.sqlflow/env` at the repository root; the CLI applies the
