@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A first local start sets the machine up, and every start says what is missing.** `dev.bat` (Windows) and the new
+  `./dev.sh` (macOS, Linux) ask for the SQL Server (starting SQL Server 2022 in Docker where there is none), the OSDU
+  platform and its client, and a flow repository, then write `.sqlflow/env` from `dev.env.example`, create the
+  databases and register the partition. Each start then reports every tool, setting and database with its fix, and
+  stops only when a start would fail; `dev.bat check` tests the OSDU sign-in too ([Run it locally](README.md#run-it-locally),
+  [sqlflow dev](osdu/docs/reference/cli/dev.md)).
+
+### Removed
+
+- **`osdu/tools/dev-setup.ps1`.** It copied a deployed estate's secrets onto the machine and defaulted to a production
+  estate; `dev.bat setup` now writes `.sqlflow/env` for this machine alone ([sqlflow dev](osdu/docs/reference/cli/dev.md)).
+
 ### Fixed
 
 - **An environment deployed by its GitHub identity creates its sign-in registration.** The deploying identity is made

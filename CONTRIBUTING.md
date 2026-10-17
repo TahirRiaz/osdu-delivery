@@ -25,8 +25,10 @@ environment variable names; a server that does not answer fails them. The tests 
 the suites never create a database per test or per run. SQLFlow's own suites read the same variable and skip when it
 is unset. Never point it at a database holding real data: the suites migrate and seed the database they are given.
 
-`dev.bat` runs the whole thing locally against a real estate; `osdu/tools/dev-setup.ps1` generates the
-git-ignored `.sqlflow/env` it reads.
+`dev.bat` (Windows) and `./dev.sh` (macOS, Linux) run the whole thing locally: on the first start they ask for the
+SQL Server, the OSDU platform and a flow repository and write the git-ignored `.sqlflow/env` from `dev.env.example`;
+every start after that checks the machine and the settings and says what is missing
+([Run it locally](README.md#run-it-locally), [sqlflow dev](osdu/docs/reference/cli/dev.md)).
 
 ## Repository layout
 

@@ -25,7 +25,7 @@ data; the well logs in `samples/` are the worked example, not a special case. Th
 | `samples/` | The `welldb` sample estate (well logs with their curves, delivered to the Wellbore DDMS), the bundled OSDU schemas, and sample cache records |
 | `deploy/` | Dockerfiles, Docker Compose, Kubernetes, Bicep, Terraform and Radix |
 | `docs/` | The reference corpus, the decision records and the key census |
-| `tools/` | `SampleData`, which generates the sample's synthetic well logs and lookup tables, and `dev-setup.ps1`, which writes the local `.sqlflow/env` |
+| `tools/` | `SampleData`, which generates the sample's synthetic well logs and lookup tables |
 
 `sqlflow/` next to this folder is the engine underneath, vendored as a subtree and changed only through the extension
 points [../docs/sqlflow-changes.md](../docs/sqlflow-changes.md) records; nothing here is copied from SQLFlow, and

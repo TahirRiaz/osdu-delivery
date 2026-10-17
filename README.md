@@ -177,6 +177,48 @@ sqlflow run     welldb/flows/welldb-welllog-03-header-delivery.yaml --set logSou
 `check` validates the flow, its mapping and its schema; `preview` builds one record without sending it; `plan` shows
 what a run would send; `run` delivers.
 
+## Run it locally
+
+The whole system (control plane, workers and GUI) runs on one machine, on Windows, macOS or Linux. You need:
+
+| Component | What for | Windows | macOS | Linux |
+| --- | --- | --- | --- | --- |
+| .NET 9 SDK or later | builds and runs everything | `winget install Microsoft.DotNet.SDK.9` | `brew install --cask dotnet-sdk` | [Install .NET](https://learn.microsoft.com/dotnet/core/install/linux) |
+| SQL Server 2022 | the catalog and ledger (`OsduDelivery`), and the source data (`OsduData`) | `winget install Microsoft.SQLServer.2022.Developer`, or Docker | Docker Desktop: `brew install --cask docker`; the setup starts SQL Server in it | Docker Engine; the setup starts SQL Server in it |
+| Node.js 22 or later | the GUI (not needed for the control plane alone) | `winget install OpenJS.NodeJS.LTS` | `brew install node` | [nodejs.org](https://nodejs.org/en/download) |
+| An OSDU platform and a client | delivering: its URL, a data partition, a client id and secret, owners and viewers groups, a legal tag | | | |
+| Azure CLI | only when flows read Azure Key Vault or Azure storage | `winget install Microsoft.AzureCLI` | `brew install azure-cli` | [Install the Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-linux) |
+
+Then start it from the checkout:
+
+```bash
+dev.bat          # Windows
+./dev.sh         # macOS, Linux
+```
+
+On the first start it asks for what it cannot know: the SQL Server (and offers to start SQL Server 2022 in Docker when
+the machine has none, which is how it runs on a Mac), the first admin's password, the OSDU platform and its client
+(which it can test by signing in and reading the legal tag), and a folder or git repository of flows. It shows its plan,
+and once you say yes it writes the git-ignored `.sqlflow/env`, creates the databases and registers the partition. Every
+start after that checks the machine and the settings, prints what is set and what is missing with the fix for each, and
+stops only when a start would fail. Then the GUI opens at http://localhost:5173 (the API is http://localhost:5000);
+sign in as `admin` with the password the setup put in `.sqlflow/env` as `SQLFLOW_ADMIN_PASSWORD`.
+
+| Command | What it does |
+| --- | --- |
+| `dev.bat`, `./dev.sh` | The setup on a first start, then the check, then the control plane and the GUI. |
+| `dev.bat check`, `./dev.sh check` | The check alone, with a test sign-in to OSDU; nothing is started or stopped. |
+| `dev.bat setup`, `./dev.sh setup` | The setup questions again, offering the current values; the file it replaces is kept beside it. |
+| `dev.bat api`, `./dev.sh api` | The control plane without the GUI. |
+| `dev.bat managed`, `./dev.sh managed` | The control plane starting worker processes of its own, as a deployment's workers run. |
+
+Every setting, with what it is for and whether a start needs it, is in [dev.env.example](dev.env.example): copy it to
+`.sqlflow/env` and fill it in to set up by hand. [sqlflow dev](osdu/docs/reference/cli/dev.md) describes the setup and
+the check in full.
+
+On a Mac with Apple silicon, SQL Server's image runs under emulation: turn on Docker Desktop's "Use Rosetta for
+x86_64/amd64 emulation on Apple Silicon" (Settings, General) before the first start.
+
 ## Under the hood
 
 Each step of the journey is a flow with its own run and log: one flow lands the source files, one loads them into a
@@ -209,8 +251,9 @@ dotnet test OsduDelivery.sln
 cd osdu/gui && npm ci && npm run build && npm run lint
 ```
 
-`dev.bat` runs the control plane and GUI locally. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup and
-[CLAUDE.md](CLAUDE.md) for the project's working rules.
+`dev.bat` (Windows) or `./dev.sh` (macOS, Linux) runs the control plane and GUI locally
+([Run it locally](#run-it-locally)). See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup and [CLAUDE.md](CLAUDE.md)
+for the project's working rules.
 
 ## Learn more
 

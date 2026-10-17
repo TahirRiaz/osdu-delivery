@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <RootNamespace>SqlFlow.Delivery.Cli</RootNamespace>
-    <Description>The OSDU module as SQLFlow's CLI composes it: the module's flow kinds on every command and worker node, and its own verbs (check, preview, values, records, config, partition, cache, template, assertions, dimensions, inventory).</Description>
+    <Description>The OSDU module as SQLFlow's CLI composes it: the module's flow kinds on every command and worker node, and its own verbs (check, preview, values, records, config, partition, cache, template, assertions, dimensions, inventory, dev).</Description>
   </PropertyGroup>
 
   <ItemGroup>
