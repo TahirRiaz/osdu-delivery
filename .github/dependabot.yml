@@ -26,7 +26,9 @@ updates:
           - "*"
 
   # The OSDU GUI. It compiles the vendored sqlflow/gui sources in place with these packages, so CI builds both GUIs on
-  # every update. A major version opens a pull request of its own.
+  # every update. A major version opens a pull request of its own, except TypeScript's: its lint workspace
+  # (osdu/gui/lint) holds TypeScript 6 because typescript-eslint does not support TypeScript 7, so a TypeScript major
+  # is moved by hand, in the build and in lint together; minor and patch updates still come for both.
   - package-ecosystem: npm
     directory: /osdu/gui
     schedule:
@@ -35,6 +37,10 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: osdu
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
     groups:
       gui:
         patterns:
