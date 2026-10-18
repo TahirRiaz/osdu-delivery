@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using SqlFlow.Core.Secrets;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// Tests a flow's OSDU client the way a delivery uses it: the client-credentials exchange a run makes (the form a flow's

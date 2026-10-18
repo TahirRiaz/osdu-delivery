@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using SqlFlow.Core;
-using SqlFlow.Delivery.Cli.LocalSetup;
+using SqlFlow.Delivery.Setup;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;

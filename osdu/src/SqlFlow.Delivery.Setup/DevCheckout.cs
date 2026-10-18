@@ -1,7 +1,7 @@
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// The checkout a local run starts from: the folder holding the template <c>dev.env.example</c> (beside dev.bat and dev.sh),
@@ -37,7 +37,7 @@ internal sealed record DevCheckout(string Root, string EnvFile)
         }
 
         throw new FlowValidationException(
-            $"No {TemplateName} was found in {Path.GetFullPath(startDirectory)} or above it. Run 'sqlflow dev' from an OSDU Delivery checkout "
+            $"No {TemplateName} was found in {Path.GetFullPath(startDirectory)} or above it. Run the setup from an OSDU Delivery checkout "
             + "(dev.bat and dev.sh do), where the template sits beside them.");
     }
 

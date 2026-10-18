@@ -1,7 +1,7 @@
 using Microsoft.Data.SqlClient;
 using SqlFlow.Core.Secrets;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// Reads the SQL Servers a local run uses, with the client the hosts use, and on the setup's request creates a database or

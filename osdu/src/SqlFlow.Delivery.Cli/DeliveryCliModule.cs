@@ -345,11 +345,11 @@ public sealed class DeliveryCliModule : ICliModule
             Subcommands = ["list", "show", "records", "lookup", "runs", "export", "removals", "removal"],
             ValueOptions = ["--partition", "--finding", "--after", "--limit", "--out", "--outcome"],
         },
-        new CliVerb("dev", LocalSetup.DevVerbs.Usage, LocalSetup.DevVerbs.DevAsync)
+        new CliVerb("dev", DeliveryDevVerbs.Usage, DeliveryDevVerbs.DevAsync)
         {
             Subcommands = ["setup", "check", "env"],
-            ValueOptions = ["--env-file"],
-            Flags = ["--api", "--test-osdu", "--prepare"],
+            ValueOptions = [.. Setup.DevCommand.ValueOptions],
+            Flags = [.. Setup.DevCommand.Flags],
             // It sets the env file up and checks it, so it reads the file itself: one the CLI would refuse still reaches it.
             ReadsLocalEnvFile = true,
         },

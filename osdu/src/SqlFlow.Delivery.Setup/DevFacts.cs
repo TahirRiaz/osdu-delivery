@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using SqlFlow.Core.Secrets;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// The settings a local run starts with, as the launchers set them: the env file's (the first of a name set twice, as the
@@ -61,7 +61,8 @@ internal sealed class DevSettings
 /// <param name="Npm">True when npm is on the PATH.</param>
 /// <param name="AzureNeeded">True when the settings read Azure through the Azure CLI.</param>
 /// <param name="AzureAccount">az account show; null when Azure is not needed.</param>
-internal sealed record ToolFacts(ToolResult Dotnet, ToolResult Node, bool Npm, bool AzureNeeded, ToolResult? AzureAccount);
+/// <param name="DotnetOffPath">Where the SDK is when this terminal's PATH does not have it (installed since it started), or null.</param>
+internal sealed record ToolFacts(ToolResult Dotnet, ToolResult Node, bool Npm, bool AzureNeeded, ToolResult? AzureAccount, string? DotnetOffPath = null);
 
 /// <summary>A repository a local run syncs, as configured or registered, and its folder on this machine when it has one.</summary>
 /// <param name="Name">Its name.</param>
@@ -175,14 +176,16 @@ internal static partial class DevFactsCollector
     private static async Task<ToolFacts> ToolsAsync(DevCheckout checkout, DevMachine machine, DevSettings settings, CancellationToken ct)
     {
         var needed = AzureNeeded(settings);
-        var dotnet = machine.Tools.RunAsync("dotnet", ["--version"], new ToolRun(WorkingDirectory: checkout.Root), ct);
+        var located = DotnetLocator.Find(machine);
+        var offPath = located is not null && machine.Tools.Find("dotnet") is null ? located : null;
+        var dotnet = machine.Tools.RunAsync(located ?? "dotnet", ["--version"], new ToolRun(WorkingDirectory: checkout.Root), ct);
         var node = machine.Tools.RunAsync("node", ["--version"], new ToolRun(), ct);
         var account = needed
             ? machine.Tools.RunAsync("az", ["account", "show", "--query", "user.name", "--output", "tsv"], new ToolRun(), ct)
             : Task.FromResult<ToolResult>(ToolResult.NotFound);
         await Task.WhenAll(dotnet, node, account).ConfigureAwait(false);
         var npm = machine.Tools.Find("npm") is not null;
-        return new ToolFacts(await dotnet.ConfigureAwait(false), await node.ConfigureAwait(false), npm, needed, needed ? await account.ConfigureAwait(false) : null);
+        return new ToolFacts(await dotnet.ConfigureAwait(false), await node.ConfigureAwait(false), npm, needed, needed ? await account.ConfigureAwait(false) : null, offPath);
     }
 
     /// <summary>

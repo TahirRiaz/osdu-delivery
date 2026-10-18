@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// What a local run's facts mean (osdu/docs/reference/cli/dev.md, What the check reports): a finding for every tool, every
@@ -40,6 +40,8 @@ internal static partial class DevReadiness
         var dotnet = facts.Tools.Dotnet;
         findings.Add(dotnet switch
         {
+            { Succeeded: true } when facts.Tools.DotnetOffPath is { } path
+                => Finding.Warning(".NET SDK", $"{dotnet.Output}, at {path}, which this terminal's PATH does not have yet", "Open a new terminal (an install since this one started is on the PATH of new ones)."),
             { Succeeded: true } => Finding.Ok(".NET SDK", dotnet.Output),
             { Found: false } => Finding.Error(".NET SDK", "not installed", advice.InstallDotnet, DevAdvice.NewTerminal),
             _ => Finding.Error(".NET SDK", "none matches global.json (9.0.100 or later)", advice.InstallDotnet),

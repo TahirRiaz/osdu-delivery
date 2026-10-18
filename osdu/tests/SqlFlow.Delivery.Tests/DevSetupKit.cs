@@ -1,4 +1,4 @@
-using SqlFlow.Delivery.Cli.LocalSetup;
+using SqlFlow.Delivery.Setup;
 
 namespace SqlFlow.Delivery.Tests;
 
@@ -144,6 +144,52 @@ internal sealed class FakeSqlProbe : ISqlServerProbe
     }
 }
 
+/// <summary>The command line, answering from a result, recording each verb it was asked to run.</summary>
+internal sealed class FakeCommandLine : ICommandLine
+{
+    /// <summary>Why it cannot run (no .NET), or null when it can.</summary>
+    public string? Missing { get; set; }
+
+    /// <summary>What <see cref="Refresh"/> finds: true once .NET has been installed.</summary>
+    public bool InstalledOnRefresh { get; set; }
+
+    /// <summary>What a run answers.</summary>
+    public ToolResult Result { get; set; } = FakeToolRunner.Ok();
+
+    public bool Prepared { get; private set; }
+
+    public bool Finished { get; private set; }
+
+    /// <summary>Every verb run, with the environment it was given.</summary>
+    public List<(IReadOnlyList<string> Arguments, IReadOnlyDictionary<string, string?> Environment)> Runs { get; } = [];
+
+    public string? Unavailable => Missing;
+
+    public void Prepare(CancellationToken ct) => Prepared = Missing is null;
+
+    public bool Refresh()
+    {
+        if (InstalledOnRefresh)
+        {
+            Missing = null;
+        }
+
+        return Missing is null;
+    }
+
+    public Task<ToolResult> RunAsync(IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string?> environment, CancellationToken ct)
+    {
+        Runs.Add((arguments, environment));
+        return Task.FromResult(Result);
+    }
+
+    public Task FinishAsync(IPrompter prompter, CancellationToken ct)
+    {
+        Finished = true;
+        return Task.CompletedTask;
+    }
+}
+
 /// <summary>An OSDU sign-in answering one result, recording what it was given.</summary>
 internal sealed class FakeOsduSignIn(OsduSignInResult result) : IOsduSignIn
 {
@@ -179,13 +225,19 @@ internal sealed class DevCheckoutScope : IDisposable
 
     public Dictionary<string, string> Environment { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>The command line every machine of the scope gets.</summary>
+    public FakeCommandLine CommandLine { get; } = new();
+
+    /// <summary>The files the machine says are there (where a .NET SDK is looked for off the PATH).</summary>
+    public HashSet<string> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public DateTimeOffset Now { get; set; } = new(2026, 10, 17, 9, 30, 0, TimeSpan.Zero);
 
     public DevEnvTemplate Template => DevEnvTemplate.Parse(File.ReadAllLines(Checkout.TemplatePath), Checkout.TemplatePath);
 
     /// <summary>The machine, answering through <paramref name="prompter"/>.</summary>
     public DevMachine Machine(IPrompter prompter, DevPlatform platform = DevPlatform.Windows)
-        => new(Tools, Sql, Osdu, prompter, Environment, platform, "DOMAIN\\dev", () => Now, new SelfCommand("sqlflow-self", ["entry.dll"]));
+        => new(Tools, Sql, Osdu, prompter, Environment, platform, "DOMAIN\\dev", () => Now, (_, _) => CommandLine, Files.Contains);
 
     /// <summary>Writes the env file.</summary>
     public void WriteEnv(params string[] lines)

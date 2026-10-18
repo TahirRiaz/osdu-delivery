@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using SqlFlow.Core;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>What a setting of the template is needed for, which decides what its absence means.</summary>
 internal enum SettingNeed

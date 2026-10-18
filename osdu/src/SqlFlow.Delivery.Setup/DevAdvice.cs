@@ -1,4 +1,4 @@
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// The commands a fix names, for the platform it is on: the launcher (dev.bat or ./dev.sh), the command line in the

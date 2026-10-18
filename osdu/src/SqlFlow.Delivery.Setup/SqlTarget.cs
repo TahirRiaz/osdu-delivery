@@ -1,6 +1,6 @@
 using Microsoft.Data.SqlClient;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>Where a SQL Server name points.</summary>
 internal enum SqlServerPlace

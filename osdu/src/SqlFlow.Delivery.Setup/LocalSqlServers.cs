@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>How a SQL Server on this machine runs.</summary>
 internal enum SqlInstanceKind

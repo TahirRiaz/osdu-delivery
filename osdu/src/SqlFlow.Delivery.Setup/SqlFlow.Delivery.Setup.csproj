@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.Setup</RootNamespace>
+    <Description>The local run's setup and check (setup, check, env): the questions that write .sqlflow/env from dev.env.example, and the report of what a local run has and what it is missing. Kept to SQLFlow's core and the SQL client, so it builds in seconds and publishes as a small self-contained binary; the osdu-delivery-setup host and the command line's dev verb both run it.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlFlow.Delivery.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SQLFlow's core alone (two small packages, no project of its own): the env file's one parser and the secret
+         redaction every host uses. Nothing of the module, the catalog or EF Core, which the command line brings. -->
+    <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Core\SqlFlow.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+  </ItemGroup>
+
+</Project>

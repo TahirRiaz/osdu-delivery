@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using SqlFlow.Core.Secrets;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// The setup's questions (osdu/docs/reference/cli/dev.md, The setup): the SQL Server (starting one in Docker when the machine
@@ -11,7 +11,7 @@ namespace SqlFlow.Delivery.Cli.LocalSetup;
 /// path that already does it (the command line's own db migrate and partition add). A current file's values are offered as
 /// the defaults, and every name it set that no question asks about is kept.
 /// </summary>
-internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplate template, DevMachine machine)
+internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplate template, DevMachine machine, ICommandLine commandLine)
 {
     private readonly DevQuestions _ask = new(machine.Prompter);
     private readonly DevAdvice _advice = new(machine.Platform, checkout.Show(checkout.EnvFile), machine.Account);
@@ -54,6 +54,7 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
         _ask.Note("command line run with. Press Enter to take the value in [brackets]. Nothing changes until you have seen the plan");
         _ask.Note("and said yes; Ctrl+C stops without writing anything.");
 
+        await DotnetAsync(ct).ConfigureAwait(false);
         var sql = await SqlServerAsync(current, ct).ConfigureAwait(false);
         var databases = await DatabasesAsync(current, values, sql, ct).ConfigureAwait(false);
         var admin = await SignInAsync(current, values, sql, databases, ct).ConfigureAwait(false);
@@ -62,6 +63,57 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
         Optional(current, values);
 
         return await WriteAsync(values, parked, sql, databases, admin, partition, ct).ConfigureAwait(false);
+    }
+
+    // ------------------------------------------------------------------------------------------------------------------
+    // .NET
+    // ------------------------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Makes sure the command line can run, which creating the catalog and registering the partition need and every start
+    /// needs after: when the .NET SDK is missing (the setup then runs from its self-contained binary), offers to install it
+    /// with the platform's package manager. Then starts building the command line, so it is ready by the time the answers
+    /// are.
+    /// </summary>
+    private async Task DotnetAsync(CancellationToken ct)
+    {
+        if (commandLine.Unavailable is { } why)
+        {
+            _ask.Heading(".NET: what OSDU Delivery builds and runs on");
+            _ask.Note($"{char.ToUpperInvariant(why[0])}{why[1..]}. The control plane, the workers and the command line all run on it.");
+            var installer = machine.Platform switch
+            {
+                DevPlatform.Windows when machine.Tools.Find("winget") is not null
+                    => ("winget", new[] { "install", "--id", "Microsoft.DotNet.SDK.9", "--exact", "--accept-package-agreements", "--accept-source-agreements" }),
+                DevPlatform.MacOS when machine.Tools.Find("brew") is not null => ("brew", new[] { "install", "--cask", "dotnet-sdk" }),
+                _ => ((string, string[])?)null,
+            };
+            if (installer is { } install
+                && _ask.YesNo($"Install the .NET SDK now ({install.Item1} {string.Join(' ', install.Item2)}; it may ask for an administrator's rights)?", true))
+            {
+                var result = await machine.Tools.RunAsync(install.Item1, install.Item2, new ToolRun(Attached: true), ct).ConfigureAwait(false);
+                if (!result.Succeeded)
+                {
+                    _ask.Say($"{install.Item1} did not finish the install (exit code {result.ExitCode}); its output above says why.", Tone.Caution);
+                }
+            }
+            else
+            {
+                _ask.Note(_advice.InstallDotnet);
+            }
+
+            if (commandLine.Refresh())
+            {
+                _ask.Say("The .NET SDK is installed.", Tone.Good);
+            }
+            else
+            {
+                _ask.Note($"The setup goes on without it: it writes the file and makes what it can, and the catalog and the partition");
+                _ask.Note($"are made once .NET is installed and {_advice.Launcher} setup runs again (it offers what this one asked).");
+            }
+        }
+
+        commandLine.Prepare(ct);
     }
 
     // ------------------------------------------------------------------------------------------------------------------
@@ -742,19 +794,29 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
             plan.Add($"allow snapshot isolation on {databases.Data}");
         }
 
+        var cliReady = commandLine.Unavailable is null;
         if (databases.CreateCatalog)
         {
-            plan.Add($"create the catalog {databases.Catalog} ('db migrate --create')");
+            plan.Add(cliReady
+                ? $"create the catalog {databases.Catalog} ('db migrate --create')"
+                : $"not yet: create the catalog {databases.Catalog}, which needs .NET ({_advice.Launcher} setup does it once .NET is installed)");
         }
 
         if (registerPartition && (databases.CatalogReady || databases.CreateCatalog))
         {
-            if (!databases.CreateCatalog)
+            if (!cliReady)
             {
-                plan.Add($"apply the catalog's pending migrations ('db migrate', as {_advice.Launcher} does at every start)");
+                plan.Add($"not yet: register the partition {partition}, which needs .NET ({_advice.Launcher} setup does it once .NET is installed)");
             }
+            else
+            {
+                if (!databases.CreateCatalog)
+                {
+                    plan.Add($"apply the catalog's pending migrations ('db migrate', as {_advice.Launcher} does at every start)");
+                }
 
-            plan.Add($"register the partition {partition} ('partition add')");
+                plan.Add($"register the partition {partition} ('partition add')");
+            }
         }
 
         foreach (var line in plan)
@@ -783,9 +845,9 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
         }
 
         var catalogReady = databases.CatalogReady;
-        if (databases.CreateCatalog)
+        if (databases.CreateCatalog && cliReady)
         {
-            _ask.Say($"Creating the catalog {databases.Catalog} (the first run builds the command line) ...");
+            _ask.Say($"Creating the catalog {databases.Catalog} ...");
             catalogReady = await CliAsync(["db", "migrate", "--create"], environment, $"Created the catalog {databases.Catalog}.", ct).ConfigureAwait(false);
         }
 
@@ -794,7 +856,7 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
             await TryAsync($"Allowed snapshot isolation on {databases.Data}.", $"Could not change {databases.Data}", () => machine.Sql.AllowSnapshotIsolationAsync(sql.Target("master"), databases.Data, ct)).ConfigureAwait(false);
         }
 
-        if (registerPartition && catalogReady)
+        if (registerPartition && catalogReady && cliReady)
         {
             var partitions = (await machine.Sql.ReadCatalogAsync(sql.Target(databases.Catalog), admin.Name, ct).ConfigureAwait(false)).Partitions;
             if (partitions.Any(p => string.Equals(p.Name, partition, StringComparison.OrdinalIgnoreCase)))
@@ -817,9 +879,7 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
     /// <summary>Runs one of the command line's own verbs on this console, with the written settings in its environment.</summary>
     private async Task<bool> CliAsync(IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string?> environment, string done, CancellationToken ct)
     {
-        var result = await machine.Tools.RunAsync(
-            machine.Self.Program, [.. machine.Self.Prefix, .. arguments], new ToolRun(WorkingDirectory: checkout.Root, Environment: environment, Attached: true), ct)
-            .ConfigureAwait(false);
+        var result = await commandLine.RunAsync(arguments, environment, ct).ConfigureAwait(false);
         if (result.Succeeded)
         {
             _ask.Say(done, Tone.Good);

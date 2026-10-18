@@ -183,7 +183,7 @@ The whole system (control plane, workers and GUI) runs on one machine, on Window
 
 | Component | What for | Windows | macOS | Linux |
 | --- | --- | --- | --- | --- |
-| .NET 9 SDK or later | builds and runs everything | `winget install Microsoft.DotNet.SDK.9` | `brew install --cask dotnet-sdk` | [Install .NET](https://learn.microsoft.com/dotnet/core/install/linux) |
+| .NET 9 SDK or later | builds and runs everything; the first start offers to install it | `winget install Microsoft.DotNet.SDK.9` | `brew install --cask dotnet-sdk` | [Install .NET](https://learn.microsoft.com/dotnet/core/install/linux) |
 | SQL Server 2022 | the catalog and ledger (`OsduDelivery`), and the source data (`OsduData`) | `winget install Microsoft.SQLServer.2022.Developer`, or Docker | Docker Desktop: `brew install --cask docker`; the setup starts SQL Server in it | Docker Engine; the setup starts SQL Server in it |
 | Node.js 22 or later | the GUI (not needed for the control plane alone) | `winget install OpenJS.NodeJS.LTS` | `brew install node` | [nodejs.org](https://nodejs.org/en/download) |
 | An OSDU platform and a client | delivering: its URL, a data partition, a client id and secret, owners and viewers groups, a legal tag | | | |
@@ -196,8 +196,9 @@ dev.bat          # Windows
 ./dev.sh         # macOS, Linux
 ```
 
-On the first start it asks for what it cannot know: the SQL Server (and offers to start SQL Server 2022 in Docker when
-the machine has none, which is how it runs on a Mac), the first admin's password, the OSDU platform and its client
+On the first start the setup (`osdu-delivery-setup`, a small program of its own that builds in seconds) asks for what
+it cannot know: .NET when it is missing (offering to install it), the SQL Server (and offers to start SQL Server 2022 in
+Docker when the machine has none, which is how it runs on a Mac), the first admin's password, the OSDU platform and its client
 (which it can test by signing in and reading the legal tag), and a folder or git repository of flows. It shows its plan,
 and once you say yes it writes the git-ignored `.sqlflow/env`, creates the databases and registers the partition. Every
 start after that checks the machine and the settings, prints what is set and what is missing with the fix for each, and
@@ -212,9 +213,15 @@ sign in as `admin` with the password the setup put in `.sqlflow/env` as `SQLFLOW
 | `dev.bat api`, `./dev.sh api` | The control plane without the GUI. |
 | `dev.bat managed`, `./dev.sh managed` | The control plane starting worker processes of its own, as a deployment's workers run. |
 
+On a machine without .NET, the launchers run the setup from the self-contained binary each release publishes
+(Windows x64, macOS on Apple silicon and Intel, Linux x64 and arm64), which needs nothing installed. The repository is
+private, so they download it with the [GitHub CLI](https://cli.github.com) signed in as you (`gh auth login`) into
+`.sqlflow/tools`, and use it only when it matches the checksum the release lists. Without the GitHub CLI, download
+`osdu-delivery-setup-<platform>` from the repository's Releases page and unpack it into `.sqlflow/tools` yourself.
+
 Every setting, with what it is for and whether a start needs it, is in [dev.env.example](dev.env.example): copy it to
-`.sqlflow/env` and fill it in to set up by hand. [sqlflow dev](osdu/docs/reference/cli/dev.md) describes the setup and
-the check in full.
+`.sqlflow/env` and fill it in to set up by hand. [osdu-delivery-setup](osdu/docs/reference/cli/dev.md) describes the
+setup and the check in full.
 
 On a Mac with Apple silicon, SQL Server's image runs under emulation: turn on Docker Desktop's "Use Rosetta for
 x86_64/amd64 emulation on Apple Silicon" (Settings, General) before the first start.

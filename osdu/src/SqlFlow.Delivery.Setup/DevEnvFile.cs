@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// Writes a local run's env file: the template's sections with the setup's values in place, every other name the replaced
@@ -34,7 +34,7 @@ internal static class DevEnvFile
         var output = new List<string>
         {
             "# OSDU Delivery: the settings of a local run on this machine. NEVER COMMITTED: .sqlflow/ is git-ignored.",
-            string.Create(CultureInfo.InvariantCulture, $"# Written by 'sqlflow dev setup' on {written:yyyy-MM-dd HH:mm} from {DevCheckout.TemplateName}, which explains each"),
+            string.Create(CultureInfo.InvariantCulture, $"# Written by osdu-delivery-setup on {written:yyyy-MM-dd HH:mm} from {DevCheckout.TemplateName}, which explains each"),
             "# setting. 'dev.bat setup' (or './dev.sh setup') asks the questions again; 'dev.bat check' reports what is set and missing.",
             "# It holds this machine's values, secrets included: never copy one into a flow, a mapping, a commit or a chat.",
             string.Empty,
