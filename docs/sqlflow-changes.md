@@ -5,7 +5,7 @@
 project made to SQLFlow on the way there and why each was made. Every one made up to 2026-10-16 is in SQLFlow itself,
 under the SQLFlow commit each row names. Of the four made since, the MCP image's build stage (`c4db29e8`) is carried
 to `B:\SQLFlow` as `be9d87b9`; the local env file's (`1e7bad85`), the run log test's (`e77b0714`) and the test
-category marks (`2e3f5d69`) are not carried yet. Besides those, `sqlflow/` is SQLFlow as it stands except for the one
+category marks (`da3ce2c8`) are not carried yet. Besides those, `sqlflow/` is SQLFlow as it stands except for the one
 difference section 5 lists. It is written for whoever wants the reason behind an extension point, or resolves a
 conflict during the next `git subtree pull`.
 
@@ -99,7 +99,7 @@ SQLFlow marked its database tests `[Trait("Category", "Integration")]`, but not 
 
 | SQLFlow commit | What it marks |
 | --- | --- |
-| `2e3f5d69` | The 34 test classes that start the control plane host (`ControlPlaneAppFactory`, `WebApplicationFactory`), start the control plane or the command line as a process, or reach a database through a fixture of their own carry the trait too. `dotnet test --filter "Category!=Integration"` then runs every other SQLFlow test with no SQL Server, host or process, in under a minute; nothing a test does changes. This project's unit tier (`tools/test.sh`, CI's Build and test) is that filter over the whole solution. |
+| `da3ce2c8` | The 34 test classes that start the control plane host (`ControlPlaneAppFactory`, `WebApplicationFactory`), start the control plane or the command line as a process, or reach a database through a fixture of their own carry the trait too. `dotnet test --filter "Category!=Integration"` then runs every other SQLFlow test with no SQL Server, host or process, in under a minute; nothing a test does changes. This project's unit tier (`tools/test.sh`, CI's Build and test) is that filter over the whole solution. |
 
 ## 2. The extension points this project needed
 
