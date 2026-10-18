@@ -3,10 +3,11 @@
 `sqlflow/` is a squashed git subtree of SQLFlow (`B:\SQLFlow`, github.com/TahirRiaz/SQLFlow), vendored at SQLFlow commit
 **`fe87877c30cafb40f89ecd37f6b11d83bdd8f0e8`** for OSDU Delivery 1.0.0. This page is the inventory of the changes this
 project made to SQLFlow on the way there and why each was made. Every one made up to 2026-10-16 is in SQLFlow itself,
-under the SQLFlow commit each row names. Of the two made since, the MCP image's build stage (`c4db29e8`) is carried to
-`B:\SQLFlow` as `be9d87b9`, and the local env file's (`1e7bad85`) is not carried yet; besides those, `sqlflow/` is
-SQLFlow as it stands except for the one difference section 5 lists. It is written for whoever wants the reason behind an extension point, or resolves a conflict during the next `git subtree
-pull`.
+under the SQLFlow commit each row names. Of the four made since, the MCP image's build stage (`c4db29e8`) is carried
+to `B:\SQLFlow` as `be9d87b9`; the local env file's (`1e7bad85`), the run log test's (`e77b0714`) and the test
+category marks (`2e3f5d69`) are not carried yet. Besides those, `sqlflow/` is SQLFlow as it stands except for the one
+difference section 5 lists. It is written for whoever wants the reason behind an extension point, or resolves a
+conflict during the next `git subtree pull`.
 
 `tools/check-vendored-sqlflow.sh` lists the changed files and fails a commit that mixes `sqlflow/` with anything else,
 or that adds a line mentioning OSDU inside it. This page says what the changes are.
@@ -91,6 +92,14 @@ same races are there for anyone running the suites in parallel or at the wrong m
 | `603750d1` | The sync extension tests left lineage objects another test's sync swept up. |
 | `971f55a6` | The notification digest clamp test asked for "today" and expected a clamp to now; between 00:00 and 00:05 UTC, today so far is shorter than the smallest period a digest may cover, so the endpoint refused it and the test failed for a reason other than the one it checks. |
 | `e77b0714` | The run log test without a database read `flw.SysLog` inside a `CASE` that `OBJECT_ID` guarded, but SQL Server compiles a statement whole, so on a fresh database it failed with "Invalid object name" whenever it ran before any test had created the table. It now reads the table in the branch of an `IF` that runs only when the table exists. |
+
+### Test tiers
+
+SQLFlow marked its database tests `[Trait("Category", "Integration")]`, but not its other heavy ones, so no filter could run the tests that need nothing outside the process on their own.
+
+| SQLFlow commit | What it marks |
+| --- | --- |
+| `2e3f5d69` | The 34 test classes that start the control plane host (`ControlPlaneAppFactory`, `WebApplicationFactory`), start the control plane or the command line as a process, or reach a database through a fixture of their own carry the trait too. `dotnet test --filter "Category!=Integration"` then runs every other SQLFlow test with no SQL Server, host or process, in under a minute; nothing a test does changes. This project's unit tier (`tools/test.sh`, CI's Build and test) is that filter over the whole solution. |
 
 ## 2. The extension points this project needed
 
