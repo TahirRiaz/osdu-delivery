@@ -9,13 +9,12 @@
 #      ./dev.sh setup    ask the setup questions again (the SQL Server, OSDU, a repository), then start
 #      ./dev.sh check    say what this machine has and what it is missing, test the OSDU sign-in, and start nothing
 #
-#  First start: with no .sqlflow/env yet, the setup asks for what it cannot know, offers to install .NET, to create the
-#  databases and to start SQL Server 2022 in Docker (which is how SQL Server runs on a Mac), writes .sqlflow/env from
-#  dev.env.example, and registers the partition. Every start then checks the machine and the file and prints what is set
-#  and what is missing, with the fix for each, and stops only when a start would fail. Both are osdu-delivery-setup
-#  (osdu/docs/reference/cli/dev.md): built here in seconds where .NET is installed, and where it is not, the
-#  self-contained binary each release publishes, fetched with the GitHub CLI into .sqlflow/tools. This script only finds
-#  them, and starts what the check cleared.
+#  First start: with no .sqlflow/env yet, the setup asks for what it cannot know, offers to create the databases and to
+#  start SQL Server 2022 in Docker (which is how SQL Server runs on a Mac), writes .sqlflow/env from dev.env.example, and
+#  registers the partition. Every start then checks the machine and the file and prints what is set and what is missing,
+#  with the fix for each, and stops only when a start would fail. Both are osdu-delivery-setup
+#  (osdu/docs/reference/cli/dev.md), built here from this checkout in seconds; on a machine without .NET, which every
+#  start needs, this script offers to install it first. It only finds them, and starts what the check cleared.
 #
 #  What comes up: the GUI on http://localhost:5173 (Vite, hot-reloads on save) and the control plane on
 #  http://localhost:5000 (API + scheduler + dispatcher + in-process node), both in this terminal: Ctrl+C stops both.
@@ -67,94 +66,83 @@ find_dotnet() {
     return 1
 }
 
-# --- The published setup, for a machine without .NET ---
-# The repository is private, so the download is the signed-in user's, through the GitHub CLI; the archive is used only
-# when it matches the checksum the release lists beside it (<archive>.sha256).
-setup_rid() {
-    local os arch
-    os="$(uname -s)"
-    arch="$(uname -m)"
-    case "$os/$arch" in
-        Darwin/arm64) echo osx-arm64 ;;
-        Darwin/x86_64) echo osx-x64 ;;
-        Linux/x86_64) echo linux-x64 ;;
-        Linux/aarch64 | Linux/arm64) echo linux-arm64 ;;
-        *) echo "" ;;
-    esac
+# --- .NET, offered when it is missing: Homebrew on a Mac, Microsoft's install script on Linux ---
+# .NET on Linux reads its culture data from ICU (libicu), and nothing of OSDU Delivery runs without it.
+has_icu() {
+    local ldconfig lib
+    for ldconfig in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
+        if command -v "$ldconfig" >/dev/null 2>&1 && "$ldconfig" -p 2>/dev/null | grep -q 'libicuuc\.so'; then
+            return 0
+        fi
+    done
+    for lib in /usr/lib/*/libicuuc.so* /usr/lib64/libicuuc.so* /usr/lib/libicuuc.so* /lib/*/libicuuc.so*; do
+        [ -e "$lib" ] && return 0
+    done
+    return 1
 }
 
-fetch_setup() {
-    local tools="$root/.sqlflow/tools" rid archive want have latest current
-    # The release the binary here came from, and the newest release when the GitHub CLI can say: a newer one replaces
-    # it. Offline, or without the GitHub CLI, the binary here is used as it is.
-    latest=""
-    if command -v gh >/dev/null 2>&1; then
-        latest="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
-    fi
-    current="$(cat "$tools/osdu-delivery-setup.release" 2>/dev/null || true)"
-    if [ -x "$tools/osdu-delivery-setup" ] && { [ -z "$latest" ] || [ "$latest" = "$current" ]; }; then
-        echo "$tools/osdu-delivery-setup"
-        return 0
-    fi
-    rid="$(setup_rid)"
-    if [ -z "$rid" ]; then
-        echo "[X] No setup binary is published for $(uname -s) $(uname -m); install the .NET SDK and start ./dev.sh again." >&2
-        return 1
-    fi
-    archive="osdu-delivery-setup-$rid.tar.gz"
-    echo "The .NET SDK is not installed, so the setup runs from the binary each release publishes." >&2
-    if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
-        fetch_manual "$archive"
-        return 1
-    fi
-    mkdir -p "$tools"
-    echo "Downloading $archive from release $latest ..." >&2
-    if ! gh release download ${latest:+"$latest"} --pattern "$archive" --pattern "$archive.sha256" --dir "$tools" --clobber >&2; then
-        fetch_manual "$archive"
-        return 1
-    fi
-    want="$(head -n 1 "$tools/$archive.sha256" | cut -d' ' -f1 || true)"
-    if command -v sha256sum >/dev/null 2>&1; then
-        have="$(sha256sum "$tools/$archive" | cut -d' ' -f1)"
-    else
-        have="$(shasum -a 256 "$tools/$archive" | cut -d' ' -f1)"
-    fi
-    if [ -z "$want" ] || [ "$want" != "$have" ]; then
-        echo "[X] The download does not match the checksum the release lists for it, so it was not used." >&2
-        rm -f -- "$tools/$archive" "$tools/$archive.sha256"
-        fetch_manual "$archive"
-        return 1
-    fi
-    tar -xzf "$tools/$archive" -C "$tools"
-    rm -f -- "$tools/$archive" "$tools/$archive.sha256"
-    chmod +x "$tools/osdu-delivery-setup"
-    printf '%s\n' "$latest" > "$tools/osdu-delivery-setup.release"
-    echo "$tools/osdu-delivery-setup"
-}
-
-fetch_manual() {
+# Installs .NET when the person says yes, and finds it again; false, with what to do, when it is still missing.
+offer_dotnet() {
+    local how command answer=""
+    echo "The .NET SDK is not installed. The setup, the control plane and the workers all build and run on it." >&2
     case "$(uname -s)" in
-        Darwin) echo "[X] The .NET SDK is not installed. Install it: brew install --cask dotnet-sdk, then start ./dev.sh again." >&2 ;;
-        *) echo "[X] The .NET SDK is not installed. Install it (https://learn.microsoft.com/dotnet/core/install/linux), then start ./dev.sh again." >&2 ;;
+        Darwin)
+            if command -v brew >/dev/null 2>&1; then
+                how="Homebrew (brew install --cask dotnet-sdk; it may ask for your password)"
+                command="brew install --cask dotnet-sdk"
+            else
+                how=""
+                command="the macOS installer from https://dotnet.microsoft.com/download"
+            fi
+            ;;
+        Linux)
+            if ! has_icu; then
+                echo "[X] .NET on Linux needs ICU (libicu), which this machine does not have:" >&2
+                echo "    apt install libicu-dev (Debian, Ubuntu), dnf install libicu (Fedora, RHEL), then start ./dev.sh again." >&2
+                return 1
+            fi
+            if command -v curl >/dev/null 2>&1; then
+                how="Microsoft's dotnet-install.sh, into ~/.dotnet"
+                command="curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 9.0 --install-dir ~/.dotnet"
+            else
+                how=""
+                command="https://learn.microsoft.com/dotnet/core/install/linux"
+            fi
+            ;;
+        *)
+            how=""
+            command="https://dotnet.microsoft.com/download"
+            ;;
     esac
-    echo "    Or put osdu-delivery-setup from this repository's Releases ($1) in .sqlflow/tools/ and start ./dev.sh again;" >&2
-    echo "    with the GitHub CLI signed in (gh auth login), ./dev.sh fetches it itself." >&2
+    if [ -n "$how" ]; then
+        read -r -p "Install the .NET 9 SDK now with $how? [Y/n] " answer || answer=n
+        case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+            n | no) ;;
+            *)
+                if bash -o pipefail -c "$command" && find_dotnet; then
+                    return 0
+                fi
+                echo "[X] The install did not leave a .NET SDK this terminal can run; its output above says why." >&2
+                ;;
+        esac
+    fi
+    echo "[X] Install the .NET 9 SDK: $command" >&2
+    echo "    then start ./dev.sh again." >&2
+    return 1
 }
 
 # --- The setup: osdu-delivery-setup ---
-# Where .NET is installed it is built here: it carries only the setup, so it builds in seconds and is always this
-# checkout's. Where .NET is not, the self-contained binary each release publishes runs instead (it needs no .NET, and
-# offers to install it).
-if find_dotnet; then
-    echo "Building the setup ..."
-    if ! dotnet build osdu/hosts/SqlFlow.Delivery.Setup.Host -v q -nologo; then
-        echo "[X] The setup did not build. Fix the build above and start ./dev.sh again." >&2
-        exit 1
-    fi
-    setup="$root/osdu/hosts/SqlFlow.Delivery.Setup.Host/bin/Debug/net9.0/osdu-delivery-setup"
-else
-    setup="$(fetch_setup)" || exit 1
+# It carries only the setup, so it builds in seconds and is always this checkout's. It needs .NET, as every start does,
+# so a machine without it is offered the install first.
+if ! find_dotnet; then
+    offer_dotnet || exit 1
 fi
+echo "Building the setup ..."
+if ! dotnet build osdu/hosts/SqlFlow.Delivery.Setup.Host -v q -nologo; then
+    echo "[X] The setup did not build. Fix the build above and start ./dev.sh again." >&2
+    exit 1
+fi
+setup="$root/osdu/hosts/SqlFlow.Delivery.Setup.Host/bin/Debug/net9.0/osdu-delivery-setup"
 
 # --- 'check': the report alone, with an OSDU sign-in; nothing is stopped or started ---
 if [ -n "$check" ]; then
@@ -184,12 +172,6 @@ else
     "$setup" check --prepare $api_flag || exit 1
 fi
 
-# --- .NET: the setup may have installed it since this terminal started, off its PATH ---
-if ! find_dotnet; then
-    echo "[X] The .NET SDK is needed to start, and is not installed; the setup said how to install it." >&2
-    echo "    Open a new terminal once it is, and start ./dev.sh again." >&2
-    exit 1
-fi
 
 # --- The command line: the migrations; the setup has usually built it already ---
 echo "Building the OSDU Delivery command line ..."

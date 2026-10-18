@@ -28,7 +28,6 @@ keywords:
   - windows authentication
   - sql login
   - osdu-delivery-setup
-  - setup binary
   - no .net installed
   - install .net
 cliCommand: dev
@@ -58,7 +57,6 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
   - sqlflow/src/SqlFlow.Core/Secrets/LocalEnvFile.cs
   - sqlflow/src/SqlFlow.Cli/Hosting/CliVerb.cs
-  - .github/workflows/ci.yml
   - dev.env.example
   - dev.bat
   - dev.sh
@@ -75,13 +73,12 @@ tests run before every push ([CONTRIBUTING.md, Tests](../../../../CONTRIBUTING.m
 It is a host of its own (`osdu/hosts/SqlFlow.Delivery.Setup.Host`) that carries only the setup, so the first question
 comes without waiting for the whole product to build:
 
-- **Where .NET is installed**, the launchers build it, which takes seconds and always matches the checkout.
-- **Where .NET is not**, they run the self-contained binary each release publishes for the platform (Windows x64,
-  macOS on Apple silicon and Intel, Linux x64 and arm64), which needs no .NET. The repository is private, so a launcher
-  fetches it with the GitHub CLI, signed in as you (`gh release download`), into `.sqlflow/tools`, and uses it only when
-  it matches the checksum the release lists beside it. It notes the release the binary came from, and a start that
-  finds a newer release replaces it; offline, the binary there is used as it is. Without the GitHub CLI, put the binary
-  from the Releases page there yourself. The setup then offers to install .NET, which every start needs.
+- **The launchers build it** from the checkout on every start, which takes seconds and always matches the checkout;
+  nothing is downloaded. By hand: `dotnet build osdu/hosts/SqlFlow.Delivery.Setup.Host`.
+- **Where .NET is not installed**, which every start needs, the launcher offers to install it before it builds the
+  setup: `dev.bat` with winget, `./dev.sh` with Homebrew on a Mac and with Microsoft's `dotnet-install.sh` into
+  `~/.dotnet` on Linux, which first needs ICU (`libicu`), as every .NET program on Linux does. Declined, or where the
+  installer is missing, it names the install and stops.
 
 The command line has the same code as a verb, `sqlflow dev`, for a machine that has built it. `dev` is about this
 machine running OSDU Delivery itself; SQLFlow's `sqlflow doctor` is about a command line reaching a control plane
@@ -127,10 +124,9 @@ has shown its plan and you have said yes. Two steps need the command line (creat
 partition), so the setup host starts building it in the background as the questions begin, with the .NET SDK on the
 PATH or the one an installer just put in its usual place; by the time the plan is confirmed it is usually built.
 
-0. **.NET**, when it is missing. On Windows it offers `winget install Microsoft.DotNet.SDK.9`, on a Mac
-   `brew install --cask dotnet-sdk`, elsewhere it names the install page. Without .NET the setup still writes the file
-   and makes the databases it can; its plan says the catalog and the partition wait for .NET, and the next
-   `dev.bat setup` makes them.
+0. **.NET**, when the command line cannot find it, which happens only to a setup started other than by a launcher
+   (they install .NET first): it says how to install it, writes the file and makes the databases it can; its plan says
+   the catalog and the partition wait for .NET, and the next `dev.bat setup` makes them.
 1. **SQL Server.** It lists the SQL Servers on this machine: Windows services, LocalDB instances and Docker containers
    from a SQL Server image. When none runs and Docker's engine does, it offers to start SQL Server 2022 in a container
    (`osdu-delivery-sql`, port 1433, its databases kept in the volume of that name), with a generated `sa` password handed
@@ -263,16 +259,12 @@ Building the setup ...
   ...
 ```
 
-A first start on a Windows machine without .NET: dev.bat fetches the setup's binary (with the GitHub CLI, signed in)
-and runs it, and the setup offers the install:
+A first start on a machine without .NET: the launcher offers the install before anything else (here dev.bat; on
+Linux, `./dev.sh` offers `Microsoft's dotnet-install.sh, into ~/.dotnet`):
 
 ```text
-The .NET SDK is not installed, so the setup runs from the binary each release publishes.
-Downloading osdu-delivery-setup-win-x64.zip from this repository's latest release ...
-
-.NET: what OSDU Delivery builds and runs on
-  The .NET SDK is not installed on this machine. The control plane, the workers and the command line all run on it.
-  Install the .NET SDK now (winget install --id Microsoft.DotNet.SDK.9 --exact ...; it may ask for an administrator's rights)? [Y/n]:
+The .NET SDK is not installed. The setup, the control plane and the workers all build and run on it.
+Install the .NET 9 SDK now with winget (it may ask for an administrator's rights)? [Y/n]
 ```
 
 A first start on a Mac with Docker Desktop running and no SQL Server:

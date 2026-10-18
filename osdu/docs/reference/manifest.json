@@ -374,7 +374,6 @@
         "windows authentication",
         "sql login",
         "osdu-delivery-setup",
-        "setup binary",
         "no .net installed",
         "install .net"
       ],
@@ -406,7 +405,6 @@
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs",
         "sqlflow/src/SqlFlow.Core/Secrets/LocalEnvFile.cs",
         "sqlflow/src/SqlFlow.Cli/Hosting/CliVerb.cs",
-        ".github/workflows/ci.yml",
         "dev.env.example",
         "dev.bat",
         "dev.sh"
