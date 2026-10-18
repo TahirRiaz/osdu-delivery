@@ -26,8 +26,8 @@ dev.bat setup / ./dev.sh setup     the setup questions again (current values off
 dev.bat api, dev.bat managed       control plane only; managed worker processes
 ```
 
-The launchers find .NET, build the setup's host (seconds; without .NET they fetch the release's self-contained binary
-into `.sqlflow/tools` with `gh release download`), and run it: `setup` when `.sqlflow/env` is missing, otherwise
+The launchers find .NET (offering to install it when it is missing: winget, Homebrew, or `dotnet-install.sh` into
+`~/.dotnet` on Linux), build the setup's host from the checkout (seconds), and run it: `setup` when `.sqlflow/env` is missing, otherwise
 `check --prepare` (fills a copied template's `<generated>` values, runs `az login` when the file reads Azure through
 it). The setup builds `osdu/hosts/SqlFlow.Delivery.Cli.Host` in the background for the catalog and partition steps.
 The launchers stop a previous control plane only after the check passed, load the settings through the setup's `env`,

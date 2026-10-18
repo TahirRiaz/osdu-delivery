@@ -213,11 +213,8 @@ sign in as `admin` with the password the setup put in `.sqlflow/env` as `SQLFLOW
 | `dev.bat api`, `./dev.sh api` | The control plane without the GUI. |
 | `dev.bat managed`, `./dev.sh managed` | The control plane starting worker processes of its own, as a deployment's workers run. |
 
-On a machine without .NET, the launchers run the setup from the self-contained binary each release publishes
-(Windows x64, macOS on Apple silicon and Intel, Linux x64 and arm64), which needs nothing installed. The repository is
-private, so they download it with the [GitHub CLI](https://cli.github.com) signed in as you (`gh auth login`) into
-`.sqlflow/tools`, and use it only when it matches the checksum the release lists. Without the GitHub CLI, download
-`osdu-delivery-setup-<platform>` from the repository's Releases page and unpack it into `.sqlflow/tools` yourself.
+On a machine without .NET, the launcher offers to install it first (winget on Windows, Homebrew on a Mac, Microsoft's
+`dotnet-install.sh` into `~/.dotnet` on Linux), then builds the setup from the checkout, as every start does.
 
 Every setting, with what it is for and whether a start needs it, is in [dev.env.example](dev.env.example): copy it to
 `.sqlflow/env` and fill it in to set up by hand. [osdu-delivery-setup](osdu/docs/reference/cli/dev.md) describes the

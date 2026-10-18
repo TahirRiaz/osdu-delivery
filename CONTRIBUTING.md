@@ -25,8 +25,7 @@ every start after that checks the machine and the settings and says what is miss
 ([Run it locally](README.md#run-it-locally), [osdu-delivery-setup](osdu/docs/reference/cli/dev.md)). The setup is its
 own host, `osdu/hosts/SqlFlow.Delivery.Setup.Host` over `osdu/src/SqlFlow.Delivery.Setup`, which depends on nothing
 but `SqlFlow.Core` and the SQL Server client, so it builds in seconds; the command line carries the same code as
-`sqlflow dev`. A `v*` tag publishes it as a self-contained binary per platform on the release, for machines without
-.NET; keep its dependencies that small.
+`sqlflow dev`. Every start builds it, so keep its dependencies that small.
 
 ## Tests
 
@@ -203,6 +202,21 @@ account needs GitHub Pro, and on GitHub Free the script reports GitHub's refusal
 repository public") and leaves `main` unprotected until the plan allows it. Required reviewers on a private
 repository's environment need GitHub Enterprise; without them, prod is still deployed only from `main`, by someone
 with write access running the Deploy workflow by hand.
+
+## Releases
+
+A release is a `v*` tag on `main` and its version's section in `CHANGELOG.md`:
+
+1. A pull request moves `[Unreleased]` under `## [X.Y.Z] - <date>`, naming the module schema version and the SQLFlow
+   commit (see the 1.0.0 entry), and lands.
+2. Tag the landed commit and push the tag: `git tag -a vX.Y.Z -m "OSDU Delivery X.Y.Z" <commit>`, then
+   `git push origin vX.Y.Z`. A tag with a suffix (`vX.Y.Z-rc.1`) makes a pre-release with `X.Y.Z`'s notes.
+3. CI runs the unit tier and the full test suite on the tag, then creates the GitHub release with the version's notes;
+   a version with no section in `CHANGELOG.md` gets no release. When the repository names an image registry
+   (`IMAGE_REGISTRY`), the images are published under the version as well.
+
+A release carries no binaries: `dev.bat` and `./dev.sh` build the setup from the checkout, and a deployment runs the
+container images.
 
 ## Reporting bugs / requesting features
 

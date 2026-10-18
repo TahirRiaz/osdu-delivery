@@ -11,13 +11,13 @@ REM      dev.bat setup    ask the setup questions again (the SQL Server, OSDU, a
 REM      dev.bat check    say what this machine has and what it is missing, test the OSDU sign-in,
 REM                       and start nothing
 REM
-REM  First start: with no .sqlflow\env yet, the setup asks for what it cannot know, offers to install
-REM  .NET, to create the databases and to start SQL Server in Docker, writes .sqlflow\env from
-REM  dev.env.example, and registers the partition. Every start then checks the machine and the file and
-REM  prints what is set and what is missing, with the fix for each, and stops only when a start would
-REM  fail. Both are osdu-delivery-setup (osdu\docs\reference\cli\dev.md): built here in seconds where
-REM  .NET is installed, and where it is not, the self-contained binary each release publishes, fetched
-REM  with the GitHub CLI into .sqlflow\tools. This file only finds them, and starts what the check cleared.
+REM  First start: with no .sqlflow\env yet, the setup asks for what it cannot know, offers to create the
+REM  databases and to start SQL Server in Docker, writes .sqlflow\env from dev.env.example, and registers
+REM  the partition. Every start then checks the machine and the file and prints what is set and what is
+REM  missing, with the fix for each, and stops only when a start would fail. Both are osdu-delivery-setup
+REM  (osdu\docs\reference\cli\dev.md), built here in seconds; on a machine without .NET, which every start
+REM  needs, this file offers to install it with winget first. It only finds them, and starts what the
+REM  check cleared.
 REM
 REM  What comes up:
 REM      GUI            http://localhost:5173   (Vite, hot-reloads on save)
@@ -76,11 +76,11 @@ if errorlevel 1 (
 )
 
 REM --- The setup: osdu-delivery-setup ---
-REM Where .NET is installed it is built here: it carries only the setup, so it builds in seconds and is
-REM always this checkout's. Where .NET is not, the self-contained binary each release publishes runs
-REM instead (it needs no .NET, and offers to install it).
+REM It carries only the setup, so it builds in seconds and is always this checkout's. It needs .NET, as
+REM every start does, so a machine without it is offered the install first.
 set "_setup="
-if not defined _dotnet goto :nosdk
+if not defined _dotnet call :offerdotnet
+if not defined _dotnet exit /b 1
 echo Building the setup ...
 dotnet build osdu\hosts\SqlFlow.Delivery.Setup.Host -v q -nologo
 if errorlevel 1 (
@@ -88,11 +88,6 @@ if errorlevel 1 (
     exit /b 1
 )
 set "_setup=%_root%osdu\hosts\SqlFlow.Delivery.Setup.Host\bin\Debug\net9.0\osdu-delivery-setup.exe"
-goto :havesetup
-:nosdk
-call :fetchsetup
-if not defined _setup exit /b 1
-:havesetup
 
 REM --- 'check': the report alone, with an OSDU sign-in; nothing is stopped or started ---
 REM Outside a parenthesised block, so %errorlevel% is read after the check ran: exit 0 ready, 2 not ready.
@@ -118,14 +113,6 @@ if not exist ".sqlflow\env" echo .sqlflow\env is missing, so this is a first sta
 if errorlevel 1 exit /b 1
 
 :checked
-REM --- .NET: the setup may have installed it since this terminal started, off its PATH ---
-call :finddotnet
-if not defined _dotnet (
-    echo [X] The .NET SDK is needed to start, and is not installed: winget install Microsoft.DotNet.SDK.9
-    echo     then open a new terminal and start dev.bat again.
-    exit /b 1
-)
-
 REM --- The command line: the migrations; the setup has usually built it already ---
 echo Building the OSDU Delivery command line ...
 dotnet build osdu\hosts\SqlFlow.Delivery.Cli.Host -v q -nologo
@@ -261,55 +248,25 @@ set "_dotnet=1"
 goto :eof
 
 REM ---------------------------------------------------------------------------
-REM  :fetchsetup   sets _setup to the published osdu-delivery-setup for this machine, fetching it with
-REM  the GitHub CLI when .sqlflow\tools does not hold it. The repository is private, so the download
-REM  is the signed-in user's; the archive is used only when it matches the checksum the release lists beside it.
+REM  :offerdotnet   the .NET SDK is missing: offers to install it with winget, then looks for it again
+REM  with :finddotnet, which finds an SDK installed since this terminal started (in Program Files, not
+REM  yet on this terminal's PATH). Sets _dotnet when one runs; says what to do when none does.
 REM ---------------------------------------------------------------------------
-:fetchsetup
-REM PowerShell reads the folder from the environment, so no character a path may hold (an apostrophe in a user name)
-REM can break the command it is given.
-set "_tools=%_root%.sqlflow\tools"
-set "_setup=%_tools%\osdu-delivery-setup.exe"
-REM The release the binary here came from, and the newest release when the GitHub CLI can say: a newer one replaces it.
-REM Offline, or without the GitHub CLI, the binary here is used as it is.
-set "_have="
-if exist "%_tools%\osdu-delivery-setup.release" set /p _have=<"%_tools%\osdu-delivery-setup.release"
-set "_latest="
-where gh >nul 2>&1
-if not errorlevel 1 for /f "usebackq delims=" %%t in (`call gh release view --json tagName --jq .tagName 2^>nul`) do set "_latest=%%t"
-if exist "%_setup%" if not defined _latest goto :eof
-if exist "%_setup%" if "%_have%"=="%_latest%" goto :eof
-set "_setup="
-echo The .NET SDK is not installed, so the setup runs from the binary each release publishes.
-where gh >nul 2>&1
-if errorlevel 1 goto :fetchmanual
-call gh auth status >nul 2>&1
-if errorlevel 1 goto :fetchmanual
-if not exist "%_tools%" mkdir "%_tools%"
-echo Downloading osdu-delivery-setup-win-x64.zip from release %_latest% ...
-call gh release download %_latest% --pattern "osdu-delivery-setup-win-x64.zip" --pattern "osdu-delivery-setup-win-x64.zip.sha256" --dir "%_tools%" --clobber
-if errorlevel 1 goto :fetchmanual
-powershell -NoProfile -Command "$zip=Join-Path $env:_tools 'osdu-delivery-setup-win-x64.zip'; $want=((Get-Content (Join-Path $env:_tools 'osdu-delivery-setup-win-x64.zip.sha256') -TotalCount 1) -split '\s+')[0]; $have=(Get-FileHash $zip -Algorithm SHA256).Hash; if ($want -and ($have -ieq $want)) { exit 0 } else { exit 1 }"
-if errorlevel 1 (
-    echo [X] The download does not match the checksum the release lists for it, so it was not used.
-    del /q "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip" "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip.sha256" >nul 2>&1
-    goto :fetchmanual
-)
-REM Expand-Archive rather than tar: the tar a PATH finds first may be Git's, which reads no zip.
-powershell -NoProfile -Command "try { Expand-Archive -LiteralPath (Join-Path $env:_tools 'osdu-delivery-setup-win-x64.zip') -DestinationPath $env:_tools -Force; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
-if errorlevel 1 goto :fetchmanual
-del /q "%_tools%\osdu-delivery-setup-win-x64.zip" "%_tools%\osdu-delivery-setup-win-x64.zip.sha256" >nul 2>&1
-if not exist "%_tools%\osdu-delivery-setup.exe" goto :fetchmanual
->"%_tools%\osdu-delivery-setup.release" echo %_latest%
-set "_setup=%_tools%\osdu-delivery-setup.exe"
-goto :eof
-:fetchmanual
-echo [X] The .NET SDK is not installed, and the setup's binary could not be fetched.
-echo     Install .NET:  winget install Microsoft.DotNet.SDK.9   then open a new terminal and start dev.bat again.
-echo     Or put osdu-delivery-setup.exe from this repository's Releases (osdu-delivery-setup-win-x64.zip) in
-echo     .sqlflow\tools\ and start dev.bat again; with the GitHub CLI signed in (winget install GitHub.cli, then
-echo     gh auth login), dev.bat fetches it itself.
-set "_setup="
+:offerdotnet
+echo The .NET SDK is not installed. The setup, the control plane and the workers all build and run on it.
+where winget >nul 2>&1
+if errorlevel 1 goto :dotnetmanual
+set "_answer=Y"
+set /p "_answer=Install the .NET 9 SDK now with winget (it may ask for an administrator's rights)? [Y/n] "
+if /i "%_answer%"=="n" goto :dotnetmanual
+if /i "%_answer%"=="no" goto :dotnetmanual
+winget install --id Microsoft.DotNet.SDK.9 --exact --accept-package-agreements --accept-source-agreements
+call :finddotnet
+if defined _dotnet goto :eof
+echo [X] winget did not leave a .NET SDK this terminal can run; its output above says why.
+:dotnetmanual
+echo [X] Install the .NET 9 SDK:  winget install Microsoft.DotNet.SDK.9   (or https://dotnet.microsoft.com/download)
+echo     then start dev.bat again.
 goto :eof
 
 REM ---------------------------------------------------------------------------
