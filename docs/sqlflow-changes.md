@@ -2,9 +2,10 @@
 
 `sqlflow/` is a squashed git subtree of SQLFlow (`B:\SQLFlow`, github.com/TahirRiaz/SQLFlow), vendored at SQLFlow commit
 **`fe87877c30cafb40f89ecd37f6b11d83bdd8f0e8`** for OSDU Delivery 1.0.0. This page is the inventory of the changes this
-project made to SQLFlow on the way there and why each was made. Every one of them is in SQLFlow itself, under the
-SQLFlow commit each row names, so `sqlflow/` is SQLFlow as it stands except for the one difference section 5 lists. It
-is written for whoever wants the reason behind an extension point, or resolves a conflict during the next `git subtree
+project made to SQLFlow on the way there and why each was made. Every one made up to 2026-10-16 is in SQLFlow itself,
+under the SQLFlow commit each row names. Of the two made since, the MCP image's build stage (`c4db29e8`) is carried to
+`B:\SQLFlow` as `be9d87b9`, and the local env file's (`1e7bad85`) is not carried yet; besides those, `sqlflow/` is
+SQLFlow as it stands except for the one difference section 5 lists. It is written for whoever wants the reason behind an extension point, or resolves a conflict during the next `git subtree
 pull`.
 
 `tools/check-vendored-sqlflow.sh` lists the changed files and fails a commit that mixes `sqlflow/` with anything else,
@@ -191,7 +192,7 @@ launcher in `osdu/`; SQLFlow registers none.
    NuGet package to its newest release for .NET 9, every npm package and Rust crate to its latest, and CI's actions
    to their latest. 1.0.0 vendors the result.
 
-A change made to `sqlflow/` after 1.0.0 adds its row here, and is carried to SQLFlow when the user asks. A row names
+A change made to `sqlflow/` from now on adds its row here, and is carried to SQLFlow when the user asks. A row names
 the commit as it is on `main`: a rebase merge gives every commit a new hash, so a row written before its pull request
 lands is corrected to the landed hash once it has. When SQLFlow
 is pulled in again (`git subtree pull --prefix=sqlflow --squash B:/SQLFlow master`), a conflict can only arise in a file
