@@ -1,5 +1,7 @@
 * text=auto
 *.sh text eol=lf
+# git runs these hooks with sh, which misreads a carriage return at the end of each line.
+tools/git-hooks/* text eol=lf
 # cmd misreads a batch file with bare LF line endings: labels and for /f blocks silently do nothing.
 *.bat text eol=crlf
 *.cmd text eol=crlf

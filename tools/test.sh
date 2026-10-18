@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Runs the tests, in one of two tiers (CONTRIBUTING.md, Tests):
+#
+#   bash tools/test.sh                  the unit tier: the build with warnings as errors, every .NET test that needs no
+#                                       SQL Server, host or other process, and the GUI's build, lint and unit tests. It
+#                                       is what CI's Build and test runs on a pull request, and what the pre-push hook
+#                                       runs. It takes minutes, and needs no database.
+#   bash tools/test.sh --full           everything: the whole .NET suite against SQL Server, the MCP server's crates and
+#                                       the GUI end-to-end suite. Run it before opening a pull request; CI runs it on a
+#                                       release tag, and on a pull request labelled full-tests.
+#   bash tools/test.sh --install-hook   makes git run the unit tier before every push (git config core.hooksPath).
+#
+# The unit tier points the suites at a server that does not exist, so a test that needs SQL Server without carrying
+# [Trait("Category", "Integration")] fails here, as it would in CI, rather than passing on this machine's database.
+# The full tier uses SQLFLOW_TEST_DB: from the environment, else from .sqlflow/env, else (on Windows) the local default
+# instance's OsduDeliveryTests under Windows authentication. Never point it at a database holding real data: the suites
+# migrate and seed it.
+#
+# Written for the bash macOS ships (3.2), and for Git Bash on Windows.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+if [ "$#" -gt 1 ]; then
+  echo "tools/test.sh: takes one argument at most, and was given $#." >&2
+  exit 2
+fi
+
+mode=unit
+case "${1:-}" in
+  "") ;;
+  --full) mode=full ;;
+  --install-hook) mode=install-hook ;;
+  -h | --help)
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "tools/test.sh: '$1' is none of --full and --install-hook (no argument runs the unit tier)." >&2
+    exit 2
+    ;;
+esac
+
+if [ "$mode" = install-hook ]; then
+  current="$(git config --get core.hooksPath || true)"
+  if [ -n "$current" ] && [ "$current" != tools/git-hooks ]; then
+    echo "tools/test.sh: core.hooksPath is '$current' already; it is left as it is. Run the unit tier from that hook:" >&2
+    echo "  bash tools/test.sh" >&2
+    exit 1
+  fi
+  git config core.hooksPath tools/git-hooks
+  echo "Installed: git runs the unit tier (bash tools/test.sh) before every push that carries commits."
+  echo "git push --no-verify skips it once; git config --unset core.hooksPath removes it."
+  exit 0
+fi
+
+started=$(date +%s)
+step() {
+  echo
+  echo "== $1"
+}
+
+on_windows=false
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) on_windows=true ;;
+esac
+
+# --- The tools each tier needs, named before anything runs ---
+missing=""
+command -v dotnet > /dev/null 2>&1 || missing="$missing .NET SDK (dotnet),"
+command -v npm > /dev/null 2>&1 || missing="$missing Node.js (npm),"
+if [ "$mode" = full ]; then
+  command -v cargo > /dev/null 2>&1 || missing="$missing Rust (cargo, https://rustup.rs),"
+fi
+if [ -n "$missing" ]; then
+  echo "tools/test.sh: the $mode tier needs${missing%,}, which this terminal cannot find." >&2
+  exit 1
+fi
+
+# --- The test database ---
+if [ "$mode" = unit ]; then
+  # A server no test can reach: the unit tier proves it needs none. Port 1 refuses at once.
+  test_db="Server=127.0.0.1,1;Database=UnitTierHasNoDatabase;Integrated Security=True;Connect Timeout=2;TrustServerCertificate=True"
+else
+  test_db="${SQLFLOW_TEST_DB:-}"
+  if [ -z "$test_db" ] && [ -f .sqlflow/env ]; then
+    # .sqlflow/env is NAME=value lines, not shell: read the one value, without its surrounding quotes.
+    test_db="$(grep -m 1 '^SQLFLOW_TEST_DB=' .sqlflow/env | cut -d= -f2- | sed -e "s/^[\"']//" -e "s/[\"']\$//" || true)"
+  fi
+  if [ -z "$test_db" ]; then
+    if [ "$on_windows" = true ]; then
+      test_db="Server=localhost;Database=OsduDeliveryTests;Integrated Security=True;TrustServerCertificate=True"
+    else
+      echo "tools/test.sh: the full tier runs the SQL Server suites, and SQLFLOW_TEST_DB is not set (in the environment or" >&2
+      echo "in .sqlflow/env). Point it at a disposable database, for example the SQL Server ./dev.sh starts in Docker:" >&2
+      echo "  SQLFLOW_TEST_DB='Server=localhost,1433;Database=OsduDeliveryTests;User ID=sa;Password=...;TrustServerCertificate=True'" >&2
+      exit 1
+    fi
+  fi
+fi
+export SQLFLOW_TEST_DB="$test_db"
+# The hosts the suites start never apply this checkout's .sqlflow/env: its credentials and its OSDU partition are not
+# the suites' to use.
+export SQLFLOW_LOCAL_ENV_FILE=false
+
+# --- .NET ---
+step "Build (Release, warnings as errors)"
+dotnet build OsduDelivery.sln -c Release -nologo -v q -warnaserror -warnnotaserror:NU1903
+
+if [ "$mode" = unit ]; then
+  step "Unit tests (everything but Category=Integration)"
+  dotnet test OsduDelivery.sln -c Release --no-build -nologo --filter "Category!=Integration"
+else
+  # One project at a time: the SQL Server suites share the test database.
+  step "Every .NET test, against $(printf '%s' "$test_db" | sed -e 's/;[Pp]assword=[^;]*/;Password=***/')"
+  dotnet test OsduDelivery.sln -c Release --no-build -nologo -m:1
+fi
+
+# --- The GUI ---
+# osdu/gui compiles the vendored sqlflow/gui sources in place, so its build covers both trees' TypeScript.
+gui_install() {
+  # Installs when there is no install, or the lock file moved on since the last one.
+  if [ ! -f "$1/node_modules/.package-lock.json" ] || [ "$1/package-lock.json" -nt "$1/node_modules/.package-lock.json" ]; then
+    (cd "$1" && npm ci --no-audit --no-fund)
+  fi
+}
+step "OSDU GUI: build and lint"
+gui_install osdu/gui
+(cd osdu/gui && npm run build && npm run lint)
+
+# SQLFlow's GUI on its own, as CI builds it, when this branch changes it.
+base="$(git merge-base HEAD origin/main 2> /dev/null || true)"
+if [ "$mode" = full ] || [ -z "$base" ] || [ -n "$(git diff --name-only "$base" -- sqlflow/gui; git status --porcelain -- sqlflow/gui)" ]; then
+  step "SQLFlow GUI: build and unit tests"
+  gui_install sqlflow/gui
+  (cd sqlflow/gui && npm run build && npm run test:unit)
+else
+  step "SQLFlow GUI: unchanged on this branch, not built"
+fi
+
+if [ "$mode" = full ]; then
+  # --- The MCP server ---
+  export CARGO_TARGET_DIR="$root/.sqlflow/test/cargo-target"
+  step "MCP server: clippy and tests"
+  cargo clippy --locked --manifest-path sqlflow/tools/Cargo.toml -p sqlflow-mcp --all-targets -- -D warnings
+  cargo test --locked --manifest-path sqlflow/tools/Cargo.toml -p sqlflow-mcp
+  cargo clippy --locked --manifest-path osdu/hosts/osdu-delivery-mcp/Cargo.toml --all-targets -- -D warnings
+  cargo test --locked --manifest-path osdu/hosts/osdu-delivery-mcp/Cargo.toml
+
+  # --- The GUI end-to-end suite ---
+  # It starts the control plane on 5299 and the GUI on 5173 from the Release build above. A dev GUI on 5173 would answer
+  # for it, so the suite takes 5174 then.
+  step "OSDU GUI end-to-end suite"
+  if [ -z "${SQLFLOW_E2E_GUI_PORT:-}" ] && { (echo > /dev/tcp/127.0.0.1/5173) > /dev/null 2>&1; }; then
+    export SQLFLOW_E2E_GUI_PORT=5174
+    echo "Port 5173 is taken (a dev GUI?), so the suite's GUI runs on 5174."
+  fi
+  if [ "$on_windows" = false ] && [ -z "${SQLFLOW_E2E_CATALOG_DB:-}" ]; then
+    echo "tools/test.sh: the end-to-end suite keeps its estate in a database of its own, and SQLFLOW_E2E_CATALOG_DB is not set." >&2
+    echo "Point it at a disposable database on the same server, for example OsduDeliveryE2E." >&2
+    exit 1
+  fi
+  export SQLFLOW_E2E_DOTNET_CONFIGURATION=Release
+  (cd osdu/gui && npx playwright install chromium && npm run e2e)
+fi
+
+elapsed=$(( $(date +%s) - started ))
+echo
+echo "The $mode tier passed in $(( elapsed / 60 ))m $(( elapsed % 60 ))s."

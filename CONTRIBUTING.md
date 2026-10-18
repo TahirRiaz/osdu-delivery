@@ -14,16 +14,10 @@ Thanks for your interest in contributing! This guide gets you productive quickly
 ```bash
 git clone <this repository>
 cd osdu-delivery
-dotnet build OsduDelivery.sln
-dotnet test OsduDelivery.sln
-cd osdu/gui && npm ci && npm run build && npm run lint
+bash tools/test.sh --install-hook   # once: git runs the unit tier before every push
+bash tools/test.sh                  # the unit tier: a few minutes, no database
+bash tools/test.sh --full           # every test, against SQL Server: before opening a pull request
 ```
-
-The pure tests need no database. The OSDU module's DB-backed suites use one database on a local SQL Server,
-`OsduDeliveryTests` under Windows authentication (created when missing), or the one the `SQLFLOW_TEST_DB`
-environment variable names; a server that does not answer fails them. The tests that use it run one at a time, so
-the suites never create a database per test or per run. SQLFlow's own suites read the same variable and skip when it
-is unset. Never point it at a database holding real data: the suites migrate and seed the database they are given.
 
 `dev.bat` (Windows) and `./dev.sh` (macOS, Linux) run the whole thing locally: on the first start they ask for the
 SQL Server, the OSDU platform and a flow repository and write the git-ignored `.sqlflow/env` from `dev.env.example`;
@@ -33,6 +27,32 @@ own host, `osdu/hosts/SqlFlow.Delivery.Setup.Host` over `osdu/src/SqlFlow.Delive
 but `SqlFlow.Core` and the SQL Server client, so it builds in seconds; the command line carries the same code as
 `sqlflow dev`. A `v*` tag publishes it as a self-contained binary per platform on the release, for machines without
 .NET; keep its dependencies that small.
+
+## Tests
+
+The tests run in two tiers, both through `tools/test.sh` (on Windows from Git Bash, or as `bash tools/test.sh` from
+any terminal that has it):
+
+- **The unit tier** (`bash tools/test.sh`) is the build with warnings as errors, every .NET test that needs no SQL
+  Server, host or other process, and the GUI's build, lint and unit tests. It takes a few minutes and needs no
+  database. It is what CI's **Build and test** runs on every pull request, and what the pre-push hook runs before every
+  push that carries commits (`git push --no-verify` skips it once).
+- **The full tier** (`bash tools/test.sh --full`) is every test: the SQL Server suites, the control plane hosts, the
+  MCP server's crates and the GUI end-to-end suite. Run it before opening a pull request and say so in the template.
+  CI runs it as **Full test suite** on a release tag, whose release waits for it, on a pull request labelled
+  `full-tests`, and when the CI workflow is run by hand (Actions, CI, Run workflow).
+
+A test that needs SQL Server, a host or another process carries `[Trait("Category", "Integration")]`, which puts it in
+the full tier. The OSDU module's SQL Server tests are the classes in `[Collection(SqlServerSuite.Name)]`, and a guard
+test fails one there without the trait. The unit tier points the suites at a server that does not exist, so any other
+test that reaches for a database fails there, and the message names the trait.
+
+The full tier's database is one database on a local SQL Server, `OsduDeliveryTests` under Windows authentication
+(created when missing), or the one the `SQLFLOW_TEST_DB` environment variable names, from the environment or from
+`.sqlflow/env`; on macOS and Linux it has to be named. A server that does not answer fails the suites. The tests that
+use it run one at a time, so the suites never create a database per test or per run, and the end-to-end suite keeps
+its estate in `OsduDeliveryE2E` (`SQLFLOW_E2E_CATALOG_DB` names another). Never point either at a database holding
+real data: the suites migrate and seed the database they are given.
 
 ## Repository layout
 
@@ -96,8 +116,8 @@ A move Dependabot does not make is a deliberate step someone takes and stands be
 
 1. Change the single `PackageVersion` line for the package you mean to move, and nothing else. A bump inside
    `sqlflow/` follows the vendoring rule: its own commit, prefixed `sqlflow:`.
-2. Run `dotnet restore OsduDelivery.sln`, then `dotnet build OsduDelivery.sln -c Release` warning-clean, then
-   `dotnet test OsduDelivery.sln`. A bump across a major version usually asks for source changes; make them in the
+2. Run `dotnet restore OsduDelivery.sln`, then `bash tools/test.sh --full`, which builds warning-clean and runs
+   every test. A bump across a major version usually asks for source changes; make them in the
    same change, so the history says what the new version needed.
 3. Commit the bump on its own, naming what moved and what it cost, and open a pull request for it.
 
@@ -110,7 +130,7 @@ SQLFlow's repository (github.com/TahirRiaz/SQLFlow, or a clone of it), whose wor
 git switch -c sqlflow-update origin/main
 git subtree pull --prefix=sqlflow --squash <sqlflow-remote> master
 bash tools/check-vendored-sqlflow.sh
-dotnet build OsduDelivery.sln -c Release && dotnet test OsduDelivery.sln
+bash tools/test.sh --full
 ```
 
 Conflicts can only arise in the files this project changed in `sqlflow/` since the last pull
@@ -129,13 +149,16 @@ GitHub marks the pull request merged. If `main` moved in the meantime, start the
 1. Branch from an up-to-date `main` (`git switch -c <topic> origin/main`) and commit as the principles above say: a
    `sqlflow:` commit touches only `sqlflow/`, and each subject says what the repository now does.
 2. Before pushing, run the quick checks CI runs: `bash tools/check-vendored-sqlflow.sh` and
-   `bash tools/check-conventions.sh origin/main HEAD`.
+   `bash tools/check-conventions.sh origin/main HEAD`. Run the full tier (`bash tools/test.sh --full`) before opening
+   the pull request; the pre-push hook runs the unit tier on every push.
 3. Push the branch and open a pull request into `main`. The template's checklist is the repository's rules; say why
    an item does not apply rather than leaving it unticked without a word.
 4. CI must pass on a branch up to date with `main`. The required checks are CI's jobs: **Conventions** (the
    vendored-SQLFlow guard, no em dash added outside `sqlflow/`, no AI attribution in the commits), **Power BI
-   extractor**, **Build and test** (the warning-free build, every suite with SQL Server, the MCP server, both GUIs and
-   the end-to-end suite), **Container images** and **Terraform checks**. A job's name is its check's name, so renaming
+   extractor**, **Build and test** (the unit tier: the warning-free build, the tests that need no SQL Server or host,
+   both GUIs), **Container images** (built only when what the images are built from changes; skipped, it counts as
+   passed) and **Terraform checks**. **Full test suite** is not required on a pull request: add the `full-tests` label
+   to run it there. A job's name is its check's name, so renaming
    a job in `.github/workflows/ci.yml` changes `.github/rulesets/main.json` in the same pull request.
 5. One approving review from someone other than the author, with every conversation resolved. A push after the
    approval dismisses it.

@@ -6,6 +6,10 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+    # Labelled: the full-tests label runs the full test suite on the pull request.
+    types: [ opened, synchronize, reopened, labeled ]
+  # Run workflow, on any branch: everything, the full test suite included.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,9 +20,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job but publish and the two that release the setup runs on each pull request to main, and its name is the check
-# the main ruleset requires (.github/rulesets/main.json): renaming a job renames its check, so a rename changes both files
-# together.
+# The tests run in two tiers (CONTRIBUTING.md, Tests). Build and test runs the unit tier on every pull request and push:
+# the build, every .NET test that needs no SQL Server, host or other process, and the GUI's build, lint and unit tests.
+# Full test suite runs everything (the SQL Server suites, the hosts, the MCP server, the GUI end-to-end suite) on a v* tag,
+# before its release is made, on a pull request labelled full-tests, and when the workflow is run by hand; a developer runs
+# the same with bash tools/test.sh --full before opening a pull request. Container images runs on a pull request only
+# when what the images are built from changes.
+#
+# Conventions, Power BI extractor, Build and test, Container images and Terraform checks are the checks the main ruleset
+# requires (.github/rulesets/main.json): renaming a job renames its check, so a rename changes both files together. A
+# required job its condition skips counts as passed.
 jobs:
   # The repository's own rules, checked on what a push or a pull request brings: sqlflow/ gains only generic
   # extension points, each in a commit of its own (tools/check-vendored-sqlflow.sh), and no added line carries an
@@ -111,13 +122,16 @@ jobs:
       - name: Test under AddressSanitizer and UndefinedBehaviorSanitizer
         run: make -C sqlflow/tools/pbix-extract test-asan
 
+  # The unit tier (bash tools/test.sh runs the same): the build with warnings as errors, every .NET test but the ones
+  # that carry Category=Integration, and both GUIs. No SQL Server runs here, so a test that needs one and does not carry
+  # the category fails, naming the trait.
   build-test:
     name: Build and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      # A clean build and the images fill the runner's disk unless the runner's unused toolchains go first.
+      # A clean build fills the runner's disk unless the runner's unused toolchains go first.
       - name: Free disk space
         run: bash tools/github/free-runner-disk.sh
 
@@ -135,6 +149,76 @@ jobs:
             osdu/gui/package-lock.json
             sqlflow/gui/package-lock.json
 
+      - name: Restore
+        run: dotnet restore OsduDelivery.sln
+
+      # Zero warnings is a project rule, so a warning fails the build. The SSH.NET advisory in vendored
+      # SQLFlow stays a warning until SQLFlow takes the fix.
+      - name: Build
+        run: dotnet build OsduDelivery.sln --no-restore -c Release -warnaserror -warnnotaserror:NU1903
+
+      - name: Unit tests
+        run: dotnet test OsduDelivery.sln --no-build -c Release --filter "Category!=Integration"
+
+      - name: Install OSDU GUI dependencies
+        working-directory: osdu/gui
+        run: npm ci
+
+      # The OSDU GUI compiles the vendored sqlflow/gui sources in place, so this build covers
+      # both trees' TypeScript.
+      - name: Build OSDU GUI
+        working-directory: osdu/gui
+        run: npm run build
+
+      - name: Lint OSDU GUI
+        working-directory: osdu/gui
+        run: npm run lint
+
+      - name: Install SQLFlow GUI dependencies
+        working-directory: sqlflow/gui
+        run: npm ci
+
+      # SQLFlow's GUI is built on its own as well, so an extension point added to sqlflow/gui is
+      # proven to keep SQLFlow's own build working.
+      - name: Build SQLFlow GUI
+        working-directory: sqlflow/gui
+        run: npm run build
+
+      # The chat's answer reading, result charting and report naming are plain modules with suites of their own,
+      # run by Node's test runner on the sources as they are.
+      - name: Unit test SQLFlow GUI
+        working-directory: sqlflow/gui
+        run: npm run test:unit
+
+  # Everything the unit tier leaves out, and the unit tier again with it (bash tools/test.sh --full runs the same): the
+  # whole .NET suite against SQL Server, the MCP server's crates and the GUI end-to-end suite. It runs on a v* tag, whose
+  # release waits for it, on a pull request labelled full-tests, and when the workflow is run by hand.
+  full-tests:
+    name: Full test suite
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-tests'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # A clean build and the SQL Server image fill the runner's disk unless the runner's unused toolchains go first.
+      - name: Free disk space
+        run: bash tools/github/free-runner-disk.sh
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: osdu/gui/package-lock.json
+
       # The report extraction suites shell out to this binary and skip without it, so it is built here
       # too: a skip would quietly drop that coverage.
       - name: Install pbix-extract build dependencies
@@ -149,8 +233,6 @@ jobs:
       - name: Restore
         run: dotnet restore OsduDelivery.sln
 
-      # Zero warnings is a project rule, so a warning fails the build. The SSH.NET advisory in vendored
-      # SQLFlow stays a warning until SQLFlow takes the fix.
       - name: Build
         run: dotnet build OsduDelivery.sln --no-restore -c Release -warnaserror -warnnotaserror:NU1903
 
@@ -184,7 +266,7 @@ jobs:
           # The e2e suite's one database: the catalog, the module's schema and the sample tables, as a local run keeps them.
           echo "SQLFLOW_E2E_CATALOG_DB=Server=localhost,1433;Database=OsduDeliveryE2E;User ID=sa;Password=$password;TrustServerCertificate=True" >> "$GITHUB_ENV"
 
-      # SQLFlow's own suites and the OSDU module's suites, in one run over the solution, one
+      # SQLFlow's own suites and the OSDU module's suites, every category, in one run over the solution, one
       # project at a time: the DB-backed suites share the database above and migrate and seed it.
       - name: Test
         env:
@@ -204,32 +286,6 @@ jobs:
       - name: Install OSDU GUI dependencies
         working-directory: osdu/gui
         run: npm ci
-
-      # The OSDU GUI compiles the vendored sqlflow/gui sources in place, so this build covers
-      # both trees' TypeScript.
-      - name: Build OSDU GUI
-        working-directory: osdu/gui
-        run: npm run build
-
-      - name: Lint OSDU GUI
-        working-directory: osdu/gui
-        run: npm run lint
-
-      - name: Install SQLFlow GUI dependencies
-        working-directory: sqlflow/gui
-        run: npm ci
-
-      # SQLFlow's GUI is built on its own as well, so an extension point added to sqlflow/gui is
-      # proven to keep SQLFlow's own build working.
-      - name: Build SQLFlow GUI
-        working-directory: sqlflow/gui
-        run: npm run build
-
-      # The chat's answer reading, result charting and report naming are plain modules with suites of their own,
-      # run by Node's test runner on the sources as they are.
-      - name: Unit test SQLFlow GUI
-        working-directory: sqlflow/gui
-        run: npm run test:unit
 
       # The suite's setup batches call sqlcmd, which the runner image does not carry; the one in the
       # SQL Server container serves them, reached through a wrapper on the PATH.
@@ -264,6 +320,44 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Whether a pull request reaches what the images are built from: their Dockerfiles and the deploy folder, the hosts,
+  # both GUIs, the MCP server's crates and the documentation it compiles in, the build's own settings, and this
+  # workflow. A push, a tag and a run by hand always build them.
+  changes:
+    name: What the change touches
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.paths.outputs.images }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compare the pull request with its base
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "A $EVENT builds the images."
+            echo "images=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pattern='^(osdu/deploy/|osdu/hosts/|osdu/gui/|sqlflow/gui/|sqlflow/tools/|osdu/docs/|sqlflow/docs/reference/|sqlflow/docs/wiki/|\.dockerignore$|global\.json$|NuGet\.config$|(.*/)?Directory\.(Build|Packages)\.props$|\.github/workflows/ci\.yml$)'
+          reaching="$(git diff --name-only "$BASE...$HEAD_SHA" | grep -E "$pattern" || true)"
+          if [ -n "$reaching" ]; then
+            echo "The images are built: the pull request changes"
+            # sed reads every line it is given, so a long list never stops printf with a broken pipe.
+            printf '%s\n' "$reaching" | sed -e '21,$d' -e 's/^/  /'
+            echo "images=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing the images are built from changes, so they are not built."
+            echo "images=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # The images build from the repository root, as a deployment builds them; nothing is
   # pushed. The control plane image then starts against a SQL Server of its own and has to report
   # ready (its catalog created, SQLFlow's and the OSDU module's migrations applied) and sign in the
@@ -272,6 +366,8 @@ jobs:
   # worker image needs a control plane token to start, so it is only built.
   images:
     name: Container images
+    needs: [ changes ]
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -456,8 +552,9 @@ jobs:
     #
     # What is pushed: the commit sha always, 'latest' from main, and the version when the ref is a v* tag, so a
     # deployment can name an exact build and a rollback has something to name.
-    needs: [ pbix-extract, build-test, images ]
-    if: github.event_name == 'push' && vars.IMAGE_REGISTRY != ''
+    # A tag's images wait for its full test suite too; on main, which runs no full suite, they wait for the rest.
+    needs: [ pbix-extract, build-test, images, full-tests ]
+    if: ${{ !cancelled() && !failure() && github.event_name == 'push' && vars.IMAGE_REGISTRY != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -514,10 +611,11 @@ jobs:
           done
 
   # The release of a v* tag, created here when the tag has none, so the setup's binaries (below) have one to land in.
-  # Its notes are the tag's section of CHANGELOG.md.
+  # Its notes are the tag's section of CHANGELOG.md. It waits for the full test suite: a release is made only of a commit
+  # every test passed on.
   setup-release:
     name: Setup release
-    needs: [ build-test ]
+    needs: [ build-test, full-tests ]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
