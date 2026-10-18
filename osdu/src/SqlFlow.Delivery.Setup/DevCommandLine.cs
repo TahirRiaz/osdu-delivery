@@ -12,9 +12,6 @@ internal interface ICommandLine
     /// <summary>Starts making it ready (a build) and returns at once; a no-op when it is ready already or cannot run.</summary>
     void Prepare(CancellationToken ct);
 
-    /// <summary>Looks for .NET again (after an install); true when the command line can run now.</summary>
-    bool Refresh();
-
     /// <summary>Runs one of its verbs on this console, with <paramref name="environment"/> set for it, once it is ready.</summary>
     Task<ToolResult> RunAsync(IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string?> environment, CancellationToken ct);
 
@@ -30,8 +27,6 @@ internal sealed class RunningCommandLine(IToolRunner tools, SelfCommand self, st
     public void Prepare(CancellationToken ct)
     {
     }
-
-    public bool Refresh() => true;
 
     public Task<ToolResult> RunAsync(IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string?> environment, CancellationToken ct)
         => tools.RunAsync(self.Program, [.. self.Prefix, .. arguments], new ToolRun(WorkingDirectory: workingDirectory, Environment: environment, Attached: true), ct);
@@ -55,7 +50,7 @@ internal sealed class CheckoutCommandLine : ICommandLine
     private readonly IToolRunner _tools;
     private readonly DevCheckout _checkout;
     private readonly DevMachine _machine;
-    private string? _dotnet;
+    private readonly string? _dotnet;
     private Task<ToolResult>? _build;
 
     public CheckoutCommandLine(IToolRunner tools, DevCheckout checkout, DevMachine machine)
@@ -71,12 +66,6 @@ internal sealed class CheckoutCommandLine : ICommandLine
     /// <summary>The command line's build output: its apphost, named as the platform names executables.</summary>
     public string Executable => Path.Combine(
         _checkout.Root, Project, "bin", "Debug", "net9.0", _machine.IsWindows ? "SqlFlow.Delivery.Cli.Host.exe" : "SqlFlow.Delivery.Cli.Host");
-
-    public bool Refresh()
-    {
-        _dotnet = DotnetLocator.Find(_machine);
-        return _dotnet is not null;
-    }
 
     public void Prepare(CancellationToken ct)
     {

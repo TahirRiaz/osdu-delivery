@@ -150,9 +150,6 @@ internal sealed class FakeCommandLine : ICommandLine
     /// <summary>Why it cannot run (no .NET), or null when it can.</summary>
     public string? Missing { get; set; }
 
-    /// <summary>What <see cref="Refresh"/> finds: true once .NET has been installed.</summary>
-    public bool InstalledOnRefresh { get; set; }
-
     /// <summary>What a run answers.</summary>
     public ToolResult Result { get; set; } = FakeToolRunner.Ok();
 
@@ -166,16 +163,6 @@ internal sealed class FakeCommandLine : ICommandLine
     public string? Unavailable => Missing;
 
     public void Prepare(CancellationToken ct) => Prepared = Missing is null;
-
-    public bool Refresh()
-    {
-        if (InstalledOnRefresh)
-        {
-            Missing = null;
-        }
-
-        return Missing is null;
-    }
 
     public Task<ToolResult> RunAsync(IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string?> environment, CancellationToken ct)
     {

@@ -54,7 +54,7 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
         _ask.Note("command line run with. Press Enter to take the value in [brackets]. Nothing changes until you have seen the plan");
         _ask.Note("and said yes; Ctrl+C stops without writing anything.");
 
-        await DotnetAsync(ct).ConfigureAwait(false);
+        Dotnet(ct);
         var sql = await SqlServerAsync(current, ct).ConfigureAwait(false);
         var databases = await DatabasesAsync(current, values, sql, ct).ConfigureAwait(false);
         var admin = await SignInAsync(current, values, sql, databases, ct).ConfigureAwait(false);
@@ -70,47 +70,19 @@ internal sealed partial class DevSetupWizard(DevCheckout checkout, DevEnvTemplat
     // ------------------------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Makes sure the command line can run, which creating the catalog and registering the partition need and every start
-    /// needs after: when the .NET SDK is missing (the setup then runs from its self-contained binary), offers to install it
-    /// with the platform's package manager. Then starts building the command line, so it is ready by the time the answers
-    /// are.
+    /// Starts building the command line, which creating the catalog and registering the partition need, so it is ready by
+    /// the time the answers are. The launchers install .NET before they build the setup, so it is missing only for a setup
+    /// started some other way: then the setup says how to install it and goes on without the steps that need it.
     /// </summary>
-    private async Task DotnetAsync(CancellationToken ct)
+    private void Dotnet(CancellationToken ct)
     {
         if (commandLine.Unavailable is { } why)
         {
             _ask.Heading(".NET: what OSDU Delivery builds and runs on");
             _ask.Note($"{char.ToUpperInvariant(why[0])}{why[1..]}. The control plane, the workers and the command line all run on it.");
-            var installer = machine.Platform switch
-            {
-                DevPlatform.Windows when machine.Tools.Find("winget") is not null
-                    => ("winget", new[] { "install", "--id", "Microsoft.DotNet.SDK.9", "--exact", "--accept-package-agreements", "--accept-source-agreements" }),
-                DevPlatform.MacOS when machine.Tools.Find("brew") is not null => ("brew", new[] { "install", "--cask", "dotnet-sdk" }),
-                _ => ((string, string[])?)null,
-            };
-            if (installer is { } install
-                && _ask.YesNo($"Install the .NET SDK now ({install.Item1} {string.Join(' ', install.Item2)}; it may ask for an administrator's rights)?", true))
-            {
-                var result = await machine.Tools.RunAsync(install.Item1, install.Item2, new ToolRun(Attached: true), ct).ConfigureAwait(false);
-                if (!result.Succeeded)
-                {
-                    _ask.Say($"{install.Item1} did not finish the install (exit code {result.ExitCode}); its output above says why.", Tone.Caution);
-                }
-            }
-            else
-            {
-                _ask.Note(_advice.InstallDotnet);
-            }
-
-            if (commandLine.Refresh())
-            {
-                _ask.Say("The .NET SDK is installed.", Tone.Good);
-            }
-            else
-            {
-                _ask.Note($"The setup goes on without it: it writes the file and makes what it can, and the catalog and the partition");
-                _ask.Note($"are made once .NET is installed and {_advice.Launcher} setup runs again (it offers what this one asked).");
-            }
+            _ask.Note(_advice.InstallDotnet);
+            _ask.Note($"The setup goes on without it: it writes the file and makes what it can, and the catalog and the partition");
+            _ask.Note($"are made once .NET is installed and {_advice.Launcher} setup runs again (it offers what this one asked).");
         }
 
         commandLine.Prepare(ct);

@@ -21,7 +21,7 @@ internal sealed record DevAdvice(DevPlatform Platform, string EnvFile, string Ac
     {
         DevPlatform.Windows => "Install the .NET 9 SDK: winget install Microsoft.DotNet.SDK.9",
         DevPlatform.MacOS => "Install the .NET SDK: brew install --cask dotnet-sdk",
-        _ => "Install the .NET 9 SDK: https://learn.microsoft.com/dotnet/core/install/linux",
+        _ => "Install the .NET 9 SDK: curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 9.0 --install-dir ~/.dotnet",
     };
 
     public string InstallNode => Platform switch
