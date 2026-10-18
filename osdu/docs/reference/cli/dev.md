@@ -79,8 +79,9 @@ comes without waiting for the whole product to build:
 - **Where .NET is not**, they run the self-contained binary each release publishes for the platform (Windows x64,
   macOS on Apple silicon and Intel, Linux x64 and arm64), which needs no .NET. The repository is private, so a launcher
   fetches it with the GitHub CLI, signed in as you (`gh release download`), into `.sqlflow/tools`, and uses it only when
-  it matches the checksum the release lists beside it; without the GitHub CLI, put the binary from the Releases page
-  there yourself. The setup then offers to install .NET, which every start needs.
+  it matches the checksum the release lists beside it. It notes the release the binary came from, and a start that
+  finds a newer release replaces it; offline, the binary there is used as it is. Without the GitHub CLI, put the binary
+  from the Releases page there yourself. The setup then offers to install .NET, which every start needs.
 
 The command line has the same code as a verb, `sqlflow dev`, for a machine that has built it. `dev` is about this
 machine running OSDU Delivery itself; SQLFlow's `sqlflow doctor` is about a command line reaching a control plane

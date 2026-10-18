@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   push; `git push --no-verify` skips it once and `git config --unset core.hooksPath` removes it
   ([CONTRIBUTING.md](CONTRIBUTING.md#tests)).
 
+### Fixed
+
+- **A machine without .NET runs the newest release's setup.** `dev.bat` and `./dev.sh` kept the setup binary they
+  first downloaded whatever came out later; they now replace it when a newer release is out, and `dev.bat` unpacks it
+  where Git's `tar` comes first on the PATH ([osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
+
 ## [1.0.0] - 2026-10-18
 
 The first release of OSDU Delivery, powered by SQLFlow: subsurface data delivered into an OSDU platform by

@@ -84,8 +84,15 @@ setup_rid() {
 }
 
 fetch_setup() {
-    local tools="$root/.sqlflow/tools" rid archive want have
-    if [ -x "$tools/osdu-delivery-setup" ]; then
+    local tools="$root/.sqlflow/tools" rid archive want have latest current
+    # The release the binary here came from, and the newest release when the GitHub CLI can say: a newer one replaces
+    # it. Offline, or without the GitHub CLI, the binary here is used as it is.
+    latest=""
+    if command -v gh >/dev/null 2>&1; then
+        latest="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+    fi
+    current="$(cat "$tools/osdu-delivery-setup.release" 2>/dev/null || true)"
+    if [ -x "$tools/osdu-delivery-setup" ] && { [ -z "$latest" ] || [ "$latest" = "$current" ]; }; then
         echo "$tools/osdu-delivery-setup"
         return 0
     fi
@@ -101,8 +108,8 @@ fetch_setup() {
         return 1
     fi
     mkdir -p "$tools"
-    echo "Downloading $archive from this repository's latest release ..." >&2
-    if ! gh release download --pattern "$archive" --pattern "$archive.sha256" --dir "$tools" --clobber >&2; then
+    echo "Downloading $archive from release $latest ..." >&2
+    if ! gh release download ${latest:+"$latest"} --pattern "$archive" --pattern "$archive.sha256" --dir "$tools" --clobber >&2; then
         fetch_manual "$archive"
         return 1
     fi
@@ -121,6 +128,7 @@ fetch_setup() {
     tar -xzf "$tools/$archive" -C "$tools"
     rm -f -- "$tools/$archive" "$tools/$archive.sha256"
     chmod +x "$tools/osdu-delivery-setup"
+    printf '%s\n' "$latest" > "$tools/osdu-delivery-setup.release"
     echo "$tools/osdu-delivery-setup"
 }
 
