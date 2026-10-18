@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// sample estate in the in-memory ingestion tables and a fake protocol.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class StoppedSubmissionTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

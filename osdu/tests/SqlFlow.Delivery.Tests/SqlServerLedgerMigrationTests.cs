@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// migration has to start from the schema it upgrades, and the suite's test database is already past it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SqlServerLedgerMigrationTests
 {
     private const string Before = "20260916105416_RemoveManualSubmission";

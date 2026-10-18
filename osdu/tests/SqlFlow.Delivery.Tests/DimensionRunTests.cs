@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// search contract.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DimensionRunTests : IDisposable
 {
     private const string WellLog = Samples.WellLogKind;

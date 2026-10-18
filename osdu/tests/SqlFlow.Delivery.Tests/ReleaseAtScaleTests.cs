@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// error its problem was read from.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ReleaseAtScaleTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();

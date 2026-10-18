@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// a captured field that shares its name.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CachedReferenceTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);

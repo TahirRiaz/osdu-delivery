@@ -85,6 +85,7 @@ public sealed class MemoryEstate : IIngestionSourceFactory
 /// stopped by an outage.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SourceRuntimeTests : IDisposable
 {
     private const string WellboreTable = "OsduData.silver.Wellbore";

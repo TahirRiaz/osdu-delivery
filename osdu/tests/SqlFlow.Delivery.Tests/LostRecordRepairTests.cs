@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// fake storage service, on the wire (osdu/specs/core/INTEGRATION.md section 5.4, D3; storage source,
 /// RecordServiceImpl.patchRecord).
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class StorageRestoreFirstTests
 {
     private const string RecordId = "dev:work-product-component--WellLog:abc";
@@ -155,6 +156,7 @@ public sealed class StorageRestoreFirstTests
 /// a fake protocol.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class LostRecordRepairTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

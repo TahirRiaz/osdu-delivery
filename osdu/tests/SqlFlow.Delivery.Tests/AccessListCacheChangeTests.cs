@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// none. Every record is judged from the dependency set its render left behind, never by rendering the estate again.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
 {
     private const string Scope = "dev";

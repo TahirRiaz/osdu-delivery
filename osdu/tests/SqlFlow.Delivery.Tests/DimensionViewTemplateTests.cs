@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// through a joined dimension too. The sample WellLog 1.4.0 template names a curve's unit a unit of measure and a log's
 /// sampling domain a well log sampling domain type.
 /// </summary>
+[Trait("Category", "Integration")]
 public class DimensionViewTemplateTests
 {
     private const string Flow = """

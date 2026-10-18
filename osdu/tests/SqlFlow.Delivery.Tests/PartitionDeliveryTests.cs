@@ -22,6 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 /// mapping is the same for both.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed partial class PartitionDeliveryTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

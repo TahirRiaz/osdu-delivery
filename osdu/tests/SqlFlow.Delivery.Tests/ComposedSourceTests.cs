@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// request keeps to the pinned contracts.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ComposedSourceTests : IDisposable
 {
     private const string WellLogTable = "OsduData.silver.WellLog";

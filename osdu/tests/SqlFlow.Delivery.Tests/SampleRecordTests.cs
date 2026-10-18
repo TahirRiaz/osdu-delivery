@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// suites keep for it (<see cref="RenderedRecord.Folder"/>). A change to a mapping, its template or the sample cache that
 /// changes what a row delivers fails here, and the kept record is updated when the change is meant.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class SampleRecordTests
 {
     /// <summary>The values the samples deliver with: the partition, the owners and viewers every record carries, and its legal tag.</summary>

@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// each type it holds is what says whether that type moved with it. It is taken over exactly the bytes the type contributes
 /// to the whole hash, so the two can never disagree, and it follows what the type holds and nothing else.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class CacheTypeHashTests
 {
     private static ReferenceItem Item(string id, params (string Name, string Json)[] fields)
@@ -174,6 +175,7 @@ public sealed class CacheTypeHashTests
 /// names the types each version moved.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CacheTypeVersionTests : IDisposable
 {
     private const string Scope = "dev";

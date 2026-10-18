@@ -11,6 +11,7 @@ namespace SqlFlow.Delivery.Tests;
 /// text or a fraction, and answers the same whatever the reading session's date format or language.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DimensionConversionTests : IDisposable
 {
     private const string Null = "(null)";

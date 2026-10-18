@@ -23,6 +23,7 @@ namespace SqlFlow.Delivery.Tests;
 /// fails says why and is not retried by every ask; and while a pass reads, an ask sees where it stands and the reading
 /// before it.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class ExplorerReferencesTests : IDisposable
 {
     private const string Wellbore10 = "osdu:wks:master-data--Wellbore:1.0.0";

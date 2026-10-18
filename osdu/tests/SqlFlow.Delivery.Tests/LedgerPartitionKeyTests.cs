@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// their partition, each in the test database's emptied module schema.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class LedgerPartitionKeyTests : IDisposable
 {
     private const string Dev = "dev";

@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// Each failing row is named with the reason, the value behind it and where the row came from; counts are exact and what
 /// is listed is bounded; and nothing is written anywhere.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class ValueCheckTests : IDisposable
 {
     private readonly TestClock _clock = new();

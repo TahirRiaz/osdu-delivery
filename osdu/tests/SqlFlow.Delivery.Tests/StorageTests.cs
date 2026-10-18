@@ -15,6 +15,7 @@ using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
 
+[Trait("Category", "Integration")]
 public class AzureBlobLocationTests
 {
     [Theory]
@@ -47,6 +48,7 @@ public class AzureBlobLocationTests
 /// The row labels a dataframe reader gives a parquet file, read from its footer. The wellbore DDMS aggregates a
 /// session's chunks by these labels, so they decide whether two chunks add rows or replace each other's.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ParquetRowLabelTests
 {
     private static readonly (string, Type)[] Curves = [("MD", typeof(double)), ("GR", typeof(double))];
@@ -111,6 +113,7 @@ public class ParquetRowLabelTests
 /// What a dataframe reader needs of a file's pandas entry. A bulk service reads a chunk as a dataframe, so a file the
 /// reader raises on is refused as malformed whatever its rows hold, and the delivery says so before it sends one.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ParquetPandasEntryTests
 {
     private static readonly (string Name, Type ClrType)[] Curves = [("MD", typeof(double)), ("GR", typeof(double))];
@@ -188,6 +191,7 @@ public class ParquetPandasEntryTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class ParquetAndLocalStoreTests
 {
     [Fact]
@@ -283,6 +287,7 @@ public class ParquetAndLocalStoreTests
 /// A record's payload files, as the plan measures them and the protocol streams them: listed from the folder the record's
 /// row names, in file-name order, each opened as a fresh stream.
 /// </summary>
+[Trait("Category", "Integration")]
 public class PayloadFileTests
 {
     [Fact]
@@ -381,6 +386,7 @@ public class PayloadFileTests
 /// capture it, and it leaves only when none of them still finds it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class OsduCacheStoreTests : IDisposable
 {
     private const string Scope = "dev";

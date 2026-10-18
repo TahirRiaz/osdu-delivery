@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// the service's pinned contract, and the report the run keeps in the ledger on SQL Server.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class AssertionRunTests : IDisposable
 {
     private const string Wellbore = Samples.WellboreKind;

@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// record (a comment) leaves the run incremental.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RenderRulesTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

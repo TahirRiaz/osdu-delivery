@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// reconcile compares the last build with the ledgers as they stand; a plan reads no id.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InventoryRunTests : IDisposable
 {
     private const string Partition = "dev";

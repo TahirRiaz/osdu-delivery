@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// test starts from an empty module.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class PartitionRegistryTests : IDisposable
 {
     private static readonly DateTime Now = new(2026, 9, 28, 9, 0, 0, DateTimeKind.Utc);

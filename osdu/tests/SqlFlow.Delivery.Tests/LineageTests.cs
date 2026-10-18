@@ -27,6 +27,7 @@ namespace SqlFlow.Delivery.Tests;
 /// only that template tells of.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class LineageTests : IDisposable
 {
     private const string Platform = "${env:OSDU_URL}";

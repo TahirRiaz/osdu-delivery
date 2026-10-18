@@ -123,7 +123,8 @@ public static class OsduTestServer
                 $"The module's suites run on SQL Server and expect a local one for development and testing, and server '{server.DataSource}' "
                 + $"(database '{server.InitialCatalog}', from {(string.IsNullOrWhiteSpace(configured) ? "the local default" : Variable)}) could not be reached or "
                 + $"prepared: {ex.Message} Start a local SQL Server the Windows login can create databases on, or set {Variable} to a disposable database on "
-                + "another server.",
+                + "another server. The unit tier (bash tools/test.sh, and CI's Build and test) runs with no SQL Server: a test that needs one, here or "
+                + "through the sample template and cache stores, carries [Trait(\"Category\", \"Integration\")] so that tier leaves it out.",
                 ex);
         }
 

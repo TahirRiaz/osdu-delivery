@@ -22,6 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 /// the properties a kind's records hold, a query the service refuses answered plainer or with its words, and a record
 /// read from the storage service.
 /// </summary>
+[Trait("Category", "Integration")]
 public class RecordExplorerTests
 {
     private const string Wellbore = "dev:master-data--Wellbore:WB-C-3-C-28-B";

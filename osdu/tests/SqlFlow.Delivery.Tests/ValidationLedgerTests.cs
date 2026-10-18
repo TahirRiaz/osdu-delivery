@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// try that sends the payload alone checks nothing and leaves the record's outcome as it was; and the run's trace counts it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ValidationLedgerTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

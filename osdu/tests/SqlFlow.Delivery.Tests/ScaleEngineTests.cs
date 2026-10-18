@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>The engine at scale, in miniature: work batches, step resumption, and the fan-out choreography.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class ScaleEngineTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

@@ -24,6 +24,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// sent, newest first. Both are indexed reads, so a page past the candidate bound is empty rather than a scan.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryRecordLookupApiTests
 {
     private const string FlowName = "wells-wellbore-03-header-delivery";

@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// against the tables as a run checks them, so a column the table lacks fails the check naming it, and the window it
 /// reports is the one the next run reads (<see cref="ScopeReads"/>), the whole scope included when the rules moved.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class CliCheckConnectTests : IDisposable
 {
     private readonly TestClock _clock = new();

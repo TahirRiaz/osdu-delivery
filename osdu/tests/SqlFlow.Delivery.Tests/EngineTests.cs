@@ -26,6 +26,7 @@ using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
 
+[Trait("Category", "Integration")]
 public class ProtocolTests
 {
     private static (OsduHttpClient Client, FakeHttpHandler Handler, HttpRuntime Runtime) Client(FakeHttpHandler? handler = null)
@@ -727,6 +728,7 @@ public class ProtocolTests
 }
 
 /// <summary>How a deliver run decides whether it re-plans a drop, and what a record-scoped run sends again.</summary>
+[Trait("Category", "Integration")]
 public class DeliverRunScopeTests
 {
     [Fact]
@@ -877,6 +879,7 @@ public class DeliverRunScopeTests
 }
 
 /// <summary>What a deliver run reports: its own work, and the submission it worked on alongside.</summary>
+[Trait("Category", "Integration")]
 public class DeliverOutcomeTests
 {
     private const string Source = "OsduData.silver.WellLog";
@@ -937,6 +940,7 @@ public class DeliverOutcomeTests
 
 /// <summary>The run boundary: a run ends as a recorded failure whatever stopped it.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryRunBoundaryTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

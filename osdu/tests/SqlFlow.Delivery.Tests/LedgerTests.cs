@@ -9,6 +9,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class SqlLedgerTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();

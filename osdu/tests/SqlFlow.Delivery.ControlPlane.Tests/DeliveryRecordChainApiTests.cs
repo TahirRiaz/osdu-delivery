@@ -24,6 +24,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// that made each change are named from the platform's own records, and only when they prove it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryRecordChainApiTests
 {
     [Fact]

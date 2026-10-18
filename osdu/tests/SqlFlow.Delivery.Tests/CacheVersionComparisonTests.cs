@@ -11,6 +11,7 @@ namespace SqlFlow.Delivery.Tests;
 /// it. The versions are written through the store, so the ranges the reads cover are the ones a refresh writes.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CacheVersionComparisonTests : IDisposable
 {
     private const string Scope = "dev";

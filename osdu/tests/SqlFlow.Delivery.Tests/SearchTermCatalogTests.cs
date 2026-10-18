@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// asks, through the term's route.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SearchTermCatalogTests : IDisposable
 {
     private const string WellLog = "work-product-component--WellLog";

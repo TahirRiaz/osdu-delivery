@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// cell a spreadsheet would run made text.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InventoryReportTests : IDisposable
 {
     private const string Partition = TestLedgers.Partition;

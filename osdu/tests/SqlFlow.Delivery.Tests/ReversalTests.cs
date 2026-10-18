@@ -24,6 +24,7 @@ namespace SqlFlow.Delivery.Tests;
 /// module's database on SQL Server, and a run reversed record by record.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ReversalTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();
@@ -1155,6 +1156,7 @@ public sealed class ReversalTests : IDisposable
 }
 
 /// <summary>What a reversal decides and can do, without a database or a target.</summary>
+[Trait("Category", "Integration")]
 public sealed class ReversalRulesTests
 {
     private static readonly Guid Submission = Guid.Parse("0193a1b2-0000-7000-8000-000000000001");

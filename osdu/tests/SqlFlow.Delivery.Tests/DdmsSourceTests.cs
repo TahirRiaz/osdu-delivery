@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// its record does not describe is held before anything is sent, and every request keeps to the pinned contracts.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DdmsSourceTests : IDisposable
 {
     private const string TrajectoryTable = "OsduData.silver.WellboreTrajectory";

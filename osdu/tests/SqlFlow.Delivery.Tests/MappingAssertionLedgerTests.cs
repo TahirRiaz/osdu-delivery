@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// keeps how many judgements failed, and the run's trace counts them.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class MappingAssertionLedgerTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

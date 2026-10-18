@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// records in one ledger. Every test works under flows of its own.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class PartitionLedgerTests
 {
     /// <summary>The module's schema, brought up to date once per test run.</summary>

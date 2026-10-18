@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// never asked says so rather than that no ledger expects it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InventoryMissingCheckTests : IDisposable
 {
     private const string Partition = TestLedgers.Partition;

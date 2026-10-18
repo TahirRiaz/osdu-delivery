@@ -38,6 +38,7 @@ namespace SqlFlow.Delivery.Tests;
 /// the other SQL Server suites and safe run in parallel with itself.</para>
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class SqlServerChainTests
 {
     private readonly ITestOutputHelper _output;

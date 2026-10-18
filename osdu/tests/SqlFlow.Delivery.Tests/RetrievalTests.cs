@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>The retrieval kind: its document, and the runner against a fake search and storage service, a temp lake and the ledger on SQL Server.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RetrievalTests : IDisposable
 {
     private const string Wellbore = "osdu:wks:master-data--Wellbore:1.*.*";

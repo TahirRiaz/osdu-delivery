@@ -20,6 +20,7 @@ namespace SqlFlow.Delivery.Tests;
 /// change under delivered records or two keys of one flow come to give one id.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed partial class RecordIdFromKeyDeliveryTests : IDisposable
 {
     private const string WellLogs = "work-product-component--WellLog";

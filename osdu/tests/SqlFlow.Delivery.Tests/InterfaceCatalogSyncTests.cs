@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// and a ledger kept by two flows is reported.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InterfaceCatalogSyncTests : IDisposable
 {
     private readonly OsduTestDatabase _module = new();

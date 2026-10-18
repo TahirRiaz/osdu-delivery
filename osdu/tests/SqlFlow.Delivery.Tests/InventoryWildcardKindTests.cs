@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// within the segment, so the build lists every kind the search would read, and a plan names the same kinds.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InventoryWildcardKindTests : IDisposable
 {
     private const string Partition = "dev";

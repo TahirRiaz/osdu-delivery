@@ -22,6 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 /// recorded, and what it cannot decide held rather than guessed.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CachedReplaceTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);

@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// index stays until a full load.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DimensionIncrementalTests : IDisposable
 {
     private const string WellLog = Samples.WellLogKind;

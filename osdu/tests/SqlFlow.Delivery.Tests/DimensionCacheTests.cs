@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// stands for, their records and their filter, so a mapping finds the value of any key.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DimensionCacheTests : IDisposable
 {
     private const string DimensionFlowName = "welllog-dimensions";

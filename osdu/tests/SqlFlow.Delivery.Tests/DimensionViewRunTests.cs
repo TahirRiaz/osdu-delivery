@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// around, and refused when <c>target.connection</c> reaches another database than the module's.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DimensionViewRunTests : IDisposable
 {
     private const string WellLog = Samples.WellLogKind;

@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// Runs on the suites' test database (<see cref="OsduTestServer"/>).
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SqlServerIngestionSourceTests
 {
     private static readonly DateTime Loaded = new(2026, 9, 1, 6, 0, 0, DateTimeKind.Utc);

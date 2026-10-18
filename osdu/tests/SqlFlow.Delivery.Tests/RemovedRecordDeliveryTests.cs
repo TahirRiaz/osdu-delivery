@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// requests in one order.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RemovedRecordLedgerTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();
@@ -243,6 +244,7 @@ public sealed class RemovedRecordLedgerTests : IAsyncLifetime, IDisposable
 /// a deleted record whose row is gone is not read again, and one outside the run's scope waits for the run of its own.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RemovedRecordRunTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();
