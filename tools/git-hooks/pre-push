@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Runs the unit tier (bash tools/test.sh) before a push that carries commits, so what CI's Build and test would refuse is
+# found here first. A push of tags alone, or one that only deletes, runs nothing. Installed with
+# `bash tools/test.sh --install-hook`; `git push --no-verify` skips it once. CONTRIBUTING.md, Tests.
+set -euo pipefail
+
+zero=0000000000000000000000000000000000000000
+carries_commits=false
+# git hands the hook one line per ref it pushes: <local ref> <local sha> <remote ref> <remote sha>.
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  case "$local_ref" in
+    refs/tags/*) continue ;;
+  esac
+  if [ "$local_sha" != "$zero" ]; then
+    carries_commits=true
+  fi
+done
+
+if [ "$carries_commits" = false ]; then
+  exit 0
+fi
+
+echo "pre-push: running the unit tier (bash tools/test.sh); git push --no-verify skips it."
+exec bash "$(git rev-parse --show-toplevel)/tools/test.sh" < /dev/null

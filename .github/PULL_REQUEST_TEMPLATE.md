@@ -10,7 +10,8 @@
 ## Checklist
 
 - [ ] Tests added or updated for the behaviour changed (a `sqlflow/` extension point gets its own, in `sqlflow/`)
-- [ ] `dotnet test OsduDelivery.sln` passes, the SQL Server suites included (against a real database, none skipped)
+- [ ] `bash tools/test.sh --full` passes: every suite, the SQL Server suites against a real database (none skipped), the
+      MCP server and the GUI end-to-end suite. CI runs only the unit tier unless the `full-tests` label is added
 - [ ] `dotnet build OsduDelivery.sln -c Release -t:Rebuild` has zero warnings and zero errors
 - [ ] `osdu/gui`: `npm run build` and `npm run lint` pass
 - [ ] A change to the catalog or the OSDU model ships with its migration, designer file and refreshed model snapshot
