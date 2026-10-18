@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// size, while the console bounds it as the GUI does and says where the whole of it is; and a flow of a source with
 /// interfaces is named once, as a run names it (<c>flow/interface</c>), on the console and in the <c>--rows</c> file.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class CliPreviewOutputTests : IDisposable
 {
     private readonly TestClock _clock = new();

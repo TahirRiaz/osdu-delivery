@@ -8,6 +8,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>How an assertion compares what a record holds with what it expects, and how a test is held to its kind's template.</summary>
+[Trait("Category", "Integration")]
 public sealed class AssertionValueTests
 {
     private static readonly DeliveryDocumentLoader Loader = new();

@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// sync, and snapshot files left in a repository are nothing to it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CacheCatalogSyncTests : IDisposable
 {
     private const string CacheFlow = """

@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// report pages through.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InventoryLedgerTests : IDisposable
 {
     private const string Partition = TestLedgers.Partition;

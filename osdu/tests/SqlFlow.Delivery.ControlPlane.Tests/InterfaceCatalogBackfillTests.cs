@@ -21,6 +21,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// repository the catalog holds no delivery flow of any more become inactive, since no repository declares those flows.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InterfaceCatalogBackfillTests : IDisposable
 {
     private static readonly DateTime Now = new(2026, 10, 11, 8, 0, 0, DateTimeKind.Utc);

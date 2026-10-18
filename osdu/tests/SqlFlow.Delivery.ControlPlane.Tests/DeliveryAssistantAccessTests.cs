@@ -22,6 +22,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// fails here until the route is opened, and a route opened that no allowed tool calls fails here too.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryAssistantAccessTests
 {
     private const string SomeGuid = "3f1c1b0e-8a53-4c1e-9d5e-6f0b7a2c9e41";

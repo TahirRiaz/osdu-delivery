@@ -21,6 +21,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// that bound, because a retention pass that took one row too many would quietly cost a delivered record its history.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryRetentionApiTests
 {
     private const string FlowName = "wells-retention";

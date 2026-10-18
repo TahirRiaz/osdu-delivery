@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// and never the partition <c>OSDU_DATA_PARTITION</c> happens to hold where the run resolves its references.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class HeaderBoundPartitionRenderTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

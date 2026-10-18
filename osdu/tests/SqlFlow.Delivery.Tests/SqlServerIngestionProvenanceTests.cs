@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// database (<see cref="OsduTestServer"/>), with tables of its own in the fixture's ingestion schema.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SqlServerIngestionProvenanceTests
 {
     private static readonly DateTime Loaded = new(2026, 9, 1, 6, 0, 0, DateTimeKind.Utc);

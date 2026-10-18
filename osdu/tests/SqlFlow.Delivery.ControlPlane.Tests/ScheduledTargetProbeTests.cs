@@ -28,6 +28,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// control plane, recording what came back in the ledger's audit trail and counting it on the delivery meter.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ScheduledTargetProbeTests
 {
     /// <summary>Off by default, on by configuration, and never paced faster than the floor.</summary>

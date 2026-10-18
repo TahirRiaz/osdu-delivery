@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// scratch database, which no other writer reaches while they run.</para>
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class SqlServerLedgerTests
 {
     /// <summary>The module's schema, brought up to date once per test run.</summary>

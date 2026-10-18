@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// works in a schema of its own, dropped afterwards, and keeps its cache in memory.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
 {
     private readonly string _suffix = Guid.NewGuid().ToString("N")[..8];

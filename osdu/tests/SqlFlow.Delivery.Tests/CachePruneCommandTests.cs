@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// is refused.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CachePruneCommandTests : IDisposable
 {
     private const string Scope = "dev";

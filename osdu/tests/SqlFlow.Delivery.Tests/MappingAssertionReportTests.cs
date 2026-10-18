@@ -19,6 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// assertion beside the template's rules, a preview lists what the record fails, and the CLI says each of them. Over the
 /// sample well database logs, with the sample mapping given assertions; no ledger, nothing written.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class MappingAssertionReportTests : IDisposable
 {
     private readonly TestClock _clock = new();

@@ -23,6 +23,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// field the DTO omits is invisible to every reader.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryRecordOriginApiTests
 {
     private const string FlowName = "wells-wellbore-03-header-delivery";

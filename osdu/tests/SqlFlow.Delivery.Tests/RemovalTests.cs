@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// The three removals against the storage service, verified as endpoint and method rather than as "a delete":
 /// they are different calls with different promises and the protocol must not blur them.
 /// </summary>
+[Trait("Category", "Integration")]
 public class RemovalProtocolTests
 {
     private const string RecordId = "dev:work-product-component--WellLog:abc";
@@ -336,6 +337,7 @@ public class RemovalProtocolTests
 
 /// <summary>What each scope does to the ledger, which is not the same question as what it does to OSDU.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class RemovalLedgerTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();
@@ -786,6 +788,7 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
 
 /// <summary>The runtime's removal: the ledger settled per record, and a selection that is a filter resolved here.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class RemovalRuntimeTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();
@@ -1124,6 +1127,7 @@ internal sealed class FixedProtocolFactory : IProtocolFactory
 /// the operator asked for "every record this matches". A drift here would aim a removal at the wrong records or at
 /// the wrong depth, so it is pinned rather than assumed.
 /// </summary>
+[Trait("Category", "Integration")]
 public class RemovalContractTests
 {
     [Theory]

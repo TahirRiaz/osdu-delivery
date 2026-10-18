@@ -8,6 +8,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>What a mapping covers of its template: the state of every variable, and what it leaves required and empty.</summary>
+[Trait("Category", "Integration")]
 public class MappingCoverageTests
 {
     private static CoverageReport Cover(string data = "", string baseData = TestSchema.BaseData, string record = "")

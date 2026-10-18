@@ -19,6 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// service, and a record naming one storage does not hold is not sent.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class ReferenceCheckTests : IAsyncLifetime, IDisposable
 {
     private static readonly SecretResolver Secrets = new([new EnvSecretProvider()]);

@@ -23,6 +23,7 @@ namespace SqlFlow.Delivery.Tests;
 /// are that protocol, and what each answer the platform can give does to the record.
 /// </remarks>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class SearchSourceTests
 {
     /// <summary>A wellbore schema with one property of every shape the indexer gives a property.</summary>

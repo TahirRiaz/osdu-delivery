@@ -24,6 +24,7 @@ namespace SqlFlow.Delivery.Tests;
 /// and none about the rest, the calls those records make, the first calls made outside any record, and the retries of a
 /// call, each allowance saying once where it stops.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class RunTraceTests
 {
     private static DeliveryKey Key(int i) => DeliveryKey.Derive("wells", [i.ToString(CultureInfo.InvariantCulture)]);
@@ -324,6 +325,7 @@ public sealed class RunTraceTests
 /// parts (the protocols among them) write to the run's log, never to the host's.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RunTraceDeliveryTests : IDisposable
 {
     private const string WellLogTable = "OsduData.silver.WellLog";

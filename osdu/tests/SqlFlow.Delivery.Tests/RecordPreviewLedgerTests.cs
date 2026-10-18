@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// nothing: the ledger reads the same before and after.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RecordPreviewLedgerTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

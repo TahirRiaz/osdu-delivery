@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// The cache the mappings resolve against: what a captured path yields (a scalar, a set, a nested object), how the
 /// cache is matched and read, and how a cache definition is declared in YAML.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ReferenceCacheTests
 {
     private static JsonObject Hit(string json) => JsonNode.Parse(json) as JsonObject ?? throw new DeliveryException("not an object");

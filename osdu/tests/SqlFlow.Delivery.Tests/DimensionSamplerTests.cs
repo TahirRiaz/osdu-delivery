@@ -25,6 +25,7 @@ namespace SqlFlow.Delivery.Tests;
 /// collector display, cleaner and attribute assembly. Then the same through the explorer's operation, as the control
 /// plane runs it.
 /// </summary>
+[Trait("Category", "Integration")]
 public class DimensionSamplerTests
 {
     private const string WellLog = "osdu:wks:work-product-component--WellLog:1.4.0";

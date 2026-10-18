@@ -32,6 +32,7 @@ namespace SqlFlow.Delivery.Tests;
 /// failed or reverted, and neither blocked, nor asked to be planned again, nor holding a document a worker sends.
 /// </remarks>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class HoldAndReleaseTests : IDisposable
 {
     /// <summary>A wellbore no record on the platform is named by: the sample mapping holds a log that names it at render.</summary>

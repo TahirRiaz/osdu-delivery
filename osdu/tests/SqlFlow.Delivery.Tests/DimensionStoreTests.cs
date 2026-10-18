@@ -10,6 +10,7 @@ namespace SqlFlow.Delivery.Tests;
 /// told in the change log, and values compared exactly, as a filter compares them.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DimensionStoreTests : IDisposable
 {
     private static readonly Guid FlowId = Guid.Parse("7f3d1a52-5b8e-4e24-9f44-0b1c2d3e4f50");

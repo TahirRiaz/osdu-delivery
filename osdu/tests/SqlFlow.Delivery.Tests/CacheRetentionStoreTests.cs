@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// running beside a retention lose nothing a kept version holds; and every refresh and import applies it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CacheRetentionStoreTests : IDisposable
 {
     private const string Scope = "dev";

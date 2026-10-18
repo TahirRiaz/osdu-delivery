@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// written, held by a cache flow in its partition's cache, and captured by a refresh into a version like any cached type.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DictionaryTests : IDisposable
 {
     private const string Pairs = """

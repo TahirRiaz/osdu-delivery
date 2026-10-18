@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// database (<see cref="OsduTestServer"/>), its catalog included.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryConfigurationCommandTests : IDisposable
 {
     /// <summary>The catalog reference the commands are given with <c>--db</c>; the suite's resolver answers it with the test database.</summary>

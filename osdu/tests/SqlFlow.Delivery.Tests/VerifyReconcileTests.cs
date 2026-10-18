@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// Through the executor's deliver path, over the module's database on SQL Server and a fake protocol.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class VerifyReconcileTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

@@ -20,6 +20,7 @@ namespace SqlFlow.Delivery.Tests;
 /// pair of partitions of its own.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class PartitionCacheRunTests : IAsyncLifetime, IDisposable
 {
     private readonly string _suffix = Guid.NewGuid().ToString("N")[..8];

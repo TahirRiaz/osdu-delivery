@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// how it is written and refused, how a test holding it fits its template once a run has read the mapping, and how its
 /// records are judged and counted.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class MappingAssertionFlowTests
 {
     private static readonly DeliveryDocumentLoader Loader = new();
@@ -172,6 +173,7 @@ public sealed class MappingAssertionFlowTests
 /// among every repository that declares it, an unreadable or ambiguous one answered with why.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SyncedMappingTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

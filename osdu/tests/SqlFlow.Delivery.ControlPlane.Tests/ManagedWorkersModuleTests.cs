@@ -14,6 +14,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// ever called.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ManagedWorkersModuleTests
 {
     [Fact]

@@ -12,6 +12,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>The mapping builder: drafts from a template and the cache, what a draft still lacks, and the YAML it is written as.</summary>
+[Trait("Category", "Integration")]
 public class MappingBuilderTests
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

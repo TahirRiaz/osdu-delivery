@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// Wellbore 1.3.0 schema stops meeting it, at the place and by the rule OSDU's own schema states, when any one of the
 /// envelope's, the data's, the meta items' or the relationships' rules is broken.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class OsduSchemaValidationTests : IDisposable
 {
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";

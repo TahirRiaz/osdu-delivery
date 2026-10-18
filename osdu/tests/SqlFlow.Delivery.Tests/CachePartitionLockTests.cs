@@ -11,6 +11,7 @@ namespace SqlFlow.Delivery.Tests;
 /// partition of its own.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CachePartitionLockTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

@@ -25,6 +25,7 @@ namespace SqlFlow.Delivery.Tests;
 /// ingestion tables, the module's database on SQL Server and a fake protocol.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class EndToEndTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

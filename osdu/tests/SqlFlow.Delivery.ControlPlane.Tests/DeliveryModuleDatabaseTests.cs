@@ -26,6 +26,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// database fails the tests.</para>
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryModuleDatabaseTests
 {
     private static readonly Guid Repo = Guid.NewGuid();

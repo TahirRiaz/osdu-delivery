@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// a run that passed keeps none.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class AssertionRunReasonTests : IDisposable
 {
     private const string Wellbore = Samples.WellboreKind;

@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// already immune; these cover the same property for cache versions, and what an import has to agree with.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SnapshotVersioningTests : IDisposable
 {
     private const string Scope = "dev";
@@ -376,6 +377,7 @@ public sealed class SnapshotVersioningTests : IDisposable
 /// Paging the search index for a cache capture. The service hands back a cursor for the page after the last one as well,
 /// and that page is empty, so ending only on a null cursor is how a capture pages forever.
 /// </summary>
+[Trait("Category", "Integration")]
 public class ReferenceCaptureCursorTests
 {
     private static readonly ReferenceTypeSpec Spec = new()

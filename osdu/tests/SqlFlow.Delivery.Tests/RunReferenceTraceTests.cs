@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// The run's collector is built the way every executor of the module builds it (<see cref="RunArtifacts.BuildEventPlumbing"/>),
 /// and the run's own values are the scope its node opens for it.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class RunReferenceTraceTests
 {
     private static SecretResolver NodeEnvironment(params (string Name, string Value)[] variables)

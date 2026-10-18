@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// dictionary document, kept under their keys, and read by a mapping the way any cached type is read.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class LookupCacheTests : IDisposable
 {
     private const string Scope = "dev";

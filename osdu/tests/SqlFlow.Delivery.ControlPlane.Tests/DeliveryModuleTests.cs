@@ -36,6 +36,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// it boots and answers the no-database surface (authorization, options, the registrations themselves) without SQL Server.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DeliveryModuleTests
 {
     [Fact]

@@ -14,6 +14,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>How a mapping addresses a template variable: <c>osdu.</c>, the record path, and <c>[]</c> for the step into an array.</summary>
+[Trait("Category", "Integration")]
 public class TemplatePathTests
 {
     [Fact]
@@ -51,6 +52,7 @@ public class TemplatePathTests
 }
 
 /// <summary>The template built from an OSDU schema: every property a variable, with what the schema says about it.</summary>
+[Trait("Category", "Integration")]
 public class OsduTemplateTests
 {
     private static OsduTemplate WellLog() => OsduTemplate.From(Samples.SampleTemplate(Samples.WellLogKind));
@@ -129,6 +131,7 @@ public class OsduTemplateTests
 
 /// <summary>The template store over the catalog: immutable versions, pinned by mappings.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class OsduTemplateStoreTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();
@@ -310,6 +313,7 @@ public sealed class OsduTemplateStoreTests : IDisposable
 }
 
 /// <summary>A bundled schema file, as the import accepts it.</summary>
+[Trait("Category", "Integration")]
 public class TemplateSourcesTests
 {
     private const string Kind = "test:wks:work-product-component--Thing:1.0.0";

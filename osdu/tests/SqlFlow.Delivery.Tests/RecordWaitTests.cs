@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// goes back to pending when that one lands, and records never wait for each other in a circle.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public class RecordWaitTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();

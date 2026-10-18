@@ -16,6 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// changes what the cache knew; a version without them hashes as versions always did.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class SystemPropertyTests : IDisposable
 {
     private const string Scope = "dev";

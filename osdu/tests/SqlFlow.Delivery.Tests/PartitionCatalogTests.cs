@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// configuration read in its two layers.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class PartitionCatalogTests : IDisposable
 {
     private readonly OsduTestDatabase _module = new();

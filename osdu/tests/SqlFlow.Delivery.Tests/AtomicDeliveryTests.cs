@@ -242,6 +242,7 @@ internal sealed class StagedRoute : IDeliveryProtocol
 /// sweep and never lost.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class AtomicDeliveryTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

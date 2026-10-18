@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// write that fails fails exactly the entries it carried.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class LeaseJournalTests : IAsyncLifetime, IDisposable
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);

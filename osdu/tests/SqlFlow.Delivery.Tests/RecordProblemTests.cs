@@ -14,6 +14,7 @@ namespace SqlFlow.Delivery.Tests;
 /// one named under the release, and records blocked before the ledger kept problems are sorted by the backfill.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RecordProblemTests : IAsyncLifetime, IDisposable
 {
     /// <summary>The hold of a record whose wellbore the cache does not hold: one problem, whatever the wellbore.</summary>

@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// and written again without a change when nothing changed. Every test starts from an empty module.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class ConfiguredPartitionsTests : IDisposable
 {
     private static readonly DateTime Now = new(2026, 10, 14, 6, 0, 0, DateTimeKind.Utc);
@@ -211,6 +212,7 @@ public sealed class ConfiguredPartitionsTests : IDisposable
 /// What <c>Osdu:Partitions</c> may hold, checked when the control plane starts: one default, data-partition-ids, property
 /// names a flow can spell, and secrets only as references. Each refusal names the setting at fault, and never a secret.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class ConfiguredPartitionsCheckTests
 {
     private static ConfiguredPartition Partition(string name, bool isDefault = false, params (string Name, string Value)[] properties)

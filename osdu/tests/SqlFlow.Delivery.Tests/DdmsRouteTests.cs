@@ -19,6 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// a metadata update carries the bulk link, a record-only collection takes no bulk data and purges through storage, and
 /// a DDMS named by its registration is read from the Register service.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class DdmsRouteTests
 {
     private const string Root = "/api/os-wellbore-ddms";

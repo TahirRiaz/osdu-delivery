@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// subcommands and exit codes, the settings <c>env</c> prints for the launchers, and the report <c>check</c> prints as text
 /// or JSON. The tests give the command line's arguments, from which the verb is taken off as the command line takes it.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class DevVerbsTests : IDisposable
 {
     private readonly DevCheckoutScope _scope = new();
@@ -156,6 +157,7 @@ public sealed class DevVerbsTests : IDisposable
 
 /// <summary>The SQL Server probe against the suites' server: what it reads, and creating the scratch database.</summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class DevSqlServerProbeTests
 {
     [Fact]

@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// a reference in it is refused where the document is read.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class RetrievalWindowTests : IDisposable
 {
     private const string Kind = "osdu:wks:master-data--Wellbore:1.*.*";

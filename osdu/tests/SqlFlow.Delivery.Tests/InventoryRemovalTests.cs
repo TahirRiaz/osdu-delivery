@@ -22,6 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 /// stops it there.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class InventoryRemovalTests : IDisposable
 {
     private const string Partition = "dev";

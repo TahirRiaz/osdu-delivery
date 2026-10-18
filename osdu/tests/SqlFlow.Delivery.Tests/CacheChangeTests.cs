@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// approved change out without taking the estate with it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
+[Trait("Category", "Integration")]
 public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
 {
     /// <summary>The partition whose cache the records under test were built from.</summary>

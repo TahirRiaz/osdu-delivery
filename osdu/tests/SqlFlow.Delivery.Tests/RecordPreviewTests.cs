@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// that keep an answer small. The ledger's side (what the next run would do with a delivered record, keys the ledger
 /// resolves) is <see cref="RecordPreviewLedgerTests"/>.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class RecordPreviewTests : IDisposable
 {
     private readonly TestClock _clock = new();
