@@ -253,7 +253,7 @@ pinned in [osdu/specs](osdu/specs). Recent changes are in the [changelog](CHANGE
 Requires the .NET 9 SDK, Node.js 22+, a SQL Server for the database tests, and Rust for the MCP server.
 
 ```bash
-bash tools/test.sh --install-hook   # once: the unit tier runs before every push
+bash tools/test.sh --install-hook   # once, where dev.bat or ./dev.sh has not: the unit tier before every push
 bash tools/test.sh                  # the unit tier: a few minutes, no database
 bash tools/test.sh --full           # every test, against SQL Server: before a pull request
 ```

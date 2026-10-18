@@ -69,6 +69,8 @@ sourceRefs:
 `osdu-delivery-setup` sets a checkout of OSDU Delivery up to run on this machine, and says what a local run has and
 what it is missing. The launchers run it: `dev.bat` on Windows and `./dev.sh` on macOS and Linux run `setup` when
 `.sqlflow/env` is missing, and `check` at every other start, and stop only when the check says a start would fail.
+A start (not `dev.bat check`) also points git at `tools/git-hooks` when the clone has no hooks path set, so the unit
+tests run before every push ([CONTRIBUTING.md, Tests](../../../../CONTRIBUTING.md#tests)).
 
 It is a host of its own (`osdu/hosts/SqlFlow.Delivery.Setup.Host`) that carries only the setup, so the first question
 comes without waiting for the whole product to build:

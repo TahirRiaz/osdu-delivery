@@ -155,6 +155,16 @@ if [ -n "$check" ]; then
     exit $?
 fi
 
+# --- The pre-push tests: git runs the unit tier before every push (CONTRIBUTING.md, Tests) ---
+# Once per clone: only in a git checkout, and only where no hooks path is set, so one somebody chose is left as it is.
+# 'git push --no-verify' skips the hook once; 'git config --unset core.hooksPath' removes it.
+if command -v git > /dev/null 2>&1 && git rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+   && [ -z "$(git config --get core.hooksPath || true)" ]; then
+    if git config core.hooksPath tools/git-hooks; then
+        echo "Installed the pre-push tests: git runs the unit tier (bash tools/test.sh) before every push; git push --no-verify skips it once."
+    fi
+fi
+
 # --- The setup when there is no env file (or it was asked for), else the check ---
 # Exit codes: 0 ready, 2 something a start needs is missing (the report says what), 1 stopped.
 if [ -n "$asksetup" ] || [ ! -f .sqlflow/env ]; then
