@@ -508,8 +508,15 @@ test.describe.serial("templates and the mapping builder", () => {
       const box = await templateKey.boundingBox({ timeout: 1_000 });
       expect(box !== null && box.y + box.height <= windowBottom).toBe(true);
     }).toPass({ timeout: 30_000 });
-    await templateKey.getByText("template", { exact: true }).hover();
-    await expect(adminPage.locator(".monaco-hover:not(.hidden)")).toContainText("The saved template version the mapping fills", { timeout: 15_000 });
+    // The loop ends as soon as the key is inside the window, while the editor may still be scrolling smoothly from the
+    // last wheel. The editor closes a hover that opens while it moves, and a mouse that stays put never opens one again,
+    // so on a slow machine the first hover is lost: it is made again from off the editor until it holds.
+    const hoverCard = adminPage.locator(".monaco-hover:not(.hidden)");
+    await expect(async () => {
+      await adminPage.mouse.move(0, 0);
+      await templateKey.getByText("template", { exact: true }).hover();
+      await expect(hoverCard).toContainText("The saved template version the mapping fills", { timeout: 3_000 });
+    }).toPass({ timeout: 30_000 });
     await expect(yaml.locator(".squiggly-error, .squiggly-warning")).toHaveCount(0);
 
     // The record shape: the renderer's layout with placeholders, and the partition filled into the id once it is given.
