@@ -7,18 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-19
+
+Module schema 1.46.0 and SQLFlow `fe87877c`, as in 1.0.0; the one change to `sqlflow/` since is to its tests
+([docs/sqlflow-changes.md](docs/sqlflow-changes.md)).
+
 ### Changed
 
 - **A local start installs the pre-push tests.** In a git clone with no hooks path set, a start of `dev.bat` or
   `./dev.sh` points git at `tools/git-hooks`, whose pre-push runs the unit tests (`bash tools/test.sh`) before every
   push; `git push --no-verify` skips it once and `git config --unset core.hooksPath` removes it
   ([CONTRIBUTING.md](CONTRIBUTING.md#tests)).
+- **A start without .NET offers to install it, on every platform.** `dev.bat` offers winget, and `./dev.sh`
+  Homebrew on a Mac and Microsoft's `dotnet-install.sh` into `~/.dotnet` on Linux; then the setup is built from the
+  checkout as on any start ([osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
 
-### Fixed
+### Removed
 
-- **A machine without .NET runs the newest release's setup.** `dev.bat` and `./dev.sh` kept the setup binary they
-  first downloaded whatever came out later; they now replace it when a newer release is out, and `dev.bat` unpacks it
-  where Git's `tar` comes first on the PATH ([osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
+- **The setup's binaries.** A release no longer carries `osdu-delivery-setup` for each platform, and the launchers
+  no longer download one: they build it from the checkout, in seconds, once .NET is there. A release is its tag and
+  its notes ([CONTRIBUTING.md](CONTRIBUTING.md#releases)).
 
 ## [1.0.0] - 2026-10-18
 
