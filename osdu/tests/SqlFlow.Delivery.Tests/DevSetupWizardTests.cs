@@ -279,37 +279,18 @@ public sealed class DevSetupWizardTests : IDisposable
         _scope.Tools.Installed.Add("winget");
         _scope.CommandLine.Missing = "the .NET SDK is not installed on this machine";
 
-        var (written, prompter) = await RunAsync(DevPlatform.Windows, ["n", "", "", "", "", "", "", "", "n", "", "", "", ""]);
+        var (written, prompter) = await RunAsync(DevPlatform.Windows, ["", "", "", "", "", "", "", "n", "", "", "", ""]);
 
         Assert.True(written);
         Assert.Equal(0, prompter.Left);
         Assert.Contains("The .NET SDK is not installed on this machine.", prompter.Transcript, StringComparison.Ordinal);
+        Assert.Contains("winget install Microsoft.DotNet.SDK.9", prompter.Transcript, StringComparison.Ordinal);
+        Assert.DoesNotContain(prompter.Asked, q => q.Contains(".NET", StringComparison.Ordinal));
         Assert.Contains("not yet: create the catalog OsduDelivery, which needs .NET", prompter.Transcript, StringComparison.Ordinal);
         Assert.Empty(_scope.CommandLine.Runs);
         Assert.False(_scope.CommandLine.Prepared);
         Assert.DoesNotContain(_scope.Tools.Runs, r => r.Tool == "winget");
         Assert.True(File.Exists(_scope.Checkout.EnvFile));
-    }
-
-    [Fact]
-    public async Task Without_dotnet_it_offers_the_install_and_goes_on_with_the_command_line_once_it_is_there()
-    {
-        _scope.WithReadyServer();
-        _scope.Sql.Databases.Remove("OsduDelivery");
-        _scope.Sql.Catalogs.Clear();
-        _scope.Tools.Results["winget"] = FakeToolRunner.Ok();
-        _scope.CommandLine.Missing = "the .NET SDK is not installed on this machine";
-        _scope.CommandLine.InstalledOnRefresh = true;
-
-        var (written, prompter) = await RunAsync(DevPlatform.Windows, ["", "", "", "", "", "", "", "", "n", "", "", "", ""]);
-
-        Assert.True(written);
-        Assert.Equal(0, prompter.Left);
-        var install = Assert.Single(_scope.Tools.Runs, r => r.Tool == "winget");
-        Assert.Equal(["install", "--id", "Microsoft.DotNet.SDK.9", "--exact", "--accept-package-agreements", "--accept-source-agreements"], install.Arguments);
-        Assert.True(install.Run.Attached);
-        Assert.True(_scope.CommandLine.Prepared);
-        Assert.Equal(["db", "migrate", "--create"], Assert.Single(_scope.CommandLine.Runs).Arguments);
     }
 
     [Fact]
