@@ -101,6 +101,9 @@ if not defined _check goto :prepare
 exit /b %errorlevel%
 
 :prepare
+REM --- The pre-push tests: git runs the unit tier before every push (CONTRIBUTING.md, Tests) ---
+call :installhook
+
 REM --- The setup when there is no env file (or it was asked for), else the check ---
 REM Exit codes: 0 ready, 2 something a start needs is missing (the report says what), 1 stopped.
 if defined _asksetup goto :setup
@@ -295,6 +298,21 @@ echo     .sqlflow\tools\ and start dev.bat again; with the GitHub CLI signed in 
 echo     gh auth login), dev.bat fetches it itself.
 set "_setup="
 goto :eof
+
+REM ---------------------------------------------------------------------------
+REM  :installhook   points git at tools\git-hooks, whose pre-push runs the unit tier (bash tools/test.sh), once per
+REM  clone: only in a git checkout, and only where no hooks path is set, so one somebody chose is left as it is.
+REM  'git push --no-verify' skips the hook once; 'git config --unset core.hooksPath' removes it.
+REM ---------------------------------------------------------------------------
+:installhook
+git rev-parse --is-inside-work-tree >nul 2>&1
+if errorlevel 1 exit /b 0
+git config --get core.hooksPath >nul 2>&1
+if not errorlevel 1 exit /b 0
+git config core.hooksPath tools/git-hooks
+if errorlevel 1 exit /b 0
+echo Installed the pre-push tests: git runs the unit tier (bash tools/test.sh) before every push; git push --no-verify skips it once.
+exit /b 0
 
 REM ---------------------------------------------------------------------------
 REM  :stopport <port> <what>   free a listening port by killing the process tree that owns it.

@@ -14,7 +14,7 @@ Thanks for your interest in contributing! This guide gets you productive quickly
 ```bash
 git clone <this repository>
 cd osdu-delivery
-bash tools/test.sh --install-hook   # once: git runs the unit tier before every push
+bash tools/test.sh --install-hook   # once, where dev.bat or ./dev.sh has not: the unit tier before every push
 bash tools/test.sh                  # the unit tier: a few minutes, no database
 bash tools/test.sh --full           # every test, against SQL Server: before opening a pull request
 ```
@@ -36,7 +36,8 @@ any terminal that has it):
 - **The unit tier** (`bash tools/test.sh`) is the build with warnings as errors, every .NET test that needs no SQL
   Server, host or other process, and the GUI's build, lint and unit tests. It takes a few minutes and needs no
   database. It is what CI's **Build and test** runs on every pull request, and what the pre-push hook runs before every
-  push that carries commits (`git push --no-verify` skips it once).
+  push that carries commits (`git push --no-verify` skips it once). `dev.bat` and `./dev.sh` install the hook on a
+  clone's first start, unless a hooks path is set already.
 - **The full tier** (`bash tools/test.sh --full`) is every test: the SQL Server suites, the control plane hosts, the
   MCP server's crates and the GUI end-to-end suite. Run it before opening a pull request and say so in the template.
   CI runs it as **Full test suite** on a release tag, whose release waits for it, on a pull request labelled

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A local start installs the pre-push tests.** In a git clone with no hooks path set, a start of `dev.bat` or
+  `./dev.sh` points git at `tools/git-hooks`, whose pre-push runs the unit tests (`bash tools/test.sh`) before every
+  push; `git push --no-verify` skips it once and `git config --unset core.hooksPath` removes it
+  ([CONTRIBUTING.md](CONTRIBUTING.md#tests)).
+
 ## [1.0.0] - 2026-10-18
 
 The first release of OSDU Delivery, powered by SQLFlow: subsurface data delivered into an OSDU platform by
