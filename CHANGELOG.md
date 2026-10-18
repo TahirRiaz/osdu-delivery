@@ -7,37 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **A first local start sets the machine up, and every start says what is missing.** `dev.bat` (Windows) and the new
-  `./dev.sh` (macOS, Linux) ask for the SQL Server (starting SQL Server 2022 in Docker where there is none), the OSDU
-  platform and its client, and a flow repository, then write `.sqlflow/env` from `dev.env.example`, create the
-  databases and register the partition. Each start then reports every tool, setting and database with its fix, and
-  stops only when a start would fail; `dev.bat check` tests the OSDU sign-in too. The setup is `osdu-delivery-setup`,
-  which builds in seconds, and each release publishes it for Windows, macOS and Linux, so a machine without .NET runs
-  it too and is offered the install ([Run it locally](README.md#run-it-locally),
-  [osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
-
-### Removed
-
-- **`osdu/tools/dev-setup.ps1`.** It copied a deployed estate's secrets onto the machine and defaulted to a production
-  estate; `dev.bat setup` now writes `.sqlflow/env` for this machine alone
-  ([osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
-
-### Fixed
-
-- **An environment deployed by its GitHub identity creates its sign-in registration.** The deploying identity is made
-  an owner of the registration and its service principal, so Microsoft Graph's `Application.ReadWrite.OwnedBy` is
-  all it needs, as the deployment guide says; before, the apply stopped creating the service principal
-  ([osdu/deploy/README.md](osdu/deploy/README.md)).
-- **The Deploy workflow applies an environment's Terraform.** Run with "infrastructure", it stopped before the plan,
-  saying the environment's resource group did not exist when it did; it now plans and applies
-  ([osdu/deploy/README.md](osdu/deploy/README.md)).
-- **The MCP server's image starts.** In 1.0.0 the `osdu-delivery-mcp` image was built on a newer Debian than it runs
-  on, and its server did not start; rebuild the image from this release
-  ([guides/mcp.md](osdu/docs/reference/guides/mcp.md)).
-
-## [1.0.0] - 2026-10-16
+## [1.0.0] - 2026-10-18
 
 The first release of OSDU Delivery, powered by SQLFlow: subsurface data delivered into an OSDU platform by
 configuration rather than code, with every record traceable in a ledger. The [README](README.md) says what it is and the
@@ -72,6 +42,13 @@ configuration rather than code, with every record traceable in a ledger. The [RE
   retrieval of OSDU records into files, dimension flows, data quality tests, and an explorer of what OSDU holds.
 - **The GUI and the command line.** The workbench pages for records, flows, the cache, mappings, tests and the audit
   trail, a mapping builder and a YAML editor that documents and checks every document, and `sqlflow` verbs for the same.
+- **A local run set up by answering questions.** `dev.bat` (Windows) and `./dev.sh` (macOS, Linux) set a machine up on
+  its first start: `osdu-delivery-setup` asks for the SQL Server (starting SQL Server 2022 in Docker where there is
+  none), the OSDU platform and its client, and a flow repository, writes `.sqlflow/env` from `dev.env.example`, creates
+  the databases and registers the partition. Every start then reports each tool, setting and database with its fix,
+  and stops only when a start would fail. The release carries the setup for Windows, macOS and Linux, so a machine
+  without .NET runs it too and is offered the install ([Run it locally](README.md#run-it-locally),
+  [osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
 - **An AI assistant.** `osdu-delivery-mcp` serves Claude, Cursor, VS Code, Codex, Slack and the GUI's chat from metadata
   and documentation, and answers questions over data only through AI contexts an admin approves
   ([guides/mcp.md](osdu/docs/reference/guides/mcp.md)).
@@ -90,7 +67,7 @@ configuration rather than code, with every record traceable in a ledger. The [RE
   1.46.0 (migration `20261014094057_PurgedRecordReadAgain`), requiring SQLFlow catalog migration
   `20261014215105_RunSuppliedReferences` or later. The hosts refuse to run against pending migrations.
 - **Built on SQLFlow** `fe87877c` ([github.com/TahirRiaz/SQLFlow](https://github.com/TahirRiaz/SQLFlow)),
-  vendored in `sqlflow/`. Every extension point and fix this project needed is in SQLFlow itself
+  vendored in `sqlflow/` with the extension points and fixes this project needed, each recorded with its reason
   ([docs/sqlflow-changes.md](docs/sqlflow-changes.md)). It runs on .NET 9, with every package on its newest release
   for it.
 
