@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 using SqlFlow.Core.Secrets;
-using SqlFlow.Delivery.Cli.LocalSetup;
+using SqlFlow.Delivery.Setup;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -57,6 +57,8 @@ public sealed class DevReadinessTests : IDisposable
 
         public ToolResult? Azure { get; set; }
 
+        public string? DotnetOffPath { get; set; }
+
         public List<SqlInstance> Instances { get; } = [new("localhost", SqlInstanceKind.Service, "MSSQLSERVER", "running", false)];
 
         public DockerState Docker { get; set; } = DockerState.NotInstalled;
@@ -97,7 +99,7 @@ public sealed class DevReadinessTests : IDisposable
         var repositories = spec.Repositories ?? [new RepositoryScan("flows", _scope.Root, _scope.Root, true, true, string.Empty, false, true)];
         var facts = new DevFacts(
             new DevAdvice(spec.Platform, ".sqlflow/env", "DOMAIN\\dev"), template, file is not null, file, settings, spec.Terminal, spec.Gui,
-            new ToolFacts(spec.Dotnet, spec.Node, spec.Npm, DevFactsCollector.AzureNeeded(settings), spec.Azure),
+            new ToolFacts(spec.Dotnet, spec.Node, spec.Npm, DevFactsCollector.AzureNeeded(settings), spec.Azure, spec.DotnetOffPath),
             spec.Instances, spec.Docker,
             catalogTarget is null ? null : new DatabaseSide("SQLFLOW_CATALOG_DB", catalogTarget, null, spec.CatalogServer, spec.CatalogServer is { Answered: true } ? spec.CatalogDatabase : null),
             spec.Contents,
@@ -380,6 +382,16 @@ public sealed class DevReadinessTests : IDisposable
         Assert.Equal(FindingStatus.Off, Single(api, "Node.js").Status);
         Assert.Equal(FindingStatus.Warning, Single(oldNode, "Node.js").Status);
         Assert.Contains("brew install --cask dotnet-sdk", Single(noDotnet, ".NET SDK").Fixes[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_sdk_this_terminals_path_does_not_have_yet_is_a_warning_to_open_a_new_terminal()
+    {
+        var dotnet = Single(Evaluate(new Spec { DotnetOffPath = @"C:\Program Files\dotnet\dotnet.exe" }), ".NET SDK");
+
+        Assert.Equal(FindingStatus.Warning, dotnet.Status);
+        Assert.Contains("which this terminal's PATH does not have yet", dotnet.Detail, StringComparison.Ordinal);
+        Assert.Contains("Open a new terminal", dotnet.Fixes[0], StringComparison.Ordinal);
     }
 
     [Fact]

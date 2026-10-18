@@ -28,7 +28,11 @@ is unset. Never point it at a database holding real data: the suites migrate and
 `dev.bat` (Windows) and `./dev.sh` (macOS, Linux) run the whole thing locally: on the first start they ask for the
 SQL Server, the OSDU platform and a flow repository and write the git-ignored `.sqlflow/env` from `dev.env.example`;
 every start after that checks the machine and the settings and says what is missing
-([Run it locally](README.md#run-it-locally), [sqlflow dev](osdu/docs/reference/cli/dev.md)).
+([Run it locally](README.md#run-it-locally), [osdu-delivery-setup](osdu/docs/reference/cli/dev.md)). The setup is its
+own host, `osdu/hosts/SqlFlow.Delivery.Setup.Host` over `osdu/src/SqlFlow.Delivery.Setup`, which depends on nothing
+but `SqlFlow.Core` and the SQL Server client, so it builds in seconds; the command line carries the same code as
+`sqlflow dev`. A `v*` tag publishes it as a self-contained binary per platform on the release, for machines without
+.NET; keep its dependencies that small.
 
 ## Repository layout
 

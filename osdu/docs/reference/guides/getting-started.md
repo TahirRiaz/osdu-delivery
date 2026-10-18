@@ -97,7 +97,7 @@ flows are plain SQLFlow and are only sketched here; the OSDU steps are shown in 
 
 On a checkout of OSDU Delivery, `dev.bat setup` (Windows) or `./dev.sh setup` (macOS, Linux) writes this file for you,
 asking for each value and testing the OSDU client, and creates the databases of step 2
-([sqlflow dev](../cli/dev.md)); what follows is the same by hand.
+([osdu-delivery-setup](../cli/dev.md)); what follows is the same by hand.
 
 Secrets never go into a document. The documents name references such as `${env:OSDU_URL}`, and the values come from the
 environment. For local work, put them in a git-ignored `.sqlflow/env` at the repository root; the CLI applies the

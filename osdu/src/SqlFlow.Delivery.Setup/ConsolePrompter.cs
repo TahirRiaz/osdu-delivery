@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// The setup's console. A question is written to the command's output and answered on the console's input; a secret is typed

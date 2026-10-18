@@ -1,6 +1,6 @@
 ---
 name: sqlflow-local-dev
-description: Run OSDU Delivery locally (dev.bat on Windows, ./dev.sh on macOS and Linux) for fast iteration and debugging, instead of building containers and deploying. Use when asked to run/debug/test locally, "spin it up", set up dev mode, reproduce a bug, or try a change without deploying. Covers the first-start setup and the readiness check (sqlflow dev), the .sqlflow/env contract, VS Code F5, and the launcher traps.
+description: Run OSDU Delivery locally (dev.bat on Windows, ./dev.sh on macOS and Linux) for fast iteration and debugging, instead of building containers and deploying. Use when asked to run/debug/test locally, "spin it up", set up dev mode, reproduce a bug, or try a change without deploying. Covers the first-start setup and the readiness check (osdu-delivery-setup), the .sqlflow/env contract, VS Code F5, and the launcher traps.
 ---
 
 # OSDU Delivery local dev
@@ -15,7 +15,7 @@ change is a Vite hot-reload (instant).
 | GUI | http://localhost:5173 (Vite, hot-reloads on save) |
 | Control plane | http://localhost:5000 (API + scheduler + dispatcher + in-process node in ONE process) |
 | Settings | `.sqlflow/env` (git-ignored), written from `dev.env.example` at the checkout's root |
-| Setup and check | the command line's `sqlflow dev` verb (`osdu/docs/reference/cli/dev.md`, code in `osdu/src/SqlFlow.Delivery.Cli/LocalSetup/`) |
+| Setup and check | `osdu-delivery-setup` (`osdu/docs/reference/cli/dev.md`): host `osdu/hosts/SqlFlow.Delivery.Setup.Host`, code in `osdu/src/SqlFlow.Delivery.Setup/`; the command line's `sqlflow dev` runs the same code |
 
 ## Start it
 
@@ -26,10 +26,12 @@ dev.bat setup / ./dev.sh setup     the setup questions again (current values off
 dev.bat api, dev.bat managed       control plane only; managed worker processes
 ```
 
-The launchers only find .NET, build `osdu/hosts/SqlFlow.Delivery.Cli.Host`, and run its `dev` verb: `dev setup` when
-`.sqlflow/env` is missing, otherwise `dev check --prepare` (fills a copied template's `<generated>` values, runs
-`az login` when the file reads Azure through it). They stop a previous control plane only after the check passed, load
-the settings through `dev env`, apply migrations with `db migrate`, and start. The check's exit code decides: 0 start,
+The launchers find .NET, build the setup's host (seconds; without .NET they fetch the release's self-contained binary
+into `.sqlflow/tools` with `gh release download`), and run it: `setup` when `.sqlflow/env` is missing, otherwise
+`check --prepare` (fills a copied template's `<generated>` values, runs `az login` when the file reads Azure through
+it). The setup builds `osdu/hosts/SqlFlow.Delivery.Cli.Host` in the background for the catalog and partition steps.
+The launchers stop a previous control plane only after the check passed, load the settings through the setup's `env`,
+apply migrations with the command line's `db migrate`, and start. The check's exit code decides: 0 start,
 2 stop (something a start needs is missing), 1 stopped.
 
 Or **F5 in VS Code** for breakpoints (`.vscode/` is git-ignored, so `launch.json` is local). F5 does not migrate: run
@@ -37,20 +39,20 @@ the launcher once after pulling or authoring a migration.
 
 ## Before saying what a local run touches
 
-Read the file's targets, never its values: `sqlflow dev check` prints each connection as server / database / sign-in
+Read the file's targets, never its values: `osdu-delivery-setup check` (or `sqlflow dev check`) prints each connection as server / database / sign-in
 and each secret by its length only. Which catalog, which data database and which OSDU partition a run uses is whatever
 `.sqlflow/env` names; it may be a local SQL Server or a shared one.
 
 ## Traps that will waste your time
 
 **The control plane reads its `ControlPlane__*` settings only from the process environment.** It builds its
-configuration before it applies `.sqlflow/env` itself, so the launchers set the file's values first (`dev env`). A
+configuration before it applies `.sqlflow/env` itself, so the launchers set the file's values first (the setup's `env`). A
 `dotnet run` by hand without them starts with an empty CORS list (every GUI call fails) and no signing key (refused).
 
 **CORS defaults to EMPTY, and empty means no CORS at all.** `ControlPlane__Cors__AllowedOrigins__0` must be
 `http://localhost:5173`; the check says so when it is not.
 
-**Do not `source .sqlflow/env` in bash.** Values contain spaces and `;`. `./dev.sh` exports each `dev env` line as it
+**Do not `source .sqlflow/env` in bash.** Values contain spaces and `;`. `./dev.sh` exports each `env` line as it
 stands; by hand, read one value with `grep '^NAME=' .sqlflow/env | cut -d= -f2-`.
 
 **A value cmd cannot set.** `dev.bat` sets each value with `set "NAME=value"`: a double quote next to `&`, `|`, `<`,

@@ -1,6 +1,6 @@
 ---
 id: delivery-cli-dev
-title: "sqlflow dev: set a checkout up for a local run, and check what it has and what it is missing"
+title: "osdu-delivery-setup and sqlflow dev: set a checkout up for a local run, and check what it has and what it is missing"
 type: cli-command
 summary: "Set a checkout up for a local run (SQL Server, databases, admin, OSDU, flows), and check every tool, setting and database it needs, each with its fix."
 keywords:
@@ -27,6 +27,10 @@ keywords:
   - env reference not set
   - windows authentication
   - sql login
+  - osdu-delivery-setup
+  - setup binary
+  - no .net installed
+  - install .net
 cliCommand: dev
 related:
   - delivery-guide-getting-started
@@ -37,42 +41,57 @@ related:
   - concept-environment-variables
   - cli-control-plane
 sourceRefs:
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevVerbs.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevSetupWizard.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevReadiness.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevFacts.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevEnvFile.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevEnvTemplate.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevValues.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/SqlTarget.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/SqlServerProbe.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/LocalSqlServers.cs
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/OsduSignIn.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevCommand.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevCommandLine.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevSetupWizard.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevReadiness.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevFacts.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevEnvFile.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevEnvTemplate.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevValues.cs
+  - osdu/src/SqlFlow.Delivery.Setup/SqlTarget.cs
+  - osdu/src/SqlFlow.Delivery.Setup/SqlServerProbe.cs
+  - osdu/src/SqlFlow.Delivery.Setup/LocalSqlServers.cs
+  - osdu/src/SqlFlow.Delivery.Setup/OsduSignIn.cs
+  - osdu/hosts/SqlFlow.Delivery.Setup.Host/Program.cs
+  - osdu/src/SqlFlow.Delivery.Cli/DeliveryDevVerbs.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs
   - sqlflow/src/SqlFlow.Core/Secrets/LocalEnvFile.cs
   - sqlflow/src/SqlFlow.Cli/Hosting/CliVerb.cs
+  - .github/workflows/ci.yml
   - dev.env.example
   - dev.bat
   - dev.sh
 ---
 
-# sqlflow dev
+# osdu-delivery-setup and sqlflow dev
 
-OSDU Delivery's command line is `sqlflow`: SQLFlow's CLI with the OSDU verbs added. `dev` is one of those verbs. It sets
-a checkout of OSDU Delivery up to run on this machine, and says what a local run has and what it is missing. The
-launchers run it: `dev.bat` on Windows and `./dev.sh` on macOS and Linux run `dev setup` when `.sqlflow/env` is missing,
-and `dev check` at every other start, and stop only when the check says a start would fail. Everything a launcher does
-beyond that is find .NET, build the command line, and start what the check cleared.
+`osdu-delivery-setup` sets a checkout of OSDU Delivery up to run on this machine, and says what a local run has and
+what it is missing. The launchers run it: `dev.bat` on Windows and `./dev.sh` on macOS and Linux run `setup` when
+`.sqlflow/env` is missing, and `check` at every other start, and stop only when the check says a start would fail.
 
-`dev` is about this machine running OSDU Delivery itself. SQLFlow's `sqlflow doctor` is about a command line reaching a
-control plane elsewhere ([the control plane verbs](../../../../sqlflow/docs/reference/cli/control-plane.md)).
+It is a host of its own (`osdu/hosts/SqlFlow.Delivery.Setup.Host`) that carries only the setup, so the first question
+comes without waiting for the whole product to build:
+
+- **Where .NET is installed**, the launchers build it, which takes seconds and always matches the checkout.
+- **Where .NET is not**, they run the self-contained binary each release publishes for the platform (Windows x64,
+  macOS on Apple silicon and Intel, Linux x64 and arm64), which needs no .NET. The repository is private, so a launcher
+  fetches it with the GitHub CLI, signed in as you (`gh release download`), into `.sqlflow/tools`, and uses it only when
+  it matches the checksum the release lists beside it; without the GitHub CLI, put the binary from the Releases page
+  there yourself. The setup then offers to install .NET, which every start needs.
+
+The command line has the same code as a verb, `sqlflow dev`, for a machine that has built it. `dev` is about this
+machine running OSDU Delivery itself; SQLFlow's `sqlflow doctor` is about a command line reaching a control plane
+elsewhere ([the control plane verbs](../../../../sqlflow/docs/reference/cli/control-plane.md)).
 
 ## Synopsis
 
 ```bash
-sqlflow dev setup [--env-file <path>]
-sqlflow dev check [--env-file <path>] [--api] [--test-osdu] [--prepare] [--json]
-sqlflow dev env   [--env-file <path>]
+osdu-delivery-setup setup [--env-file <path>]
+osdu-delivery-setup check [--env-file <path>] [--api] [--test-osdu] [--prepare] [--json]
+osdu-delivery-setup env   [--env-file <path>]
+osdu-delivery-setup --help
+sqlflow dev setup | check | env ...     # the same, from the command line
 ```
 
 ```bash
@@ -95,14 +114,20 @@ The template's sections decide what a missing setting means:
 | Needed to run flows | the data database; the OSDU platform, partition, client, groups and legal tag | The check warns; the launchers start, and a run that reads it fails. |
 | Optional | the tenant, a flow repository, migrations, Azure sign-in, Microsoft sign-in, the assistant's ! questions, managed workers, the test database | Reported when set. |
 
-The verb reads the env file itself: the command line does not apply it before `dev` runs (as it does for every other
-verb), so a file the hosts would refuse still reaches the check, which names each line it refuses.
+The setup reads the env file itself, never applying it first (the command line applies it before every other verb), so
+a file the hosts would refuse still reaches the check, which names each line it refuses.
 
 ### The setup
 
-`dev setup` asks for what it cannot know, offering the current file's values as the defaults, and changes nothing until
-it has shown its plan and you have said yes:
+`setup` asks for what it cannot know, offering the current file's values as the defaults, and changes nothing until it
+has shown its plan and you have said yes. Two steps need the command line (creating the catalog, registering the
+partition), so the setup host starts building it in the background as the questions begin, with the .NET SDK on the
+PATH or the one an installer just put in its usual place; by the time the plan is confirmed it is usually built.
 
+0. **.NET**, when it is missing. On Windows it offers `winget install Microsoft.DotNet.SDK.9`, on a Mac
+   `brew install --cask dotnet-sdk`, elsewhere it names the install page. Without .NET the setup still writes the file
+   and makes the databases it can; its plan says the catalog and the partition wait for .NET, and the next
+   `dev.bat setup` makes them.
 1. **SQL Server.** It lists the SQL Servers on this machine: Windows services, LocalDB instances and Docker containers
    from a SQL Server image. When none runs and Docker's engine does, it offers to start SQL Server 2022 in a container
    (`osdu-delivery-sql`, port 1433, its databases kept in the volume of that name), with a generated `sa` password handed
@@ -112,7 +137,8 @@ it has shown its plan and you have said yes:
    left for later.
 2. **Databases.** The catalog (`OsduDelivery` by default) and the data database (`OsduData`); flows name them in
    three-part names, so the names are kept unless the flows say otherwise. A missing catalog is created with the
-   catalog and the `osdu` schema after the file is written, through `sqlflow db migrate --create`. A missing data
+   catalog and the `osdu` schema after the file is written, through the command line's `db migrate --create`; a
+   database the login cannot read is said so, never taken for an empty one. A missing data
    database is created with snapshot isolation allowed, and an existing one without it is offered it.
 3. **Signing in.** The first admin's user name, and its password (12 characters at least; Enter generates one). A user
    that already exists keeps its password, so none is asked for. The session signing key is generated, or the current
@@ -129,16 +155,17 @@ it has shown its plan and you have said yes:
 
 It then writes the file, keeping the one it replaces beside it as `env.<time>.bak`, carries over every name the old file
 set that no question asked about and every setting it kept commented out, creates or adjusts the databases, and
-registers the partition with `sqlflow partition add` (as the default when the catalog has none), applying the catalog's
-pending migrations first. On macOS and Linux the file is readable by its owner only. Then it runs the check.
+registers the partition with the command line's `partition add` (as the default when the catalog has none), applying
+the catalog's pending migrations first. On macOS and Linux the file is readable by its owner only. It waits for the
+command line's build to finish, which the start needs next, and then runs the check.
 
 ### What the check reports
 
-`dev check` prints a line per finding, with the fix under each that has one:
+`check` prints a line per finding, with the fix under each that has one:
 
 | Section | What it reads |
 | --- | --- |
-| Tools | the .NET SDK (as `global.json` takes it), Node.js 22 or later with npm (not with `--api`), the Azure CLI and its sign-in (when the file reads Azure through it), Docker (where SQL Server runs in it) |
+| Tools | the .NET SDK (as `global.json` takes it; one installed where this terminal's PATH does not reach yet is a warning to open a new terminal), Node.js 22 or later with npm (not with `--api`), the Azure CLI and its sign-in (when the file reads Azure through it), Docker (where SQL Server runs in it) |
 | The file | lines the hosts refuse, names set twice (the first counts), values `dev.bat` cannot set (a double quote beside `&`, `\|`, `<`, `>` or `^`, or more than 8,000 characters), and names this terminal sets to another value |
 | Settings | every setting of the template, by section: set, missing, still a placeholder, or wrong (a signing key under 32 bytes, an origin that is not the GUI's, a URL that is not https, a group that is not an e-mail, Windows authentication off Windows); misspelt names, with the one meant |
 | SQL Server | the servers on this machine; the catalog's server, its release and edition; the catalog database (missing, empty, another application's, offline, closed to the login) and the data database (missing, without snapshot isolation) |
@@ -155,7 +182,7 @@ database and kind of sign-in.
 
 ### env
 
-`dev env` prints the file's settings, one `NAME=value` line each, exactly as the hosts read them (surrounding quotes
+`env` prints the file's settings, one `NAME=value` line each, exactly as the hosts read them (surrounding quotes
 taken off, the first of a name set twice). The launchers set them in their own process: the control plane builds its
 configuration from the process environment before it reads `.sqlflow/env` itself, so its `ControlPlane__*` settings
 reach it only that way.
@@ -200,13 +227,16 @@ Not ready to start: 1 ERROR line(s) above. Fix them (dev.bat setup asks the setu
 
 | Message | Cause |
 | --- | --- |
-| `No dev.env.example was found in <folder> or above it. Run 'sqlflow dev' from an OSDU Delivery checkout ...` | The verb ran outside a checkout. |
+| `No dev.env.example was found in <folder> or above it. Run the setup from an OSDU Delivery checkout ...` | It ran outside a checkout. |
 | `The template <path> is missing; it ships with the repository. Restore it with: git checkout -- dev.env.example` | The checkout lost its template. |
 | `<path>(<line>): the section '<title>' is none of 'Needed to start', 'Needed to run flows' and 'Optional'.` | An edited template renamed a section. |
-| `name what to do: setup, check or env.` | No subcommand, or (`'<word>' is none of setup, check and env.`) an unknown one; the verb's usage follows. |
-| `--json applies to 'dev check' alone.` | `--json` with `setup` or `env`. |
-| `The input ended before the setup was done; nothing was written.` | `dev setup` ran with no one to answer (its input ended); exit 1. |
-| `<env file> is missing; dev.bat setup writes it.` | `dev env` with no file; exit 2. |
+| `name what to do: setup, check or env.` | No subcommand, or (`'<word>' is none of setup, check and env.`) an unknown one; the usage follows, as it does for each error of this kind. |
+| `'<word>' follows the subcommand '<subcommand>', which takes no other word.` | A second word after the subcommand. |
+| `'<option>' is not an option of this command; it takes --env-file <path>, --api, --test-osdu, --prepare and --json.` | An option it does not read. |
+| `--env-file needs the path of the env file.` | `--env-file` with no path after it. |
+| `--json applies to 'check' alone.` | `--json` with `setup` or `env`. |
+| `The input ended before the setup was done; nothing was written.` | `setup` ran with no one to answer (its input ended); exit 1. |
+| `<env file> is missing; dev.bat setup writes it.` | `env` with no file; exit 2. |
 
 Each error is printed as `ERROR  <message>` on stderr.
 
@@ -219,6 +249,7 @@ dev.bat
 ```
 
 ```text
+Building the setup ...
 .sqlflow\env is missing, so this is a first start: a few questions set this machine up.
 
 1. SQL Server: where the catalog and the data database live
@@ -227,6 +258,18 @@ dev.bat
   Sign in with your Windows account (WELLDB\dev)? n for a SQL login [Y/n]:
     Connected: SQL Server 2022 (16.0.4135.4), Developer Edition (64-bit), as WELLDB\dev.
   ...
+```
+
+A first start on a Windows machine without .NET: dev.bat fetches the setup's binary (with the GitHub CLI, signed in)
+and runs it, and the setup offers the install:
+
+```text
+The .NET SDK is not installed, so the setup runs from the binary each release publishes.
+Downloading osdu-delivery-setup-win-x64.zip from this repository's latest release ...
+
+.NET: what OSDU Delivery builds and runs on
+  The .NET SDK is not installed on this machine. The control plane, the workers and the command line all run on it.
+  Install the .NET SDK now (winget install --id Microsoft.DotNet.SDK.9 --exact ...; it may ask for an administrator's rights)? [Y/n]:
 ```
 
 A first start on a Mac with Docker Desktop running and no SQL Server:
@@ -245,7 +288,7 @@ A first start on a Mac with Docker Desktop running and no SQL Server:
 The check from a script, as JSON:
 
 ```bash
-sqlflow dev check --api --json
+osdu/hosts/SqlFlow.Delivery.Setup.Host/bin/Debug/net9.0/osdu-delivery-setup check --api --json
 ```
 
 ## Exit behavior
@@ -254,6 +297,7 @@ sqlflow dev check --api --json
 | --- | --- | --- | --- |
 | 0 | written, and a start would succeed | a start would succeed (warnings may remain) | printed |
 | 1 | stopped before writing, or a usage error | a usage error | a usage error |
+| 130 | stopped with Ctrl+C | stopped with Ctrl+C | |
 | 2 | written, and a start would fail | a start would fail | the file is missing or the hosts refuse a line of it; nothing printed |
 
 ## See also

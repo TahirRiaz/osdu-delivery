@@ -41,7 +41,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs
   - osdu/deploy/bicep/entra-app.bicep
   - osdu/deploy/bicep/main.bicep
-  - osdu/src/SqlFlow.Delivery.Cli/LocalSetup/DevSetupWizard.cs
+  - osdu/src/SqlFlow.Delivery.Setup/DevSetupWizard.cs
   - dev.env.example
   - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlanePolicies.cs
   - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlaneHost.cs
@@ -128,7 +128,7 @@ exception: asked for or scheduled, it is recorded as a `probe` activity under wh
 A local run (`dev.bat`, `./dev.sh`) signs its own session tokens: the setup generates a signing key for this machine
 alone into the git-ignored `.sqlflow/env`, so a token a local control plane issues is valid there and nowhere else, and
 configures a first admin, created at the first start when the catalog has no user of that name and never reset after
-([sqlflow dev](../cli/dev.md)). A local control plane started against a catalog that already has users needs no first
+([osdu-delivery-setup](../cli/dev.md)). A local control plane started against a catalog that already has users needs no first
 admin, and signs in with those users' accounts and roles.
 
 ## See also

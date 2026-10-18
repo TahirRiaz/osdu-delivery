@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>osdu-delivery-setup</AssemblyName>
+    <RootNamespace>SqlFlow.Delivery.Setup.Host</RootNamespace>
+    <!-- The published binary is one file a launcher runs; the API documentation stays with the sources. -->
+    <PublishDocumentationFiles>false</PublishDocumentationFiles>
+    <Description>osdu-delivery-setup: sets a checkout up for a local run and checks it. dev.bat and dev.sh build it in seconds where .NET is installed, and where it is not they run the self-contained binary each release publishes, which can install .NET.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SqlFlow.Delivery.Setup\SqlFlow.Delivery.Setup.csproj" />
+  </ItemGroup>
+
+</Project>

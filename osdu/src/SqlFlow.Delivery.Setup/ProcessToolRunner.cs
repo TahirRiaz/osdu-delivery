@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// Runs tools as processes. A tool is found on the PATH as the shell finds it (with the system's executable extensions on

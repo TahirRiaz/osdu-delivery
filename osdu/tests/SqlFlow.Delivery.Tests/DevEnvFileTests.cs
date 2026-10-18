@@ -1,5 +1,5 @@
 using SqlFlow.Core.Secrets;
-using SqlFlow.Delivery.Cli.LocalSetup;
+using SqlFlow.Delivery.Setup;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;

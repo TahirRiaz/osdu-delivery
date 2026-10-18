@@ -1,24 +1,22 @@
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.DependencyInjection;
-using SqlFlow.Cli.Hosting;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Cli;
-using SqlFlow.Delivery.Cli.LocalSetup;
+using SqlFlow.Delivery.Setup;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// <c>sqlflow dev</c> as the command line runs it (osdu/docs/reference/cli/dev.md): its subcommands and exit codes, the
-/// settings <c>env</c> prints for the launchers, and the report <c>check</c> prints as text or JSON.
+/// The setup's command as <c>osdu-delivery-setup</c> and <c>sqlflow dev</c> run it (osdu/docs/reference/cli/dev.md): its
+/// subcommands and exit codes, the settings <c>env</c> prints for the launchers, and the report <c>check</c> prints as text
+/// or JSON. The tests give the command line's arguments, from which the verb is taken off as the command line takes it.
 /// </summary>
 public sealed class DevVerbsTests : IDisposable
 {
     private readonly DevCheckoutScope _scope = new();
     private readonly StringWriter _out = new();
     private readonly StringWriter _error = new();
-    private readonly List<string> _usage = [];
 
     public void Dispose()
     {
@@ -28,16 +26,8 @@ public sealed class DevVerbsTests : IDisposable
     }
 
     private Task<int> RunAsync(IPrompter prompter, params string[] args)
-    {
-        var verb = Assert.Single(new DeliveryCliModule().Verbs, v => v.Name == "dev");
-        using var services = new ServiceCollection().BuildServiceProvider();
-        var command = new ModuleCommand(services, new CliArguments(args, verb.ValueOptions), _out, reason =>
-        {
-            _usage.Add(reason ?? string.Empty);
-            return 1;
-        }, CancellationToken.None);
-        return DevVerbs.RunAsync(command, _scope.Machine(prompter), _error, Path.Combine(_scope.Root, "nested"));
-    }
+        => DevCommand.RunAsync(
+            DeliveryDevVerbs.Arguments(args, "dev"), "sqlflow dev", _scope.Machine(prompter), _out, _error, Path.Combine(_scope.Root, "nested"), CancellationToken.None);
 
     [Fact]
     public void The_verb_reads_the_env_file_itself()
@@ -120,14 +110,33 @@ public sealed class DevVerbsTests : IDisposable
     [Theory]
     [InlineData(new[] { "dev" }, "name what to do")]
     [InlineData(new[] { "dev", "start" }, "'start' is none of setup, check and env")]
-    [InlineData(new[] { "dev", "setup", "--json" }, "--json applies to 'dev check' alone")]
+    [InlineData(new[] { "dev", "setup", "--json" }, "--json applies to 'check' alone")]
+    [InlineData(new[] { "dev", "check", "--bogus" }, "'--bogus' is not an option of this command")]
+    [InlineData(new[] { "dev", "check", "--env-file" }, "--env-file needs the path of the env file")]
+    [InlineData(new[] { "dev", "check", "again" }, "'again' follows the subcommand 'check'")]
     public async Task A_command_it_cannot_run_is_a_usage_error(string[] args, string reason)
     {
         Directory.CreateDirectory(Path.Combine(_scope.Root, "nested"));
 
         Assert.Equal(1, await RunAsync(new ScriptedPrompter(), args));
-        Assert.Contains(reason, Assert.Single(_usage), StringComparison.Ordinal);
+        Assert.Contains($"ERROR  {reason}", _error.ToString(), StringComparison.Ordinal);
+        Assert.Contains("sqlflow dev check [--env-file <path>]", _error.ToString(), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Help_prints_the_usage_and_verbose_is_taken_as_every_verb_takes_it()
+    {
+        Assert.Equal(0, await DevCommand.RunAsync(["--help"], "osdu-delivery-setup", _scope.Machine(new ScriptedPrompter()), _out, _error, _scope.Root, CancellationToken.None));
+        Assert.Contains("osdu-delivery-setup setup [--env-file <path>]", _out.ToString(), StringComparison.Ordinal);
+
+        Directory.CreateDirectory(Path.Combine(_scope.Root, "nested"));
+        _scope.WriteEnv("A=1");
+        Assert.Equal(0, await RunAsync(new ScriptedPrompter(), "-v", "dev", "env", "--verbose"));
+    }
+
+    [Fact]
+    public void The_command_line_takes_its_verb_off_the_arguments_once()
+        => Assert.Equal(["check", "--env-file", "dev"], DeliveryDevVerbs.Arguments(["dev", "check", "--env-file", "dev"], "dev"));
 
     [Fact]
     public void Outside_a_checkout_the_verb_says_where_to_run_it()

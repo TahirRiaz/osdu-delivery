@@ -16,9 +16,10 @@ data; the well logs in `samples/` are the worked example, not a special case. Th
 | `src/SqlFlow.Delivery.Data/` | `OsduDbContext` over the `osdu` schema, with its migrations and schema version |
 | `src/SqlFlow.Delivery.ControlPlane/` | The delivery API under `/api/v1/delivery` and the module's background services |
 | `src/SqlFlow.Delivery.Cli/` | The OSDU verbs of `sqlflow` (`check`, `preview`, `records`, `template`, `cache` and the rest) |
+| `src/SqlFlow.Delivery.Setup/` | The local run's setup and check, which `dev.bat` and `./dev.sh` run: as `osdu-delivery-setup` and as `sqlflow dev` |
 | `src/SqlFlow.Delivery.Search/` | The query strings sent to OSDU's search service, built and escaped canonically |
 | `src/SqlFlow.Delivery.Telemetry/` | Where the module's metrics go: an OpenTelemetry export to OTLP, Azure Monitor or the console |
-| `hosts/` | The control plane, worker and CLI hosts, and `osdu-delivery-mcp`, the assistant's server with its tools for building and checking flows and mappings |
+| `hosts/` | The control plane, worker and CLI hosts, the setup's host (`osdu-delivery-setup`), and `osdu-delivery-mcp`, the assistant's server with its tools for building and checking flows and mappings |
 | `gui/` | The OSDU pages of the workbench, the mapping builder among them |
 | `tests/` | The delivery, ledger, route, control plane and search suites |
 | `specs/` | The OSDU service contracts every route is built from, pinned with their provenance (`specs/sources.json`), and an integration brief per service |

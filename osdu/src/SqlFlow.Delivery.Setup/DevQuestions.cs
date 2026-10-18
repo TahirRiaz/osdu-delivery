@@ -1,4 +1,4 @@
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>
 /// The setup's questions over a prompter: a default taken on Enter, an answer checked before it is taken (and the question

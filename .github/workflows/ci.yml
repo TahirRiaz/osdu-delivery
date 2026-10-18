@@ -16,8 +16,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job but publish runs on each pull request to main, and its name is the check the main ruleset requires
-# (.github/rulesets/main.json): renaming a job renames its check, so a rename changes both files together.
+# Every job but publish and the two that release the setup runs on each pull request to main, and its name is the check
+# the main ruleset requires (.github/rulesets/main.json): renaming a job renames its check, so a rename changes both files
+# together.
 jobs:
   # The repository's own rules, checked on what a push or a pull request brings: sqlflow/ gains only generic
   # extension points, each in a commit of its own (tools/check-vendored-sqlflow.sh), and no added line carries an
@@ -511,3 +512,112 @@ jobs:
             docker push --all-tags "$repository"
             echo "pushed ${repository} (${SHA}${version:+, $version})"
           done
+
+  # The release of a v* tag, created here when the tag has none, so the setup's binaries (below) have one to land in.
+  # Its notes are the tag's section of CHANGELOG.md.
+  setup-release:
+    name: Setup release
+    needs: [ build-test ]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "The release $TAG exists; the setup's binaries are added to it."
+            exit 0
+          fi
+          version="${TAG#v}"
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "OSDU Delivery $TAG. CHANGELOG.md has no section for $version." > notes.md
+          fi
+          gh release create "$TAG" --verify-tag --title "OSDU Delivery $TAG" --notes-file notes.md
+
+  # osdu-delivery-setup for each platform: one self-contained file a launcher runs on a machine without .NET (it needs
+  # none, and offers to install it), uploaded to the tag's release with its checksum beside it (<archive>.sha256), which
+  # dev.bat and dev.sh check before they use the archive. The macOS builds run on a macOS runner, whose SDK signs the
+  # apphost ad hoc, as Apple silicon requires of every binary it runs.
+  setup-binaries:
+    name: Setup binary (${{ matrix.rid }})
+    needs: [ setup-release ]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: win-x64, os: windows-latest, archive: osdu-delivery-setup-win-x64.zip }
+          - { rid: linux-x64, os: ubuntu-latest, archive: osdu-delivery-setup-linux-x64.tar.gz }
+          - { rid: linux-arm64, os: ubuntu-latest, archive: osdu-delivery-setup-linux-arm64.tar.gz }
+          - { rid: osx-arm64, os: macos-latest, archive: osdu-delivery-setup-osx-arm64.tar.gz }
+          - { rid: osx-x64, os: macos-latest, archive: osdu-delivery-setup-osx-x64.tar.gz }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish
+        shell: bash
+        run: >-
+          dotnet publish osdu/hosts/SqlFlow.Delivery.Setup.Host -c Release -r ${{ matrix.rid }} --self-contained
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none -o out
+
+      # The binaries this runner can run answer their usage, so a broken publish never reaches the release.
+      - name: Run it
+        if: matrix.rid == 'win-x64' || matrix.rid == 'linux-x64' || matrix.rid == 'osx-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=out/osdu-delivery-setup
+          if [ -f out/osdu-delivery-setup.exe ]; then exe=out/osdu-delivery-setup.exe; fi
+          "$exe" --help | grep -q 'osdu-delivery-setup setup'
+
+      - name: Archive (Windows)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path out/osdu-delivery-setup.exe -DestinationPath "dist/${{ matrix.archive }}"
+
+      - name: Archive
+        if: matrix.rid != 'win-x64'
+        shell: bash
+        run: |
+          mkdir -p dist
+          chmod +x out/osdu-delivery-setup
+          tar -czf "dist/${{ matrix.archive }}" -C out osdu-delivery-setup
+
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum > /dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,4 +1,4 @@
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>What a tool printed and how it ended.</summary>
 /// <param name="Found">False when the tool is not on the PATH: nothing ran.</param>
@@ -187,13 +187,18 @@ internal sealed class SetupStoppedException : Exception
 /// <param name="Platform">The operating system: Windows has services, LocalDB and Windows authentication; the fixes name its installers.</param>
 /// <param name="Account">The account this runs as (DOMAIN\user), for a login's fix.</param>
 /// <param name="Now">The clock, for a backup's name and the file's header.</param>
-/// <param name="Self">The command line that runs this verb, to run another of its verbs (db migrate, partition add).</param>
+/// <param name="CommandLineFor">The OSDU command line for a checkout, which runs what only it does (db migrate, partition add).</param>
+/// <param name="FileExists">Whether a file is there, for finding a .NET SDK an installer put off the PATH.</param>
 internal sealed record DevMachine(
     IToolRunner Tools, ISqlServerProbe Sql, IOsduSignIn Osdu, IPrompter Prompter, IReadOnlyDictionary<string, string> Environment,
-    DevPlatform Platform, string Account, Func<DateTimeOffset> Now, SelfCommand Self)
+    DevPlatform Platform, string Account, Func<DateTimeOffset> Now, Func<DevCheckout, DevMachine, ICommandLine> CommandLineFor, Func<string, bool> FileExists)
 {
     /// <summary>True on Windows.</summary>
     public bool IsWindows => Platform == DevPlatform.Windows;
+
+    /// <summary>The platform this process runs on.</summary>
+    public static DevPlatform CurrentPlatform
+        => OperatingSystem.IsWindows() ? DevPlatform.Windows : OperatingSystem.IsMacOS() ? DevPlatform.MacOS : DevPlatform.Linux;
 }
 
 /// <summary>The operating system a local run is on.</summary>
@@ -209,6 +214,8 @@ internal sealed record SelfCommand(string Program, IReadOnlyList<string> Prefix)
 {
     /// <summary>
     /// The command line this process is: its apphost, or <c>dotnet</c> with the entry assembly when it runs through dotnet.
+    /// The entry assembly is the process's first argument, which names it however the process was started (an assembly
+    /// inside a single-file app has no location of its own).
     /// </summary>
     public static SelfCommand Current()
     {
@@ -216,8 +223,9 @@ internal sealed record SelfCommand(string Program, IReadOnlyList<string> Prefix)
         var host = Path.GetFileNameWithoutExtension(program);
         if (string.Equals(host, "dotnet", StringComparison.OrdinalIgnoreCase))
         {
-            var entry = System.Reflection.Assembly.GetEntryAssembly()?.Location;
-            if (string.IsNullOrEmpty(entry))
+            var arguments = System.Environment.GetCommandLineArgs();
+            var entry = arguments.Length > 0 ? arguments[0] : null;
+            if (string.IsNullOrEmpty(entry) || !File.Exists(entry))
             {
                 throw new InvalidOperationException("This process runs through dotnet, and its entry assembly has no path to run again.");
             }

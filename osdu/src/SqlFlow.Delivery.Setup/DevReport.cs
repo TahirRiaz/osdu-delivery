@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace SqlFlow.Delivery.Cli.LocalSetup;
+namespace SqlFlow.Delivery.Setup;
 
 /// <summary>What a finding says about the run.</summary>
 internal enum FindingStatus

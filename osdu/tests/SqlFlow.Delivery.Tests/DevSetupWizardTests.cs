@@ -1,4 +1,4 @@
-using SqlFlow.Delivery.Cli.LocalSetup;
+using SqlFlow.Delivery.Setup;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -22,7 +22,7 @@ public sealed class DevSetupWizardTests : IDisposable
     private async Task<(bool Written, ScriptedPrompter Prompter)> RunAsync(DevPlatform platform, params string[] answers)
     {
         var prompter = new ScriptedPrompter(answers);
-        var wizard = new DevSetupWizard(_scope.Checkout, _scope.Template, _scope.Machine(prompter, platform)) { ContainerPoll = TimeSpan.Zero };
+        var wizard = new DevSetupWizard(_scope.Checkout, _scope.Template, _scope.Machine(prompter, platform), _scope.CommandLine) { ContainerPoll = TimeSpan.Zero };
         var written = await wizard.RunAsync(CancellationToken.None);
         return (written, prompter);
     }
@@ -54,7 +54,7 @@ public sealed class DevSetupWizardTests : IDisposable
 
         // The admin exists, so no password was asked; the catalog registers dev, so the command line never ran.
         Assert.Single(prompter.SecretsAsked);
-        Assert.DoesNotContain(_scope.Tools.Runs, r => r.Tool == "sqlflow-self");
+        Assert.Empty(_scope.CommandLine.Runs);
         Assert.Contains("Sign in at http://localhost:5173 as admin, with its password.", prompter.Transcript, StringComparison.Ordinal);
     }
 
@@ -64,19 +64,17 @@ public sealed class DevSetupWizardTests : IDisposable
         _scope.WithReadyServer();
         _scope.Sql.Databases.Remove("OsduDelivery");
         _scope.Sql.Catalogs.Clear();
-        _scope.Tools.Results["sqlflow-self"] = FakeToolRunner.Ok();
 
         var (written, prompter) = await RunAsync(DevPlatform.Windows, ["", "", "", "", "", "", "", .. OsduAnswers, "", "", "", ""]);
 
         Assert.True(written);
         Assert.Equal(0, prompter.Left);
-        var runs = _scope.Tools.Runs.Where(r => r.Tool == "sqlflow-self").ToList();
+        var runs = _scope.CommandLine.Runs;
         Assert.Equal(2, runs.Count);
-        Assert.Equal(["entry.dll", "db", "migrate", "--create"], runs[0].Arguments);
-        Assert.Equal(["entry.dll", "partition", "add", "dev", "--default"], runs[1].Arguments);
-        Assert.All(runs, r => Assert.True(r.Run.Attached));
-        Assert.Equal(_scope.ReadEnv()["SQLFLOW_CATALOG_DB"], runs[0].Run.Environment!["SQLFLOW_CATALOG_DB"]);
-        Assert.Equal(_scope.Root, runs[0].Run.WorkingDirectory);
+        Assert.Equal(["db", "migrate", "--create"], runs[0].Arguments);
+        Assert.Equal(["partition", "add", "dev", "--default"], runs[1].Arguments);
+        Assert.Equal(_scope.ReadEnv()["SQLFLOW_CATALOG_DB"], runs[0].Environment["SQLFLOW_CATALOG_DB"]);
+        Assert.True(_scope.CommandLine.Prepared);
         Assert.Contains("Generated one", prompter.Transcript, StringComparison.Ordinal);
     }
 
@@ -273,6 +271,48 @@ public sealed class DevSetupWizardTests : IDisposable
     }
 
     [Fact]
+    public async Task Without_dotnet_the_setup_writes_what_it_can_and_leaves_the_command_lines_steps_for_later()
+    {
+        _scope.WithReadyServer();
+        _scope.Sql.Databases.Remove("OsduDelivery");
+        _scope.Sql.Catalogs.Clear();
+        _scope.Tools.Installed.Add("winget");
+        _scope.CommandLine.Missing = "the .NET SDK is not installed on this machine";
+
+        var (written, prompter) = await RunAsync(DevPlatform.Windows, ["n", "", "", "", "", "", "", "", "n", "", "", "", ""]);
+
+        Assert.True(written);
+        Assert.Equal(0, prompter.Left);
+        Assert.Contains("The .NET SDK is not installed on this machine.", prompter.Transcript, StringComparison.Ordinal);
+        Assert.Contains("not yet: create the catalog OsduDelivery, which needs .NET", prompter.Transcript, StringComparison.Ordinal);
+        Assert.Empty(_scope.CommandLine.Runs);
+        Assert.False(_scope.CommandLine.Prepared);
+        Assert.DoesNotContain(_scope.Tools.Runs, r => r.Tool == "winget");
+        Assert.True(File.Exists(_scope.Checkout.EnvFile));
+    }
+
+    [Fact]
+    public async Task Without_dotnet_it_offers_the_install_and_goes_on_with_the_command_line_once_it_is_there()
+    {
+        _scope.WithReadyServer();
+        _scope.Sql.Databases.Remove("OsduDelivery");
+        _scope.Sql.Catalogs.Clear();
+        _scope.Tools.Results["winget"] = FakeToolRunner.Ok();
+        _scope.CommandLine.Missing = "the .NET SDK is not installed on this machine";
+        _scope.CommandLine.InstalledOnRefresh = true;
+
+        var (written, prompter) = await RunAsync(DevPlatform.Windows, ["", "", "", "", "", "", "", "", "n", "", "", "", ""]);
+
+        Assert.True(written);
+        Assert.Equal(0, prompter.Left);
+        var install = Assert.Single(_scope.Tools.Runs, r => r.Tool == "winget");
+        Assert.Equal(["install", "--id", "Microsoft.DotNet.SDK.9", "--exact", "--accept-package-agreements", "--accept-source-agreements"], install.Arguments);
+        Assert.True(install.Run.Attached);
+        Assert.True(_scope.CommandLine.Prepared);
+        Assert.Equal(["db", "migrate", "--create"], Assert.Single(_scope.CommandLine.Runs).Arguments);
+    }
+
+    [Fact]
     public async Task A_catalog_the_login_cannot_read_is_not_taken_for_an_empty_one()
     {
         _scope.WithReadyServer();
@@ -284,7 +324,7 @@ public sealed class DevSetupWizardTests : IDisposable
         Assert.Equal(0, prompter.Left);
         Assert.Contains("OsduDelivery could not be read: could not read OsduDelivery: The SELECT permission was denied", prompter.Transcript, StringComparison.Ordinal);
         Assert.DoesNotContain(prompter.Asked, q => q.Contains("Create the catalog in it", StringComparison.Ordinal));
-        Assert.DoesNotContain(_scope.Tools.Runs, r => r.Tool == "sqlflow-self");
+        Assert.Empty(_scope.CommandLine.Runs);
     }
 
     [Fact]
@@ -298,6 +338,6 @@ public sealed class DevSetupWizardTests : IDisposable
         Assert.True(written);
         Assert.Contains("does not answer", prompter.Transcript, StringComparison.Ordinal);
         Assert.Empty(_scope.Sql.Created);
-        Assert.DoesNotContain(_scope.Tools.Runs, r => r.Tool == "sqlflow-self");
+        Assert.Empty(_scope.CommandLine.Runs);
     }
 }
