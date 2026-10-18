@@ -266,29 +266,42 @@ REM  the GitHub CLI when .sqlflow\tools does not hold it. The repository is priv
 REM  is the signed-in user's; the archive is used only when it matches the checksum the release lists beside it.
 REM ---------------------------------------------------------------------------
 :fetchsetup
-set "_setup=%_root%.sqlflow\tools\osdu-delivery-setup.exe"
-if exist "%_setup%" goto :eof
+REM PowerShell reads the folder from the environment, so no character a path may hold (an apostrophe in a user name)
+REM can break the command it is given.
+set "_tools=%_root%.sqlflow\tools"
+set "_setup=%_tools%\osdu-delivery-setup.exe"
+REM The release the binary here came from, and the newest release when the GitHub CLI can say: a newer one replaces it.
+REM Offline, or without the GitHub CLI, the binary here is used as it is.
+set "_have="
+if exist "%_tools%\osdu-delivery-setup.release" set /p _have=<"%_tools%\osdu-delivery-setup.release"
+set "_latest="
+where gh >nul 2>&1
+if not errorlevel 1 for /f "usebackq delims=" %%t in (`call gh release view --json tagName --jq .tagName 2^>nul`) do set "_latest=%%t"
+if exist "%_setup%" if not defined _latest goto :eof
+if exist "%_setup%" if "%_have%"=="%_latest%" goto :eof
 set "_setup="
 echo The .NET SDK is not installed, so the setup runs from the binary each release publishes.
 where gh >nul 2>&1
 if errorlevel 1 goto :fetchmanual
 call gh auth status >nul 2>&1
 if errorlevel 1 goto :fetchmanual
-if not exist "%_root%.sqlflow\tools" mkdir "%_root%.sqlflow\tools"
-echo Downloading osdu-delivery-setup-win-x64.zip from this repository's latest release ...
-call gh release download --pattern "osdu-delivery-setup-win-x64.zip" --pattern "osdu-delivery-setup-win-x64.zip.sha256" --dir "%_root%.sqlflow\tools" --clobber
+if not exist "%_tools%" mkdir "%_tools%"
+echo Downloading osdu-delivery-setup-win-x64.zip from release %_latest% ...
+call gh release download %_latest% --pattern "osdu-delivery-setup-win-x64.zip" --pattern "osdu-delivery-setup-win-x64.zip.sha256" --dir "%_tools%" --clobber
 if errorlevel 1 goto :fetchmanual
-powershell -NoProfile -Command "$dir='%_root%.sqlflow\tools'; $zip=Join-Path $dir 'osdu-delivery-setup-win-x64.zip'; $want=((Get-Content (Join-Path $dir 'osdu-delivery-setup-win-x64.zip.sha256') -TotalCount 1) -split '\s+')[0]; $have=(Get-FileHash $zip -Algorithm SHA256).Hash; if ($want -and ($have -ieq $want)) { exit 0 } else { exit 1 }"
+powershell -NoProfile -Command "$zip=Join-Path $env:_tools 'osdu-delivery-setup-win-x64.zip'; $want=((Get-Content (Join-Path $env:_tools 'osdu-delivery-setup-win-x64.zip.sha256') -TotalCount 1) -split '\s+')[0]; $have=(Get-FileHash $zip -Algorithm SHA256).Hash; if ($want -and ($have -ieq $want)) { exit 0 } else { exit 1 }"
 if errorlevel 1 (
     echo [X] The download does not match the checksum the release lists for it, so it was not used.
     del /q "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip" "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip.sha256" >nul 2>&1
     goto :fetchmanual
 )
-tar -xf "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip" -C "%_root%.sqlflow\tools"
+REM Expand-Archive rather than tar: the tar a PATH finds first may be Git's, which reads no zip.
+powershell -NoProfile -Command "try { Expand-Archive -LiteralPath (Join-Path $env:_tools 'osdu-delivery-setup-win-x64.zip') -DestinationPath $env:_tools -Force; exit 0 } catch { Write-Host $_.Exception.Message; exit 1 }"
 if errorlevel 1 goto :fetchmanual
-del /q "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip" "%_root%.sqlflow\tools\osdu-delivery-setup-win-x64.zip.sha256" >nul 2>&1
-if not exist "%_root%.sqlflow\tools\osdu-delivery-setup.exe" goto :fetchmanual
-set "_setup=%_root%.sqlflow\tools\osdu-delivery-setup.exe"
+del /q "%_tools%\osdu-delivery-setup-win-x64.zip" "%_tools%\osdu-delivery-setup-win-x64.zip.sha256" >nul 2>&1
+if not exist "%_tools%\osdu-delivery-setup.exe" goto :fetchmanual
+>"%_tools%\osdu-delivery-setup.release" echo %_latest%
+set "_setup=%_tools%\osdu-delivery-setup.exe"
 goto :eof
 :fetchmanual
 echo [X] The .NET SDK is not installed, and the setup's binary could not be fetched.
