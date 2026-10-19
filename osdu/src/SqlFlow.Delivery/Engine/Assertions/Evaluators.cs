@@ -38,6 +38,12 @@ public sealed class TestScope
     /// <summary>The template the test's fields were checked against, or null when it reads none.</summary>
     public OsduTemplate? Template { get; init; }
 
+    /// <summary>When the run judges the test: what a <c>validUntil</c> is held against.</summary>
+    public DateTimeOffset Now { get; init; } = DateTimeOffset.UtcNow;
+
+    /// <summary>The templates of the records the test reads through references, by entity type (<see cref="TemplateFit.Referenced"/>).</summary>
+    public IReadOnlyDictionary<string, OsduTemplate> Referenced { get; init; } = new Dictionary<string, OsduTemplate>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>The failing examples an assertion names at most.</summary>
     public required int Examples { get; init; }
 
@@ -121,6 +127,25 @@ public abstract class Evaluator
     /// <summary>The outcome of an assertion over records a test did not read, saying why.</summary>
     protected AssertionOutcome NotRead(TestSubject subject) => AssertionOutcome.Errored(Index, Assertion, subject.NotRead!);
 
+    /// <summary>
+    /// The outcome of an assertion that does not hold, having missed what it expects by no more than its warning band
+    /// (osdu/docs/reference/flow/assertion.md, A warning band): it weighs a warning, or its own severity when that is milder,
+    /// so its test warns rather than fails, and its message says by how much it missed.
+    /// </summary>
+    protected AssertionOutcome Warned(AssertionOutcome outcome, string why)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        return outcome with
+        {
+            Severity = AssertionText.Of(Severities.Milder(AssertionSeverity.Warning, Assertion.Severity)),
+            Message = (outcome.Message is { Length: > 0 } message ? message.TrimEnd('.') + "; " : string.Empty) + why + ".",
+        };
+    }
+
+    /// <summary>What a miss within a warning band says: by how much, when one value missed, and that it warns.</summary>
+    internal static string WithinBand(WarningBand band, string? miss)
+        => $"{(miss is null ? string.Empty : miss + ", ")}within the warning band of {band}, so it warns";
+
     /// <summary>The evaluators of a test's assertions, in document order.</summary>
     public static IReadOnlyList<Evaluator> For(TestScope scope)
     {
@@ -137,6 +162,7 @@ public abstract class Evaluator
             UniqueAssertion unique => new UniqueEvaluator(index, unique, examples),
             GroupAssertion group => new GroupEvaluator(index, group, examples),
             RecordSetAssertion set => new RecordSetEvaluator(index, set, examples),
+            KnownValuesAssertion known => new KnownValuesEvaluator(index, known, examples),
             ConformsAssertion conforms => new ConformsEvaluator(index, conforms, scope),
             MappingRulesAssertion rules => new MappingRulesEvaluator(index, rules, examples),
             IndexedAssertion indexed => new IndexedEvaluator(index, indexed, examples),
@@ -146,7 +172,7 @@ public abstract class Evaluator
             ColumnsAssertion columns => new ColumnsEvaluator(index, columns, examples),
             MonotonicAssertion monotonic => new MonotonicEvaluator(index, monotonic, examples),
             _ => throw new InvalidOperationException($"No evaluator for a '{assertion.Type}' assertion."),
-        }).ToList();
+        }).Where(e => AssertionActivity.Disabled(e.Assertion) is null && AssertionActivity.Stale(e.Assertion, scope.Test, scope.Now) is null).ToList();
     }
 
     /// <summary>Whether a record (or row) meets every one of an assertion's where conditions: one of its values meets each.</summary>
@@ -268,9 +294,10 @@ internal sealed class CountEvaluator(int index, CountAssertion assertion, int ex
             return Task.FromResult(AssertionOutcome.Errored(Index, Assertion, "The test did not get as far as counting its records."));
         }
 
-        var passed = ValueComparer.Evaluate(assertion.Comparison, Measured.Of(matched), null);
+        var count = Measured.Of(matched);
+        var passed = ValueComparer.Evaluate(assertion.Comparison, count, null);
         var missing = subject.Missing.Take(Examples).Select(id => new AssertionExample(id, null, "storage does not return it: it was never written, was deleted, or this identity may not read it")).ToList();
-        return Task.FromResult(Result(
+        var outcome = Result(
             passed,
             string.Create(CultureInfo.InvariantCulture, $"{matched} record(s)"),
             string.Create(CultureInfo.InvariantCulture, $"The test matches {matched} record(s); it expects {assertion.Comparison}.")
@@ -278,7 +305,10 @@ internal sealed class CountEvaluator(int index, CountAssertion assertion, int ex
             matched,
             passed ? 0 : 1,
             matched,
-            missing));
+            missing);
+        return Task.FromResult(!passed && assertion.WarnWithin is { } band && ValueComparer.Within(assertion.Comparison, count, null, band)
+            ? Warned(outcome, WithinBand(band, ValueComparer.Miss(assertion.Comparison, count, null)))
+            : outcome);
     }
 }
 
@@ -503,6 +533,7 @@ internal sealed class AggregateEvaluator : Evaluator
     private readonly AggregateAssertion _assertion;
     private readonly Aggregator _aggregator;
     private long _missing;
+    private long _leftOut;
 
     public AggregateEvaluator(int index, AggregateAssertion assertion, int examples)
         : base(index, assertion, examples)
@@ -518,6 +549,13 @@ internal sealed class AggregateEvaluator : Evaluator
     public override void Observe(string id, JsonNode record)
     {
         var values = RecordValues.Select(record, _assertion.Target.Path);
+        if (_assertion.Except.Count > 0)
+        {
+            var kept = values.Where(v => !LeftOut(_assertion, v)).ToList();
+            _leftOut += values.Count - kept.Count;
+            values = kept;
+        }
+
         if (values.Count == 0)
         {
             _missing++;
@@ -529,6 +567,18 @@ internal sealed class AggregateEvaluator : Evaluator
             _aggregator.Add(value);
         }
     }
+
+    /// <summary>
+    /// Whether an aggregate leaves <paramref name="value"/> out: it equals one of the values its <c>except</c> lists, compared
+    /// as a condition compares a value with what it expects. A value left out counts as no value.
+    /// </summary>
+    internal static bool LeftOut(AggregateAssertion assertion, JsonNode value)
+        => assertion.Except.Count > 0 && assertion.Except.Any(e => ValueComparer.Equal(value, e, null, out _));
+
+    /// <summary>What an aggregate's result says it left out, as a reader needs to know it.</summary>
+    internal static string LeftOutNote(AggregateAssertion assertion, long leftOut) => assertion.Except.Count == 0
+        ? string.Empty
+        : string.Create(CultureInfo.InvariantCulture, $" ({leftOut} value(s) left out: {string.Join(", ", assertion.Except)})");
 
     public override Task<AssertionOutcome> CompleteAsync(TestScope scope, TestSubject subject, CancellationToken ct)
     {
@@ -544,8 +594,11 @@ internal sealed class AggregateEvaluator : Evaluator
         }
 
         var passed = ValueComparer.Evaluate(_assertion.Comparison, value, _assertion.Tolerance);
-        var actual = $"{AssertionText.Of(_assertion.Function)}({_assertion.Target}) is {value}" + _aggregator.Note();
-        return Task.FromResult(Result(passed, actual, $"{actual}; expected {_assertion.Expected}.", _aggregator.Count, passed ? 0 : 1, value.Number));
+        var actual = $"{AssertionText.Of(_assertion.Function)}({_assertion.Target}) is {value}" + _aggregator.Note() + LeftOutNote(_assertion, _leftOut);
+        var outcome = Result(passed, actual, $"{actual}; expected {_assertion.Expected}.", _aggregator.Count, passed ? 0 : 1, value.Number);
+        return Task.FromResult(!passed && _assertion.WarnWithin is { } band && ValueComparer.Within(_assertion.Comparison, value, _assertion.Tolerance, band)
+            ? Warned(outcome, WithinBand(band, ValueComparer.Miss(_assertion.Comparison, value, _assertion.Tolerance)))
+            : outcome);
     }
 }
 

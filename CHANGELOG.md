@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Proof values of records found by what they hold.** An assertion flow's `knownValues` finds each record a sheet
+  describes by full paths in the OSDU record and values, including lists of paths up to the record a reference names
+  (`'[data.WellboreID, data.FacilityName]'`, as a dimension's label reads) and down to the records naming one, then
+  holds it to the sheet's proof values,
+  saying row by row which hold, which differ, which are not found and which are found twice
+  ([Known values](osdu/docs/reference/flow/known-values.md)).
+- **Tests switched off, and proof values that hold for a while.** A test, an assertion, a row of known values or a proof
+  value takes `disabled: <why>` and is reported as skipped with its reason. A test or an assertion says when its values
+  were stated (`asOf`) and how long they hold (`validFor: 90d`, or `validUntil`); past that it is not judged and is
+  flagged as needing new proof values, a warning on the board. `asOfField: createTime` compares only the records OSDU had
+  created by that day
+  ([Disabling a test](osdu/docs/reference/flow/assertion.md#disabling-a-test-and-the-day-its-values-hold-until)).
+- **Numbers a little off warn rather than fail.** A `count`, an `aggregate` or a known value's proof value takes
+  `warnWithin: 10%` (or a distance, `warnWithin: 5`): a number that misses by no more is a warning, so its test is warned
+  rather than failed, and the result says by how much it missed
+  ([A warning band](osdu/docs/reference/flow/assertion.md#a-warning-band)).
+- **A test names its template by the mapping.** `template: WellLog@1.5.0` checks a test against the template that
+  mapping pins, so a test reads as the delivery does and follows the mapping when it is pinned to another capture; a
+  template version (`template: 2f8a99cb38d32480`) is taken as before ([Tests](osdu/docs/reference/flow/assertion.md#tests)).
+- **Aggregates that leave values out.** An aggregate's `except` lists values it does not count, such as a log's index
+  curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
+
+### Fixed
+
+- **A tolerance is the number written.** A `tolerance` with few decimals, such as `0.0005`, was read as
+  0.000500000024, which let a value a hair further off hold and showed that number in reports; it is now compared and
+  shown as written. A test with such a tolerance is shown as changed once, until it runs again
+  ([Conditions](osdu/docs/reference/flow/assertion.md#conditions)).
+
 ## [1.0.1] - 2026-10-19
 
 Module schema 1.46.0 and SQLFlow `fe87877c`, as in 1.0.0; the one change to `sqlflow/` since is to its tests

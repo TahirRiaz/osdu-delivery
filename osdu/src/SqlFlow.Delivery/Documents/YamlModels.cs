@@ -1155,6 +1155,19 @@ internal sealed class AssertionTestYaml
 
     public AssertionBulkYaml? Bulk { get; set; }
 
+    // Why the test is disabled: it stays in the flow and its reports, skipped with this reason.
+    public string? Disabled { get; set; }
+
+    // When the values the test expects were stated, and the last day they hold, or how long after asOf.
+    public string? AsOf { get; set; }
+
+    public string? ValidUntil { get; set; }
+
+    public string? ValidFor { get; set; }
+
+    // The date property a record holds on or before asOf to be among the test's records.
+    public string? AsOfField { get; set; }
+
     public List<AssertionItemYaml>? Assert { get; set; }
 }
 
@@ -1240,6 +1253,16 @@ internal sealed class AssertionItemYaml : AssertionConditionYaml
 
     public string? Severity { get; set; }
 
+    // Why the assertion is disabled: it is reported as skipped with this reason.
+    public string? Disabled { get; set; }
+
+    // When what the assertion expects was stated, and the last day it holds, or how long after asOf; its test's when it says neither.
+    public string? AsOf { get; set; }
+
+    public string? ValidUntil { get; set; }
+
+    public string? ValidFor { get; set; }
+
     // A number (equals), or a comparison ({ atLeast: 1 }).
     public object? Count { get; set; }
 
@@ -1259,6 +1282,14 @@ internal sealed class AssertionItemYaml : AssertionConditionYaml
     public object? GroupCount { get; set; }
 
     public AssertionRecordSetYaml? RecordSet { get; set; }
+
+    public AssertionKnownValuesYaml? KnownValues { get; set; }
+
+    // The values an aggregate leaves out, each a scalar as a condition's operand is.
+    public List<object>? Except { get; set; }
+
+    // How far a count or an aggregate may miss its comparison and only warn: a distance (5) or a percentage (10%).
+    public object? WarnWithin { get; set; }
 
     public bool? Conforms { get; set; }
 
@@ -1297,6 +1328,39 @@ internal sealed class AssertionRecordSetYaml
     public string? Mode { get; set; }
 
     public List<List<object?>>? Rows { get; set; }
+}
+
+/// <summary>
+/// Known values: the full paths and values every row is located by (<c>locateBy</c>) and checked in (<c>check</c>), the
+/// rows, each adding paths of its own, and the settings the values take when they state none. A value is a scalar, or for a
+/// proof value a condition written as a mapping, which the mapper reads from what YAML gives.
+/// </summary>
+internal sealed class AssertionKnownValuesYaml
+{
+    public Dictionary<string, object?>? LocateBy { get; set; }
+
+    public Dictionary<string, object?>? Check { get; set; }
+
+    public List<AssertionKnownRowYaml>? Rows { get; set; }
+
+    public double? Tolerance { get; set; }
+
+    // How far a number may miss a proof value and only warn, where the proof value compares a number and says nothing itself.
+    public object? WarnWithin { get; set; }
+
+    public bool? IgnoreCase { get; set; }
+
+    public string? NotFound { get; set; }
+}
+
+/// <summary>One row of known values: the full paths and values it is located by and checked in, and why it is disabled, when it is.</summary>
+internal sealed class AssertionKnownRowYaml
+{
+    public Dictionary<string, object?>? LocateBy { get; set; }
+
+    public Dictionary<string, object?>? Check { get; set; }
+
+    public string? Disabled { get; set; }
 }
 
 internal sealed class AssertionColumnsYaml

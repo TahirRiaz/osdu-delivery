@@ -392,6 +392,13 @@ public enum AssertionSeverity
     Error = 2,
 }
 
+/// <summary>How severities weigh against each other.</summary>
+public static class Severities
+{
+    /// <summary>The milder of two severities: what a miss within a warning band weighs, an assertion of info staying info.</summary>
+    public static AssertionSeverity Milder(AssertionSeverity a, AssertionSeverity b) => a <= b ? a : b;
+}
+
 /// <summary>
 /// One test of an assertion flow: what it reads from OSDU (one kind, found by a query or named by id, and optionally the
 /// bulk data of each record) and the assertions it holds that to.
@@ -417,8 +424,18 @@ public sealed record AssertionTest
     /// </summary>
     public required string Kind { get; init; }
 
-    /// <summary>The saved template version the test's paths are checked against; null takes the newest saved for the kind.</summary>
+    /// <summary>
+    /// The saved template version the test's paths are checked against; null takes the one <see cref="TemplateMapping"/>
+    /// pins, or else the newest saved for the kind.
+    /// </summary>
     public string? Template { get; init; }
+
+    /// <summary>
+    /// The mapping (<c>Name@version</c>) whose template the test's paths are checked against (<c>template: WellLog@1.5.0</c>):
+    /// the kind and version its <c>template</c> pins, read from the synced mapping when the test is checked, so the test
+    /// follows the mapping when it is pinned to another capture. Null when the test names a version, or none.
+    /// </summary>
+    public string? TemplateMapping { get; init; }
 
     /// <summary>A Lucene query narrowing the kind, with <c>{parameter}</c> and <c>{partition}</c> tokens; null matches the whole kind.</summary>
     public string? Query { get; init; }
@@ -456,6 +473,35 @@ public sealed record AssertionTest
 
     /// <summary>The bulk data the test reads for each record, or null for a test that reads the records alone.</summary>
     public AssertionBulk? Bulk { get; init; }
+
+    /// <summary>
+    /// Why the test is disabled (<c>disabled: &lt;why&gt;</c>), or null when it runs: a disabled test stays part of the flow
+    /// and of every report, recorded as skipped with this reason, and reads nothing.
+    /// </summary>
+    public string? Disabled { get; init; }
+
+    /// <summary>
+    /// When the values the test expects were stated (<c>asOf</c>, an ISO 8601 date or date-time), which every result quotes
+    /// beside what was expected; null when the test does not say.
+    /// </summary>
+    public string? AsOf { get; init; }
+
+    /// <summary>
+    /// The last day (or instant) the values the test expects hold (<c>validUntil</c>), past which the test is flagged as
+    /// needing new proof values rather than judged, since what it expects is no longer known to be so; null when they hold
+    /// for good, or when <see cref="ValidFor"/> says how long.
+    /// </summary>
+    public string? ValidUntil { get; init; }
+
+    /// <summary>How long after <see cref="AsOf"/> the values the test expects hold (<c>validFor: 90d</c>), in place of <see cref="ValidUntil"/>.</summary>
+    public string? ValidFor { get; init; }
+
+    /// <summary>
+    /// The date property a record holds on or before <see cref="AsOf"/> to be among the test's records (<c>asOfField</c>:
+    /// <c>createTime</c>, <c>modifyTime</c>, or a date of its data), so values counted on that day are compared with what OSDU
+    /// held of them then; null compares every record the test finds.
+    /// </summary>
+    public string? AsOfField { get; init; }
 
     public required IReadOnlyList<TestAssertion> Assertions { get; init; }
 
@@ -504,6 +550,7 @@ public sealed record AssertionBulk
 [JsonDerivedType(typeof(UniqueAssertion), "unique")]
 [JsonDerivedType(typeof(GroupAssertion), "groupBy")]
 [JsonDerivedType(typeof(RecordSetAssertion), "recordSet")]
+[JsonDerivedType(typeof(KnownValuesAssertion), "knownValues")]
 [JsonDerivedType(typeof(ConformsAssertion), "conforms")]
 [JsonDerivedType(typeof(IndexedAssertion), "indexed")]
 [JsonDerivedType(typeof(LegalAssertion), "legal")]
@@ -521,6 +568,18 @@ public abstract record TestAssertion
 
     public AssertionSeverity Severity { get; init; } = AssertionSeverity.Error;
 
+    /// <summary>Why the assertion is disabled (<c>disabled: &lt;why&gt;</c>), or null when it is judged: a disabled one is reported as skipped, with this reason.</summary>
+    public string? Disabled { get; init; }
+
+    /// <summary>When what the assertion expects was stated, overriding its test's <see cref="AssertionTest.AsOf"/>; null takes the test's.</summary>
+    public string? AsOf { get; init; }
+
+    /// <summary>The last day (or instant) what the assertion expects holds, overriding its test's <see cref="AssertionTest.ValidUntil"/>; null takes the test's.</summary>
+    public string? ValidUntil { get; init; }
+
+    /// <summary>How long after its <c>asOf</c> (or its test's) what the assertion expects holds, in place of <see cref="ValidUntil"/>.</summary>
+    public string? ValidFor { get; init; }
+
     /// <summary>The assertion's type as documents and reports name it: count, field, aggregate, unique, groupBy, ...</summary>
     [JsonIgnore]
     public abstract string Type { get; }
@@ -533,9 +592,12 @@ public abstract record TestAssertion
 /// <summary>How many records the test matches: the index's exact count, or the records its ids name that storage holds.</summary>
 public sealed record CountAssertion(Comparison Comparison) : TestAssertion
 {
+    /// <summary>How far the count may miss <see cref="Comparison"/> and only warn (<c>warnWithin</c>); null fails it outright.</summary>
+    public WarningBand? WarnWithin { get; init; }
+
     public override string Type => "count";
 
-    public override string Expected => Comparison.ToString();
+    public override string Expected => Comparison + WarningBand.Note(WarnWithin);
 }
 
 /// <summary>
@@ -581,9 +643,29 @@ public sealed record AggregateAssertion : TestAssertion
     /// <summary>How far the aggregate may be from a number it is compared with and still be equal to it, or within a range.</summary>
     public double? Tolerance { get; init; }
 
+    /// <summary>
+    /// The values the aggregate leaves out (<c>except</c>): a value equal to one of them is not counted, added up or ordered,
+    /// such as a log's index curve <c>MD</c> among its curves, or a null sentinel among a column's values.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<ExpectedValue> Except { get; init; } = [];
+
+    /// <summary>
+    /// <see cref="Except"/> as a test's definition hash reads it: absent when the aggregate leaves nothing out, so a test
+    /// written before <c>except</c> existed hashes as it did, and its last result is not taken for one of another test.
+    /// </summary>
+    [JsonPropertyName("except")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<ExpectedValue>? ExceptListed => Except.Count == 0 ? null : Except;
+
+    /// <summary>How far the aggregate may miss <see cref="Comparison"/> and only warn (<c>warnWithin</c>); null fails it outright.</summary>
+    public WarningBand? WarnWithin { get; init; }
+
     public override string Type => "aggregate";
 
-    public override string Expected => Comparison + (Tolerance is { } tolerance ? " (tolerance " + tolerance.ToString(CultureInfo.InvariantCulture) + ")" : string.Empty);
+    public override string Expected => Comparison + (Tolerance is { } tolerance ? " (tolerance " + tolerance.ToString(CultureInfo.InvariantCulture) + ")" : string.Empty)
+        + WarningBand.Note(WarnWithin)
+        + (Except.Count == 0 ? string.Empty : ", leaving out " + string.Join(", ", Except));
 }
 
 /// <summary>No two records carry the same values of the fields named, taken together.</summary>
@@ -668,7 +750,269 @@ public sealed record RecordSetAssertion : TestAssertion
     };
 }
 
-/// <summary>How a record set compares with the rows expected.</summary>
+/// <summary>
+/// Known values (osdu/docs/reference/flow/assertion.md, Known values): proof values a source states about records it does
+/// not name by id. Each row finds its record by the full paths and values it is located by (<see cref="KnownRow.Locate"/>)
+/// and holds that record to its proof values (<see cref="KnownRow.Checks"/>), each a full path and the value, or the
+/// condition, the record has to hold there. Every path is a path in the OSDU record from its root, as the assertion's
+/// field reads it; a list of paths leaves the record, read step by step as a dimension's label is: up to the record a
+/// reference names (<c>[data.WellboreID, data.FacilityName]</c>, the name of the wellbore a log belongs to) and down to the
+/// records that name it (<c>[work-product-component--WellLog[data.WellboreID], data.Name]</c>, the names of a wellbore's
+/// logs). A row located
+/// inside a list of objects (by <c>data.Curves.CurveID</c>) is one item of that list, and its proof values under the list are
+/// that item's. Every row comes to one of four verdicts: it holds its values, it differs (and in which), its record is not
+/// found (and by which path), or it finds more than one.
+/// </summary>
+public sealed record KnownValuesAssertion : TestAssertion
+{
+    /// <summary>The rows, each located and checked by its own full paths.</summary>
+    public required IReadOnlyList<KnownRow> Rows { get; init; }
+
+    /// <summary>The severity of a row whose record is not found; null takes the assertion's own, so such a row fails it.</summary>
+    public AssertionSeverity? NotFound { get; init; }
+
+    public override string Type => "knownValues";
+
+    public override string Expected => string.Create(CultureInfo.InvariantCulture,
+        $"each of {Rows.Count(r => r.Disabled is null)} row(s) finds one record and holds its {Rows.Where(r => r.Disabled is null).Sum(r => r.Checks.Count(c => c.Disabled is null))} proof value(s)")
+        + (NotFound is { } severity && severity != Severity ? $"; a row not found counts as {AssertionText.Of(severity)}" : string.Empty);
+}
+
+/// <summary>
+/// One row of known values: the full paths and values its record is located by, the proof values it holds the record to,
+/// and why the row is disabled, when it is: a disabled row stays in the flow, reported, and is neither located nor checked.
+/// </summary>
+public sealed record KnownRow(IReadOnlyList<KnownLocate> Locate, IReadOnlyList<KnownCheck> Checks, string? Disabled = null)
+{
+    /// <summary>The row as reports name it: the values it is located by.</summary>
+    public string Label => string.Join(" / ", Locate.Select(l => l.Value.Text));
+}
+
+/// <summary>A full path and the value the record a row is located by holds there.</summary>
+public sealed record KnownLocate(KnownColumn Column, ExpectedValue Value);
+
+/// <summary>
+/// A proof value: a full path and the condition the values the record holds there meet (equal to a value unless it says
+/// otherwise), and why it is disabled, when it is: a disabled proof value is reported and not checked.
+/// </summary>
+public sealed record KnownCheck(KnownColumn Column, ValueCondition Condition, string? Disabled = null);
+
+/// <summary>
+/// A full path of known values: its steps (<see cref="Steps"/>) from the record (or the item of the list a row is an item
+/// of), through references to the records they name and to the records naming it, to the values it reads; how its values
+/// compare; and, for a proof value, which of the values it reads are held to the condition: each of them, any of them, or
+/// an aggregate of them.
+/// </summary>
+public sealed record KnownColumn
+{
+    /// <summary>The most paths a list of paths reads through: the record's own and three more to records it names or that name it.</summary>
+    public const int MaxSteps = 4;
+
+    /// <summary>The path as the document writes it: <c>data.Name</c>, <c>[data.WellboreID, data.FacilityName]</c>.</summary>
+    public required string Path { get; init; }
+
+    /// <summary>The steps of the path: the first reads the record (or the records naming it), each later one leaves it.</summary>
+    public required IReadOnlyList<KnownStep> Steps { get; init; }
+
+    /// <summary>For a locating path: how far a number may be from the value given and still be equal to it.</summary>
+    public double? Tolerance { get; init; }
+
+    /// <summary>For a locating path: true compares text ignoring case.</summary>
+    public bool IgnoreCase { get; init; }
+
+    /// <summary>For a proof value reading several values: true holds it when one meets the condition, false when every one does.</summary>
+    public bool AnyValue { get; init; }
+
+    /// <summary>For a proof value: the aggregate of the values it reads that the condition is held to, or null to hold each value.</summary>
+    public AggregateFunction? Aggregate { get; init; }
+
+    /// <summary>The values an aggregating proof value leaves out, such as a log's index curve MD among its curves.</summary>
+    public IReadOnlyList<ExpectedValue> Except { get; init; } = [];
+
+    /// <summary>For a proof value comparing a number: how far the value may miss it and only warn; null makes any miss a difference.</summary>
+    public WarningBand? WarnWithin { get; init; }
+
+    /// <summary>What a report calls it: the path, and the aggregate taken of it.</summary>
+    public string Label => Aggregate is { } function ? $"{AssertionText.Of(function)}({Path})" : Path;
+
+    public override string ToString() => Label;
+}
+
+/// <summary>How one step of a known value's path reaches the record it reads.</summary>
+public enum KnownStepVia
+{
+    /// <summary>The record (or item) the row is held to.</summary>
+    Record,
+
+    /// <summary>The record the reference the step before it read names: the record's parent, such as a log's wellbore.</summary>
+    Parent,
+
+    /// <summary>The records of <see cref="KnownStep.EntityType"/> whose <see cref="KnownStep.Reference"/> names the record the step before it reached: its children.</summary>
+    Children,
+}
+
+/// <summary>
+/// One step of a known value's path: how it reaches its records, the entity type of the records it reaches by their
+/// references to the one before (<see cref="KnownStepVia.Children"/>), which of their properties holds that reference, and the
+/// path it reads in the records it reaches; a step reading nothing stands for the records themselves, which the step after
+/// it reaches the children of.
+/// </summary>
+public sealed record KnownStep(KnownStepVia Via, string? Field, string? EntityType = null, string? Reference = null);
+
+/// <summary>
+/// Whether a test, or an assertion of it, is judged in a run (osdu/docs/reference/flow/assertion.md, Disabling a test, and
+/// dating its proof values): one that is disabled is skipped, saying why; one whose proof values are past the day they hold
+/// until is not judged against values that may no longer be so, and is flagged instead, a warning saying they need
+/// restating. What an assertion states of its dates takes over from its test's.
+/// </summary>
+public static partial class AssertionActivity
+{
+    /// <summary>Why <paramref name="test"/> is switched off, or null when it runs: it is disabled, or every assertion of it is.</summary>
+    public static string? Disabled(AssertionTest test)
+    {
+        ArgumentNullException.ThrowIfNull(test);
+        if (test.Disabled is { } why)
+        {
+            return $"The test is disabled: {why}";
+        }
+
+        return test.Assertions.Count > 0 && test.Assertions.All(a => a.Disabled is not null)
+            ? string.Create(CultureInfo.InvariantCulture, $"Every one of its {test.Assertions.Count} assertion(s) is disabled ({test.Assertions[0].Disabled}).")
+            : null;
+    }
+
+    /// <summary>Why <paramref name="assertion"/> is switched off, or null when it is judged.</summary>
+    public static string? Disabled(TestAssertion assertion)
+    {
+        ArgumentNullException.ThrowIfNull(assertion);
+        return assertion.Disabled is { } why ? $"disabled: {why}" : null;
+    }
+
+    /// <summary>
+    /// Whether every assertion <paramref name="test"/> judges needs new proof values at <paramref name="now"/>, so the test
+    /// asks OSDU nothing and is flagged whole.
+    /// </summary>
+    public static bool Stale(AssertionTest test, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(test);
+        var judged = test.Assertions.Where(a => a.Disabled is null).ToList();
+        return judged.Count > 0 && judged.All(a => Stale(a, test, now) is not null);
+    }
+
+    /// <summary>
+    /// Why what <paramref name="assertion"/> expects needs restating at <paramref name="now"/>: the day it was stated and the
+    /// day it holds until, which the run is past; null while it holds, or when it states no such day.
+    /// </summary>
+    public static string? Stale(TestAssertion assertion, AssertionTest test, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(assertion);
+        ArgumentNullException.ThrowIfNull(test);
+        var (asOf, validUntil, validFor) = Validity(assertion, test);
+        return Last(asOf, validUntil, validFor) is { } last && now > last
+            ? $"needs new proof values: {Window(asOf, validUntil, validFor)}, and the run is past that; restate them and move asOf"
+            : null;
+    }
+
+    /// <summary>
+    /// The day an assertion's values were stated, and the day (or the period after it) they hold until: its own where it
+    /// states them, its test's where it does not.
+    /// </summary>
+    public static (string? AsOf, string? ValidUntil, string? ValidFor) Validity(TestAssertion assertion, AssertionTest test)
+    {
+        ArgumentNullException.ThrowIfNull(assertion);
+        ArgumentNullException.ThrowIfNull(test);
+        var own = assertion.ValidUntil is not null || assertion.ValidFor is not null;
+        return (assertion.AsOf ?? test.AsOf, own ? assertion.ValidUntil : test.ValidUntil, own ? assertion.ValidFor : test.ValidFor);
+    }
+
+    /// <summary>The day what an assertion expects was stated, as a result quotes it after what was expected; empty when it was not given.</summary>
+    public static string Stated(string? asOf) => asOf is null ? string.Empty : $" (stated as of {asOf})";
+
+    /// <summary>
+    /// The last instant values hold: <paramref name="validUntil"/>, or <paramref name="validFor"/> after
+    /// <paramref name="asOf"/>. A date holds to the end of that day in UTC, a date and time to that instant. Null when they
+    /// hold for good.
+    /// </summary>
+    public static DateTimeOffset? Last(string? asOf, string? validUntil, string? validFor)
+    {
+        if (validUntil is not null)
+        {
+            return Until(validUntil);
+        }
+
+        if (validFor is null || asOf is null || !TryPeriod(validFor, out var count, out var unit)
+            || !Engine.Assertions.RecordValues.TryInstant(asOf, out var from))
+        {
+            return null;
+        }
+
+        var end = unit switch
+        {
+            'd' => from.AddDays(count),
+            'w' => from.AddDays(7.0 * count),
+            'm' => from.AddMonths(count),
+            _ => from.AddYears(count),
+        };
+        return IsDate(asOf) ? end.AddDays(1).AddTicks(-1) : end;
+    }
+
+    /// <summary>The last instant <paramref name="validUntil"/> covers, or null when it is not an ISO 8601 date.</summary>
+    public static DateTimeOffset? Until(string validUntil)
+    {
+        ArgumentNullException.ThrowIfNull(validUntil);
+        if (!Engine.Assertions.RecordValues.TryInstant(validUntil, out var instant))
+        {
+            return null;
+        }
+
+        return IsDate(validUntil) ? instant.AddDays(1).AddTicks(-1) : instant;
+    }
+
+    /// <summary>How a reason says when values were stated and how long they hold: <c>stated as of 2026-10-13 and valid until 2027-01-11 (90d after asOf)</c>.</summary>
+    public static string Window(string? asOf, string? validUntil, string? validFor)
+    {
+        var until = validUntil
+            ?? (Last(asOf, null, validFor) is { } last
+                ? (IsDate(asOf!) ? last.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : last.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)) + $" ({validFor} after asOf)"
+                : "a day it does not name");
+        return asOf is null ? $"valid until {until}" : $"stated as of {asOf} and valid until {until}";
+    }
+
+    /// <summary>
+    /// Whether <paramref name="text"/> is a period values hold for: a whole number of days, weeks, months or years, written
+    /// <c>90d</c>, <c>12w</c>, <c>6m</c>, <c>1y</c> (or in words, or as ISO 8601's <c>P90D</c>).
+    /// </summary>
+    public static bool TryPeriod(string text, out int count, out char unit)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        count = 0;
+        unit = 'd';
+        var match = Period().Match(text.Trim());
+        if (!match.Success || !int.TryParse(match.Groups["count"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out count) || count < 1)
+        {
+            return false;
+        }
+
+        unit = char.ToLowerInvariant(match.Groups["unit"].Value[0]);
+        return true;
+    }
+
+    /// <summary>The first instant past <paramref name="asOf"/>: the start of the next day for a date, the next millisecond for an instant.</summary>
+    public static DateTimeOffset? After(string asOf)
+    {
+        ArgumentNullException.ThrowIfNull(asOf);
+        return Engine.Assertions.RecordValues.TryInstant(asOf, out var instant)
+            ? IsDate(asOf) ? instant.AddDays(1) : instant.AddMilliseconds(1)
+            : null;
+    }
+
+    private static bool IsDate(string text) => text.Trim().Length == 10;
+
+    [GeneratedRegex(@"^(?:P(?<count>\d{1,4})(?<unit>[DWMY])|(?<count>\d{1,4})\s*(?:(?<unit>d)(?:ays?)?|(?<unit>w)(?:eeks?)?|(?<unit>m)(?:onths?)?|(?<unit>y)(?:ears?)?))$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex Period();
+}
+
+// <summary>How a record set compares with the rows expected.</summary>
 public enum RecordSetMode
 {
     Exact,
@@ -1004,6 +1348,27 @@ public enum ExpectedValueKind
     Number,
     Boolean,
     Null,
+}
+
+/// <summary>
+/// How far a number may miss what an assertion compares it with and still only warn (<c>warnWithin</c>,
+/// osdu/docs/reference/flow/assertion.md, A warning band): a distance (<c>5</c>), or a percentage of each number it is
+/// compared with (<c>10%</c>). A number that misses by no more is a warning, so its test warns rather than fails; one
+/// further off fails as ever. The band widens each number the comparison names its own way: an equality both ways, a lower
+/// bound downwards, an upper bound upwards.
+/// </summary>
+/// <param name="Amount">The distance, or the percentage, greater than zero.</param>
+/// <param name="Percent">True when <see cref="Amount"/> is a percentage of the number compared with.</param>
+public sealed record WarningBand(double Amount, bool Percent)
+{
+    /// <summary>How far a number may be from <paramref name="expected"/> and be within the band.</summary>
+    public double Around(double expected) => Percent ? Math.Abs(expected) * Amount / 100 : Amount;
+
+    /// <summary>The band as a document writes it: <c>10%</c>, or <c>5</c>.</summary>
+    public override string ToString() => Amount.ToString("R", CultureInfo.InvariantCulture) + (Percent ? "%" : string.Empty);
+
+    /// <summary>What an assertion's expectation adds for its band, or nothing when it has none.</summary>
+    public static string Note(WarningBand? band) => band is null ? string.Empty : $" (warning within {band})";
 }
 
 /// <summary>

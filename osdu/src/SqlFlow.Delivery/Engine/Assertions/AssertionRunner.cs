@@ -155,9 +155,11 @@ public sealed class AssertionRunner
             },
             ct).ConfigureAwait(false);
 
-        var runnable = await BindMappingsAsync(selected.Where(t => t.RunsIn(partition)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList(), ct).ConfigureAwait(false);
-        var skipped = selected.Where(t => !t.RunsIn(partition)).ToList();
-        var fits = await AssertionTemplates.FitAsync(runnable, _context.Templates, ct).ConfigureAwait(false);
+        var now = _context.Time.GetUtcNow();
+        var runnable = await BindMappingsAsync(selected.Where(t => t.RunsIn(partition) && AssertionActivity.Disabled(t) is null && !AssertionActivity.Stale(t, now)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList(), ct).ConfigureAwait(false);
+        var skipped = selected.Where(t => !t.RunsIn(partition) || AssertionActivity.Disabled(t) is not null).ToList();
+        var flagged = selected.Where(t => t.RunsIn(partition) && AssertionActivity.Disabled(t) is null && AssertionActivity.Stale(t, now)).ToList();
+        var fits = await AssertionTemplates.FitAsync(runnable, _context.Templates, Mappings, ct).ConfigureAwait(false);
         var run = await ledger.StartAssertionRunAsync(
             new AssertionRunState
             {
@@ -182,7 +184,16 @@ public sealed class AssertionRunner
         {
             foreach (var test in skipped)
             {
-                var result = Skipped(test, $"The test runs in {PartitionNames.Listed(test.Partitions)}, not in '{partition}'.");
+                var result = Skipped(test, test.RunsIn(partition)
+                    ? AssertionActivity.Disabled(test)!
+                    : $"The test runs in {PartitionNames.Listed(test.Partitions)}, not in '{partition}'.");
+                await RecordAsync(ledger, run, entry.FlowId, result, ct).ConfigureAwait(false);
+                results.Add(result);
+            }
+
+            foreach (var test in flagged)
+            {
+                var result = NeedsNewProofValues(test, now);
                 await RecordAsync(ledger, run, entry.FlowId, result, ct).ConfigureAwait(false);
                 results.Add(result);
             }
@@ -268,11 +279,13 @@ public sealed class AssertionRunner
                 {
                     Test = test,
                     Template = fits[test.Name].Template,
+                    Referenced = fits[test.Name].Referenced,
+                    Now = _context.Time.GetUtcNow(),
                     Examples = flow.Defaults.Examples,
                     Query = new OsduSearchQuery
                     {
                         Kind = test.Kind,
-                        Query = test.Query,
+                        Query = AssertionQueries.Of(test),
                         Spatial = test.Spatial,
                         Sort = test.Sort.Select(s => (s.Field, s.Descending)).ToList(),
                     },
@@ -324,13 +337,18 @@ public sealed class AssertionRunner
             .ToList();
     }
 
+    /// <summary>A mapping a test names for its template, read from the mappings the repository sync keeps.</summary>
+    private Task<(MappingDefinition? Mapping, string? Problem)> Mappings(string reference, CancellationToken ct)
+        => SyncedMappings.ByReferenceAsync(_context, reference, ct);
+
     /// <summary>Checks and counts the tests the run selects, evaluating nothing and recording nothing.</summary>
     public async Task<AssertionPlanOutcome> PlanAsync(IReadOnlyCollection<string> tests, IReadOnlyCollection<string> tags, CancellationToken ct)
     {
         var partition = await PartitionAsync(ct).ConfigureAwait(false);
         var selected = _flow.Select(tests, tags);
-        var runnable = await BindMappingsAsync(selected.Where(t => t.RunsIn(partition)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList(), ct).ConfigureAwait(false);
-        var fits = await AssertionTemplates.FitAsync(runnable, _context.Templates, ct).ConfigureAwait(false);
+        var now = _context.Time.GetUtcNow();
+        var runnable = await BindMappingsAsync(selected.Where(t => t.RunsIn(partition) && AssertionActivity.Disabled(t) is null && !AssertionActivity.Stale(t, now)).Select(t => AssertionBinding.Bind(t, Values(partition))).ToList(), ct).ConfigureAwait(false);
+        var fits = await AssertionTemplates.FitAsync(runnable, _context.Templates, Mappings, ct).ConfigureAwait(false);
         using var http = new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, _transport, _allowLoopback, observer: _context.HttpObserver);
         var client = await ProtocolFactory.ClientAsync(http, _flow.Source.Endpoint, _flow.Source.Auth, _flow.Source.Headers, _context.Secrets, ct).ConfigureAwait(false);
         var search = new OsduSearch(client, _flow.Source.QueryPath, _flow.Source.SearchPath, _log, _flow.Source.Paging);
@@ -345,6 +363,20 @@ public sealed class AssertionRunner
                 continue;
             }
 
+            if (AssertionActivity.Disabled(test) is { } why)
+            {
+                plans.Add(new AssertionTestPlan(test.Name, test.Kind, test.Query, test.Ids.Count, null, null, null, [], why, null));
+                continue;
+            }
+
+            if (AssertionActivity.Stale(test, now))
+            {
+                var first = test.Assertions.First(a => a.Disabled is null);
+                plans.Add(new AssertionTestPlan(test.Name, test.Kind, test.Query, test.Ids.Count, null, null, null, [],
+                    "The test " + AssertionActivity.Stale(first, test, now), null));
+                continue;
+            }
+
             var bound = runnable.First(t => string.Equals(t.Name, test.Name, StringComparison.OrdinalIgnoreCase));
             var fit = fits[bound.Name];
             long? matched = null;
@@ -354,7 +386,7 @@ public sealed class AssertionRunner
                 try
                 {
                     matched = await search.CountAsync(
-                        new OsduSearchQuery { Kind = bound.Kind, Query = bound.Query, Spatial = bound.Spatial, ReturnedFields = ["id"] }, ct).ConfigureAwait(false);
+                        new OsduSearchQuery { Kind = bound.Kind, Query = AssertionQueries.Of(bound), Spatial = bound.Spatial, ReturnedFields = ["id"] }, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (TestEvaluator.Expected(ex, ct))
                 {
@@ -363,14 +395,18 @@ public sealed class AssertionRunner
             }
 
             var reads = ReadsRecords(bound);
-            long? wouldRead = bound.ByIds ? bound.Ids.Count : matched is { } m && reads ? Math.Min(m, bound.MaxRecords) : reads ? null : 0;
+
+            // Known values find their records by searches of their own, narrowed by the rows' keys, so what they read is
+            // known only once they have searched.
+            var findsOwn = bound.Assertions.Any(a => a is KnownValuesAssertion);
+            long? wouldRead = bound.ByIds ? bound.Ids.Count : matched is { } m && reads ? Math.Min(m, bound.MaxRecords) : reads || findsOwn ? null : 0;
             if (matched is { } n && n > bound.MaxRecords && reads && !bound.Sample)
             {
                 error ??= string.Create(CultureInfo.InvariantCulture,
                     $"the query matches {n} records, more than the {bound.MaxRecords} the test reads; its assertions over the records would not be evaluated");
             }
 
-            plans.Add(new AssertionTestPlan(bound.Name, bound.Kind, bound.Query, bound.Ids.Count, bound.ByIds ? null : matched, wouldRead, fit.Version, fit.Problems, null, error));
+            plans.Add(new AssertionTestPlan(bound.Name, bound.Kind, AssertionQueries.Of(bound), bound.Ids.Count, bound.ByIds ? null : matched, wouldRead, fit.Version, fit.Problems, null, error));
             _log.LogInformation(
                 "plan {Test} ({Kind}): {Matched}{Problems}",
                 bound.Name, bound.Kind, bound.ByIds ? $"{bound.Ids.Count} id(s)" : matched is { } c ? $"{c} matching record(s)" : "not counted: " + error,
@@ -382,7 +418,7 @@ public sealed class AssertionRunner
 
     /// <summary>Whether a test reads records at all, rather than asking the search alone.</summary>
     private static bool ReadsRecords(AssertionTest test)
-        => test.Bulk is not null || test.Assertions.Any(a => a is not (CountAssertion or GroupAssertion or IndexedAssertion));
+        => test.Bulk is not null || test.Assertions.Any(a => a is not (CountAssertion or GroupAssertion or IndexedAssertion or KnownValuesAssertion));
 
     /// <summary>
     /// The partition the run tests, by its data-partition-id: the one the flow is bound to, or for a flow whose partition is
@@ -488,6 +524,35 @@ public sealed class AssertionRunner
         var failed = result.Assertions.Where(a => a.Outcome is TestOutcomes.Failed or TestOutcomes.Errored).Select(a => a.Label).Take(3).ToList();
         return new AssertionTestSummary(result.Test, result.Kind, result.Outcome, result.Matched,
             failed.Count == 0 ? result.Error : string.Join("; ", failed));
+    }
+
+    /// <summary>
+    /// The result of a test whose every judged assertion is past the day its proof values hold until: it asks OSDU nothing, and
+    /// each such assertion is flagged as needing new proof values, so the test is warned and the board shows it.
+    /// </summary>
+    private static TestResult NeedsNewProofValues(AssertionTest test, DateTimeOffset now)
+    {
+        var outcomes = test.Assertions.Select((a, i) => AssertionActivity.Disabled(a) is { } off
+                ? AssertionOutcome.Skipped(i, a, off)
+                : AssertionOutcome.NeedsNewProofValues(i, a, AssertionActivity.Stale(a, test, now)!, a.AsOf ?? test.AsOf))
+            .ToList();
+        var (outcome, severity) = TestResults.Outcome(outcomes);
+        return new TestResult
+        {
+            Test = test.Name,
+            Description = test.Description,
+            Kind = test.Kind,
+            Tags = test.Tags,
+            Outcome = outcome,
+            Severity = severity,
+            Query = AssertionQueries.Of(test),
+            Ids = test.Ids.Count,
+            DefinitionHash = test.DefinitionHash,
+            Notes = ["Not judged: the proof values of every assertion it judges are past the day they hold until; restate them and move asOf."],
+            Assertions = outcomes,
+            StartedUtc = now.UtcDateTime,
+            CompletedUtc = now.UtcDateTime,
+        };
     }
 
     private static TestResult Skipped(AssertionTest test, string why) => new()

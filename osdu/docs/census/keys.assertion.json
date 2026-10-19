@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/assertion.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 233,
+  "keyCount": 261,
   "keys": [
     {
       "path": "batch",
@@ -1085,6 +1085,113 @@
       "freeForm": true
     },
     {
+      "path": "tests[].assert[].knownValues",
+      "type": "object",
+      "required": false,
+      "description": "Known values: every row finds one record by the full paths and values it is located by, and that record holds the row's proof values. Not with ids."
+    },
+    {
+      "path": "tests[].assert[].knownValues.locateBy",
+      "type": "map",
+      "required": false,
+      "description": "The full paths and values a row is located by, as path: value or path: { equals, ignoreCase, tolerance }. A path is a path in the OSDU record (data.Name); a quoted list of paths reads through a reference, as a dimension label does ('[data.WellboreID, data.FacilityName]'), and an entry group--Entity[reference] reaches the records naming one ('[work-product-component--WellLog[data.WellboreID], data.Name]'). Every row takes these, beside its own."
+    },
+    {
+      "path": "tests[].assert[].knownValues.locateBy.<name>",
+      "type": "object",
+      "required": false,
+      "description": "A value the record holds at the path `<name>`: text, a number, true or false, or a mapping of equals, ignoreCase and tolerance.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].knownValues.check",
+      "type": "map",
+      "required": false,
+      "description": "The proof values a row holds its record to, as path: value, path: ~ (no value) or path: { <comparison>: <operand>, tolerance, warnWithin, ignoreCase, values, aggregate, except, disabled }. Every row takes these, beside its own."
+    },
+    {
+      "path": "tests[].assert[].knownValues.check.<name>",
+      "type": "object",
+      "required": false,
+      "description": "A proof value at the path `<name>`: a value it equals, ~ for none, or a condition.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows",
+      "type": "list",
+      "required": false,
+      "description": "The rows, 1 to 1000, each with its own locateBy and check. Left out, the shared locateBy and check are the one row."
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows[]",
+      "type": "object",
+      "required": false,
+      "description": "One row of proof values."
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows[].locateBy",
+      "type": "map",
+      "required": false,
+      "description": "The full paths and values a row is located by, as path: value or path: { equals, ignoreCase, tolerance }. A path is a path in the OSDU record (data.Name); a quoted list of paths reads through a reference, as a dimension label does ('[data.WellboreID, data.FacilityName]'), and an entry group--Entity[reference] reaches the records naming one ('[work-product-component--WellLog[data.WellboreID], data.Name]'). Added to the shared ones; 1 to 8 in all."
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows[].locateBy.<name>",
+      "type": "object",
+      "required": false,
+      "description": "A value the record holds at the path `<name>`.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows[].check",
+      "type": "map",
+      "required": false,
+      "description": "The proof values a row holds its record to, as path: value, path: ~ (no value) or path: { <comparison>: <operand>, tolerance, warnWithin, ignoreCase, values, aggregate, except, disabled }. Added to the shared ones; at most 60 in all."
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows[].check.<name>",
+      "type": "object",
+      "required": false,
+      "description": "A proof value at the path `<name>`.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].knownValues.rows[].disabled",
+      "type": "string",
+      "required": false,
+      "description": "Why the row is disabled: it is neither located nor checked, and the result counts it."
+    },
+    {
+      "path": "tests[].assert[].knownValues.tolerance",
+      "type": "number",
+      "required": false,
+      "description": "How far a number may be from a proof value and still be equal to it, where the proof value compares a number and says nothing itself."
+    },
+    {
+      "path": "tests[].assert[].knownValues.warnWithin",
+      "type": "object",
+      "required": false,
+      "description": "How far a number may miss a proof value and only warn, where the proof value compares a number and gives no warnWithin itself: a distance (`5`) or a percentage (`10%`). A row missing only within it is a warning.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].knownValues.ignoreCase",
+      "type": "boolean",
+      "required": false,
+      "description": "Compare text ignoring case, where a proof value or a locating value compares text and says nothing itself.",
+      "default": "false"
+    },
+    {
+      "path": "tests[].assert[].knownValues.notFound",
+      "type": "enum(error|warning|info)",
+      "required": false,
+      "description": "The severity of a row whose record is not found. Left out, the assertion's own, so such a row fails it.",
+      "enumValues": [
+        "error",
+        "warning",
+        "info"
+      ]
+    },
+    {
       "path": "tests[].assert[].resolves",
       "type": "object",
       "required": false,
@@ -1153,6 +1260,30 @@
       ]
     },
     {
+      "path": "tests[].assert[].disabled",
+      "type": "string",
+      "required": false,
+      "description": "Why it is disabled, at most 200 characters: it stays in the flow and in every report, recorded as skipped with this reason, and is not judged."
+    },
+    {
+      "path": "tests[].assert[].asOf",
+      "type": "string",
+      "required": false,
+      "description": "The day (an ISO 8601 date or date and time) the values it expects were stated; every result quotes it beside what was expected. Takes over from its test's."
+    },
+    {
+      "path": "tests[].assert[].validUntil",
+      "type": "string",
+      "required": false,
+      "description": "The last day (or instant) what the assertion expects holds; a run past it does not judge what is expected and flags it instead: a warning that it needs new proof values. A date holds to the end of its day in UTC. Takes over from its test's."
+    },
+    {
+      "path": "tests[].assert[].validFor",
+      "type": "string",
+      "required": false,
+      "description": "How long after asOf the values hold, a whole number of days, weeks, months or years (90d, 12w, 6m, 1y, or P90D), in place of validUntil; past it they are flagged as needing new proof values. Takes over from its test's."
+    },
+    {
       "path": "tests[].assert[].startsWith",
       "type": "string",
       "required": false,
@@ -1163,6 +1294,28 @@
       "type": "number",
       "required": false,
       "description": "How far a number may be from the value compared with and still be equal to it, or within a range."
+    },
+    {
+      "path": "tests[].assert[].warnWithin",
+      "type": "object",
+      "required": false,
+      "description": "How far a count or an aggregate may miss what it is compared with and only warn: a distance (`5`) or a percentage of each number compared with (`10%`). Within it the assertion is a warning, so its test warns rather than fails; further off it fails.",
+      "appliesWhen": "With count or aggregate.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].except",
+      "type": "list",
+      "required": false,
+      "description": "The values the aggregate leaves out, 1 to 1000, as if they were no value: a log's index curve MD among its curves, a null sentinel among a column's values.",
+      "appliesWhen": "With aggregate."
+    },
+    {
+      "path": "tests[].assert[].except[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
     },
     {
       "path": "tests[].assert[].type",
@@ -1520,6 +1673,36 @@
       ]
     },
     {
+      "path": "tests[].disabled",
+      "type": "string",
+      "required": false,
+      "description": "Why the test is disabled, at most 200 characters: it stays in the flow and in every report, recorded as skipped with this reason, and reads nothing."
+    },
+    {
+      "path": "tests[].asOf",
+      "type": "string",
+      "required": false,
+      "description": "The day (an ISO 8601 date or date and time) the values it expects were stated; every result quotes it beside what was expected."
+    },
+    {
+      "path": "tests[].validUntil",
+      "type": "string",
+      "required": false,
+      "description": "The last day (or instant) the values the test expects hold; a run past it does not judge what is expected and flags it instead: a warning that it needs new proof values. A date holds to the end of its day in UTC. Not before asOf; not with validFor."
+    },
+    {
+      "path": "tests[].validFor",
+      "type": "string",
+      "required": false,
+      "description": "How long after asOf the values hold, a whole number of days, weeks, months or years (90d, 12w, 6m, 1y, or P90D), in place of validUntil; past it they are flagged as needing new proof values. Needs asOf."
+    },
+    {
+      "path": "tests[].asOfField",
+      "type": "string",
+      "required": false,
+      "description": "The date a record holds on or before asOf to be among the test's records: createTime (when OSDU created it), modifyTime, or a date property of its data. Every search of the test is narrowed by it. Needs asOf; not with ids."
+    },
+    {
       "path": "tests[].sort",
       "type": "list",
       "required": false,
@@ -1607,7 +1790,7 @@
       "path": "tests[].template",
       "type": "string",
       "required": false,
-      "description": "The saved template version the test's fields are checked against: the mapping's `template.version`, so the test is checked against the schema the mapping renders to; left out, the newest saved for the kind. A test that reads fields of a kind with no saved template is not evaluated, and says how to capture one."
+      "description": "The template the test's fields are checked against: the mapping that renders the records as Name@version (`WellLog@1.5.0`), whose pinned template.kind and template.version are read from the synced mapping, or a saved template version itself (`2f8a99cb38d32480`); left out, the newest saved for the kind. A test that reads fields of a kind with no saved template is not evaluated, and says how to capture one."
     }
   ]
 }

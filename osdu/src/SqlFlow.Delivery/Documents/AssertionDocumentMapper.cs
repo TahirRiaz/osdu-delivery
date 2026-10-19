@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Json;
@@ -275,10 +276,18 @@ internal static partial class AssertionMapper
             }
         }
 
+        // A template names a saved version (2f8a99cb38d32480), or a mapping by Name@version: the template that mapping pins.
         var template = Optional(t.Template);
-        if (template is not null && (template.Length > 64 || template.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))))
+        string? templateMapping = null;
+        if (template is not null && template.Contains('@', StringComparison.Ordinal))
         {
-            throw new FlowValidationException($"{source}: {where}: template '{template}' is not a template version (at most 64 characters, no whitespace).");
+            templateMapping = MappingReference(template, $"{where}: template", "the mapping whose template the test is checked against", "template: WellLog@1.5.0", source);
+            template = null;
+        }
+        else if (template is not null && (template.Length > 64 || template.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: template '{template}' is not a template version (at most 64 characters, no whitespace), nor a mapping as Name@version, such as template: WellLog@1.5.0.");
         }
 
         var read = FlowMapper.ParseEnum(t.Read, defaults.Read, at + ".read", source);
@@ -293,7 +302,7 @@ internal static partial class AssertionMapper
 
         var severity = FlowMapper.ParseEnum(t.Severity, AssertionSeverity.Error, at + ".severity", source);
         var bulk = MapBulk(t.Bulk, kind, where, source);
-        var context = new TestContext(where, source, kind, severity, ids.Count > 0, read, sort.Count > 0, bulk is not null);
+        var context = new TestContext(where, source, kind, severity, ids.Count > 0, read, sort.Count > 0, bulk is not null, Optional(t.AsOf));
         var assertions = MapAssertions(t.Assert, context);
         var test = new AssertionTest
         {
@@ -304,6 +313,7 @@ internal static partial class AssertionMapper
             Severity = severity,
             Kind = kind,
             Template = template,
+            TemplateMapping = templateMapping,
             Query = query,
             Ids = ids,
             Spatial = spatial,
@@ -313,6 +323,11 @@ internal static partial class AssertionMapper
             Sample = t.Sample ?? false,
             IndexSettleSeconds = indexSettle,
             Bulk = bulk is null ? null : bulk with { Columns = BulkColumns(bulk, assertions, where, source) },
+            Disabled = DisabledOf(t.Disabled, where, source),
+            AsOf = DateOf(t.AsOf, where + ": asOf", source),
+            ValidUntil = ValidUntilOf(t.AsOf, t.ValidUntil, where, source),
+            ValidFor = ValidForOf(t.AsOf, t.ValidUntil, t.ValidFor, where, source),
+            AsOfField = AsOfFieldOf(t.AsOf, t.AsOfField, ids.Count > 0, where, source),
             Assertions = assertions,
         };
         return test with { DefinitionHash = Hash(test) };
@@ -656,7 +671,7 @@ internal static partial class AssertionMapper
     }
 
     private sealed record TestContext(
-        string Where, string Source, string Kind, AssertionSeverity Severity, bool ByIds, AssertionRead Read, bool Sorted, bool Bulk);
+        string Where, string Source, string Kind, AssertionSeverity Severity, bool ByIds, AssertionRead Read, bool Sorted, bool Bulk, string? AsOf);
 
     private static IReadOnlyList<TestAssertion> MapAssertions(List<AssertionItemYaml>? declared, TestContext test)
     {
@@ -713,6 +728,9 @@ internal static partial class AssertionMapper
             Add(item.Mode is not null, "mode");
             Add(item.GroupCount is not null, "groupCount");
             Add(item.RecordSet is not null, "recordSet");
+            Add(item.KnownValues is not null, "knownValues");
+            Add(item.Except is not null, "except");
+            Add(item.WarnWithin is not null, "warnWithin");
             Add(item.Conforms is not null, "conforms");
             Add(item.Mapping is not null, "mapping");
             Add(item.Indexed is not null, "indexed");
@@ -726,6 +744,10 @@ internal static partial class AssertionMapper
             Add(item.For is not null, "for");
             Add(item.Values is not null, "values");
             Add(item.Optional is not null, "optional");
+            Add(item.Disabled is not null, "disabled");
+            Add(item.AsOf is not null, "asOf");
+            Add(item.ValidUntil is not null, "validUntil");
+            Add(item.ValidFor is not null, "validFor");
             Add(item.Where is not null, "where");
         }
 
@@ -767,7 +789,7 @@ internal static partial class AssertionMapper
         return operators;
     }
 
-    private static readonly string[] Common = ["name", "description", "severity"];
+    private static readonly string[] Common = ["name", "description", "severity", "disabled", "asOf", "validUntil", "validFor"];
 
     private static TestAssertion MapAssertion(AssertionItemYaml y, string at, TestContext test)
     {
@@ -778,7 +800,7 @@ internal static partial class AssertionMapper
                      (y.Unique is not null, "unique"), (y.GroupBy is not null, "groupBy"), (y.RecordSet is not null, "recordSet"),
                      (y.Conforms is not null, "conforms"), (y.Indexed is not null, "indexed"), (y.Legal is not null, "legal"),
                      (y.Delivered is not null, "delivered"), (y.RowCount is not null, "rowCount"), (y.Columns is not null, "columns"),
-                     (y.Mapping is not null, "mapping"),
+                     (y.Mapping is not null, "mapping"), (y.KnownValues is not null, "knownValues"),
                  })
         {
             if (present)
@@ -807,7 +829,7 @@ internal static partial class AssertionMapper
         if (subjects.Count != 1)
         {
             throw new FlowValidationException(subjects.Count == 0
-                ? $"{test.Source}: {at} names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic."
+                ? $"{test.Source}: {at} names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, knownValues, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic."
                 : $"{test.Source}: {at} names {string.Join(" and ", subjects)}; an assertion has one subject. Write one assertion for each.");
         }
 
@@ -822,6 +844,7 @@ internal static partial class AssertionMapper
             "unique" => MapUnique(y, at, test),
             "groupBy" => MapGroup(y, at, test),
             "recordSet" => MapRecordSet(y, at, test),
+            "knownValues" => MapKnownValues(y, at, test),
             "conforms" => MapConforms(y, at, test),
             "mapping" => MapMapping(y, at, test),
             "indexed" => MapIndexed(y, at, test),
@@ -843,6 +866,10 @@ internal static partial class AssertionMapper
             Label = name ?? Clip(assertion.Label, MaxLabel),
             Description = description,
             Severity = severity,
+            Disabled = DisabledOf(y.Disabled, at, test.Source),
+            AsOf = DateOf(y.AsOf, at + ".asOf", test.Source),
+            ValidUntil = ValidUntilOf(y.AsOf ?? test.AsOf, y.ValidUntil, at, test.Source),
+            ValidFor = ValidForOf(y.AsOf ?? test.AsOf, y.ValidUntil, y.ValidFor, at, test.Source),
         };
     }
 
@@ -862,9 +889,15 @@ internal static partial class AssertionMapper
 
     private static CountAssertion MapCount(AssertionItemYaml y, string at, TestContext test)
     {
-        OnlyKeys(y, "count", ["count"], at, test);
+        OnlyKeys(y, "count", ["count", "warnWithin"], at, test);
         var comparison = ConditionReader.CountComparison(y.Count!, at + ".count", test.Source);
-        return new CountAssertion(comparison) { Label = $"count {comparison}" };
+        var band = ConditionReader.Band(y.WarnWithin, at, test.Source);
+        if (band is not null)
+        {
+            ConditionReader.CheckBand(band, null, comparison, at, test.Source);
+        }
+
+        return new CountAssertion(comparison) { WarnWithin = band, Label = $"count {comparison}" };
     }
 
     private static RowCountAssertion MapRowCount(AssertionItemYaml y, string at, TestContext test)
@@ -896,15 +929,7 @@ internal static partial class AssertionMapper
     private static MappingRulesAssertion MapMapping(AssertionItemYaml y, string at, TestContext test)
     {
         OnlyKeys(y, "mapping", ["mapping"], at, test);
-        var reference = y.Mapping!.Trim();
-        var split = reference.IndexOf('@', StringComparison.Ordinal);
-        if (split <= 0 || split == reference.Length - 1
-            || reference.Contains('/', StringComparison.Ordinal) || reference.Contains('\\', StringComparison.Ordinal) || reference.Contains("..", StringComparison.Ordinal)
-            || reference.Any(char.IsWhiteSpace))
-        {
-            throw new FlowValidationException(
-                $"{test.Source}: {at}.mapping '{Shown(reference)}' names the mapping whose assertions the records are held to as Name@version, such as mapping: WellLog@1.4.0.");
-        }
+        var reference = MappingReference(y.Mapping!, at + ".mapping", "the mapping whose assertions the records are held to", "mapping: WellLog@1.4.0", test.Source);
 
         if (test.Read == AssertionRead.Index)
         {
@@ -913,6 +938,21 @@ internal static partial class AssertionMapper
         }
 
         return new MappingRulesAssertion(reference) { Label = $"meets what mapping {reference} asserts" };
+    }
+
+    /// <summary>A mapping as a document names it, <c>Name@version</c>: a name and a version, no path, no whitespace.</summary>
+    private static string MappingReference(string declared, string at, string what, string example, string source)
+    {
+        var reference = declared.Trim();
+        var split = reference.IndexOf('@', StringComparison.Ordinal);
+        if (split <= 0 || split == reference.Length - 1 || reference.IndexOf('@', split + 1) >= 0
+            || reference.Contains('/', StringComparison.Ordinal) || reference.Contains('\\', StringComparison.Ordinal) || reference.Contains("..", StringComparison.Ordinal)
+            || reference.Any(char.IsWhiteSpace))
+        {
+            throw new FlowValidationException($"{source}: {at} '{Shown(reference)}' names {what} as Name@version, such as {example}.");
+        }
+
+        return reference;
     }
 
     private static IndexedAssertion MapIndexed(AssertionItemYaml y, string at, TestContext test)
@@ -1164,10 +1204,649 @@ internal static partial class AssertionMapper
         };
     }
 
+    /// <summary>
+    /// Known values (osdu/docs/reference/flow/assertion.md, Known values): rows of proof values, each a full path and the
+    /// value (or condition) the record a row finds holds there, and the full paths and values the row finds its record by.
+    /// What the assertion lists under <c>locateBy</c> and <c>check</c> every row takes, beside its own; with no rows, those
+    /// are the one row. What a path is in the kind's schema (a property, a reference, a list of objects) is checked against the
+    /// templates when a run reads them; here every path is read, every row is located by something, every value suits its
+    /// comparison, and no two rows are located alike.
+    /// </summary>
+    private static KnownValuesAssertion MapKnownValues(AssertionItemYaml y, string at, TestContext test)
+    {
+        OnlyKeys(y, "knownValues", ["knownValues"], at, test);
+        if (test.ByIds)
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at} finds its records by the values its rows give, and the test names its records by id; give the test a query (or none) instead of ids.");
+        }
+
+        var known = y.KnownValues!;
+        var block = at + ".knownValues";
+        var tolerance = ConditionReader.Tolerance(known.Tolerance, block, test.Source);
+        var band = ConditionReader.Band(known.WarnWithin, block, test.Source);
+        var ignoreCase = known.IgnoreCase ?? false;
+        var sharedLocate = ReadLocate(known.LocateBy, ignoreCase, block + ".locateBy", test);
+        var sharedChecks = ReadChecks(known.Check, tolerance, band, ignoreCase, block + ".check", test);
+        var declared = known.Rows is { Count: > 0 } listed ? listed : [new AssertionKnownRowYaml()];
+        if (declared.Count > MaxRows)
+        {
+            throw new FlowValidationException($"{test.Source}: {block}.rows lists {declared.Count} rows; known values hold at most {MaxRows}. Split them over several assertions.");
+        }
+
+        var rows = new List<KnownRow>(declared.Count);
+        var located = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < declared.Count; i++)
+        {
+            var rowAt = known.Rows is { Count: > 0 } ? string.Create(CultureInfo.InvariantCulture, $"{block}.rows[{i}]") : block;
+            var row = declared[i] ?? throw new FlowValidationException($"{test.Source}: {rowAt} is empty.");
+            var locate = Joined(sharedLocate, ReadLocate(row.LocateBy, ignoreCase, rowAt + ".locateBy", test), l => l.Column.Path, "is located by", rowAt, test);
+            var checks = Joined(sharedChecks, ReadChecks(row.Check, tolerance, band, ignoreCase, rowAt + ".check", test), c => c.Column.Label, "checks", rowAt, test);
+            if (locate.Count is 0 or > MaxLocatingPaths)
+            {
+                throw new FlowValidationException(locate.Count == 0
+                    ? $"{test.Source}: {rowAt} is located by nothing; give it locateBy, the full paths and values its record holds, such as data.Name: COMPOSITE."
+                    : $"{test.Source}: {rowAt} is located by {locate.Count} paths; a row is located by at most {MaxLocatingPaths}.");
+            }
+
+            if (checks.Count > MaxProofValues)
+            {
+                throw new FlowValidationException($"{test.Source}: {rowAt} checks {checks.Count} proof values; a row checks at most {MaxProofValues}. Split it over two rows of their own assertions.");
+            }
+
+            var clash = locate.Select(l => l.Column.Path).Intersect(checks.Where(c => c.Column.Aggregate is null).Select(c => c.Column.Path), StringComparer.Ordinal).FirstOrDefault();
+            if (clash is not null)
+            {
+                throw new FlowValidationException($"{test.Source}: {rowAt} is located by {clash} and checks it as well; a value a row is found by is the record's already.");
+            }
+
+            var identity = string.Join("\u001f", locate.OrderBy(l => l.Column.Path, StringComparer.Ordinal)
+                .Select(l => l.Column.Path + "=" + (l.Column.IgnoreCase ? l.Value.Text.ToUpperInvariant() : l.Value.Text)));
+            if (located.TryGetValue(identity, out var earlier))
+            {
+                throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                    $"{test.Source}: {rowAt} is located as rows[{earlier}] is ({string.Join(" / ", locate.Select(l => l.Value.Text))}); a record is held to one row of proof values, so locate each once."));
+            }
+
+            located[identity] = i;
+            rows.Add(new KnownRow(locate, checks, DisabledOf(row.Disabled, rowAt, test.Source)));
+        }
+
+        var notFound = known.NotFound is null ? (AssertionSeverity?)null : FlowMapper.ParseEnum<AssertionSeverity>(known.NotFound.Trim(), block + ".notFound", test.Source);
+        return new KnownValuesAssertion
+        {
+            Rows = rows,
+            NotFound = notFound,
+            Label = string.Create(CultureInfo.InvariantCulture, $"known values of {rows.Count} row(s)"),
+        };
+    }
+
+    /// <summary>The most full paths a row of known values is located by.</summary>
+    public const int MaxLocatingPaths = 8;
+
+    /// <summary>The most proof values one row of known values checks.</summary>
+    public const int MaxProofValues = 60;
+
+    /// <summary>The comparisons a proof value holds the values a record holds to.</summary>
+    private static readonly string[] CheckComparisons =
+    [
+        "equals", "notEquals", "in", "notIn", "atLeast", "atMost", "greaterThan", "lessThan", "between", "matches", "notMatches",
+        "startsWith", "endsWith", "contains", "notContains", "exists", "empty", "type", "length",
+    ];
+
+    /// <summary>What the assertion lists for every row, followed by what the row lists itself; a path both list is refused.</summary>
+    private static List<T> Joined<T>(IReadOnlyList<T> shared, IReadOnlyList<T> own, Func<T, string> path, string verb, string at, TestContext test)
+    {
+        var twice = own.Select(path).Intersect(shared.Select(path), StringComparer.Ordinal).FirstOrDefault();
+        if (twice is not null)
+        {
+            throw new FlowValidationException($"{test.Source}: {at} {verb} {twice}, which the assertion lists for every row already; give it in one place.");
+        }
+
+        return [.. shared, .. own];
+    }
+
+    /// <summary>An ISO 8601 date or date and time as the document writes it (<c>2026-10-13</c>), or null when it gives none.</summary>
+    private static string? DateOf(string? declared, string at, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var text = declared.Trim();
+        return Engine.Assertions.RecordValues.TryInstant(text, out _)
+            ? text
+            : throw new FlowValidationException($"{source}: {at} '{Shown(text)}' is not an ISO 8601 date, such as 2026-10-13 or 2026-10-13T12:00:00Z.");
+    }
+
+    /// <summary>The last day what is expected holds, refused when it comes before the day it was stated.</summary>
+    private static string? ValidUntilOf(string? asOf, string? validUntil, string at, string source)
+    {
+        var until = DateOf(validUntil, at + ".validUntil", source);
+        if (until is not null && DateOf(asOf, at + ".asOf", source) is { } stated
+            && Engine.Assertions.RecordValues.TryInstant(stated, out var from) && AssertionActivity.Until(until) is { } last && last < from)
+        {
+            throw new FlowValidationException($"{source}: {at}.validUntil {until} comes before asOf {stated}; values hold from when they are stated.");
+        }
+
+        return until;
+    }
+
+    /// <summary>
+    /// How long after asOf what is expected holds (<c>90d</c>, <c>12w</c>, <c>6m</c>, <c>1y</c>), refused without an asOf to count
+    /// from, or beside a validUntil that says it already.
+    /// </summary>
+    private static string? ValidForOf(string? asOf, string? validUntil, string? validFor, string at, string source)
+    {
+        if (validFor is null)
+        {
+            return null;
+        }
+
+        var period = validFor.Trim();
+        if (!AssertionActivity.TryPeriod(period, out _, out _))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.validFor '{Shown(period)}' is not a period: a whole number of days, weeks, months or years, such as 90d, 12w, 6m or 1y.");
+        }
+
+        if (validUntil is not null)
+        {
+            throw new FlowValidationException($"{source}: {at} gives validUntil and validFor; values hold until a day, or for a period after asOf, so give one.");
+        }
+
+        if (asOf is null)
+        {
+            throw new FlowValidationException($"{source}: {at}.validFor counts from the day the values were stated, and no asOf says which; give asOf.");
+        }
+
+        return period;
+    }
+
+    /// <summary>
+    /// The date property a record holds on or before asOf to be among the test's records: createTime, modifyTime, or a path
+    /// into its data (whose type the template check holds to a date); refused without an asOf, and for a test of ids.
+    /// </summary>
+    private static string? AsOfFieldOf(string? asOf, string? declared, bool byIds, string where, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var path = ConditionReader.RecordPath(declared, where + ".asOfField", source);
+        if (path is not ("createTime" or "modifyTime") && !path.StartsWith("data.", StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}.asOfField '{Shown(path)}' is not a date every record carries: createTime (when OSDU created the record), modifyTime, or a date property of its data.");
+        }
+
+        if (asOf is null)
+        {
+            throw new FlowValidationException($"{source}: {where}.asOfField compares records with the day the values were stated, and no asOf says which; give asOf.");
+        }
+
+        if (byIds)
+        {
+            throw new FlowValidationException($"{source}: {where}.asOfField narrows the records a search finds, and the test names its records by id.");
+        }
+
+        return path;
+    }
+
+    /// <summary>Why something is disabled, as the document writes it: null when it is not, and refused when it says nothing.</summary>
+    private static string? DisabledOf(object? declared, string at, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var why = (declared as string)?.Trim();
+        if (string.IsNullOrEmpty(why) || why.Length > MaxLabel)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.disabled says why it is disabled, in at most {MaxLabel} characters, such as disabled: \"OSDU holds no LogSource for these logs yet\".");
+        }
+
+        return why;
+    }
+
+    /// <summary>The full paths and values a row is located by: each value a scalar, or a mapping of equals with its ignoreCase and tolerance.</summary>
+    private static IReadOnlyList<KnownLocate> ReadLocate(Dictionary<string, object?>? declared, bool ignoreCase, string at, TestContext test)
+    {
+        var locate = new List<KnownLocate>();
+        foreach (var (written, raw) in declared ?? [])
+        {
+            var pathAt = $"{at}.{written}";
+            var column = ReadKnownPath(written, pathAt, test) with { IgnoreCase = ignoreCase };
+            ExpectedValue value;
+            if (raw is IDictionary map)
+            {
+                object? equals = null;
+                var given = false;
+                foreach (System.Collections.DictionaryEntry entry in map)
+                {
+                    switch (entry.Key as string)
+                    {
+                        case "equals":
+                            equals = entry.Value;
+                            given = true;
+                            break;
+                        case "ignoreCase":
+                            column = column with { IgnoreCase = Flag(entry.Value, pathAt + ".ignoreCase", test) };
+                            break;
+                        case "tolerance":
+                            column = column with { Tolerance = ConditionReader.Tolerance(entry.Value, pathAt, test.Source) };
+                            break;
+                        default:
+                            throw new FlowValidationException(
+                                $"{test.Source}: {pathAt} has '{entry.Key}'; a row is located by values its record equals: a value, or a mapping of equals, ignoreCase and tolerance.");
+                    }
+                }
+
+                if (!given)
+                {
+                    throw new FlowValidationException($"{test.Source}: {pathAt} gives no value; write it, or a mapping with equals.");
+                }
+
+                value = ConditionReader.Scalar(equals, pathAt, test.Source);
+            }
+            else
+            {
+                value = ConditionReader.Scalar(raw, pathAt, test.Source);
+            }
+
+            if (value.Kind == ExpectedValueKind.Null)
+            {
+                throw new FlowValidationException($"{test.Source}: {pathAt} gives no value; a row is found by the values its record holds, so each is given.");
+            }
+
+            locate.Add(new KnownLocate(column, value));
+        }
+
+        return locate;
+    }
+
+    /// <summary>
+    /// The proof values a row holds its record to: each a full path and a value it equals, ~ for no value at all, or a
+    /// condition written as a mapping (one comparison, with tolerance, warnWithin, ignoreCase, values, an aggregate and its
+    /// except, and disabled), as a field assertion's condition is written. The assertion's warning band serves every proof
+    /// value it can widen that gives none itself.
+    /// </summary>
+    private static IReadOnlyList<KnownCheck> ReadChecks(
+        Dictionary<string, object?>? declared, double? tolerance, WarningBand? band, bool ignoreCase, string at, TestContext test)
+    {
+        var checks = new List<KnownCheck>();
+        foreach (var (written, raw) in declared ?? [])
+        {
+            var pathAt = $"{at}.{written}";
+            var column = ReadKnownPath(written, pathAt, test);
+            if (raw is not IDictionary map)
+            {
+                var condition = raw is null
+                    ? new ValueCondition { Operator = ValueOperator.Exists, Flag = false }
+                    : Proof([("equals", raw)], null, null, tolerance, ignoreCase, pathAt, test);
+                checks.Add(new KnownCheck(column with { WarnWithin = Shared(band, condition) }, condition));
+                continue;
+            }
+
+            var operators = new List<(string Key, object Operand)>();
+            object? columnTolerance = null;
+            object? columnBand = null;
+            bool? columnIgnoreCase = null;
+            string? values = null;
+            string? aggregate = null;
+            List<object>? except = null;
+            object? disabled = null;
+            foreach (System.Collections.DictionaryEntry entry in map)
+            {
+                var key = entry.Key as string ?? string.Empty;
+                switch (key)
+                {
+                    case "tolerance":
+                        columnTolerance = entry.Value;
+                        break;
+                    case "warnWithin":
+                        columnBand = entry.Value ?? throw new FlowValidationException($"{test.Source}: {pathAt}.warnWithin has no value.");
+                        break;
+                    case "ignoreCase":
+                        columnIgnoreCase = Flag(entry.Value, pathAt + ".ignoreCase", test);
+                        break;
+                    case "values":
+                        values = entry.Value as string ?? throw new FlowValidationException($"{test.Source}: {pathAt}.values is all or any.");
+                        break;
+                    case "aggregate":
+                        aggregate = entry.Value as string ?? throw new FlowValidationException($"{test.Source}: {pathAt}.aggregate names an aggregate, such as count.");
+                        break;
+                    case "except":
+                        except = (entry.Value as IList)?.Cast<object>().ToList()
+                            ?? throw new FlowValidationException($"{test.Source}: {pathAt}.except lists the values the aggregate leaves out.");
+                        break;
+                    case "disabled":
+                        disabled = entry.Value ?? string.Empty;
+                        break;
+                    default:
+                        if (!CheckComparisons.Contains(key, StringComparer.Ordinal))
+                        {
+                            throw new FlowValidationException(
+                                $"{test.Source}: {pathAt} has '{entry.Key}'; a proof value is a value, or a condition: one of {string.Join(", ", CheckComparisons)}, with tolerance, warnWithin, ignoreCase, values, aggregate, except and disabled.");
+                        }
+
+                        if (entry.Value is not null)
+                        {
+                            operators.Add((key, entry.Value));
+                        }
+
+                        break;
+                }
+            }
+
+            var function = aggregate is null ? (AggregateFunction?)null : FlowMapper.ParseEnum<AggregateFunction>(aggregate.Trim(), pathAt + ".aggregate", test.Source);
+            if (function == AggregateFunction.Missing)
+            {
+                throw new FlowValidationException(
+                    $"{test.Source}: {pathAt}.aggregate missing counts records without a value, and a proof value reads the values of one record; hold its count to 0 instead.");
+            }
+
+            if (function is not null && operators.Any(o => !ConditionReader.ComparisonKeys.Contains(o.Key, StringComparer.Ordinal)))
+            {
+                throw new FlowValidationException(
+                    $"{test.Source}: {pathAt} compares {AssertionText.Of(function.Value)}({column.Path}), a number, so it takes one of {string.Join(", ", ConditionReader.ComparisonKeys)}.");
+            }
+
+            var condition2 = Proof(operators, columnIgnoreCase, columnTolerance, tolerance, ignoreCase, pathAt, test);
+            if (function is { } taken)
+            {
+                var dated = taken is AggregateFunction.Min or AggregateFunction.Max;
+                if (condition2.Operands.Any(o => o.Kind != ExpectedValueKind.Number && !(dated && o.Kind == ExpectedValueKind.Text && Engine.Assertions.RecordValues.TryInstant(o.Text, out _))))
+                {
+                    throw new FlowValidationException(
+                        $"{test.Source}: {pathAt} compares {AssertionText.Of(taken)}({column.Path}), which is a number{(dated ? " or a date" : string.Empty)}; give a number{(dated ? " or an ISO 8601 date" : string.Empty)}.");
+                }
+            }
+
+            if (function is not null && values is not null)
+            {
+                throw new FlowValidationException(
+                    $"{test.Source}: {pathAt} aggregates its values and says which of them are held to the condition; an aggregate is taken of them all. Write two proof values.");
+            }
+
+            if (except is not null && function is null)
+            {
+                throw new FlowValidationException(
+                    $"{test.Source}: {pathAt}.except leaves values out of an aggregate, and the proof value aggregates nothing; give it an aggregate, such as count.");
+            }
+
+            var anyValue = (values?.Trim().ToLowerInvariant()) switch
+            {
+                null or "all" => false,
+                "any" => true,
+                _ => throw new FlowValidationException($"{test.Source}: {pathAt}.values '{values}' is all or any."),
+            };
+            var own = ConditionReader.Band(columnBand, pathAt, test.Source);
+            if (own is not null)
+            {
+                ConditionReader.CheckBand(own, condition2.Tolerance, [AssertionText.Of(condition2.Operator)], condition2.Operands, pathAt, test.Source);
+            }
+
+            checks.Add(new KnownCheck(
+                column with
+                {
+                    AnyValue = anyValue,
+                    Aggregate = function,
+                    Except = except is null ? [] : MapExcept(except, pathAt, test),
+                    WarnWithin = own ?? Shared(band, condition2),
+                },
+                condition2,
+                DisabledOf(disabled, pathAt, test.Source)));
+        }
+
+        return checks;
+    }
+
+    /// <summary>
+    /// The condition a proof value states: its comparison with the settings it writes itself, and the assertion's tolerance and
+    /// ignoreCase where it writes none and they fit (a tolerance where a number is compared, ignoreCase where text is), so the
+    /// assertion's settings serve its numbers and its text alike.
+    /// </summary>
+    private static ValueCondition Proof(
+        IReadOnlyList<(string Key, object Operand)> operators, bool? ignoreCase, object? tolerance, double? sharedTolerance, bool sharedIgnoreCase, string at, TestContext test)
+    {
+        var condition = ConditionReader.Read(operators, ignoreCase, tolerance, ResolvesRefused, at, test.Source);
+        var takesTolerance = tolerance is null && sharedTolerance is not null
+            && condition.Operator is ValueOperator.EqualTo or ValueOperator.NotEqualTo or ValueOperator.In or ValueOperator.NotIn or ValueOperator.Between
+                or ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan
+            && condition.Operands.Any(o => o.Kind == ExpectedValueKind.Number);
+        var takesIgnoreCase = ignoreCase is null && sharedIgnoreCase
+            && condition.Operator is ValueOperator.EqualTo or ValueOperator.NotEqualTo or ValueOperator.In or ValueOperator.NotIn or ValueOperator.Matches
+                or ValueOperator.NotMatches or ValueOperator.StartsWith or ValueOperator.EndsWith or ValueOperator.Contains or ValueOperator.NotContains
+            && condition.Operands.Any(o => o.Kind == ExpectedValueKind.Text);
+        return takesTolerance || takesIgnoreCase
+            ? ConditionReader.Read(operators, takesIgnoreCase ? true : ignoreCase, takesTolerance ? sharedTolerance : tolerance, ResolvesRefused, at, test.Source)
+            : condition;
+    }
+
+    /// <summary>The assertion's warning band for a proof value giving none: where it can widen the proof value's comparison, else none.</summary>
+    private static WarningBand? Shared(WarningBand? band, ValueCondition condition)
+        => band is not null && ConditionReader.Widens(band, condition) ? band : null;
+
+    /// <summary>Why <c>resolves</c> is not a proof value's comparison.</summary>
+    private const string ResolvesRefused = "does not apply to a proof value; read the record a reference names with a list of paths instead, such as '[data.WellboreID, data.FacilityName]'.";
+
+    private static bool Flag(object? declared, string at, TestContext test) => declared switch
+    {
+        bool flag => flag,
+        string text when bool.TryParse(text, out var parsed) => parsed,
+        _ => throw new FlowValidationException($"{test.Source}: {at} is true or false."),
+    };
+
+    /// <summary>
+    /// A full path of known values. A path in the OSDU record, from its root (<c>data.Name</c>, <c>tags.SourceProject</c>), as
+    /// the assertion's field, a mapping's assertions and a dimension read a record; or a list of paths, read step by step as
+    /// a dimension's label and attributes are (osdu/docs/reference/flow/dimension.md, Labels and attributes): each path but
+    /// the last reads the reference the next records are found by, and the last reads the value
+    /// (<c>[data.WellboreID, data.FacilityName]</c>, the name of the wellbore a log belongs to). An entry
+    /// <c>group--Entity[reference]</c> steps the other way, to the records of that type whose reference names the record
+    /// reached so far (<c>[work-product-component--WellLog[data.WellboreID], data.Name]</c>, the names of a wellbore's
+    /// logs). A path names properties: the item of a list a row reads is the one its locating values find, never one by
+    /// its position.
+    /// </summary>
+    private static KnownColumn ReadKnownPath(string written, string at, TestContext test)
+    {
+        var text = written.Trim();
+        if (!text.StartsWith('['))
+        {
+            if (ChildrenPrefix().IsMatch(text))
+            {
+                throw new FlowValidationException(
+                    $"{test.Source}: {at} '{Shown(text)}' steps to the records naming one outside a list of paths; write the step and the path read in them as a list, such as '[work-product-component--WellLog[data.WellboreID], data.Name]'.");
+            }
+
+            var path = PathOf(text, written, at, test);
+            return new KnownColumn { Path = path, Steps = [new KnownStep(KnownStepVia.Record, path)] };
+        }
+
+        var entries = StepEntries(text, written, at, test);
+        if (entries.Count > KnownColumn.MaxSteps)
+        {
+            throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture,
+                $"{test.Source}: {at} lists {entries.Count} paths; a list reads through at most {KnownColumn.MaxSteps}: the record's own and three more to the records it names or that name it."));
+        }
+
+        var steps = new List<KnownStep>();
+        var afterChildren = false;
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+            if (ChildrenStep().Match(entry) is { Success: true } children)
+            {
+                if (i == entries.Count - 1)
+                {
+                    throw new FlowValidationException(
+                        $"{test.Source}: {at} ends at the {children.Groups["type"].Value} records naming the record, and reads nothing of them; end the list with the path read in them, such as '[{entry}, data.Name]'.");
+                }
+
+                if (i > 0 && !afterChildren)
+                {
+                    // The record the reference before names, whose children the step reaches.
+                    steps.Add(new KnownStep(KnownStepVia.Parent, null));
+                }
+
+                steps.Add(new KnownStep(KnownStepVia.Children, null, children.Groups["type"].Value, PathOf(children.Groups["reference"].Value, written, at, test)));
+                afterChildren = true;
+                continue;
+            }
+
+            var path = PathOf(entry, written, at, test);
+            if (afterChildren)
+            {
+                // The path read in the records the step before reached.
+                steps[^1] = steps[^1] with { Field = path };
+                afterChildren = false;
+                continue;
+            }
+
+            steps.Add(new KnownStep(i == 0 ? KnownStepVia.Record : KnownStepVia.Parent, path));
+        }
+
+        // A list of one path is that path, so it is written, compared and reported as the path itself.
+        return new KnownColumn { Path = entries.Count == 1 ? steps[0].Field! : "[" + string.Join(", ", entries) + "]", Steps = steps };
+    }
+
+    /// <summary>
+    /// The entries of a list of paths as a key writes it, <c>[data.WellboreID, data.FacilityName]</c>: separated by commas
+    /// outside brackets, each optionally quoted as the same list in a dimension is; one entry is the path itself.
+    /// </summary>
+    private static List<string> StepEntries(string text, string written, string at, TestContext test)
+    {
+        if (!text.EndsWith(']'))
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at} '{Shown(written)}' opens a list of paths it does not close; write it as '[data.WellboreID, data.FacilityName]'.");
+        }
+
+        var entries = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var depth = 0;
+        char? quote = null;
+        foreach (var c in text[1..^1])
+        {
+            if (quote is { } open)
+            {
+                if (c == open)
+                {
+                    quote = null;
+                }
+                else
+                {
+                    current.Append(c);
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'' or '"' when current.ToString().Trim().Length == 0:
+                    quote = c;
+                    continue;
+                case '[':
+                    depth++;
+                    break;
+                case ']':
+                    depth--;
+                    break;
+                case ',' when depth == 0:
+                    entries.Add(current.ToString().Trim());
+                    current.Clear();
+                    continue;
+            }
+
+            if (depth < 0)
+            {
+                break;
+            }
+
+            current.Append(c);
+        }
+
+        entries.Add(current.ToString().Trim());
+        if (depth != 0 || quote is not null)
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at} '{Shown(written)}' has a bracket or a quote that does not pair up; write the list as '[data.WellboreID, data.FacilityName]'.");
+        }
+
+        if (entries.Any(e => e.Length == 0))
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at} '{Shown(written)}' has an empty entry; write a path between each two commas.");
+        }
+
+        return entries;
+    }
+
+    /// <summary>A path a step reads: a record path from a root property, with no item by its position, its [*] steps implied.</summary>
+    private static string PathOf(string part, string written, string at, TestContext test)
+    {
+        var path = ConditionReader.RecordPath(part, at, test.Source);
+        if (PositionStep().IsMatch(path))
+        {
+            throw new FlowValidationException(
+                $"{test.Source}: {at} '{Shown(written)}' names an item of a list by its position; a row reads the item its locating values find, so name the property ({PositionStep().Replace(path, string.Empty)}).");
+        }
+
+        return path.Replace("[*]", string.Empty, StringComparison.Ordinal);
+    }
+
+    [GeneratedRegex(@"\[\d+\]", RegexOptions.CultureInvariant)]
+    private static partial Regex PositionStep();
+
+    /// <summary>An entry stepping to the records naming one: <c>group--Entity[reference]</c>.</summary>
+    [GeneratedRegex(@"^(?<type>[A-Za-z0-9_.-]+--[A-Za-z0-9_.]+)\[(?<reference>[^\]]+)\]$", RegexOptions.CultureInvariant)]
+    private static partial Regex ChildrenStep();
+
+    /// <summary>The start of such an entry, as a path that is not a list may begin with one by mistake.</summary>
+    [GeneratedRegex(@"^[A-Za-z0-9_.-]+--[A-Za-z0-9_.]+\[", RegexOptions.CultureInvariant)]
+    private static partial Regex ChildrenPrefix();
+
+    /// <summary>The values an aggregate leaves out: 1 to <see cref="MaxListed"/> scalars, none of them null, which is no value already.</summary>
+    private static IReadOnlyList<ExpectedValue> MapExcept(List<object>? declared, string at, TestContext test)
+    {
+        if (declared is null)
+        {
+            return [];
+        }
+
+        if (declared.Count is 0 or > MaxListed)
+        {
+            throw new FlowValidationException($"{test.Source}: {at}.except lists between 1 and {MaxListed} values the aggregate leaves out.");
+        }
+
+        var values = new List<ExpectedValue>(declared.Count);
+        foreach (var raw in declared)
+        {
+            var value = ConditionReader.Scalar(raw, at + ".except", test.Source);
+            if (value.Kind == ExpectedValueKind.Null)
+            {
+                throw new FlowValidationException($"{test.Source}: {at}.except lists null; an aggregate already leaves out what has no value.");
+            }
+
+            if (!values.Contains(value))
+            {
+                values.Add(value);
+            }
+        }
+
+        return values;
+    }
+
     private static AggregateAssertion MapAggregate(AssertionItemYaml y, string at, TestContext test)
     {
         var isColumn = y.Column is not null;
-        OnlyKeys(y, "aggregate", ConditionReader.ComparisonKeys.Append("aggregate").Append(isColumn ? "column" : "field").Append("tolerance"), at, test);
+        OnlyKeys(y, "aggregate", ConditionReader.ComparisonKeys.Append("aggregate").Append(isColumn ? "column" : "field").Append("tolerance").Append("except").Append("warnWithin"), at, test);
         var function = FlowMapper.ParseEnum<AggregateFunction>(y.Aggregate!.Trim(), at + ".aggregate", test.Source);
         ValueTarget target;
         if (isColumn)
@@ -1195,12 +1874,20 @@ internal static partial class AssertionMapper
             throw new FlowValidationException($"{test.Source}: {at}.tolerance applies to comparisons of numbers, and the aggregate is compared with a date.");
         }
 
+        var band = ConditionReader.Band(y.WarnWithin, at, test.Source);
+        if (band is not null)
+        {
+            ConditionReader.CheckBand(band, tolerance, new Comparison(terms), at, test.Source);
+        }
+
         var assertion = new AggregateAssertion
         {
             Function = function,
             Target = target,
             Comparison = new Comparison(terms),
             Tolerance = tolerance,
+            WarnWithin = band,
+            Except = MapExcept(y.Except, at, test),
             Label = string.Empty,
         };
         return assertion with { Label = $"{AssertionText.Of(function)}({target}) {assertion.Expected}" };

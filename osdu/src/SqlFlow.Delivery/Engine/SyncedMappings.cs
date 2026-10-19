@@ -1,4 +1,5 @@
 using SqlFlow.Core;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 
@@ -23,7 +24,7 @@ public static class SyncedMappings
         }
 
         return await ledger.SyncedMappingAsync(id, ct).ConfigureAwait(false) is { } synced
-            ? Parse(context, synced)
+            ? Parse(context.Documents, synced)
             : (null, $"no mapping is synced under {id:D}; its repository may no longer declare it");
     }
 
@@ -31,11 +32,22 @@ public static class SyncedMappings
     /// The mapping synced under <paramref name="reference"/> (<c>Name@version</c>), or why it cannot be read: none is synced,
     /// or several repositories declare the reference with documents that differ, which leaves no one mapping to read.
     /// </summary>
-    public static async Task<(MappingDefinition? Mapping, string? Problem)> ByReferenceAsync(EngineContext context, string reference, CancellationToken ct)
+    public static Task<(MappingDefinition? Mapping, string? Problem)> ByReferenceAsync(EngineContext context, string reference, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
+        return ByReferenceAsync(context.Ledger, context.Documents, reference, ct);
+    }
+
+    /// <summary>
+    /// The mapping synced under <paramref name="reference"/> in <paramref name="ledger"/>, read by <paramref name="loader"/>:
+    /// what a page reads where it has the module database and no engine.
+    /// </summary>
+    public static async Task<(MappingDefinition? Mapping, string? Problem)> ByReferenceAsync(
+        ILedger? ledger, DeliveryDocumentLoader loader, string reference, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(loader);
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        if (context.Ledger is not { } ledger)
+        if (ledger is null)
         {
             return (null, $"the host keeps no module database, so mapping {reference} cannot be read");
         }
@@ -54,10 +66,10 @@ public static class SyncedMappings
                 + $"({string.Join(", ", documents.Select(d => d.First().RelativePath))}), so there is no one mapping to read; give each its own version");
         }
 
-        return Parse(context, synced[0]);
+        return Parse(loader, synced[0]);
     }
 
-    private static (MappingDefinition? Mapping, string? Problem) Parse(EngineContext context, SyncedMapping synced)
+    private static (MappingDefinition? Mapping, string? Problem) Parse(DeliveryDocumentLoader loader, SyncedMapping synced)
     {
         if (!synced.Valid)
         {
@@ -66,7 +78,7 @@ public static class SyncedMappings
 
         try
         {
-            return (context.Documents.ParseMapping(synced.Yaml, synced.RelativePath), null);
+            return (loader.ParseMapping(synced.Yaml, synced.RelativePath), null);
         }
         catch (FlowValidationException ex)
         {

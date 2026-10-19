@@ -1,5 +1,7 @@
 using System.Text.RegularExpressions;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Rendering;
+using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Engine.Assertions;
@@ -11,7 +13,17 @@ namespace SqlFlow.Delivery.Engine.Assertions;
 public sealed record TemplateFit(OsduTemplate? Template, string? Version, IReadOnlyList<string> Problems)
 {
     public static TemplateFit NotNeeded { get; } = new(null, null, []);
+
+    /// <summary>
+    /// The templates of the records the test reads through references (known values' <c>[data.WellboreID, data.FacilityName]</c>),
+    /// by entity type: the newest saved of each, which the test's paths into those records are checked against and its searches
+    /// of them ask.
+    /// </summary>
+    public IReadOnlyDictionary<string, OsduTemplate> Referenced { get; init; } = new Dictionary<string, OsduTemplate>(StringComparer.OrdinalIgnoreCase);
 }
+
+/// <summary>The mapping a test names as Name@version, read where the test is checked, or why it cannot be read.</summary>
+public delegate Task<(MappingDefinition? Mapping, string? Problem)> MappingReader(string reference, CancellationToken ct);
 
 /// <summary>
 /// Checks a test against the template of the kind it reads (osdu/docs/reference/flow/assertion.md, Checked against the
@@ -28,6 +40,16 @@ public static partial class AssertionTemplates
     /// </summary>
     public static async Task<IReadOnlyDictionary<string, TemplateFit>> FitAsync(
         IReadOnlyList<AssertionTest> tests, ITemplateStore? store, CancellationToken ct)
+        => await FitAsync(tests, store, null, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// As <see cref="FitAsync(IReadOnlyList{AssertionTest}, ITemplateStore?, CancellationToken)"/>, reading the mapping a test
+    /// names for its template (<c>template: WellLog@1.5.0</c>) through <paramref name="mappings"/>: the test is checked against
+    /// the kind and version that mapping's <c>template</c> pins, and does not fit when the mapping cannot be read or pins
+    /// another kind than the test reads.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<string, TemplateFit>> FitAsync(
+        IReadOnlyList<AssertionTest> tests, ITemplateStore? store, MappingReader? mappings, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(tests);
         var fits = new Dictionary<string, TemplateFit>(StringComparer.OrdinalIgnoreCase);
@@ -54,17 +76,47 @@ public static partial class AssertionTemplates
 
         var saved = await store.ListAsync(ct).ConfigureAwait(false);
         var loaded = new Dictionary<TemplateReference, OsduTemplate?>();
+        var read = new Dictionary<string, (MappingDefinition? Mapping, string? Problem)>(StringComparer.Ordinal);
         foreach (var test in needing)
         {
+            var pin = test.Template;
+            if (test.TemplateMapping is { } reference)
+            {
+                if (!read.TryGetValue(reference, out var mapping))
+                {
+                    mapping = mappings is null
+                        ? (null, "no mapping can be read where the test is checked")
+                        : await mappings(reference, ct).ConfigureAwait(false);
+                    read[reference] = mapping;
+                }
+
+                if (mapping.Mapping is not { } pinning)
+                {
+                    fits[test.Name] = new TemplateFit(null, null, [$"The test is checked against the template mapping {reference} pins, and {mapping.Problem}."]);
+                    continue;
+                }
+
+                if (!string.Equals(pinning.Template.Kind, test.Kind, StringComparison.OrdinalIgnoreCase))
+                {
+                    fits[test.Name] = new TemplateFit(null, pinning.Template.Version, [
+                        $"Mapping {reference} pins a template of {pinning.Template.Kind}, and the test reads {test.Kind}; name the mapping of {test.Kind}, or a template version of it.",
+                    ]);
+                    continue;
+                }
+
+                pin = pinning.Template.Version;
+            }
+
             var versions = saved.Where(t => string.Equals(t.Kind, test.Kind, StringComparison.OrdinalIgnoreCase)).OrderByDescending(t => t.CapturedUtc).ToList();
-            var chosen = test.Template is { } pinned
+            var chosen = pin is { } pinned
                 ? versions.FirstOrDefault(t => string.Equals(t.Version, pinned, StringComparison.OrdinalIgnoreCase))
                 : versions.FirstOrDefault();
             if (chosen is null)
             {
-                fits[test.Name] = new TemplateFit(null, test.Template, [
-                    test.Template is { } version
-                        ? $"Template version '{version}' of {test.Kind} is not saved{(versions.Count == 0 ? "; no version of the kind is" : $"; the saved versions are {string.Join(", ", versions.Select(v => v.Version))}")}. Capture it on the Templates page, or pin a saved version."
+                var by = test.TemplateMapping is { } named ? $" (the version mapping {named} pins)" : string.Empty;
+                fits[test.Name] = new TemplateFit(null, pin, [
+                    pin is { } version
+                        ? $"Template version '{version}'{by} of {test.Kind} is not saved{(versions.Count == 0 ? "; no version of the kind is" : $"; the saved versions are {string.Join(", ", versions.Select(v => v.Version))}")}. Capture it on the Templates page, or pin a saved version."
                         : $"No template of {test.Kind} is saved, so the test's fields cannot be checked against the kind's schema. Capture it on the Templates page (or with 'sqlflow template capture --kind {test.Kind}'), then run the test again.",
                 ]);
                 continue;
@@ -77,9 +129,51 @@ public static partial class AssertionTemplates
                 loaded[chosen.Reference] = template;
             }
 
-            fits[test.Name] = template is null
-                ? new TemplateFit(null, chosen.Version, [$"Template {chosen.Reference} was listed but could not be read back; capture it again."])
-                : new TemplateFit(template, chosen.Version, Check(test, template));
+            if (template is null)
+            {
+                fits[test.Name] = new TemplateFit(null, chosen.Version, [$"Template {chosen.Reference} was listed but could not be read back; capture it again."]);
+                continue;
+            }
+
+            // The records a test's known values reach from its own are checked against the newest saved template of their type.
+            // A step's type is known once the template of the step before it is, so they are loaded a step at a time.
+            var referenced = new Dictionary<string, OsduTemplate>(StringComparer.OrdinalIgnoreCase);
+            var known = test.Assertions.OfType<KnownValuesAssertion>().ToList();
+            for (var step = 0; step < KnownColumn.MaxSteps && known.Count > 0; step++)
+            {
+                var wanted = known.SelectMany(k => KnownValuesShape.ReferencedTypes(k, template, referenced)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var added = false;
+                foreach (var entityType in wanted)
+                {
+                    var newest = saved.Where(t => string.Equals(Documents.OsduKind.EntityType(t.Kind), entityType, StringComparison.OrdinalIgnoreCase))
+                        .OrderByDescending(t => t.CapturedUtc)
+                        .FirstOrDefault();
+                    if (newest is null)
+                    {
+                        continue;
+                    }
+
+                    if (!loaded.TryGetValue(newest.Reference, out var target))
+                    {
+                        var schema = await store.LoadAsync(newest.Reference, ct).ConfigureAwait(false);
+                        target = schema is null ? null : OsduTemplate.From(schema);
+                        loaded[newest.Reference] = target;
+                    }
+
+                    if (target is not null)
+                    {
+                        referenced[entityType] = target;
+                        added = true;
+                    }
+                }
+
+                if (!added)
+                {
+                    break;
+                }
+            }
+
+            fits[test.Name] = new TemplateFit(template, chosen.Version, Check(test, template, referenced)) { Referenced = referenced };
         }
 
         return fits;
@@ -92,17 +186,20 @@ public static partial class AssertionTemplates
     public static bool ReadsFields(AssertionTest test)
     {
         ArgumentNullException.ThrowIfNull(test);
-        return test.Sort.Count > 0 || test.Spatial is not null || test.Assertions.Any(a => a switch
+        return test.Sort.Count > 0 || test.Spatial is not null || test.AsOfField?.StartsWith("data.", StringComparison.Ordinal) == true || test.Assertions.Any(a => a switch
         {
             ValueAssertion { Target.IsColumn: false } => true,
             AggregateAssertion { Target.IsColumn: false } => true,
-            UniqueAssertion or GroupAssertion or RecordSetAssertion or ConformsAssertion or MappingRulesAssertion => true,
+            UniqueAssertion or GroupAssertion or RecordSetAssertion or KnownValuesAssertion or ConformsAssertion or MappingRulesAssertion => true,
             _ => false,
         });
     }
 
-    /// <summary>Every place <paramref name="test"/> does not fit <paramref name="template"/>; empty when it fits.</summary>
-    public static IReadOnlyList<string> Check(AssertionTest test, OsduTemplate template)
+    /// <summary>
+    /// Every place <paramref name="test"/> does not fit <paramref name="template"/>, or the templates of the records it reads
+    /// through references (<paramref name="referenced"/>, by entity type); empty when it fits.
+    /// </summary>
+    public static IReadOnlyList<string> Check(AssertionTest test, OsduTemplate template, IReadOnlyDictionary<string, OsduTemplate>? referenced = null)
     {
         ArgumentNullException.ThrowIfNull(test);
         ArgumentNullException.ThrowIfNull(template);
@@ -116,6 +213,16 @@ public static partial class AssertionTemplates
         if (test.Spatial?["field"]?.GetValue<string>() is { } geo)
         {
             _ = Resolve(template, geo, "spatial.field", where, problems);
+        }
+
+        if (test.AsOfField is { } asOfField && asOfField.StartsWith("data.", StringComparison.Ordinal)
+            && Resolve(template, asOfField, "asOfField", where, problems) is { } dated)
+        {
+            var shape = SearchFields.ClassifyValue(template.Schema, asOfField);
+            if (dated.Format is not ("date" or "date-time") || shape.Field is not { Index: OsduFieldIndex.Date, NestedPath: null })
+            {
+                problems.Add($"asOfField: '{asOfField}' is not a date {where} indexes outside a nested list, so records cannot be compared with asOf by it; name createTime, or a date property of the record.");
+            }
         }
 
         foreach (var assertion in test.Assertions)
@@ -142,8 +249,15 @@ public static partial class AssertionTemplates
                     if (Resolve(template, aggregate.Target.Path, at, where, problems) is { } measured)
                     {
                         CheckAggregate(measured, aggregate, at, problems);
+                        foreach (var left in aggregate.Except)
+                        {
+                            CheckValue(measured, aggregate.Target.Path, left, at + " except", problems);
+                        }
                     }
 
+                    break;
+                case KnownValuesAssertion known:
+                    _ = KnownValuesShape.Of(known, template, referenced ?? new Dictionary<string, OsduTemplate>(StringComparer.OrdinalIgnoreCase), at, problems);
                     break;
                 case UniqueAssertion unique:
                     foreach (var field in unique.Fields)
@@ -278,6 +392,26 @@ public static partial class AssertionTemplates
                 }
 
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> could be a value of <paramref name="variable"/>: of its type (an item's, for a list of
+    /// values), its date format and its pattern. A property whose shape the schema leaves open takes anything.
+    /// </summary>
+    internal static void CheckValue(TemplateVariable variable, string path, ExpectedValue value, string at, ICollection<string> problems)
+    {
+        ArgumentNullException.ThrowIfNull(variable);
+        ArgumentNullException.ThrowIfNull(value);
+        if (variable.Shape is TemplateVariableShape.Whole or TemplateVariableShape.Group or TemplateVariableShape.GroupList || variable.Type == "any")
+        {
+            return;
+        }
+
+        var type = variable.Shape == TemplateVariableShape.ValueList || variable.Type == "array" ? variable.ItemType ?? "any" : variable.Type;
+        if (type is not ("any" or "object"))
+        {
+            CheckOperand(type, variable.Format, variable.Pattern, value, path, at, problems);
         }
     }
 

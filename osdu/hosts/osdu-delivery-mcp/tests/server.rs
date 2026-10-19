@@ -501,6 +501,70 @@ async fn the_products_documentation_and_flow_kinds_are_answered_by_sqlflows_own_
     assert!(estate.calls().is_empty(), "the docs and the census are in the binary");
 }
 
+/// A test of known values as a QC sheet's rows become one: the flow-language tools read it as the loader does, its full
+/// paths through other records and its conditions included, and still catch a key the loader would refuse.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_test_of_known_values_validates_and_its_keys_are_described() {
+    let estate = Estate::start(vec![]).await;
+    let mut session = Session::open(&estate).await;
+    let flow = r#"flowType: assertion
+name: qc-a-1-f-11
+source:
+  endpoint: ${env:OSDU_URL}
+tests:
+  - name: composite-log
+    kind: osdu:wks:work-product-component--WellLog:1.5.0
+    template: WellLog@1.5.0
+    asOf: 2026-10-13
+    validFor: 90d
+    asOfField: createTime
+    assert:
+      - name: the curves of the COMPOSITE log of A/1-F-11
+        knownValues:
+          tolerance: 0.0005
+          warnWithin: 1%
+          notFound: warning
+          locateBy:
+            '[data.WellboreID, data.FacilityName]': A/1-F-11
+            data.Name: { equals: COMPOSITE, ignoreCase: true }
+          check:
+            data.SamplingInterval: 0.1524
+          rows:
+            - locateBy:
+                data.Curves.CurveID: DT
+              check:
+                data.Curves.CurveUnit: "{partition}:reference-data--UnitOfMeasure:us%2Fft:"
+                data.Curves.TopDepth: { equals: 1023.0612, tolerance: 0.00005 }
+                '[data.WellboreID, work-product-component--WellLog[data.WellboreID], data.Name]': { in: [COMPOSITE, PRESSURE], values: any }
+                data.CompanyID: ~
+                data.LogSource: { equals: OPERATOR, disabled: the log source is renamed next release }
+            - locateBy: { data.Curves.CurveID: GR }
+              disabled: GR is not delivered yet
+      - aggregate: count
+        field: data.Curves.CurveID
+        except: [MD]
+        equals: 2
+        warnWithin: 10%
+        asOf: 2026-10-13
+        validFor: 1w
+      - count: 1
+        disabled: kept for when the second log arrives
+"#;
+    let answer = session.call("validate_flow", json!({ "yaml": flow })).await;
+    assert_eq!(answer, "OK: no problems found.", "{answer}");
+
+    let key = session.json("describe_flow_key", json!({ "path": "tests[].assert[].knownValues.locateBy", "flowType": "assertion" })).await;
+    assert!(key["description"].as_str().is_some_and(|d| d.contains("full paths")), "{key}");
+    let key = session.json("describe_flow_key", json!({ "path": "tests[].assert[].warnWithin", "flowType": "assertion" })).await;
+    assert!(key["description"].as_str().is_some_and(|d| d.contains("only warn")), "{key}");
+    let key = session.json("describe_flow_key", json!({ "path": "tests[].validFor", "flowType": "assertion" })).await;
+    assert!(key["description"].as_str().is_some_and(|d| d.contains("needing new proof values")), "{key}");
+
+    // A key the loader refuses is still reported.
+    let wrong = session.call("validate_flow", json!({ "yaml": flow.replace("validFor: 90d", "validFrom: 90d") })).await;
+    assert!(wrong.contains("validFrom"), "{wrong}");
+}
+
 /// Questions people ask, in their own words, and the pages that answer each. The documentation is written so that the
 /// search, which ranks on a page's title, keywords and summary, puts the answer near the top
 /// (osdu/docs/reference/README.md, Page format); a page whose frontmatter drifts away from how it is asked about fails
@@ -545,6 +609,10 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("literal secret in a flow", &["delivery-cli-validate", "delivery-flow-delivery"]),
     ("seismic store ddms", &["delivery-flow-ddms-services"]),
     ("undo unfinished deliveries", &["delivery-concept-removal-and-reversal"]),
+    ("check the values a qc sheet states against what osdu holds", &["delivery-flow-known-values", "delivery-guide-data-quality-tests"]),
+    ("find a well log by its wellbore name and check its curves", &["delivery-flow-known-values"]),
+    ("proof values expire and need restating", &["delivery-flow-assertion"]),
+    ("a count 10 percent off is acceptable but should only warn", &["delivery-flow-assertion"]),
 ];
 
 #[tokio::test(flavor = "multi_thread")]

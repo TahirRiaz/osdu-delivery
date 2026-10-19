@@ -281,6 +281,124 @@ public sealed class AssertionValueTests
     }
 
     [Fact]
+    public async Task A_test_names_its_template_by_the_mapping_that_pins_it()
+    {
+        var mapping = Loader.LoadMapping(Path.Combine(Samples.Mappings, "WellLog@1.4.0.yaml"));
+        Task<(MappingDefinition? Mapping, string? Problem)> Synced(string reference, CancellationToken ct) => Task.FromResult(reference == mapping.Reference
+            ? ((MappingDefinition?)mapping, (string?)null)
+            : (null, $"no mapping {reference} is synced; sync the repository that declares it, then run again"));
+        var flow = Loader.ParseAssertion($$"""
+            flowType: assertion
+            name: t
+            source: { endpoint: http://x }
+            tests:
+              - name: logs
+                kind: {{Samples.WellLogKind}}
+                template: WellLog@1.4.0
+                assert:
+                  - { field: data.Name, exists: true }
+              - name: unsynced
+                kind: {{Samples.WellLogKind}}
+                template: WellLog@9.9.9
+                assert:
+                  - { field: data.Name, exists: true }
+              - name: other-kind
+                kind: {{Samples.WellboreKind}}
+                template: WellLog@1.4.0
+                assert:
+                  - { field: data.FacilityName, exists: true }
+            """, "flow.yaml");
+        Assert.Equal(("WellLog@1.4.0", (string?)null), (flow.Tests[0].TemplateMapping, flow.Tests[0].Template));
+
+        var fits = await AssertionTemplates.FitAsync(flow.Tests, Samples.SampleTemplates, Synced, CancellationToken.None);
+
+        // The test is checked against the version the mapping pins, and follows the mapping when it pins another.
+        Assert.Empty(fits["logs"].Problems);
+        Assert.Equal(mapping.Template.Version, fits["logs"].Version);
+        Assert.Equal(
+            "The test is checked against the template mapping WellLog@9.9.9 pins, and no mapping WellLog@9.9.9 is synced; sync the repository that declares it, then run again.",
+            Assert.Single(fits["unsynced"].Problems));
+        Assert.Equal(
+            $"Mapping WellLog@1.4.0 pins a template of {Samples.WellLogKind}, and the test reads {Samples.WellboreKind}; name the mapping of {Samples.WellboreKind}, or a template version of it.",
+            Assert.Single(fits["other-kind"].Problems));
+
+        // Where no mapping can be read, the test says so rather than taking another template.
+        var unread = await AssertionTemplates.FitAsync(flow.Tests, Samples.SampleTemplates, CancellationToken.None);
+        Assert.Contains("no mapping can be read where the test is checked", Assert.Single(unread["logs"].Problems), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("template: Well@Log@1", "template 'Well@Log@1' names the mapping whose template the test is checked against as Name@version, such as template: WellLog@1.5.0.")]
+    [InlineData("template: '@1.5.0'", "template '@1.5.0' names the mapping")]
+    [InlineData("template: 'two words'", "template 'two words' is not a template version (at most 64 characters, no whitespace), nor a mapping as Name@version")]
+    public void A_template_that_is_neither_a_version_nor_a_mapping_is_refused(string template, string expected)
+    {
+        var refused = Assert.Throws<SqlFlow.Core.FlowValidationException>(() => Loader.ParseAssertion($$"""
+            flowType: assertion
+            name: t
+            source: { endpoint: http://x }
+            tests:
+              - name: logs
+                kind: {{Samples.WellLogKind}}
+                {{template}}
+                assert:
+                  - count: 1
+            """, "flow.yaml"));
+        Assert.Contains(expected, refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A test written before except, the warning band, dates and known values hashes as it did, so its last result is still
+    /// its own after an upgrade: the hashes below are what the release before them gave this flow.
+    /// </summary>
+    [Fact]
+    public void A_test_written_before_the_newer_keys_hashes_as_it_did()
+    {
+        var flow = Loader.ParseAssertion("""
+            flowType: assertion
+            name: hash-pin
+            partitions: [dev]
+            source:
+              endpoint: http://localhost
+            tests:
+              - name: logs
+                kind: osdu:wks:work-product-component--WellLog:1.4.0
+                template: 26a3c3441882db4f
+                query: 'data.Name:"COMPOSITE"'
+                severity: warning
+                assert:
+                  - count: { atLeast: 1, atMost: 5000 }
+                  - field: data.Name
+                    equals: COMPOSITE
+                    ignoreCase: true
+                  - field: data.SamplingStart
+                    between: [0, 100]
+                    tolerance: 1
+                  - aggregate: count
+                    field: data.Curves.CurveID
+                    equals: 7842
+                  - aggregate: max
+                    field: data.SamplingStop
+                    atMost: 5000
+                    tolerance: 2
+                  - unique: [data.WellboreID, data.Name]
+                  - groupBy: data.Name
+                    groups: { COMPOSITE: 1 }
+                  - recordSet: { columns: [data.Name], rows: [[COMPOSITE]] }
+                  - conforms: true
+                    severity: info
+              - name: wellbores
+                kind: osdu:wks:master-data--Wellbore:1.3.0
+                ids: ["{partition}:master-data--Wellbore:1001"]
+                assert:
+                  - count: 1
+                  - field: data.WellID
+                    resolves: master-data--Well
+            """, "flow.yaml");
+        Assert.Equal(["e1b4a0414a523dac", "ba37aacab7027028"], flow.Tests.Select(t => t.DefinitionHash));
+    }
+
+    [Fact]
     public async Task A_result_keeps_within_its_budget_by_naming_fewer_examples()
     {
         var examples = Enumerable.Range(0, 500).Select(i => new AssertionExample($"id-{i}", new string('v', 290), new string('r', 1500))).ToList();
