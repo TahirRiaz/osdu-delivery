@@ -1,6 +1,6 @@
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CircleAlert, FileText, Play, TriangleAlert } from "lucide-react";
+import { CircleAlert, FileText, Info, Play, TriangleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -16,7 +16,9 @@ import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
 import { TestOutcomeIcon } from "./AssertionBadges";
 import { CheckDetail, CheckList } from "./AssertionChecks";
-import { STANDING_TEXT, checkCounts, checksVerdict, counted, duration, standingOf, testVerdict, type TestStanding } from "./assertionFormat";
+import {
+  STANDING_TEXT, checkCounts, checksVerdict, counted, disabledWhy, duration, standingOf, testVerdict, validityText, type TestStanding,
+} from "./assertionFormat";
 
 /** The sheet's tabs, which its address names (`testTab`) so a link opens the one it means. */
 const TABS = ["checks", "definition"] as const;
@@ -32,8 +34,23 @@ function Definition({ test }: { test: DeliveryAssertionTest }) {
       <dd>
         {test.template === null
           ? <span className="text-muted-foreground">none needed: it reads no field</span>
-          : <span className="font-mono text-[12px]">{test.template}</span>}
+          : (
+            <span className="flex flex-wrap items-baseline gap-x-1.5" data-testid="test-definition-schema">
+              <span className="font-mono text-[12px]">{test.template}</span>
+              <span className="text-muted-foreground">
+                {test.templateMapping
+                  ? `the version mapping ${test.templateMapping} pins`
+                  : test.templatePinned ? "the version it names" : "the newest captured from OSDU"}
+              </span>
+            </span>
+          )}
       </dd>
+      {validityText(test) !== null && (
+        <>
+          <dt className="text-muted-foreground">Proof values</dt>
+          <dd data-testid="test-definition-validity">{validityText(test)}</dd>
+        </>
+      )}
       <dt className="text-muted-foreground">Selects</dt>
       <dd className="min-w-0">
         {test.query !== null
@@ -68,19 +85,28 @@ function Definition({ test }: { test: DeliveryAssertionTest }) {
   );
 }
 
-/** A test with no result yet: its checks as declared, each with what it will expect. */
-function DeclaredChecks({ test }: { test: DeliveryAssertionTest }) {
+/**
+ * An assertion with no result yet: its checks as declared, each with what it will expect, or that it is disabled or past
+ * the day its proof values hold until, which its first run will say as well.
+ */
+function DeclaredChecks({ test, intro = "Not run yet. These are the checks its first run will make." }: { test: DeliveryAssertionTest; intro?: string }) {
   return (
     <div className="flex flex-col gap-2" data-testid="declared-checks">
-      <p className="text-[12.5px] text-muted-foreground">Not run yet. These are the checks its first run will make.</p>
+      <p className="text-[12.5px] text-muted-foreground">{intro}</p>
       <div className="divide-y overflow-hidden rounded-lg border">
-        {test.assertions.map((assertion) => (
-          <div key={assertion.index} className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2.5 px-3 py-1.5">
-            <TestOutcomeIcon outcome="notRun" />
-            <span className="truncate text-[12.5px]" title={assertion.label}>{assertion.label}</span>
-            <span className="truncate text-right font-mono text-[11.5px] text-muted-foreground" title={assertion.expected}>{assertion.expected}</span>
-          </div>
-        ))}
+        {test.assertions.map((assertion) => {
+          const standing: TestStanding = assertion.disabled ? "skipped" : assertion.needsNewProofValues ? "warned" : "notRun";
+          const note = assertion.disabled
+            ? `disabled: ${assertion.disabled}`
+            : assertion.needsNewProofValues ? `needs new proof values: ${validityText(assertion) ?? ""}` : assertion.expected;
+          return (
+            <div key={assertion.index} className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2.5 px-3 py-1.5" data-testid="declared-check">
+              <TestOutcomeIcon outcome={standing} />
+              <span className="truncate text-[12.5px]" title={assertion.label}>{assertion.label}</span>
+              <span className={cn("truncate text-right font-mono text-[11.5px]", STANDING_TEXT[standing] ?? "text-muted-foreground")} title={note}>{note}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -136,9 +162,13 @@ export function AssertionTestSheet({ flow, test, onClose, onRun }: {
     return merged;
   }, { replace: true });
 
+  // What the document says now (disabled, out of date) is the verdict before any result; else the last result's checks.
+  const disabled = test === null ? null : disabledWhy(test);
   const verdict = test === null
     ? null
-    : latest !== undefined && latest.outcome !== "skipped" ? { ...checksVerdict(checkCounts(latest.assertions ?? [])), standing: latest.outcome as TestStanding } : testVerdict(test);
+    : disabled === null && test.needsNewProofValues !== true && latest !== undefined && latest.outcome !== "skipped"
+      ? { ...checksVerdict(checkCounts(latest.assertions ?? [])), standing: latest.outcome as TestStanding }
+      : testVerdict(test);
 
   return (
     <Sheet open={test !== null} onOpenChange={(next) => { if (!next) { onClose(); } }}>
@@ -174,7 +204,7 @@ export function AssertionTestSheet({ flow, test, onClose, onRun }: {
               </div>
               <p className={cn("text-[13px]", STANDING_TEXT[verdict.standing])} data-testid="assertion-test-verdict">
                 {verdict.text}
-                {latest !== undefined && (
+                {latest !== undefined && latest.outcome !== "skipped" && (
                   <span className="text-muted-foreground">
                     {` · ${latest.matched?.toLocaleString("en-US") ?? "-"} matched`}
                     {latest.sampled ? `, ${latest.evaluated?.toLocaleString("en-US") ?? "-"} read as a sample` : ""}
@@ -184,7 +214,7 @@ export function AssertionTestSheet({ flow, test, onClose, onRun }: {
                 )}
               </p>
               <SheetDescription className={cn(test.description === null && "sr-only")}>
-                {test.description ?? `A test of ${flow.name}.`}
+                {test.description ?? `An assertion of ${flow.name}.`}
               </SheetDescription>
             </SheetHeader>
 
@@ -213,19 +243,46 @@ export function AssertionTestSheet({ flow, test, onClose, onRun }: {
                       </AlertDescription>
                     </Alert>
                   )}
+                  {disabled !== null && (
+                    <Alert data-testid="assertion-test-disabled">
+                      <Info />
+                      <AlertTitle>Disabled</AlertTitle>
+                      <AlertDescription>
+                        {disabled.replace(/\.$/, "")}. It stays in the flow and in every report, skipped with this reason; take its disabled
+                        line out to run it.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  {disabled === null && test.needsNewProofValues === true && (
+                    <Alert data-testid="assertion-test-restate">
+                      <TriangleAlert className="text-warning" />
+                      <AlertTitle>Needs new proof values</AlertTitle>
+                      <AlertDescription>
+                        Its values were {validityText(test) ?? "stated for a day now past"}, and that day is past, so a run flags it instead of judging
+                        it. Restate the values and move asOf.
+                      </AlertDescription>
+                    </Alert>
+                  )}
                   {test.changed && (
                     <Alert data-testid="assertion-test-changed">
                       <TriangleAlert />
-                      <AlertDescription>The test changed since this result: run it again for a result of what it checks now.</AlertDescription>
+                      <AlertDescription>The assertion changed since this result: run it again for a result of what it checks now.</AlertDescription>
                     </Alert>
                   )}
                   {last.isError && <ProblemView error={last.error} testId="assertion-test-last-error" />}
                   {test.latest !== null && last.isPending && <Skeleton className="h-40 w-full rounded-lg" />}
                   {test.latest === null && <DeclaredChecks test={test} />}
-                  {latest !== undefined && latest.error && (
+                  {latest !== undefined && latest.error && latest.outcome === "skipped" && disabled === null && (
+                    <Alert data-testid="assertion-test-skipped">
+                      <Info />
+                      <AlertTitle>Skipped in its last run</AlertTitle>
+                      <AlertDescription>{latest.error}</AlertDescription>
+                    </Alert>
+                  )}
+                  {latest !== undefined && latest.error && latest.outcome !== "skipped" && (
                     <Alert variant="destructive" data-testid="assertion-test-error">
                       <CircleAlert />
-                      <AlertTitle>The test could not be evaluated</AlertTitle>
+                      <AlertTitle>The assertion could not be evaluated</AlertTitle>
                       <AlertDescription>{latest.error}</AlertDescription>
                     </Alert>
                   )}
@@ -234,7 +291,10 @@ export function AssertionTestSheet({ flow, test, onClose, onRun }: {
                       {(latest.notes ?? []).map((note) => <li key={note}>{note}</li>)}
                     </ul>
                   )}
-                  {latest !== undefined && (checkOutcome !== null
+                  {latest !== undefined && latest.outcome === "skipped" && (latest.assertions ?? []).length === 0 && (
+                    <DeclaredChecks test={test} intro="Its checks, as the flow declares them:" />
+                  )}
+                  {latest !== undefined && !(latest.outcome === "skipped" && (latest.assertions ?? []).length === 0) && (checkOutcome !== null
                     ? <CheckDetail outcome={checkOutcome} onBack={() => show({ check: null })} />
                     : <CheckList key={latest.completedUtc ?? ""} outcomes={latest.assertions ?? []} onOpen={(index) => show({ check: index })} />)}
                 </TabsContent>

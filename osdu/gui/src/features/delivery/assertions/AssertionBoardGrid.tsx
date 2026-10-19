@@ -62,7 +62,7 @@ const TONE_TEXT: Record<OutcomeTone, string> = {
 };
 
 const SORT_HINTS: Record<BoardSort, string> = {
-  status: "What needs a look first: failed tests, then errored, warned, unfit and not run, then passing; the flow with more of them first",
+  status: "What needs a look first: failed assertions, then errored, warned, unfit and not run, then passing; the flow with more of them first",
   name: "By name",
   run: "The newest run first",
 };
@@ -75,8 +75,8 @@ const stop = (event: MouseEvent) => event.stopPropagation();
 
 /** The flow's own facts, read on hover of its name: what it is for and what fails a run of it. */
 function flowAbout(flow: DeliveryAssertionFlow): string {
-  const fails = flow.failRunOn === "never" ? "A run of it never fails on its tests; it only reports." : flow.failRunOn === "warning" ? "A run fails on a warning or worse." : "A run fails on a failed or errored test.";
-  return `${flow.description ?? "Tests of what OSDU holds."}\n${fails}`;
+  const fails = flow.failRunOn === "never" ? "A run of it never fails on its assertions; it only reports." : flow.failRunOn === "warning" ? "A run fails on a warning or worse." : "A run fails on a failed or errored assertion.";
+  return `${flow.description ?? "Assertions about what OSDU holds."}\n${fails}`;
 }
 
 /** The kinds a flow's tests read, in the order its document first names them. */
@@ -122,7 +122,7 @@ function FlowTallyCell({ tally }: { tally: FlowTally }) {
     ["failed", tally.failed], ["errored", tally.errored], ["warned", tally.warned], ["notRun", tally.notRun], ["passed", tally.passed],
   ];
   return (
-    <RichTooltip body={tallyText(tally)} title="Tests">
+    <RichTooltip body={tallyText(tally)} title="Assertions">
       <div className="flex min-w-0 items-center gap-3" data-testid="board-flow-tally">
         <OutcomeBar
           counts={{ passed: tally.passed, warned: tally.warned, failed: tally.failed, errored: tally.errored, skipped: tally.notRun }}
@@ -131,7 +131,7 @@ function FlowTallyCell({ tally }: { tally: FlowTally }) {
         <span className="flex h-5 min-w-0 flex-wrap items-center gap-x-3 overflow-hidden">
           {parts.filter(([, count]) => count > 0).map(([standing, count]) => <TallyPart key={standing} standing={standing} count={count} />)}
           {tally.tests === 0 && tally.elsewhere > 0 && (
-            <span className="h-5 whitespace-nowrap text-[12px] leading-5 text-muted-foreground">{counted(tally.elsewhere, "test")} of other partitions</span>
+            <span className="h-5 whitespace-nowrap text-[12px] leading-5 text-muted-foreground">{counted(tally.elsewhere, "assertion")} of other partitions</span>
           )}
         </span>
       </div>
@@ -277,14 +277,14 @@ const TestRow = memo(function TestRow({ flow, test, columns, showKind, nested, p
             <TooltipTrigger asChild>
               <span className="truncate">#{stale.assertionRunId}, <RelativeTime value={stale.completedUtc} absolute={false} /></span>
             </TooltipTrigger>
-            <TooltipContent className="max-w-sm">The flow's last run left this test out, so this is its result from an earlier run. Run it for how the data stands now.</TooltipContent>
+            <TooltipContent className="max-w-sm">The flow's last run left this assertion out, so this is its result from an earlier run. Run it for how the data stands now.</TooltipContent>
           </Tooltip>
         )}
       </div>
       <div role="gridcell" className="flex justify-end" onClick={stop}>
         <RunControl
           label={`Run ${test.name}`}
-          disabledWhy={runnable ? null : test.runsHere ? "Its flow cannot run in this partition" : "It does not test this partition"}
+          disabledWhy={runnable ? null : test.runsHere ? "Its flow cannot run in this partition" : "It does not check this partition"}
           onRun={() => onLaunch(flow, [test.name])}
           testId={`board-test-${test.name}-run`}
         >
@@ -301,18 +301,18 @@ function whyNotRunnable(entry: BoardEntry): string | null {
     case "broken":
       return "Its document does not parse";
     case "elsewhere":
-      return "It does not test this partition";
+      return "It does not check this partition";
     case "empty":
-      return "It declares no test";
+      return "It declares no assertion";
     default:
-      return entry.tally.tests === 0 ? "None of its tests tests this partition" : null;
+      return entry.tally.tests === 0 ? "None of its assertions checks this partition" : null;
   }
 }
 
 /** The line an opened flow with no test to list shows: why, on one line, whole on hover and with a way to copy it. */
 function FlowNote({ entry }: { entry: BoardEntry }) {
   const { flow, state } = entry;
-  const text = flow.problem ?? "The flow declares no test.";
+  const text = flow.problem ?? "The flow declares no assertion.";
   return (
     <div role="row" aria-level={2} className="flex h-[36px] items-center gap-2 border-b border-border/60 pl-12 pr-3 text-[12.5px]" data-testid="board-flow-problem">
       {state === "broken"
@@ -400,10 +400,10 @@ const FlowGroup = memo(function FlowGroup({ entry, open, repoName, columns, pick
             <span className={cn("truncate font-mono text-[12.5px] font-medium", state === "elsewhere" && "text-muted-foreground")}>{flow.name}</span>
           </RichTooltip>
           {tally.unfit > 0 && (
-            <Mark icon={FileWarning} tone="text-destructive" count={tally.unfit} hint={`${counted(tally.unfit, "test")} ${tally.unfit === 1 ? "does" : "do"} not fit the schema of ${tally.unfit === 1 ? "its" : "their"} type, and so ${tally.unfit === 1 ? "is" : "are"} not evaluated`} testId="board-flow-unfit" />
+            <Mark icon={FileWarning} tone="text-destructive" count={tally.unfit} hint={`${counted(tally.unfit, "assertion")} ${tally.unfit === 1 ? "does" : "do"} not fit the schema of ${tally.unfit === 1 ? "its" : "their"} type, and so ${tally.unfit === 1 ? "is" : "are"} not evaluated`} testId="board-flow-unfit" />
           )}
           {tally.changed > 0 && (
-            <Mark icon={PencilLine} tone="text-warning" count={tally.changed} hint={`${counted(tally.changed, "test")} changed since ${tally.changed === 1 ? "its" : "their"} latest result`} testId="board-flow-changed" />
+            <Mark icon={PencilLine} tone="text-warning" count={tally.changed} hint={`${counted(tally.changed, "assertion")} changed since ${tally.changed === 1 ? "its" : "their"} latest result`} testId="board-flow-changed" />
           )}
           {hidden > 0 && entry.tests.length > 0 && (
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground" data-testid="board-flow-shown">
@@ -431,10 +431,10 @@ const FlowGroup = memo(function FlowGroup({ entry, open, repoName, columns, pick
           {state === "elsewhere" && (
             <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
               <SkipForward className="size-3.5 shrink-0" aria-hidden />
-              <span className="truncate">{flow.partitions.length > 0 ? `tests ${flow.partitions.join(", ")}` : "not this partition"}</span>
+              <span className="truncate">{flow.partitions.length > 0 ? `checks ${flow.partitions.join(", ")}` : "not this partition"}</span>
             </span>
           )}
-          {state === "empty" && <span className="text-[12px] text-muted-foreground">declares no test</span>}
+          {state === "empty" && <span className="text-[12px] text-muted-foreground">declares no assertion</span>}
         </div>
         <div role="gridcell" className={cn(RUN_CELL, "gap-1.5 text-[12px] text-muted-foreground")} data-testid="board-flow-last-run">
           {last !== null && lastVisual !== null
@@ -461,7 +461,7 @@ const FlowGroup = memo(function FlowGroup({ entry, open, repoName, columns, pick
                   </Link>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Open the flow: its tests, their history and its reports</TooltipContent>
+              <TooltipContent>Open the flow: its assertions, their history and its reports</TooltipContent>
             </Tooltip>
           </span>
           {pickedNames.length > 0
@@ -472,7 +472,7 @@ const FlowGroup = memo(function FlowGroup({ entry, open, repoName, columns, pick
               </Button>
             )
             : (
-              <RunControl label="Run every test of the flow" disabledWhy={why} onRun={() => onLaunch(flow, [])} testId="board-flow-run-all">
+              <RunControl label="Run every assertion of the flow" disabledWhy={why} onRun={() => onLaunch(flow, [])} testId="board-flow-run-all">
                 <Play />
               </RunControl>
             )}
@@ -649,7 +649,7 @@ export function AssertionBoardGrid(props: BoardGridProps) {
       <div
           ref={scroller}
           role="treegrid"
-          aria-label={scope === "all" ? "Assertion flows and their tests" : "The flow's tests"}
+          aria-label={scope === "all" ? "Assertion flows and their assertions" : "The flow's assertions"}
           aria-rowcount={-1}
           onKeyDown={stepFocus}
           className="min-h-0 overflow-y-auto overscroll-contain"
@@ -674,7 +674,7 @@ export function AssertionBoardGrid(props: BoardGridProps) {
             </div>
             {scope === "all"
               ? <SortHeading sort="name" current={sort} onSort={onSort}>Flow</SortHeading>
-              : <div role="columnheader">Test</div>}
+              : <div role="columnheader">Assertion</div>}
             {columns === WITH_TYPE && <div role="columnheader" className={TYPE_CELL}>Type</div>}
             {scope === "all"
               ? <SortHeading sort="status" current={sort} onSort={onSort}>Results</SortHeading>

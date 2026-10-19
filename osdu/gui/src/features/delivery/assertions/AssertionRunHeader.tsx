@@ -38,7 +38,7 @@ export function AssertionRunCounts({ run }: { run: RunDetail }) {
   const result = runResult(run);
   return (
     <>
-      <DetailPair label="Tests"><Count result={result} field="tests" testId="run-tests" /></DetailPair>
+      <DetailPair label="Assertions"><Count result={result} field="tests" testId="run-tests" /></DetailPair>
       <DetailPair label="Passed"><Count result={result} field="passed" testId="run-tests-passed" /></DetailPair>
       <DetailPair label="Failed"><Count result={result} field="failed" testId="run-tests-failed" /></DetailPair>
       <DetailPair label="Warned"><Count result={result} field="warned" testId="run-tests-warned" /></DetailPair>

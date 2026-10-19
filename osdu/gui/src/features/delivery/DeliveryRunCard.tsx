@@ -16,7 +16,7 @@ import { DimensionRunViews } from "./dimensions/DimensionRunViews";
 const OUTCOME_COPY: Record<string, string> = {
   cache: "What the refresh reported when it finished: the version it wrote (or that nothing changed), each type's record count and changes, and the delivered records those changes reach.",
   retrieval: "What the retrieval reported when it finished: the window it covered, the records and files it wrote, and where they went.",
-  assertion: "How the tests came out: the report it kept, each outcome's count, and the tests that did not pass. Every result, whole, is in the report.",
+  assertion: "How the assertions came out: the report it kept, each outcome's count, and the assertions that did not pass. Every result, whole, is in the report.",
 };
 
 const DEFAULT_OUTCOME_COPY = "What the run reported when it finished: its counts, the submission it worked on, and how far it fanned out.";
@@ -104,7 +104,7 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
               )}
               {request.tests.length > 0 && (
                 <Badge variant="secondary" className="font-mono" data-testid="run-tests-picked">
-                  {`${request.tests.length === 1 ? "test" : "tests"} ${request.tests.join(", ")}`}
+                  {`${request.tests.length === 1 ? "assertion" : "assertions"} ${request.tests.join(", ")}`}
                 </Badge>
               )}
               {request.tags.map((tag) => (

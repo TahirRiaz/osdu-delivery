@@ -79,7 +79,7 @@ function ResultRow({ result, initiallyOpen }: { result: DeliveryTestResult; init
           {result.error && result.outcome !== "skipped" && (
             <Alert variant="destructive">
               <CircleAlert />
-              <AlertTitle>The test could not be evaluated</AlertTitle>
+              <AlertTitle>The assertion could not be evaluated</AlertTitle>
               <AlertDescription>{result.error}</AlertDescription>
             </Alert>
           )}
@@ -215,7 +215,7 @@ export default function AssertionReportPage() {
   })();
   const cells: StripCell[] = [
     { key: "failed", label: "Failed", count: counts.failed, standing: "failed", hint: "A check of error severity failed." },
-    { key: "errored", label: "Errored", count: counts.errored, standing: "errored", hint: "The test could not find out." },
+    { key: "errored", label: "Errored", count: counts.errored, standing: "errored", hint: "The assertion could not find out." },
     { key: "warned", label: "Warned", count: counts.warned, standing: "warned", hint: "Only checks of warning severity failed." },
     { key: "passed", label: "Passed", count: counts.passed, standing: "passed", hint: "Every check of error or warning severity passed." },
     { key: "skipped", label: "Skipped", count: counts.skipped, standing: null, hint: "Not run in this partition." },
@@ -237,7 +237,7 @@ export default function AssertionReportPage() {
             {notPassing.length > 0 && (
               <Button size="sm" onClick={() => again(notPassing, [])} disabled={!launchable} data-testid="assertion-report-rerun-failing">
                 <RotateCcw />
-                Run the {counted(notPassing.length, "test")} not passing again
+                Run the {counted(notPassing.length, "assertion")} not passing again
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={() => again(selection.tests, selection.tags)} disabled={!launchable} data-testid="assertion-report-rerun">
@@ -270,7 +270,7 @@ export default function AssertionReportPage() {
       <ByKind results={results} />
 
       {shownResults.length === 0
-        ? <p className="text-[13px] text-muted-foreground">{results.length === 0 ? "The run recorded no result yet." : "No test came out this way."}</p>
+        ? <p className="text-[13px] text-muted-foreground">{results.length === 0 ? "The run recorded no result yet." : "No assertion came out this way."}</p>
         : (
           <Card className="gap-0 divide-y overflow-hidden rounded-lg p-0" data-testid="assertion-report-results">
             {shownResults.map((result) => (

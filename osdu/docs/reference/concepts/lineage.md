@@ -303,7 +303,7 @@ never costs other flows their lineage. The common ones:
 
 - The lineage graph in the GUI draws the OSDU nodes with their captions, and the catalog explorer lists them under
   Datasets, grouped by system, partition and group; an object's Pipelines tab shows the flows that write and read it.
-- The Mappings, Cache and Tests pages jump from a row to its node in the graph.
+- The Mappings, Cache and Assertions pages jump from a row to its node in the graph.
 - The OSDU cache page reads the same edges to show where each cached type's content comes from (the flows upstream of the
   cache flow, and where their stream starts) and which delivery flows read it.
 - `sqlflow lineage <folder>` computes the same graph offline, with `--explain`, `--of` and `--json`

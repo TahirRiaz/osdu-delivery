@@ -133,7 +133,7 @@ function runPanels(extra: Omit<RunDetailContribution, "card" | "hiddenTabs">): R
   };
 }
 
-// The module's kinds wear the icons of the pages they feed (Delivery, Cache, Tests), in colours of their own: a delivery
+// The module's kinds wear the icons of the pages they feed (Delivery, Cache, Assertions), in colours of their own: a delivery
 // flow in the one tone SQLFlow leaves to modules, a cache flow in orange, so a pre, ingestion, cache and delivery flow of
 // one source each read differently; a retrieval flow brings records in, as SQLFlow's blue kinds do, an assertion flow
 // checks, as SQLFlow's neutral kinds do, and a dimension flow shapes what OSDU holds into tables of its own, as SQLFlow's
@@ -243,7 +243,7 @@ const assertionKind: FlowKindContribution = {
   pipelineTabs: [
     {
       value: "tests",
-      label: "Tests",
+      label: "Assertions",
       testId: "pipeline-tab-tests",
       render: (pipeline) => <Deferred><AssertionTestsPanel pipelineId={pipeline.id} /></Deferred>,
     },
@@ -365,7 +365,7 @@ export const osduDeliveryModule: GuiModule = {
     { group: OSDU_GROUP, section: "ledger", label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
     { group: OSDU_GROUP, section: "ledger", label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
     { group: OSDU_GROUP, section: "in-osdu", label: "Explorer", to: "/delivery/explorer", icon: Telescope, testId: "nav-delivery-explorer" },
-    { group: OSDU_GROUP, section: "in-osdu", label: "Tests", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
+    { group: OSDU_GROUP, section: "in-osdu", label: "Assertions", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
     { group: OSDU_GROUP, section: "in-osdu", label: "Inventories", to: "/delivery/inventories", icon: ClipboardList, testId: "nav-delivery-inventories" },
     { group: OSDU_GROUP, section: "in-osdu", label: "Dimensions", to: "/delivery/dimensions", icon: Shapes, testId: "nav-delivery-dimensions" },
     {

@@ -256,6 +256,133 @@ public sealed class DeliveryAssertionApiTests
         }
     }
 
+    /// <summary>
+    /// The board says what an assertion's document says now, before any run: why it is disabled, when its proof values
+    /// were stated and the last day they hold, whether that day is past, and where its template comes from, a mapping it
+    /// names included; a check carries its own.
+    /// </summary>
+    [Fact]
+    public async Task The_board_says_which_assertions_are_disabled_out_of_date_or_name_their_template_by_mapping()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.SaveTemplatesAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var flowName = "api-assertion-dated-" + suffix;
+        var partition = "ad" + suffix;
+        var repoId = FlowIdentity.FromName("repo/cp-assertions-dated-" + suffix);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var today = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var yaml = $$"""
+            flowType: assertion
+            name: {{flowName}}
+            partitions: [{{partition}}]
+            source:
+              endpoint: http://localhost
+            tests:
+              - name: switched-off
+                kind: {{WellLog}}
+                disabled: waiting for the second load
+                assert:
+                  - count: { atLeast: 1 }
+              - name: out-of-date
+                kind: {{WellLog}}
+                asOf: 2026-01-01
+                validFor: 30d
+                assert:
+                  - count: 7
+                  - count: 8
+                    disabled: restated after the load
+              - name: current
+                kind: {{WellLog}}
+                template: 26a3c3441882db4f
+                asOf: {{today}}
+                validFor: 1y
+                assert:
+                  - field: data.Name
+                    exists: true
+              - name: by-mapping
+                kind: {{WellLog}}
+                template: WellLog@9.9.9
+                assert:
+                  - field: data.Name
+                    exists: true
+            """;
+        var flow = new DeliveryDocumentLoader().ParseAssertion(yaml, "flows/" + flowName + ".yaml").ForRun(partition, RegisteredPartitions.None);
+        var now = new DateTime(DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            db.Repos.Add(new CatalogRepo
+            {
+                Id = repoId, Name = "cp-assertions-dated-" + suffix, RemoteUrl = "https://example/cp-assertions-dated.git",
+                RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now,
+            });
+            db.Pipelines.Add(Pipeline(pipelineId, repoId, flowName, "assertion", yaml, now));
+            await db.SaveChangesAsync();
+        }
+
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        try
+        {
+            await ledger.RegisterLedgerAsync(new LedgerEntry
+            {
+                FlowId = flow.LedgerId, Partition = partition, Kind = LedgerKinds.Assertion, FlowName = flow.Name, LedgerName = flow.LedgerName,
+            });
+
+            await using var factory = new ControlPlaneAppFactory()
+                .WithCatalog(cs)
+                .WithModules(new DeliveryControlPlaneModule())
+                .WithSetting("ControlPlane:Worker:Enabled", "false")
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            var own = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/assertions?partition={partition}");
+            var tests = Assert.Single(own.GetProperty("flows").EnumerateArray()).GetProperty("tests").EnumerateArray()
+                .ToDictionary(test => test.GetProperty("name").GetString()!);
+
+            Assert.Equal("waiting for the second load", tests["switched-off"].GetProperty("disabled").GetString());
+            Assert.False(tests["switched-off"].GetProperty("needsNewProofValues").GetBoolean());
+
+            // 30 days after 2026-01-01 is past: the assertion, and the one check it judges, need new proof values.
+            var dated = tests["out-of-date"];
+            Assert.Equal(("2026-01-01", "2026-01-31"), (dated.GetProperty("asOf").GetString(), dated.GetProperty("validUntil").GetString()));
+            Assert.True(dated.GetProperty("needsNewProofValues").GetBoolean());
+            var checks = dated.GetProperty("assertions").EnumerateArray().ToList();
+            Assert.True(checks[0].GetProperty("needsNewProofValues").GetBoolean());
+            Assert.Equal("2026-01-31", checks[0].GetProperty("validUntil").GetString());
+            Assert.Equal("restated after the load", checks[1].GetProperty("disabled").GetString());
+
+            // A year from today holds, and the template it names is its own.
+            var current = tests["current"];
+            Assert.False(current.GetProperty("needsNewProofValues").GetBoolean());
+            Assert.Equal(today, current.GetProperty("asOf").GetString());
+            Assert.True(current.GetProperty("templatePinned").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, current.GetProperty("templateMapping").ValueKind);
+
+            // A template named by a mapping is read from the synced mapping, and one that is not synced says so.
+            var byMapping = tests["by-mapping"];
+            Assert.Equal("WellLog@9.9.9", byMapping.GetProperty("templateMapping").GetString());
+            Assert.False(byMapping.GetProperty("templatePinned").GetBoolean());
+            Assert.Contains("no mapping WellLog@9.9.9 is synced", Assert.Single(byMapping.GetProperty("problems").EnumerateArray()).GetString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                await osdu.DeliveryLedgers.Where(l => l.FlowId == flow.LedgerId).ExecuteDeleteAsync();
+                await osdu.DeliveryLedgerPartitions.Where(p => p.Name == partition).ExecuteDeleteAsync();
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+                await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+            }
+        }
+    }
+
     /// <summary>Writes a run to the ledger as the runner does: opened, each result recorded, then closed with its counts.</summary>
     private static async Task<long> RecordRunAsync(OsduLedger ledger, AssertionFlowDefinition flow, string? selection, DateTime startedUtc, IReadOnlyList<TestResult> results)
     {

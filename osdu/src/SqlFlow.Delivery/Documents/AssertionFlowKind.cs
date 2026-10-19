@@ -57,8 +57,8 @@ public sealed class AssertionFlowKind : IFlowDocumentKind
 
     public IReadOnlyList<FlowKindOperation> Operations { get; } =
     [
-        new(DeliveryOperations.Test, "Test", "Run the tests (all of them, or those the payload names by test or tag) against what OSDU holds, and record the report.", WritesTarget: false),
-        new(DeliveryOperations.Plan, "Plan", "Check every test against the template of its kind and count what each would read, evaluating nothing and recording nothing.", WritesTarget: false),
+        new(DeliveryOperations.Test, "Check", "Run the assertions (all of them, or those the payload names or tags) against what OSDU holds, and record the report.", WritesTarget: false),
+        new(DeliveryOperations.Plan, "Plan", "Fit every assertion to the template of its kind and count what each would read, evaluating nothing and recording nothing.", WritesTarget: false),
     ];
 
     public RegisteredFlowDocument Parse(string yaml, string source)

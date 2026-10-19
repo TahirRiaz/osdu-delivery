@@ -2511,7 +2511,7 @@ export type AssertionSeverity = "error" | "warning" | "info";
 /** The formats a run's report downloads in. */
 export type AssertionReportFormat = "html" | "md" | "json" | "junit";
 
-/** An assertion of a test as the flow document states it. */
+/** A check of an assertion as the flow document states it. */
 export interface DeliveryAssertionDefinition {
   index: number;
   label: string;
@@ -2519,6 +2519,14 @@ export interface DeliveryAssertionDefinition {
   severity: AssertionSeverity;
   expected: string;
   description: string | null;
+  /** Why the check is disabled (its `disabled`); absent or null when it is judged. */
+  disabled?: string | null;
+  /** The day what it expects was stated (its own `asOf`, else its assertion's). */
+  asOf?: string | null;
+  /** The last day what it expects holds (`validUntil`, or `validFor` after `asOf`); absent when it holds for good. */
+  validUntil?: string | null;
+  /** True when that day is past: a run flags the check as needing new proof values instead of judging it. */
+  needsNewProofValues?: boolean;
 }
 
 /** One run's outcome of a test, as a history strip or a matrix cell shows it. */
@@ -2568,6 +2576,18 @@ export interface DeliveryAssertionTest {
   partitions: string[];
   /** The version of the saved template of its kind its fields are checked against; null when it reads no field of an exact kind. */
   template: string | null;
+  /** The mapping (`Name@version`) whose pinned template it is checked against (`template: WellLog@1.5.0`). */
+  templateMapping?: string | null;
+  /** True when it names its template version itself; false takes the newest captured, or the mapping's. */
+  templatePinned?: boolean;
+  /** Why it is disabled (its `disabled`); absent or null when it runs. */
+  disabled?: string | null;
+  /** The day what it expects was stated (`asOf`). */
+  asOf?: string | null;
+  /** The last day what it expects holds; absent when it holds for good. */
+  validUntil?: string | null;
+  /** True when every check it judges is past that day, so a run flags it as needing new proof values. */
+  needsNewProofValues?: boolean;
   problems: string[];
   latest: DeliveryAssertionLatest | null;
   history: DeliveryAssertionPoint[];

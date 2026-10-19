@@ -10,7 +10,7 @@ import { counted } from "./assertionFormat";
 
 /** What the page covers, in one line; how the tests stand is the status strip's to say. */
 function subtitle(tests: number, flows: number, partition: string | null): string {
-  return `${counted(tests, "test")} of ${counted(flows, "assertion flow")}${partition === null ? "" : ` in ${partition}`}.`;
+  return `${counted(tests, "assertion")} of ${counted(flows, "assertion flow")}${partition === null ? "" : ` in ${partition}`}.`;
 }
 
 /**
@@ -28,7 +28,7 @@ export default function DeliveryAssertionsPage() {
 
   return (
     <Page data-testid="page-delivery-assertions">
-      <PageHeader title="Tests" subtitle={board.data ? subtitle(board.data.totals.tests, board.data.totals.flows, board.data.partition) : undefined} />
+      <PageHeader title="Assertions" subtitle={board.data ? subtitle(board.data.totals.tests, board.data.totals.flows, board.data.partition) : undefined} />
       {board.isError
         ? <ProblemView error={board.error} testId="assertion-board-error" />
         : board.data === undefined

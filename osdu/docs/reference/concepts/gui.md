@@ -324,19 +324,26 @@ A run page gains, by kind:
 
 The other kinds' pipeline pages gain one tab each, which they open on: a retrieval flow **Retrievals** (every run with
 its window, location, counts and outcome); a cache flow **Cache versions** (the partition it fills and every version of
-its cache, with a **Cache page** link); an assertion flow **Tests**, **History** (the tests against recent runs, each with
-its pass rate and how often it flipped) and **Reports**; a dimension flow **Dimensions**; an inventory flow
+its cache, with a **Cache page** link); an assertion flow **Assertions**, **History** (its assertions against recent
+runs, each with its pass rate and how often it flipped) and **Reports**; a dimension flow **Dimensions**; an inventory flow
 **Inventories**.
 
 ## In OSDU
 
 - **Explorer**: what the partition holds, read live from OSDU. See [the explorer](explorer.md).
-- **Tests**: every assertion flow's tests in the partition, one line per flow, what needs a look first. A strip counts
+- **Assertions**: every assertion flow's assertions in the partition, one line per flow, what needs a look first. The
+  GUI calls each entry of a flow's `tests:` an assertion, and each item of its `assert:` a check. A strip counts
   **Failing**, **Errored**, **Warned**, **Not run**, **Passing**, **Unfit** and **Changed**, each a filter; a search and
-  **Types** and **Tags** pickers narrow further. A flow runs every test, or **Run N** picked tests, through the trigger
-  dialog. A test opens in a sheet with **Latest report** and **Run**, and tabs **Checks** and **Definition**. A report
-  (`/delivery/assertions/runs/{n}`) shows one run's tests by outcome, with **Run the N tests not passing again**,
-  **Run again**, and the report as HTML, Markdown, JSON or JUnit XML. See [assertion flows](../flow/assertion.md).
+  **Types** and **Tags** pickers narrow further. A flow runs every assertion, or **Run N** picked ones, through the
+  trigger dialog, whose operation **Check** runs them. An assertion says on its line what its document says now: a
+  disabled one shows `disabled:` and its reason, and one whose proof values are past their day shows
+  `needs new proof values` and that day. It opens in a sheet with **Latest report** and **Run**, and tabs **Checks**
+  and **Definition** (the schema it is checked against and where that comes from: the newest captured from OSDU, the
+  version it names, or the version a mapping pins; and when its proof values were stated and how long they hold). A
+  check of known values lists its rows that do not hold: the values a row is located by, the record it found (none
+  when it found none), and what it came to. A report (`/delivery/assertions/runs/{n}`) shows one run's assertions by
+  outcome, with **Run the N assertions not passing again**, **Run again**, and the report as HTML, Markdown, JSON or
+  JUnit XML. See [assertion flows](../flow/assertion.md).
 - **Inventories**: every inventory flow's inventories in the partition (kind, findings raised, when reconciled). One
   opens its report: the findings (Orphan, Foreign, Stale, Forgotten and the rest), tabs **Ids**, **Runs** and
   **Removals**, **Run pipeline**, **Export the ids as CSV**, and **Remove** for picked ids where the flow allows it,

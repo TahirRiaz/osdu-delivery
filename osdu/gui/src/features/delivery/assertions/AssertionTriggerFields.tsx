@@ -11,7 +11,7 @@ import { deliveryApi, type DeliveryAssertionFlow, type DeliveryParameter } from 
 import { useActivePartition } from "../activePartition";
 import { parseValues } from "../runValues";
 import { TagChip } from "./AssertionBadges";
-import { counted, kindEntity, selectionPayload } from "./assertionFormat";
+import { counted, disabledWhy, kindEntity, selectionPayload } from "./assertionFormat";
 
 /** The run value naming the partition a run tests (osdu/docs/reference/flow/assertion.md, Which partition a run tests). */
 const PARTITION = "partition";
@@ -44,26 +44,26 @@ function parameterValues(parameters: readonly DeliveryParameter[], fields: Recor
     values,
     error: missing.length === 0
       ? null
-      : `The tests need ${missing.map((p) => p.name).join(", ")}: the flow declares ${missing.length === 1 ? "it" : "them"} required, with no default.`,
+      : `The assertions need ${missing.map((p) => p.name).join(", ")}: the flow declares ${missing.length === 1 ? "it" : "them"} required, with no default.`,
   };
 }
 
 /** The partition a run of the flow tests, and why it cannot run while the title bar is where it is. */
 function partitionOf(flow: DeliveryAssertionFlow | undefined, active: string | null): { partition: string | null; error: string | null } {
   if (flow === undefined) {
-    return { partition: null, error: "Reading the flow's tests." };
+    return { partition: null, error: "Reading the flow's assertions." };
   }
 
   if (flow.partitions.length > 0) {
     if (active === null) {
-      return { partition: null, error: "Pick a partition in the title bar: a run tests the partition picked there." };
+      return { partition: null, error: "Pick a partition in the title bar: a run checks the partition picked there." };
     }
 
     return flow.partitions.includes(active)
       ? { partition: active, error: null }
       : {
         partition: null,
-        error: `This flow does not test ${active}, the partition picked in the title bar; it tests ${flow.partitions.join(", ")}. Pick ${flow.partitions.length > 1 ? "one of them" : "it"} in the title bar to run it.`,
+        error: `This flow does not check ${active}, the partition picked in the title bar; it checks ${flow.partitions.join(", ")}. Pick ${flow.partitions.length > 1 ? "one of them" : "it"} in the title bar to run it.`,
       };
   }
 
@@ -74,7 +74,7 @@ function partitionOf(flow: DeliveryAssertionFlow | undefined, active: string | n
   return flow.partition !== null && active !== null && flow.partition !== active
     ? {
       partition: null,
-      error: `This flow tests ${flow.partition}, the partition its data-partition-id header names, and the title bar is on ${active}. Pick ${flow.partition} in the title bar to run it.`,
+      error: `This flow checks ${flow.partition}, the partition its data-partition-id header names, and the title bar is on ${active}. Pick ${flow.partition} in the title bar to run it.`,
     }
     : { partition: null, error: null };
 }
@@ -128,11 +128,11 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
     const missing = flow === undefined ? [] : [...tests].filter((name) => !known.has(name.toLowerCase()));
     const unusedTags = flow === undefined ? [] : [...tags].filter((tag) => !allTags.includes(tag));
     const error = parsed.error
-      ?? (PARTITION in parsed.values ? "The partition is not a flow parameter: a run tests the partition picked in the title bar." : null)
+      ?? (PARTITION in parsed.values ? "The partition is not a flow parameter: a run checks the partition picked in the title bar." : null)
       ?? partitionError
-      ?? ([...tests].some((name) => !TEST_NAME.test(name)) ? "A test's name is a letter or digit, then letters, digits, '.', '_' and '-'." : null)
-      ?? (missing.length > 0 ? `The flow has no test named ${missing.join(", ")}; clear ${missing.length === 1 ? "it" : "them"} to run.` : null)
-      ?? (unusedTags.length > 0 ? `No test of the flow carries the tag ${unusedTags.join(", ")}; clear ${unusedTags.length === 1 ? "it" : "them"} to run.` : null);
+      ?? ([...tests].some((name) => !TEST_NAME.test(name)) ? "An assertion's name is a letter or digit, then letters, digits, '.', '_' and '-'." : null)
+      ?? (missing.length > 0 ? `The flow has no assertion named ${missing.join(", ")}; clear ${missing.length === 1 ? "it" : "them"} to run.` : null)
+      ?? (unusedTags.length > 0 ? `No assertion of the flow carries the tag ${unusedTags.join(", ")}; clear ${unusedTags.length === 1 ? "it" : "them"} to run.` : null);
     const values: Record<string, string> = { ...parsed.values };
     if (partition !== null) {
       values[PARTITION] = partition;
@@ -169,7 +169,7 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
             : partition ?? active ?? "none picked"}
         </span>
         <p className="text-xs text-muted-foreground">
-          The partition picked in the title bar: the tests read it, and the report is kept under it. Nothing is written to it.
+          The partition picked in the title bar: the assertions read it, and the report is kept under it. Nothing is written to it.
         </p>
       </div>
 
@@ -194,7 +194,7 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
               </div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">The values fill the tests' {"{name}"} tokens; an empty field takes the default shown.</p>
+          <p className="text-xs text-muted-foreground">The values fill the assertions' {"{name}"} tokens; an empty field takes the default shown.</p>
         </div>
       )}
       {flow === undefined && !board.isPending && (
@@ -214,16 +214,16 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
 
       <div className="flex flex-col gap-2" data-testid="trigger-tests">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <span className="text-[13px] font-medium">Tests</span>
+          <span className="text-[13px] font-medium">Assertions</span>
           <span className="text-xs text-muted-foreground" data-testid="trigger-tests-summary">
             {tests.size === 0 && tags.size === 0
-              ? `Every test runs${allTests.length > 0 ? ` (${allTests.length})` : ""}.`
-              : `${counted(chosen.length, "test")} of ${allTests.length} run.`}
+              ? `Every assertion runs${allTests.length > 0 ? ` (${allTests.length})` : ""}.`
+              : `${counted(chosen.length, "assertion")} of ${allTests.length} run.`}
           </span>
         </div>
         {board.isPending && pipelineId !== null && <Skeleton className="h-24 w-full" />}
         {allTags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Run the tests carrying a tag">
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Run the assertions carrying a tag">
             <span className="text-xs text-muted-foreground">Tags</span>
             {allTags.map((tag) => (
               <TagChip key={tag} tag={tag} pressed={tags.has(tag)} onToggle={() => setTags((was) => toggle(was, tag))} />
@@ -231,7 +231,7 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
           </div>
         )}
         {allTests.length > FILTER_FROM && (
-          <SearchInput value={filter} onChange={setFilter} placeholder="Filter tests by name, kind or tag" label="Filter tests" testId="trigger-tests-filter" />
+          <SearchInput value={filter} onChange={setFilter} placeholder="Filter assertions by name, kind or tag" label="Filter assertions" testId="trigger-tests-filter" />
         )}
         {allTests.length > 0 && (
           <div className="max-h-64 overflow-y-auto rounded-md border" data-testid="trigger-tests-list">
@@ -256,18 +256,20 @@ export function AssertionTriggerFields({ pipelineId, initialValues, initialPaylo
                     <span className="block truncate text-[11px] text-muted-foreground">
                       {kindEntity(test.kind)}
                       {byTag ? ", picked by its tag" : ""}
-                      {test.runsHere ? "" : ", skipped: it does not test this partition"}
+                      {test.runsHere ? "" : ", skipped: it does not check this partition"}
+                      {test.runsHere && disabledWhy(test) !== null ? ", skipped: disabled" : ""}
+                      {test.runsHere && disabledWhy(test) === null && test.needsNewProofValues === true ? ", flagged: needs new proof values" : ""}
                     </span>
                   </span>
                   {test.tags.length > 0 && <span className="hidden font-mono text-[10.5px] text-muted-foreground sm:inline">{test.tags.map((tag) => `#${tag}`).join(" ")}</span>}
                 </label>
               );
             })}
-            {shown.length === 0 && <p className="px-2.5 py-3 text-xs text-muted-foreground">No test matches the filter.</p>}
+            {shown.length === 0 && <p className="px-2.5 py-3 text-xs text-muted-foreground">No assertion matches the filter.</p>}
           </div>
         )}
         <p className="text-xs text-muted-foreground">
-          Pick tests by name or by tag to run only those; the others keep their last results on the board.
+          Pick assertions by name or by tag to run only those; the others keep their last results on the board.
         </p>
       </div>
     </div>
