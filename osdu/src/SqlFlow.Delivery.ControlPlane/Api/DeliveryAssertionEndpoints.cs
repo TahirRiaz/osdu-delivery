@@ -16,8 +16,15 @@ using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>An assertion of a test as the document states it.</summary>
-public sealed record DeliveryAssertionDefinitionDto(int Index, string Label, string Type, string Severity, string Expected, string? Description);
+/// <summary>
+/// An assertion of a test as the document states it: <c>Disabled</c> says why it is disabled (null when it is judged),
+/// <c>AsOf</c> the day what it expects was stated (its own or its test's), <c>ValidUntil</c> the last day that holds
+/// (<c>validUntil</c>, or <c>validFor</c> after <c>asOf</c>; null for good), and <c>NeedsNewProofValues</c> is true when that
+/// day is past, so a run flags the check rather than judging it.
+/// </summary>
+public sealed record DeliveryAssertionDefinitionDto(
+    int Index, string Label, string Type, string Severity, string Expected, string? Description,
+    string? Disabled = null, string? AsOf = null, string? ValidUntil = null, bool NeedsNewProofValues = false);
 
 /// <summary>One run's outcome of a test, as a history strip shows it.</summary>
 public sealed record DeliveryAssertionPointDto(long AssertionRunId, string Outcome, int FailedAssertions, long? Matched, DateTime CompletedUtc);
@@ -30,13 +37,17 @@ public sealed record DeliveryAssertionLatestDto(
 /// <summary>
 /// One test of an assertion flow as a board shows it: what the document says of it, whether it fits the template of its
 /// kind, its latest result, and how it came out over the last runs. <c>Changed</c> is true when the test's definition has
-/// changed since its latest result was recorded.
+/// changed since its latest result was recorded. <c>Disabled</c>, <c>AsOf</c> and <c>ValidUntil</c> are the test's own, as a
+/// check's are; <c>NeedsNewProofValues</c> is true when every check it judges is past its day. <c>TemplateMapping</c> names the
+/// mapping (<c>Name@version</c>) whose pinned template the test is checked against, and <c>TemplatePinned</c> is true when the
+/// test names its template version itself rather than taking the newest captured.
 /// </summary>
 public sealed record DeliveryAssertionTestDto(
     string Name, string? Description, string Kind, IReadOnlyList<string> Tags, string Severity, string? Query, int Ids, bool Bulk, string Read,
     int MaxRecords, IReadOnlyList<DeliveryAssertionDefinitionDto> Assertions, bool RunsHere, IReadOnlyList<string> Partitions,
     string? Template, IReadOnlyList<string> Problems, DeliveryAssertionLatestDto? Latest, IReadOnlyList<DeliveryAssertionPointDto> History, bool Changed,
-    string DefinitionHash);
+    string DefinitionHash, string? Disabled = null, string? AsOf = null, string? ValidUntil = null, bool NeedsNewProofValues = false,
+    string? TemplateMapping = null, bool TemplatePinned = false);
 
 /// <summary>An assertion run as listings show it.</summary>
 public sealed record DeliveryAssertionRunDto(
@@ -102,7 +113,7 @@ public static class DeliveryAssertionEndpoints
     /// <summary>Every active assertion flow of the catalog, each in the partition the request reads.</summary>
     private static async Task<Ok<DeliveryAssertionBoardDto>> GetBoardAsync(
         string? partition, HttpRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, ITemplateStore templates,
-        IPartitionRegistry registry, CancellationToken ct)
+        IPartitionRegistry registry, TimeProvider time, CancellationToken ct)
     {
         var pipelines = await db.Pipelines.AsNoTracking()
             .Where(p => p.Kind == AssertionFlowDefinition.FlowTypeName && p.Active)
@@ -110,14 +121,14 @@ public static class DeliveryAssertionEndpoints
             .Take(MaxFlows)
             .ToListAsync(ct).ConfigureAwait(false);
         var named = WorkbenchPartition.Named(partition, request);
-        var flows = await BoardAsync(pipelines, named, documents, ledger, templates, registry, ct).ConfigureAwait(false);
+        var flows = await BoardAsync(pipelines, named, documents, ledger, templates, registry, time.GetUtcNow(), ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryAssertionBoardDto(named, Totals(flows), flows));
     }
 
     /// <summary>One assertion flow's board.</summary>
     private static async Task<Results<Ok<DeliveryAssertionBoardDto>, ProblemHttpResult>> GetFlowBoardAsync(
         Guid pipelineId, string? partition, HttpRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
-        ITemplateStore templates, IPartitionRegistry registry, CancellationToken ct)
+        ITemplateStore templates, IPartitionRegistry registry, TimeProvider time, CancellationToken ct)
     {
         var (pipeline, problem) = await PipelineAsync(db, pipelineId, ct).ConfigureAwait(false);
         if (pipeline is null)
@@ -126,7 +137,7 @@ public static class DeliveryAssertionEndpoints
         }
 
         var named = WorkbenchPartition.Named(partition, request);
-        var flows = await BoardAsync([pipeline], named, documents, ledger, templates, registry, ct).ConfigureAwait(false);
+        var flows = await BoardAsync([pipeline], named, documents, ledger, templates, registry, time.GetUtcNow(), ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryAssertionBoardDto(flows[0].Partition ?? named, Totals(flows), flows));
     }
 
@@ -312,9 +323,27 @@ public static class DeliveryAssertionEndpoints
         }
     }
 
+    /// <summary>
+    /// One check of a test as the board shows it: what it asserts, and whether it is disabled or past the day its values hold
+    /// until, as a run would find it now.
+    /// </summary>
+    private static DeliveryAssertionDefinitionDto Definition(int index, TestAssertion assertion, AssertionTest test, DateTimeOffset now)
+    {
+        var (asOf, validUntil, validFor) = AssertionActivity.Validity(assertion, test);
+        return new DeliveryAssertionDefinitionDto(
+            index, assertion.Label, assertion.Type, AssertionText.Of(assertion.Severity), assertion.Expected, assertion.Description,
+            assertion.Disabled, asOf, LastDay(asOf, validUntil, validFor), AssertionActivity.Stale(assertion, test, now) is not null);
+    }
+
+    /// <summary>The last day values hold (<c>2027-01-11</c>), from <c>validUntil</c> or <c>validFor</c> after <c>asOf</c>; null when they hold for good.</summary>
+    private static string? LastDay(string? asOf, string? validUntil, string? validFor)
+        => AssertionActivity.Last(asOf, validUntil, validFor) is { } last
+            ? last.UtcDateTime.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+
     private static async Task<IReadOnlyList<DeliveryAssertionFlowDto>> BoardAsync(
         IReadOnlyList<CatalogPipeline> pipelines, string? partition, DeliveryDocumentLoader documents, ILedger ledger, ITemplateStore templates,
-        IPartitionRegistry registry, CancellationToken ct)
+        IPartitionRegistry registry, DateTimeOffset now, CancellationToken ct)
     {
         var registered = await registry.ReadAsync(ct).ConfigureAwait(false);
         var parsed = new List<(CatalogPipeline Pipeline, AssertionFlowDefinition? Flow, AssertionFlowDefinition? Bound, string? Problem)>();
@@ -363,14 +392,20 @@ public static class DeliveryAssertionEndpoints
                 return new DeliveryAssertionTestDto(
                     test.Name, test.Description, test.Kind, test.Tags, AssertionText.Of(test.Severity), test.Query, test.Ids.Count, test.Bulk is not null,
                     test.Read == AssertionRead.Index ? "index" : "storage", test.MaxRecords,
-                    test.Assertions.Select((a, i) => new DeliveryAssertionDefinitionDto(i, a.Label, a.Type, AssertionText.Of(a.Severity), a.Expected, a.Description)).ToList(),
+                    test.Assertions.Select((a, i) => Definition(i, a, test, now)).ToList(),
                     test.RunsIn(testPartition), test.Partitions, fit.Version, fit.Problems,
                     result is null ? null : new DeliveryAssertionLatestDto(
                         result.ResultId, result.AssertionRunId, result.Outcome, result.Severity, result.Matched, result.Evaluated, result.Sampled, result.Assertions,
                         result.FailedAssertions, result.DurationMs, result.Error, result.CompletedUtc, result.DefinitionHash),
                     history.TryGetValue(test.Name, out var points) ? points : [],
                     result is not null && !string.Equals(result.DefinitionHash, test.DefinitionHash, StringComparison.Ordinal),
-                    test.DefinitionHash);
+                    test.DefinitionHash,
+                    test.Disabled,
+                    test.AsOf,
+                    LastDay(test.AsOf, test.ValidUntil, test.ValidFor),
+                    AssertionActivity.Stale(test, now),
+                    test.TemplateMapping,
+                    test.Template is not null);
             }).ToList();
             flows.Add(new DeliveryAssertionFlowDto(
                 pipeline.Id, pipeline.RepoId, pipeline.Name, bound.Description, bound.Batch, testPartition, true, true, bound.Served(registered),

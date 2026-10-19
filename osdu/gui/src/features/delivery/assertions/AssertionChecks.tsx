@@ -52,12 +52,28 @@ function CheckRow({ outcome, expanded, onClick }: { outcome: DeliveryAssertionOu
   );
 }
 
-/** The records that failed a check: the id (copyable), what it held there, and why that fails it. */
+/**
+ * A record id as a narrow cell shows it: the entity type and the id after it (`WellLog:5596f42c30e95cac`), the part that
+ * differs from row to row; the cell's title and its copy button keep the whole id.
+ */
+function shortId(id: string): string {
+  const at = id.lastIndexOf("--");
+  return at < 0 ? id : id.slice(at + 2);
+}
+
+/**
+ * The records that failed a check: the id (copyable), what it held there, and why that fails it. Known values name rows
+ * rather than records, so a row comes first (the values it is located by), then the record it found, or none, and what
+ * it came to. A check that only warns says why it warns.
+ */
 function Examples({ outcome }: { outcome: DeliveryAssertionOutcome }) {
   const examples = outcome.examples ?? [];
   if (examples.length === 0) {
     return null;
   }
+
+  const known = outcome.type === "knownValues";
+  const why = known ? "What it came to" : assertionStanding(outcome) === "warned" ? "Why it warns" : "Why it fails";
 
   return (
     <div className="flex flex-col gap-1">
@@ -65,30 +81,47 @@ function Examples({ outcome }: { outcome: DeliveryAssertionOutcome }) {
         <table className="w-full text-[12px]" data-testid="assertion-examples">
           <thead>
             <tr className="border-b text-left text-[11px] text-muted-foreground">
+              {known ? <th className="px-2 py-1.5 font-medium">Row</th> : null}
               <th className="px-2 py-1.5 font-medium">Record</th>
-              <th className="px-2 py-1.5 font-medium">Value</th>
-              <th className="px-2 py-1.5 font-medium">Why it fails</th>
+              {known ? null : <th className="px-2 py-1.5 font-medium">Value</th>}
+              <th className="px-2 py-1.5 font-medium">{why}</th>
             </tr>
           </thead>
           <tbody>
-            {examples.map((example, index) => (
-              <tr key={`${example.id ?? ""}-${index}`} className="border-b align-top last:border-b-0">
-                <td className="max-w-[20rem] px-2 py-1.5">
+            {examples.map((example, index) => {
+              const record = (
+                <td className="max-w-[13rem] px-2 py-1.5">
                   {example.id
                     ? (
                       <span className="flex items-center gap-1">
-                        <span className="truncate font-mono text-[11.5px]" title={example.id}>{example.id}</span>
+                        <span className="truncate font-mono text-[11.5px]" title={example.id}>{shortId(example.id)}</span>
                         <CopyButton label="Copy the id" text={example.id} testId="copy-example-id" iconOnly />
                       </span>
                     )
-                    : <span className="text-muted-foreground">-</span>}
+                    : <span className="text-muted-foreground">{known ? "none found" : "-"}</span>}
                 </td>
-                <td className="max-w-[14rem] px-2 py-1.5">
-                  <span className="line-clamp-3 break-all font-mono text-[11.5px]" title={example.value ?? undefined}>{example.value ?? "(nothing)"}</span>
-                </td>
-                <td className="px-2 py-1.5">{example.reason}</td>
-              </tr>
-            ))}
+              );
+              return (
+                <tr key={`${example.id ?? ""}-${index}`} className="border-b align-top last:border-b-0">
+                  {known
+                    ? (
+                      <td className="min-w-[11rem] max-w-[16rem] px-2 py-1.5">
+                        <span className="break-words font-mono text-[11.5px]" data-testid="example-row">{example.value ?? "(nothing)"}</span>
+                      </td>
+                    )
+                    : null}
+                  {record}
+                  {known
+                    ? null
+                    : (
+                      <td className="max-w-[14rem] px-2 py-1.5">
+                        <span className="line-clamp-3 break-all font-mono text-[11.5px]" title={example.value ?? undefined}>{example.value ?? "(nothing)"}</span>
+                      </td>
+                    )}
+                  <td className="px-2 py-1.5">{example.reason}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -157,7 +190,7 @@ export function CheckList({ outcomes, onOpen, testId = "check-list" }: {
   const [view, setView] = useState<CheckView>(() => (looking.length > 0 ? "look" : "all"));
   const [open, setOpen] = useState<ReadonlySet<number>>(new Set());
   if (outcomes.length === 0) {
-    return <p className="text-[12.5px] text-muted-foreground">The test recorded no check.</p>;
+    return <p className="text-[12.5px] text-muted-foreground">The assertion recorded no check.</p>;
   }
 
   // The choice is only offered when it changes something: some checks ask for a look and some do not.

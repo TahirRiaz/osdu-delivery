@@ -74,9 +74,13 @@ export function standingOf(test: DeliveryAssertionTest): TestStanding {
   return test.latest?.outcome ?? "notRun";
 }
 
-/** A check that asks for a look: one that did not hold, whatever its severity, could not be evaluated, or was skipped. */
+/**
+ * A check that asks for a look: one that did not hold, whatever its severity, or could not be evaluated. A skipped check
+ * (one its document disables) asks for none: it was meant not to run.
+ */
 export function needsLook(outcome: Pick<DeliveryAssertionOutcome, "outcome" | "severity">): boolean {
-  return assertionStanding(outcome) !== "passed";
+  const standing = assertionStanding(outcome);
+  return standing !== "passed" && standing !== "skipped";
 }
 
 /** How a test's checks came out, counted by where each stands. */
@@ -144,7 +148,18 @@ export function testVerdict(test: DeliveryAssertionTest): Verdict {
   const standing = standingOf(test);
   const latest = test.latest;
   if (standing === "elsewhere") {
-    return { text: `tests ${test.partitions.join(", ")}`, standing };
+    return { text: `checks ${test.partitions.join(", ")}`, standing };
+  }
+
+  // What the document says now comes before the last result: a disabled assertion does not run, and one whose proof
+  // values are out of date is flagged rather than judged.
+  const disabled = disabledWhy(test);
+  if (disabled !== null) {
+    return { text: `disabled: ${disabled}`, standing: "skipped" };
+  }
+
+  if (test.needsNewProofValues === true) {
+    return { text: `needs new proof values (valid until ${test.validUntil ?? "a day now past"})`, standing: "warned" };
   }
 
   if (latest === null) {
@@ -161,6 +176,29 @@ export function testVerdict(test: DeliveryAssertionTest): Verdict {
 
   const how = standing === "passed" ? "noted" : standing === "warned" ? "warned" : "failed";
   return { text: `${latest.failedAssertions} of ${counted(latest.assertions, "check")} ${how}`, standing: standing === "passed" ? "noted" : standing };
+}
+
+/**
+ * Why an assertion does not run: its own `disabled`, or every one of its checks disabled; null when it runs.
+ */
+export function disabledWhy(test: Pick<DeliveryAssertionTest, "disabled" | "assertions">): string | null {
+  if (test.disabled) {
+    return test.disabled;
+  }
+
+  const checks = test.assertions;
+  return checks.length > 0 && checks.every((check) => check.disabled) ? `every check is disabled (${checks[0].disabled})` : null;
+}
+
+/** When an assertion's proof values were stated and how long they hold, as a line says it; null when it states neither. */
+export function validityText(item: { asOf?: string | null; validUntil?: string | null }): string | null {
+  if (!item.asOf && !item.validUntil) {
+    return null;
+  }
+
+  return [item.asOf ? `stated as of ${item.asOf}` : null, item.validUntil ? `valid until ${item.validUntil}` : "valid for good"]
+    .filter((part): part is string => part !== null)
+    .join(", ");
 }
 
 /** How an assertion run's status is shown, in the same families as a test's outcome. */
@@ -200,7 +238,7 @@ export function kindEntity(kind: string): string {
   return at > 0 ? entity.slice(at + 2) : entity;
 }
 
-/** A count with its noun, pluralized: "1 test", "3 tests". */
+/** A count with its noun, pluralized: "1 assertion", "3 assertions". */
 export function counted(count: number, noun: string): string {
   return `${count.toLocaleString("en-US")} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -222,7 +260,7 @@ export function duration(milliseconds: number | null | undefined): string {
 /** The tests and tags a run was asked for, as its row names them; every test when it names none. */
 export function selectionText(selection: string | null): string {
   if (selection === null) {
-    return "every test";
+    return "every assertion";
   }
 
   try {
@@ -231,7 +269,7 @@ export function selectionText(selection: string | null): string {
       ...(parsed.tests ?? []).map((name) => name),
       ...(parsed.tags ?? []).map((tag) => `#${tag}`),
     ];
-    return parts.length === 0 ? "every test" : parts.join(", ");
+    return parts.length === 0 ? "every assertion" : parts.join(", ");
   } catch {
     return selection;
   }

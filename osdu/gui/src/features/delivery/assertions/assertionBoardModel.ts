@@ -81,7 +81,7 @@ export function tallyOf(flow: DeliveryAssertionFlow): FlowTally {
 /** A tally in words, worst first, as a tooltip or an accessible name says it: "3 failed, 9 passed, 2 do not fit". */
 export function tallyText(tally: FlowTally): string {
   if (tally.tests === 0) {
-    return tally.elsewhere > 0 ? `${counted(tally.elsewhere, "test")} of other partitions` : "no test";
+    return tally.elsewhere > 0 ? `${counted(tally.elsewhere, "assertion")} of other partitions` : "no assertion";
   }
 
   return [

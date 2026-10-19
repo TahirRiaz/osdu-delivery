@@ -23,7 +23,7 @@ const REFRESH_MS = 15000;
 /** The runs the History tab lays out against the tests. */
 const MATRIX_RUNS = 30;
 
-/** An assertion flow's Tests tab: its board in the workbench's partition. */
+/** An assertion flow's Assertions tab: its board in the workbench's partition. */
 export function AssertionTestsPanel({ pipelineId }: { pipelineId: string }) {
   const [active] = useActivePartition();
   const board = useQuery({
@@ -98,7 +98,7 @@ export function AssertionHistoryPanel({ pipelineId }: { pipelineId: string }) {
     return (
       <EmptyState
         title="No run yet"
-        description="Each run of the flow's tests adds a column here, so a test that breaks, and one that keeps flipping, shows at once."
+        description="Each run of the flow's assertions adds a column here, so an assertion that breaks, and one that keeps flipping, shows at once."
         data-testid="assertion-history-empty"
       />
     );
@@ -110,7 +110,7 @@ export function AssertionHistoryPanel({ pipelineId }: { pipelineId: string }) {
         <table className="text-[12px]">
           <thead>
             <tr className="border-b bg-muted/40">
-              <th className="sticky left-0 z-10 min-w-56 bg-muted/40 px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Test</th>
+              <th className="sticky left-0 z-10 min-w-56 bg-muted/40 px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Assertion</th>
               <th className="px-2 py-2 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground" title="Runs it passed, of those that evaluated it">Pass</th>
               <th className="px-2 py-2 text-right text-[11px] font-medium uppercase tracking-wider text-muted-foreground" title="How often its outcome changed from one run to the next">Flips</th>
               {laid.runs.map((run) => {
@@ -147,7 +147,7 @@ export function AssertionHistoryPanel({ pipelineId }: { pipelineId: string }) {
                   <span className="block truncate text-[10.5px] text-muted-foreground">{kindEntity(row.kind)}</span>
                 </td>
                 <td className="px-2 py-1.5 text-right font-mono tabular-nums">{row.passRate === null ? "-" : `${row.passRate}%`}</td>
-                <td className={cn("px-2 py-1.5 text-right font-mono tabular-nums", row.flips >= 3 && "font-semibold text-warning")} title={row.flips >= 3 ? "It keeps changing: a test that flips is either unsteady data or an unsteady test." : undefined}>
+                <td className={cn("px-2 py-1.5 text-right font-mono tabular-nums", row.flips >= 3 && "font-semibold text-warning")} title={row.flips >= 3 ? "It keeps changing: an assertion that flips is either unsteady data or an unsteady assertion." : undefined}>
                   {row.flips}
                 </td>
                 {row.cells.map((cell, index) => (
@@ -174,7 +174,7 @@ export function AssertionHistoryPanel({ pipelineId }: { pipelineId: string }) {
       </div>
       <p className="text-[12px] text-muted-foreground">
         The last {laid.runs.length} run{laid.runs.length === 1 ? "" : "s"} in this partition, oldest on the left. A dashed square is a run
-        that did not run the test; a test with three or more flips is marked, since it keeps changing.
+        that did not run the assertion; an assertion with three or more flips is marked, since it keeps changing.
       </p>
     </div>
   );
@@ -245,7 +245,7 @@ export function AssertionReportsPanel({ pipelineId }: { pipelineId: string }) {
       rows={runs.data}
       rowKey={(row) => row.assertionRunId}
       onRowClick={(row) => navigate(`/delivery/assertions/runs/${row.assertionRunId}`)}
-      emptyMessage="No report yet. Each run of the flow's tests keeps one: run them from the Tests tab."
+      emptyMessage="No report yet. Each run of the flow's assertions keeps one: run them from the Assertions tab."
       data-testid="assertion-reports"
     />
   );

@@ -113,7 +113,7 @@ export function OutcomeBar({ counts, className, testId = "outcome-bar" }: {
     { outcome: "skipped", count: counts.skipped },
   ];
   const total = parts.reduce((sum, part) => sum + part.count, 0);
-  const label = total === 0 ? "no test" : parts.filter((p) => p.count > 0).map((p) => `${p.count} ${OUTCOME_VISUALS[p.outcome].label}`).join(", ");
+  const label = total === 0 ? "no assertion" : parts.filter((p) => p.count > 0).map((p) => `${p.count} ${OUTCOME_VISUALS[p.outcome].label}`).join(", ");
   return (
     <div className={cn("flex h-2 w-full overflow-hidden rounded-full bg-muted", className)} role="img" aria-label={label} title={label} data-testid={testId}>
       {total > 0 && parts.filter((p) => p.count > 0).map((part) => (

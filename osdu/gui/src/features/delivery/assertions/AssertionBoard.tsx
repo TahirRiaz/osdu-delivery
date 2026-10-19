@@ -291,12 +291,12 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
   const totals = board.totals;
   const cells: StripCell[] = [
     { key: "failed", label: "Failing", count: totals.failed, standing: "failed", hint: "A check of error severity failed." },
-    { key: "errored", label: "Errored", count: totals.errored, standing: "errored", hint: "The test could not find out: a query OSDU refused, a service that did not answer." },
+    { key: "errored", label: "Errored", count: totals.errored, standing: "errored", hint: "The assertion could not find out: a query OSDU refused, a service that did not answer." },
     { key: "warned", label: "Warned", count: totals.warned, standing: "warned", hint: "Only checks of warning severity failed." },
     { key: "notRun", label: "Not run", count: totals.notRun, standing: null, hint: "No result yet in this partition." },
     { key: "passed", label: "Passing", count: totals.passed, standing: "passed", hint: "Every check of error or warning severity passed in the latest run." },
-    ...(totals.problems > 0 ? [{ key: "problems", label: "Unfit", count: totals.problems, standing: "errored" as const, hint: "Tests that do not fit the schema of their type, and so are not evaluated." }] : []),
-    ...(totals.changed > 0 ? [{ key: "changed", label: "Changed", count: totals.changed, standing: "warned" as const, hint: "Tests changed since their latest result." }] : []),
+    ...(totals.problems > 0 ? [{ key: "problems", label: "Unfit", count: totals.problems, standing: "errored" as const, hint: "Assertions that do not fit the schema of their type, and so are not evaluated." }] : []),
+    ...(totals.changed > 0 ? [{ key: "changed", label: "Changed", count: totals.changed, standing: "warned" as const, hint: "Assertions changed since their latest result." }] : []),
   ];
 
   if (board.flows.length === 0) {
@@ -304,7 +304,7 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
       <EmptyState
         icon={<ListChecks />}
         title="No assertion flows synced yet"
-        description="Register a repository holding flowType: assertion documents; each flow's tests appear here with how they came out."
+        description="Register a repository holding flowType: assertion documents; each flow's assertions appear here with how they came out."
         data-testid="assertion-board-empty"
       />
     );
@@ -321,13 +321,13 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
   const none = narrowed
     ? (
       <EmptyState
-        title={scope === "all" ? "No flow or test matches" : "No test of this flow matches"}
-        description="Clear the filters to see every test."
+        title={scope === "all" ? "No flow or assertion matches" : "No assertion of this flow matches"}
+        description="Clear the filters to see every assertion."
         data-testid="assertion-board-none"
       />
     )
     : single !== undefined && single.problem === null && (
-      <p className="px-3 py-3 text-[12.5px] text-muted-foreground" data-testid="board-flow-none">The flow declares no test.</p>
+      <p className="px-3 py-3 text-[12.5px] text-muted-foreground" data-testid="board-flow-none">The flow declares no assertion.</p>
     );
 
   const footer = single !== undefined && single.problem !== null && single.tests.length === 0 ? undefined : (
@@ -335,17 +335,17 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
       <span className="truncate font-mono tabular-nums">
         {scope === "all"
           ? narrowed
-            ? `${entries.length.toLocaleString("en-US")} of ${counted(board.flows.length, "flow")}, ${shownTests.toLocaleString("en-US")} of ${counted(totals.tests, "test")}`
-            : `${counted(board.flows.length, "flow")}, ${counted(totals.tests, "test")}`
+            ? `${entries.length.toLocaleString("en-US")} of ${counted(board.flows.length, "flow")}, ${shownTests.toLocaleString("en-US")} of ${counted(totals.tests, "assertion")}`
+            : `${counted(board.flows.length, "flow")}, ${counted(totals.tests, "assertion")}`
           : narrowed
-            ? `${shownTests.toLocaleString("en-US")} of ${counted(totals.tests, "test")}`
-            : counted(totals.tests, "test")}
+            ? `${shownTests.toLocaleString("en-US")} of ${counted(totals.tests, "assertion")}`
+            : counted(totals.tests, "assertion")}
       </span>
       {pickedTests > 0 && (
         <span className="flex shrink-0 items-center gap-2" data-testid="assertion-board-picked">
           {scope === "all" && picked.length > 1
-            ? `${counted(pickedTests, "test")} picked in ${picked.length} flows, each run from its flow's line`
-            : `${counted(pickedTests, "test")} picked`}
+            ? `${counted(pickedTests, "assertion")} picked in ${picked.length} flows, each run from its flow's line`
+            : `${counted(pickedTests, "assertion")} picked`}
           <Button variant="ghost" size="xs" onClick={() => setPicks(new Map())} data-testid="assertion-board-unpick">Clear</Button>
         </span>
       )}
@@ -380,8 +380,8 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
               next.set("q", value);
             }
           })}
-          placeholder={scope === "all" ? "Find a flow, or a test by its name, type, tag, query or check" : "Find a test by its name, type, tag, query or check"}
-          label={scope === "all" ? "Find a flow or a test" : "Find a test"}
+          placeholder={scope === "all" ? "Find a flow, or an assertion by its name, type, tag, query or check" : "Find an assertion by its name, type, tag, query or check"}
+          label={scope === "all" ? "Find a flow or an assertion" : "Find an assertion"}
           testId="assertion-board-search"
           className="sm:w-[30rem]"
         />

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The Tests page is the Assertions page.** The GUI calls each test of an assertion flow an assertion, as the flow
+  type names them, and each of its assertions a check: the page, a flow's tab, the board, the sheet, the run dialog
+  (whose operation reads **Check**) and the reports say so. Flow documents, the API and the CLI keep `tests:`,
+  `assert:` and the `test` operation ([The GUI](osdu/docs/reference/concepts/gui.md#in-osdu)).
+- **The board says what an assertion's document says now.** A disabled assertion shows its reason, one whose proof
+  values are past their day shows that it needs new proof values, the Definition tab says where the schema comes from
+  and how long the proof values hold, and a skipped result no longer reads as an error
+  ([The GUI](osdu/docs/reference/concepts/gui.md#in-osdu)).
+
 ### Added
 
 - **Proof values of records found by what they hold.** An assertion flow's `knownValues` finds each record a sheet
