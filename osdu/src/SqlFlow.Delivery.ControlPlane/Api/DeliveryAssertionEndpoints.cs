@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Assertions;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -350,7 +351,8 @@ public static class DeliveryAssertionEndpoints
             var history = (await ledger.AssertionHistoryAsync(bound.LedgerId, null, BoardHistory, withDetail: false, ct).ConfigureAwait(false))
                 .GroupBy(r => r.TestName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Select(Point).ToList(), StringComparer.OrdinalIgnoreCase);
-            var fits = await AssertionTemplates.FitAsync(bound.Tests, templates, ct).ConfigureAwait(false);
+            var fits = await AssertionTemplates.FitAsync(
+                bound.Tests, templates, (reference, token) => SyncedMappings.ByReferenceAsync(ledger, documents, reference, token), ct).ConfigureAwait(false);
             var runs = await ledger.ListAssertionRunsAsync(bound.LedgerId, 1, ct).ConfigureAwait(false);
             var lastRun = runs.Count > 0 ? runs[0] : null;
             var ofFlow = latest.TryGetValue(bound.LedgerId, out var found) ? found : new Dictionary<string, AssertionResultState>(StringComparer.OrdinalIgnoreCase);

@@ -279,19 +279,131 @@ internal static partial class ConditionReader
     /// </summary>
     public static double? Tolerance(object? declared, string at, string source)
     {
-        var tolerance = declared switch
-        {
-            null => (double?)null,
-            double d => d,
-            float f => f,
-            decimal m => (double)m,
-            byte or sbyte or short or ushort or int or uint or long or ulong => Convert.ToDouble(declared, CultureInfo.InvariantCulture),
-            _ => double.NaN,
-        };
+        var tolerance = declared is null ? (double?)null : NumberOf(declared);
         return tolerance is { } value && (value < 0 || !double.IsFinite(value))
             ? throw new FlowValidationException($"{source}: {at}.tolerance must be a number, zero or more.")
             : tolerance;
     }
+
+    /// <summary>A number as YAML types it, as the text it writes back as; NaN for anything that is not a number.</summary>
+    private static double NumberOf(object declared) => declared switch
+    {
+        double d => d,
+        // A single as the text it writes back as, which is what the document wrote: 0.0005 stays 0.0005, as Scalar reads it.
+        float f => double.Parse(f.ToString("R", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture),
+        decimal m => (double)m,
+        byte or sbyte or short or ushort or int or uint or long or ulong => Convert.ToDouble(declared, CultureInfo.InvariantCulture),
+        _ => double.NaN,
+    };
+
+    /// <summary>The comparisons a warning band widens: each names a number a value may miss by the band.</summary>
+    private static readonly string[] Widened = ["equals", "in", "atLeast", "atMost", "greaterThan", "lessThan", "between"];
+
+    /// <summary>
+    /// A warning band as a document writes it (<c>warnWithin</c>, osdu/docs/reference/flow/assertion.md, A warning band): a
+    /// distance greater than zero (<c>5</c>), or a percentage of the number compared with (<c>10%</c>), more than 0% and at
+    /// most 100%; null when it gives none.
+    /// </summary>
+    public static WarningBand? Band(object? declared, string at, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        const string Shape = "a distance greater than zero, such as 5, or a percentage of the value compared with, such as 10%";
+        if (declared is string text)
+        {
+            var trimmed = text.Trim();
+            var percent = trimmed.EndsWith('%');
+            var written = percent ? trimmed[..^1].TrimEnd() : trimmed;
+            if (double.TryParse(written, NumberStyles.Float, CultureInfo.InvariantCulture, out var amount) && double.IsFinite(amount) && amount > 0)
+            {
+                return !percent || amount <= 100
+                    ? new WarningBand(amount, percent)
+                    : throw new FlowValidationException($"{source}: {at}.warnWithin '{Shown(trimmed)}' is more than the value itself; a percentage is at most 100%.");
+            }
+
+            throw new FlowValidationException($"{source}: {at}.warnWithin '{Shown(trimmed)}' is not a warning band: {Shape}.");
+        }
+
+        var distance = NumberOf(declared);
+        return double.IsFinite(distance) && distance > 0
+            ? new WarningBand(distance, Percent: false)
+            : throw new FlowValidationException($"{source}: {at}.warnWithin is not a warning band: {Shape}.");
+    }
+
+    /// <summary>Refuses a band beside a comparison of a count or an aggregate it cannot warn of; see <see cref="CheckBand(WarningBand, double?, IReadOnlyList{string}, IReadOnlyList{ExpectedValue}, string, string)"/>.</summary>
+    public static void CheckBand(WarningBand band, double? tolerance, Comparison comparison, string at, string source)
+    {
+        ArgumentNullException.ThrowIfNull(band);
+        ArgumentNullException.ThrowIfNull(comparison);
+        CheckBand(
+            band,
+            tolerance,
+            comparison.Terms.Select(t => AssertionText.Of(t.Operator)).ToList(),
+            comparison.Terms.SelectMany(t => t.Upper is null ? [t.Value] : new[] { t.Value, t.Upper }).ToList(),
+            at,
+            source);
+    }
+
+    /// <summary>
+    /// Refuses a warning band that cannot warn of anything: one beside a comparison that is not of numbers, one beside a
+    /// comparison saying what a value must not be (notEquals, notIn), which has nothing to widen, and one no wider than the
+    /// tolerance the comparison already allows.
+    /// </summary>
+    public static void CheckBand(WarningBand band, double? tolerance, IReadOnlyList<string> operators, IReadOnlyList<ExpectedValue> operands, string at, string source)
+    {
+        ArgumentNullException.ThrowIfNull(band);
+        ArgumentNullException.ThrowIfNull(operators);
+        ArgumentNullException.ThrowIfNull(operands);
+        if (operators.FirstOrDefault(o => !Widened.Contains(o, StringComparer.Ordinal)) is { } other)
+        {
+            throw new FlowValidationException(other is "notEquals" or "notIn"
+                ? $"{source}: {at}.warnWithin widens the numbers a value is compared with, and {other} says what the value must not be, which has nothing to widen."
+                : $"{source}: {at}.warnWithin widens {string.Join(", ", Widened)} of a number, and the value is compared by {other}.");
+        }
+
+        var numbers = new List<double>(operands.Count);
+        foreach (var operand in operands)
+        {
+            if (NumberIn(operand) is not { } number)
+            {
+                throw new FlowValidationException($"{source}: {at}.warnWithin is a distance between numbers, and {operand} is not a number.");
+            }
+
+            numbers.Add(number);
+        }
+
+        if (numbers.Count > 0 && numbers.All(n => band.Around(n) <= (tolerance ?? 0)))
+        {
+            throw new FlowValidationException(band.Percent && numbers.All(n => n == 0)
+                ? $"{source}: {at}.warnWithin {band} of 0 is nothing, so nothing would warn; give a distance, such as 1."
+                : $"{source}: {at}.warnWithin {band} is no wider than the tolerance {(tolerance ?? 0).ToString("R", CultureInfo.InvariantCulture)} the comparison already allows, so nothing would warn; widen it.");
+        }
+    }
+
+    /// <summary>Whether a band can widen <paramref name="condition"/>: one of the comparisons it widens, of numbers, and wider than its tolerance.</summary>
+    public static bool Widens(WarningBand band, ValueCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(band);
+        ArgumentNullException.ThrowIfNull(condition);
+        if (!Widened.Contains(AssertionText.Of(condition.Operator), StringComparer.Ordinal) || condition.Operands.Count == 0)
+        {
+            return false;
+        }
+
+        var numbers = condition.Operands.Select(NumberIn).ToList();
+        return numbers.All(n => n is not null) && numbers.Any(n => band.Around(n!.Value) > (condition.Tolerance ?? 0));
+    }
+
+    /// <summary>The number a value compared with names: a number, or text holding one, as a comparison reads it.</summary>
+    private static double? NumberIn(ExpectedValue value) => value.Kind switch
+    {
+        ExpectedValueKind.Number => value.Number,
+        ExpectedValueKind.Text when double.TryParse(value.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) && double.IsFinite(n) => n,
+        _ => null,
+    };
 
     /// <summary>A scalar as the document writes it: text, a number or a boolean; a mapping or a list is refused.</summary>
     /// <remarks>

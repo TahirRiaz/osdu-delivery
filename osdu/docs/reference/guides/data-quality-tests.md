@@ -19,6 +19,7 @@ keywords:
   - schedule tests after delivery
 related:
   - delivery-flow-assertion
+  - delivery-flow-known-values
   - delivery-cli-assertions
   - delivery-flow-mapping-assertions
   - delivery-flow-delivery
@@ -281,6 +282,37 @@ states assertions, a test's `mapping` subject holds every record it reads to the
 The mapping is read from the mappings the repository sync keeps, so the test judges records delivered before the
 mapping stated its rules too.
 
+### Values a sheet states about records it does not name
+
+A QC sheet lists what a delivery should have produced, by the names people use: wellbore A/1-F-11, its COMPOSITE log,
+the DT curve in `us/ft`. It names no OSDU id, and a log does not even hold its wellbore's name. A `knownValues` assertion
+finds each record by full paths in the OSDU record and the values the sheet gives, reading another record through a
+reference with a list of paths, as a dimension's label does, then holds the record to the sheet's proof values, each a
+full path and its value:
+
+```yaml
+  - name: composite-log
+    kind: osdu:wks:work-product-component--WellLog:1.5.0
+    assert:
+      - knownValues:
+          locateBy:
+            '[data.WellboreID, data.FacilityName]': A/1-F-11
+            data.Name: COMPOSITE
+          rows:
+            - locateBy: { data.Curves.CurveID: DT }
+              check:
+                data.Curves.CurveUnit: "{partition}:reference-data--UnitOfMeasure:us%2Fft:"
+                data.Curves.TopDepth: { equals: 1023.0612, tolerance: 0.00005 }
+```
+
+Each row of the sheet becomes a row of proof values, and the result says, row by row, which hold, which differ and in
+what, which are not found and by which path, and which find more than one record. Keep one flow per wellbore and one test
+per log, so a report reads as the sheet does. See [Known values](../flow/known-values.md).
+
+A number the sheet states as of a day can drift as more data lands. `warnWithin: 10%` beside a count, an aggregate or a
+proof value lets it miss by that much as a warning, so the test is `warned` (amber on the board) rather than failed, and
+the result says by how much it missed ([A warning band](../flow/assertion.md#a-warning-band)).
+
 ## 6. Check the curve data in the Wellbore DDMS
 
 A test with a `bulk` block reads each record's bulk data from the Wellbore DDMS (under `source.ddmsRoot`, by default
@@ -352,6 +384,12 @@ partition within each test's `indexSettleSeconds` (300 by default), and skips a 
 The skipped result says which flow changed what and from when a run judges it. A skipped test does not fail the run.
 Within the same hourly fire the tests after a delivery that changed logs are skipped, and the next fire judges them.
 Set `indexSettleSeconds: 0` on a test to judge it whatever changed.
+
+A test is also skipped, saying why, when it is `disabled: <why>`. Values counted on a day change as the source does: a
+test that says when its values were stated (`asOf`) and how long they hold (`validFor: 90d`) is not judged past that, and
+is flagged instead, a warning that it needs new proof values, so the board shows which tests to restate; `asOfField:
+createTime` compares only the records OSDU had on that day
+([disabling a test](../flow/assertion.md#disabling-a-test-and-the-day-its-values-hold-until)).
 
 ## 8. Publish the results from CI
 

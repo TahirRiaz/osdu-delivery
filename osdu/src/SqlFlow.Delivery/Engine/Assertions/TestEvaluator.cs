@@ -30,6 +30,15 @@ public static class AssertionBinding
         {
             ValueAssertion v => v with { Condition = Condition(v.Condition), Where = v.Where.Select(w => w with { Condition = Condition(w.Condition) }).ToList() },
             RecordSetAssertion r => r with { Rows = r.Rows.Select(row => (IReadOnlyList<ExpectedValue?>)row.Select(c => c?.WithText(Sub)).ToList()).ToList() },
+            KnownValuesAssertion k => k with
+            {
+                Rows = k.Rows.Select(row => row with
+                {
+                    Locate = row.Locate.Select(l => l with { Value = l.Value.WithText(Sub) }).ToList(),
+                    Checks = row.Checks.Select(c => c with { Condition = Condition(c.Condition) }).ToList(),
+                }).ToList(),
+            },
+            AggregateAssertion g when g.Except.Count > 0 => g with { Except = g.Except.Select(e => e.WithText(Sub)).ToList() },
             GroupAssertion g => g with { Groups = g.Groups.Select(x => x with { Key = Sub(x.Key) }).ToList(), Absent = g.Absent.Select(Sub).ToList() },
             _ => a,
         }).ToList();
@@ -162,6 +171,30 @@ public static class TestEvaluator
             }
         }
 
+        // What an assertion expects is quoted with the day it was stated, and one not judged (disabled, or past the day its
+        // values hold until) is reported where the document has it, skipped with why.
+        for (var i = 0; i < outcomes.Count; i++)
+        {
+            var stated = test.Assertions[outcomes[i].Index].AsOf ?? test.AsOf;
+            if (stated is not null)
+            {
+                outcomes[i] = outcomes[i] with { Expected = outcomes[i].Expected + AssertionActivity.Stated(stated) };
+            }
+        }
+
+        foreach (var (assertion, position) in test.Assertions.Select((a, i) => (a, i)))
+        {
+            if (AssertionActivity.Disabled(assertion) is { } off)
+            {
+                outcomes.Add(AssertionOutcome.Skipped(position, assertion, off));
+            }
+            else if (AssertionActivity.Stale(assertion, test, scope.Now) is { } why)
+            {
+                outcomes.Add(AssertionOutcome.NeedsNewProofValues(position, assertion, why, assertion.AsOf ?? test.AsOf));
+            }
+        }
+
+        outcomes.Sort((a, b) => a.Index.CompareTo(b.Index));
         var (outcome, severity) = TestResults.Outcome(outcomes);
         if (sampled)
         {
@@ -179,7 +212,7 @@ public static class TestEvaluator
             Matched = matched,
             Evaluated = read,
             Sampled = sampled,
-            Query = test.Query,
+            Query = scope.Query.Query,
             Ids = test.Ids.Count,
             Template = fit.Version,
             DefinitionHash = test.DefinitionHash,
@@ -324,7 +357,8 @@ public static class TestEvaluator
         return read - notStored;
     }
 
-    private static async Task<IReadOnlyDictionary<string, JsonNode>> ReadStoredAsync(TestScope scope, IReadOnlyList<string> ids, CancellationToken ct)
+    /// <summary>The records storage holds for <paramref name="ids"/>, read a hundred at a time and as many at once as the test allows, by id.</summary>
+    internal static async Task<IReadOnlyDictionary<string, JsonNode>> ReadStoredAsync(TestScope scope, IReadOnlyList<string> ids, CancellationToken ct)
     {
         var found = new Dictionary<string, JsonNode>(StringComparer.Ordinal);
         var gate = new Lock();

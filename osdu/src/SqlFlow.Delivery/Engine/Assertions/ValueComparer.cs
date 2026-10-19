@@ -403,6 +403,139 @@ public static class ValueComparer
         return true;
     }
 
+    /// <summary>
+    /// Whether a number that misses <paramref name="comparison"/> is within <paramref name="band"/> of it
+    /// (osdu/docs/reference/flow/assertion.md, A warning band): every term holds once each number it names is moved by the
+    /// band its own way (an equality both ways, a lower bound down, an upper bound up), and by no less than the tolerance.
+    /// An instant is never within a band, and notEquals is held to as it is.
+    /// </summary>
+    public static bool Within(Comparison comparison, Measured actual, double? tolerance, WarningBand band)
+    {
+        ArgumentNullException.ThrowIfNull(comparison);
+        ArgumentNullException.ThrowIfNull(band);
+        return actual.Number is { } number
+            && comparison.Terms.All(t => NumberIn(t.Value) is { } value
+                && (t.Upper is null || NumberIn(t.Upper) is not null)
+                && TermWithin(t.Operator, value, t.Upper is null ? null : NumberIn(t.Upper), number, tolerance, band));
+    }
+
+    /// <summary>
+    /// Whether a value that does not meet <paramref name="condition"/> is within <paramref name="band"/> of it: a number (or
+    /// text holding one) that meets the comparison once its numbers are widened by the band, and for <c>in</c>, one of them.
+    /// </summary>
+    public static bool Within(ValueCondition condition, JsonNode value, WarningBand band)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(band);
+        var numbers = condition.Operands.Select(NumberIn).ToList();
+        if (NumberOf(value) is not { } number || numbers.Count == 0 || numbers.Any(n => n is null))
+        {
+            return false;
+        }
+
+        return condition.Operator switch
+        {
+            ValueOperator.EqualTo => TermWithin(ComparisonOperator.EqualTo, numbers[0]!.Value, null, number, condition.Tolerance, band),
+            ValueOperator.In => numbers.Any(n => TermWithin(ComparisonOperator.EqualTo, n!.Value, null, number, condition.Tolerance, band)),
+            ValueOperator.AtLeast => TermWithin(ComparisonOperator.AtLeast, numbers[0]!.Value, null, number, condition.Tolerance, band),
+            ValueOperator.AtMost => TermWithin(ComparisonOperator.AtMost, numbers[0]!.Value, null, number, condition.Tolerance, band),
+            ValueOperator.GreaterThan => TermWithin(ComparisonOperator.GreaterThan, numbers[0]!.Value, null, number, condition.Tolerance, band),
+            ValueOperator.LessThan => TermWithin(ComparisonOperator.LessThan, numbers[0]!.Value, null, number, condition.Tolerance, band),
+            ValueOperator.Between when numbers.Count == 2 => TermWithin(ComparisonOperator.Between, numbers[0]!.Value, numbers[1], number, condition.Tolerance, band),
+            _ => false,
+        };
+    }
+
+    /// <summary>
+    /// How far a number misses <paramref name="comparison"/>, as a report says it (<c>242 below 7842 (3.09%)</c>): the first
+    /// term it misses, measured from the number that term names; null when it misses none, or is not a number.
+    /// </summary>
+    public static string? Miss(Comparison comparison, Measured actual, double? tolerance)
+    {
+        ArgumentNullException.ThrowIfNull(comparison);
+        if (actual.Number is not { } number)
+        {
+            return null;
+        }
+
+        foreach (var term in comparison.Terms)
+        {
+            if (Evaluate(new Comparison([term]), actual, tolerance))
+            {
+                continue;
+            }
+
+            return NumberIn(term.Value) is { } named
+                ? Distance(number, Crossed(term.Operator, named, term.Upper is null ? null : NumberIn(term.Upper), number))
+                : null;
+        }
+
+        return null;
+    }
+
+    /// <summary>How far a value misses <paramref name="condition"/>, as <see cref="Miss(Comparison, Measured, double?)"/> says it; for <c>in</c>, from the nearest value.</summary>
+    public static string? Miss(ValueCondition condition, JsonNode value)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        ArgumentNullException.ThrowIfNull(value);
+        var numbers = condition.Operands.Select(NumberIn).ToList();
+        if (NumberOf(value) is not { } number || numbers.Count == 0 || numbers.Any(n => n is null))
+        {
+            return null;
+        }
+
+        return condition.Operator switch
+        {
+            ValueOperator.In => Distance(number, numbers.Select(n => n!.Value).OrderBy(n => Math.Abs(number - n)).First()),
+            ValueOperator.Between when numbers.Count == 2 => Distance(number, number < numbers[0]!.Value ? numbers[0]!.Value : numbers[1]!.Value),
+            ValueOperator.EqualTo or ValueOperator.AtLeast or ValueOperator.AtMost or ValueOperator.GreaterThan or ValueOperator.LessThan => Distance(number, numbers[0]!.Value),
+            _ => null,
+        };
+    }
+
+    private static bool TermWithin(ComparisonOperator op, double value, double? upper, double number, double? tolerance, WarningBand band)
+    {
+        double Around(double named) => Math.Max(tolerance ?? 0, band.Around(named));
+        return op switch
+        {
+            ComparisonOperator.EqualTo => Math.Abs(number - value) <= Around(value),
+            ComparisonOperator.NotEqualTo => !Near(number, value, tolerance),
+            ComparisonOperator.AtLeast => number >= value - Around(value),
+            ComparisonOperator.GreaterThan => number > value - Around(value),
+            ComparisonOperator.AtMost => number <= value + Around(value),
+            ComparisonOperator.LessThan => number < value + Around(value),
+            _ => upper is { } high && number >= value - Around(value) && number <= high + Around(high),
+        };
+    }
+
+    /// <summary>The number a term names that <paramref name="number"/> lies beyond: a range's low end below it, its high end above.</summary>
+    private static double Crossed(ComparisonOperator op, double value, double? upper, double number)
+        => op == ComparisonOperator.Between && upper is { } high && number > high ? high : value;
+
+    /// <summary>How far <paramref name="number"/> is from <paramref name="named"/>: the distance, which way, and its share of the number named.</summary>
+    private static string Distance(double number, double named)
+    {
+        var off = number - named;
+        var distance = Math.Abs(off).ToString("0.######", CultureInfo.InvariantCulture);
+        var share = named == 0 ? string.Empty : " (" + (Math.Abs(off) / Math.Abs(named) * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%)";
+        return off == 0
+            ? $"at {RecordValues.Format(named)}"
+            : $"{distance} {(off < 0 ? "below" : "above")} {RecordValues.Format(named)}{share}";
+    }
+
+    /// <summary>A value as a number: a number, or text holding one.</summary>
+    private static double? NumberOf(JsonNode value)
+        => RecordValues.TryNumber(value, out var n) ? n : RecordValues.TryText(value, out var t) && RecordValues.TryParseNumber(t, out var p) ? p : null;
+
+    /// <summary>The number a value compared with names: a number, or text holding one.</summary>
+    private static double? NumberIn(ExpectedValue expected) => expected.Kind switch
+    {
+        ExpectedValueKind.Number => expected.Number,
+        ExpectedValueKind.Text when RecordValues.TryParseNumber(expected.Text, out var n) => n,
+        _ => null,
+    };
+
     private static int? Order(Measured actual, ExpectedValue expected, double? tolerance)
     {
         if (actual.Number is { } number && expected.Number is { } value)

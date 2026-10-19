@@ -64,6 +64,23 @@ public sealed record AssertionOutcome
         Message = why,
     };
 
+    /// <summary>
+    /// The outcome of an assertion whose proof values are past the day they hold until: not judged against them, and flagged
+    /// as a warning saying they need restating, so a board and a report show which tests ask for new proof values.
+    /// </summary>
+    public static AssertionOutcome NeedsNewProofValues(int index, Model.TestAssertion assertion, string why, string? asOf) => new()
+    {
+        Index = index,
+        Label = assertion.Label,
+        Description = assertion.Description,
+        Type = assertion.Type,
+        Severity = Model.AssertionText.Of(Model.AssertionSeverity.Warning),
+        Outcome = TestOutcomes.Failed,
+        Expected = assertion.Expected + Model.AssertionActivity.Stated(asOf),
+        Actual = "not judged",
+        Message = why,
+    };
+
     public static AssertionOutcome Errored(int index, Model.TestAssertion assertion, string why) => new()
     {
         Index = index,

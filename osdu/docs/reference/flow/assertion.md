@@ -23,12 +23,30 @@ keywords:
   - bulk.columns
   - mapping assertions
   - "mapping: name@version"
+  - knownValues
+  - aggregate except
+  - warnWithin
+  - warning band
+  - template of a mapping
+  - "template: Name@version"
+  - acceptable difference
+  - within 10 percent warns
+  - disabled test
+  - asOf
+  - validUntil
+  - validFor
+  - asOfField
+  - needs new proof values
+  - proof values expire
+  - restate proof values
+  - validity period of a test
 yamlPath: "(root, flowType: assertion)"
 related:
   - delivery-concept-search-paging
   - delivery-guide-data-quality-tests
   - delivery-cli-assertions
   - delivery-flow-mapping-assertions
+  - delivery-flow-known-values
   - delivery-flow-delivery
   - delivery-concept-templates
   - delivery-concept-partitions
@@ -48,6 +66,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/TestEvaluator.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/Evaluators.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/BulkEvaluators.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionQueries.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/ValueComparer.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionTemplates.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/IndexSettling.cs
@@ -256,7 +275,7 @@ flow's partitions; a run in another records it as `skipped`. See [Partitions](..
 | `tags` | none | Up to 20 labels, written as names are. A run can select tests by tag. |
 | `partitions` | all | The flow's partitions the test runs in. |
 | `kind` | required | The one type the test reads, in one version: `authority:source:entityType:major.minor.patch`, as the delivering mapping's `template.kind` names it. Wildcards are refused. |
-| `template` | newest | The saved template version its fields are checked against: the mapping's `template.version`. Left out, the most recently captured template of the kind. |
+| `template` | newest | The template its fields are checked against. The mapping that renders the records, as `Name@version` (`template: WellLog@1.5.0`): the kind and version that mapping's `template` pins, read from the synced mapping each time the test is checked, so the test follows the mapping when it is pinned to another capture. Or a saved template version itself (`template: 2f8a99cb38d32480`), as the Templates page lists it. Left out, the most recently captured template of the kind. |
 | `query` | none | A Lucene query narrowing the kind, with `{parameter}` and `{partition}` tokens. Left out, every record of the kind. |
 | `ids` | none | 1 to 1,000 record ids to read from storage instead of searching, with tokens. Not with `query`, `spatial` or `sort`. |
 | `spatial` | none | The search's `spatialFilter`: a geo `field` and exactly one of `byBoundingBox` (`topLeft`, `bottomRight`), `byDistance` (`point`, `distance` in metres), `byGeoPolygon` (`points`), `byIntersection` (`polygons`, each with `points`), `byWithinPolygon` (`points`); a point is `{ latitude, longitude }`. |
@@ -267,6 +286,11 @@ flow's partitions; a run in another records it as `skipped`. See [Partitions](..
 | `indexSettleSeconds` | `defaults.indexSettleSeconds` | This test's settle window. |
 | `severity` | `error` | The severity of its assertions that state none: `error`, `warning` or `info`. |
 | `bulk` | none | Read each record's bulk data: `columns` (the columns read; they include every column the assertions name) and `maxRows` (default 1,000,000, at most 100,000,000). See [Bulk data](#bulk-data). |
+| `disabled` | none | Why the test is disabled. It stays in the flow and in every report, recorded as `skipped` with this reason, and reads nothing. See [Disabling a test, and the day its values hold until](#disabling-a-test-and-the-day-its-values-hold-until). |
+| `asOf` | none | The day (an ISO 8601 date or date and time) the values the test expects were stated; every result quotes it beside what it expected. |
+| `validFor` | none | How long after `asOf` those values hold (`90d`, `12w`, `6m`, `1y`); past it the test is not judged, and is flagged as needing new proof values. |
+| `validUntil` | none | The last day (or instant) those values hold, in place of `validFor`. |
+| `asOfField` | none | The date a record holds on or before `asOf` to be among the test's records: `createTime`, `modifyTime`, or a date of its data. See [Disabling a test, and the day its values hold until](#disabling-a-test-and-the-day-its-values-hold-until). |
 | `assert` | required | The assertions, 1 to 100. |
 
 A test first counts what its query matches (`POST /api/search/v2/query` with `trackTotalCount`), or reads its ids from
@@ -301,17 +325,19 @@ the test's, is left out and noted too.
 ## Assertions
 
 An assertion has exactly one subject, the keys that subject takes, and optionally `name` (what reports call it, at most
-200 characters; left out, a label read off what it asserts), `description` and `severity`. A key its subject does not
-take fails validation: `<test>: assert[<n>] is a <subject> assertion, which does not take <keys>.`
+200 characters; left out, a label read off what it asserts), `description`, `severity`, and `disabled`, `asOf`,
+`validFor` and `validUntil`, which say of the assertion what a test's say of the test and take over from its test's. A key its subject
+does not take fails validation: `<test>: assert[<n>] is a <subject> assertion, which does not take <keys>.`
 
 | Subject | Takes | Holds when |
 | --- | --- | --- |
-| `count: <n or comparison>` | | The number of records the test matches (the index's exact count, or for `ids` the records storage returns of the kind) compares true. |
+| `count: <n or comparison>` | `warnWithin` | The number of records the test matches (the index's exact count, or for `ids` the records storage returns of the kind) compares true. |
 | `field: <path>` | one condition, `for`, `values`, `optional`, `where`, `ignoreCase`, `tolerance` | The condition holds of the path's values in the records read, for the share `for` asks. |
-| `aggregate: min, max, sum, avg, count, distinct, missing` | `field` (or `column`), comparison keys, `tolerance` | The aggregate of the field over every record read (or of the column over each record's rows, record by record) compares true. |
+| `aggregate: min, max, sum, avg, count, distinct, missing` | `field` (or `column`), comparison keys, `tolerance`, `warnWithin`, `except` | The aggregate of the field over every record read (or of the column over each record's rows, record by record) compares true. `except` lists values the aggregate leaves out, as if they were no value: a log's index curve `MD` among its curves, a null sentinel among a column's values. |
 | `unique: [paths]` | | No two records read share the values of all the paths (1 to 20). Records holding none of them are passed over. |
 | `groupBy: <path>` | `groups`, `mode`, `absent`, `groupCount` | The search's groups of the path's values (`aggregateBy`): each group under `groups` has a count that compares true (`mode: exact` allows no other group; `includes`, the default, does), no group under `absent` is there, and the number of groups compares true with `groupCount`. Reads no record. Not with `ids`. |
 | `recordSet: { columns, rows, mode }` | | The records projected onto `columns` (1 to 20 paths) match `rows` (at most 1,000): `exact` (the same rows in any order, the default), `ordered` (in the test's `sort` order), `includes` or `excludes`. |
+| `knownValues: { locateBy, check, rows, ... }` | | Every row finds one record by the full paths and values it is located by, and that record holds the row's proof values. Paths may reach the record a reference names and the records naming one. Not with `ids`. See [Known values](known-values.md). |
 | `conforms: true` | | Every record read meets the schema of its kind as the template states it (required properties, types, formats, patterns, enumerations), and is of the test's kind. Needs `read: storage`. |
 | `mapping: <Name@version>` | | Every record read meets what that mapping asserts of the values a record carries (its `$assert` on the record stage). Needs `read: storage`. See [Holding records to a mapping's assertions](#holding-records-to-a-mappings-assertions). |
 | `indexed: true` | | No record the test matches has an index status of 201 or above (`index.statusCode:[201 TO *]`): the indexer mapped every record whole. Not with `ids`. |
@@ -322,7 +348,7 @@ take fails validation: `<test>: assert[<n>] is a <subject> assertion, which does
 | `column: <name>` | one condition, `for`, `optional`, `where`, `ignoreCase`, `tolerance` | The condition holds of the column's values in each record's bulk data, for the share of its rows `for` asks. |
 | `monotonic: increasing, decreasing, strictlyIncreasing, strictlyDecreasing` | `column` | The column's values only go that way, row after row, in each record's bulk data. Absent values are passed over. |
 
-An assertion with no subject fails with `names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic.`;
+An assertion with no subject fails with `names no subject; an assertion is one of count, field, column, aggregate, unique, groupBy, recordSet, knownValues, conforms, mapping, indexed, legal, delivered, rowCount, columns or monotonic.`;
 one with two fails with `names <a> and <b>; an assertion has one subject. Write one assertion for each.`
 
 When there is nothing to check (no record matched, or none had a value), `field`, `column`, `resolves`, `unique`,
@@ -340,6 +366,39 @@ These take a whole number (equals) or a mapping of `equals`, `notEquals`, `atLea
 `lessThan` and `between: [low, high]`, every one of which has to hold: `count: { atLeast: 1, atMost: 5000 }`. An
 `aggregate` takes the same keys beside it (`aggregate: avg`, `field: ...`, `between: [0.1, 0.2]`); `min` and `max`
 compare numbers or ISO 8601 dates, the others numbers.
+
+### A warning band
+
+A number that is a little off is often still acceptable, but worth a look: a count of curves that drifts as logs are
+added, a depth a source rounds differently. `warnWithin` says how far a `count`, an `aggregate` or a known value's
+proof value may miss what it is compared with and only warn: a distance (`warnWithin: 5`) or a percentage of each number
+compared with (`warnWithin: 10%`).
+
+```yaml
+      - aggregate: count
+        field: data.Curves.CurveID
+        except: [MD]
+        equals: 7842
+        warnWithin: 10%
+```
+
+| What it comes to | `equals: 7842`, `warnWithin: 10%` | Outcome |
+| --- | --- | --- |
+| Within `tolerance` (exactly, without one) | 7842 | `passed` |
+| Within the band | 7058 to 8626 | `failed` at severity `warning`, so its test is `warned` |
+| Beyond the band | 7000 | `failed` at its own severity |
+
+- The band widens each number its own way: an equality both ways, `atLeast` and `greaterThan` downwards, `atMost` and
+  `lessThan` upwards, and each end of `between` outwards by its own share. `in` (on a proof value) is within the band of
+  any of its values.
+- A miss within the band weighs `warning`, or the assertion's own severity when that is milder: an `info` assertion stays
+  `info`. A test whose only failures are warnings is `warned`, which `failRunOn: error` does not fail the run for.
+- The result says by how much it missed:
+  `count(data.Curves.CurveID) is 7600 (948 value(s) left out: "MD"); expected equals 7842 (warning within 10%), leaving out "MD"; 242 below 7842 (3.09%), within the warning band of 10%, so it warns.`
+- A bulk-data `aggregate` of a `column` warns when every record that misses, misses within the band.
+- `warnWithin` widens numbers only, so it is refused beside a date, beside `notEquals` and `notIn`, which have nothing
+  to widen, at 0 or below, above 100%, and where it is no wider than the `tolerance` (a percentage of 0 is nothing). A
+  `field`, `column`, `rowCount` or `groupBy` assertion does not take it.
 
 ### Conditions
 
@@ -489,10 +548,73 @@ A mapping the sync recorded as not loading is answered with
 before they are sent; a test judges what OSDU holds afterwards, records delivered before the assertions were written
 included.
 
+## Known values
+
+A `knownValues` assertion holds records to proof values a source states about them without naming them by id: each row
+finds its record by full paths and the values the record holds there, including paths up to the record a reference names
+(`'[data.WellboreID, data.FacilityName]'`, a list of paths read as a dimension's label is) and down to the records
+naming one, and holds it to its proof values, each a full
+path and a value or a condition. It says, row by row, which rows hold, which differ and in what, which are not found and
+by which path, and which find more than one record. [Known values](known-values.md) has every key, how the records are
+found, and what a row comes to.
+
+## Disabling a test, and the day its values hold until
+
+A test, an assertion, a row of known values or one proof value can be switched off without leaving the flow:
+`disabled: <why>` keeps it in every report, `skipped` with that reason, and the run neither judges nor fails on it. A test
+whose every assertion is disabled is skipped as a whole.
+
+Proof values are stated on a day and change as the source does: a count taken today is not tomorrow's. A test, or an
+assertion, says when its values were stated and how long they hold, and a run past that does not judge it against values
+that may no longer be so: it flags it, so the tests that need new proof values stand out on the board.
+
+```yaml
+  - name: interpretation-logs
+    disabled: No flow of this estate delivers interpretation logs to OSDU yet.
+  - name: north-counts
+    query: 'tags.SourceProject:"NORTH"'
+    asOf: 2026-10-13
+    validFor: 90d
+    asOfField: createTime
+    assert:
+      - { aggregate: distinct, field: data.WellboreID, equals: 62 }
+      - name: curves, restated weekly
+        aggregate: count
+        field: data.Curves.CurveID
+        equals: 7842
+        asOf: 2026-10-13
+        validFor: 1w
+```
+
+| Key | Meaning |
+| --- | --- |
+| `asOf` | The day (an ISO 8601 date or date and time) the values were stated. Every result quotes it beside what it expected (`equals 62 (stated as of 2026-10-13)`). |
+| `validFor` | How long after `asOf` they hold: a whole number of days, weeks, months or years (`90d`, `12w`, `6m`, `1y`, or ISO 8601's `P90D`). Needs `asOf`. |
+| `validUntil` | The last day (or instant) they hold, in place of `validFor`; not before `asOf`. |
+| `asOfField` | Tests only: the date a record holds on or before `asOf` to be among the test's records (below). |
+
+A date holds to the end of that day in UTC, a date and time to that instant. An assertion's own `asOf`, `validFor` and
+`validUntil` take over from its test's.
+
+**Past the day.** An assertion whose values are past the day they hold until is not judged, and comes out as a `warning`
+that has not judged anything (`not judged`), saying
+`needs new proof values: stated as of 2026-10-13 and valid until 2027-01-11 (90d after asOf), and the run is past that; restate them and move asOf`.
+Its test is `warned` (the other assertions are judged as ever), and a test whose every judged assertion is past its day
+asks OSDU nothing. A warning does not fail a run unless the flow says `failRunOn: warning`. Restating is giving the new
+values and the day they were stated on: change the values and move `asOf`.
+
+**What OSDU held on the day.** `asOfField` narrows every search of the test (its count, its groups, the records it reads,
+the searches of its known values, a plan) to the records whose date there is on or before `asOf`:
+`(<query>) AND (createTime:[* TO "2026-10-14T00:00:00.000Z"})`. It takes `createTime` (when OSDU created the record),
+`modifyTime`, or a date property of the record's data the index holds outside a nested list. With `createTime`, a count
+stated today keeps meaning the records there today as more arrive. It cannot rebuild the past: a record changed since
+`asOf` is read as it is now, one deleted since is not found, and `createTime` is when OSDU received a record, not when its
+source had it, so a record first delivered after `asOf` is left out even when the source held it then. Not with `ids`.
+
 ## Checked against the template
 
-Before a test that reads fields (a field condition, a field aggregate, `unique`, `groupBy`, `recordSet`, `conforms`,
-`mapping`, a `sort` or a `spatial` filter) reads anything, it is checked against the template of its kind (see
+Before a test that reads fields (a field condition, a field aggregate, `unique`, `groupBy`, `recordSet`, `knownValues`,
+`conforms`, `mapping`, a `sort` or a `spatial` filter) reads anything, it is checked against the template of its kind (see
 [Templates](../concepts/templates.md)): every path has to be a property of the schema, every operator has to suit the
 property's type, and every value compared with has to be one the property can hold (its type, date format and pattern).
 A test that does not fit is reported `errored` with each problem, and is not evaluated:
@@ -501,6 +623,8 @@ A test that does not fit is reported `errored` with each problem, and is not eva
 - `'<label>': '<path>' is a list in <kind> (template <version>); equals compares one value, so test each item with '<path>[*]', or ask what the list contains.`
 - `'<label>': '<path>' refers to master-data--Wellbore in <kind> (template <version>), never to master-data--Well.`
 - `No template of <kind> is saved, so the test's fields cannot be checked against the kind's schema. Capture it on the Templates page (or with 'sqlflow template capture --kind <kind>'), then run the test again.`
+- `The test is checked against the template mapping <Name@version> pins, and no mapping <Name@version> is synced; sync the repository that declares it, then run again.`
+- `Mapping <Name@version> pins a template of <kind>, and the test reads <other kind>; name the mapping of <other kind>, or a template version of it.`
 
 A test that only counts, checks the index, legal tags or the ledger, or reads bulk data, needs no template.
 
@@ -523,7 +647,7 @@ it does not mark the test as changed.
 | Level | Outcomes |
 | --- | --- |
 | Assertion | `passed`, `failed`, `errored` (it could not find out: a refused query, an unreachable service, a limit passed, more records matched than the test reads) or `skipped`. A failed one keeps what it expected, what it found, how many it checked and failed, and the first failing records (`examples`), each with its id, value and reason. |
-| Test | `errored` when an assertion errored or the test does not fit its template; else `failed` when an `error` assertion failed; `warned` when only `warning` ones did; `passed` otherwise (a failed `info` assertion is reported and changes nothing); `skipped` when it does not run in the partition or the index has not settled. |
+| Test | `errored` when an assertion errored or the test does not fit its template; else `failed` when an `error` assertion failed; `warned` when only `warning` ones did; `passed` otherwise (a failed `info` assertion is reported and changes nothing; an assertion past the day its values hold until is a `warning` that needs new proof values); `skipped` when it does not run in the partition, the index has not settled, or it is disabled. |
 | Run | `failed` when a test failed, else `errored` when one errored, else `passed`; `cancelled` when stopped, and `errored` when the run itself could not go on. A run whose tests failed or errored keeps, as its reason, how many did and which; a run that stopped keeps why, and records fewer results than tests. A run with no test to judge in its partition asks OSDU nothing and completes `passed`, its tests skipped. |
 
 `failRunOn` decides whether the platform run fails: `error` (the default) on a failed or errored test, `warning` on a
@@ -602,7 +726,10 @@ ordered before the tests, and a schedule firing both runs the tests after the re
 | Assertions per test | 100 |
 | Tags per test | 20 |
 | Ids per test | 1,000 |
-| Values in `in`, `notIn`; rows in a `recordSet` | 1,000 |
+| Values in `in`, `notIn`, `except`; rows in a `recordSet` or of `knownValues` | 1,000 |
+| Paths a row of `knownValues` is located by; proof values it checks | 8; 60 |
+| Steps of a `knownValues` path beyond the record's own | 3 |
+| Records reached through others by one `knownValues` assertion | 200,000 |
 | Fields in `unique`; columns in a `recordSet` | 20 |
 | Records compared by `unique` | `maxRecords`, at most 1,000,000 |
 | Conditions in a `where` | 10 |
@@ -635,6 +762,22 @@ Past one of the last four, the assertion does not pass, and its result says why.
 | `source.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it tests. Remove the header.` | Both ways of naming the partition. |
 | `partitions[<i>] '<name>' is not a data-partition-id: letters, digits, underscore, hyphen and dot, at most 200 characters.` | A partition such as `*`. |
 | `parameters declares 'partition', which an assertion flow keeps for the partition a run tests: {partition} in a test is always that partition. Rename the parameter.` | A parameter named `partition`. |
+| `<test>: assert[<n>].knownValues is located by nothing; give it locateBy, the full paths and values its record holds, such as data.Name: COMPOSITE.` | A row of known values with no `locateBy`. |
+| `<test>: assert[<n>].knownValues.rows[<i>] is located as rows[<j>] is (<values>); a record is held to one row of proof values, so locate each once.` | Two rows located alike. |
+| `<test>: assert[<n>].knownValues.check.<path> has '<key>'; a proof value is a value, or a condition: one of equals, ...` | A proof value with a key it does not take. |
+| `<test>: assert[<n>].knownValues.locateBy.<path> '<path>' names an item of a list by its position; ...` | A path with `[0]`. |
+| `<test>: assert[<n>] finds its records by the values its rows give, and the test names its records by id; ...` | `knownValues` in a test with `ids`. |
+| `<test>.disabled says why it is disabled, in at most 200 characters, ...` | An empty `disabled`. |
+| `<test>: template '<text>' names the mapping whose template the test is checked against as Name@version, such as template: WellLog@1.5.0.` | A `template` with `@` that is not one mapping's `Name@version`. |
+| `<test>: asOf '<text>' is not an ISO 8601 date, such as 2026-10-13 or 2026-10-13T12:00:00Z.` | A date that is not ISO 8601. |
+| `<test>.validUntil <day> comes before asOf <day>; values hold from when they are stated.` | A `validUntil` before its `asOf`. |
+| `<test>.validFor '<text>' is not a period: a whole number of days, weeks, months or years, such as 90d, 12w, 6m or 1y.` | A `validFor` that is not a period. |
+| `<test>.validFor counts from the day the values were stated, and no asOf says which; give asOf.` | `validFor` without `asOf`. |
+| `<test> gives validUntil and validFor; values hold until a day, or for a period after asOf, so give one.` | Both. |
+| `<test>.asOfField '<path>' is not a date every record carries: createTime (when OSDU created the record), modifyTime, or a date property of its data.` | Another `asOfField`. |
+| `<test>: assert[<n>].warnWithin '<text>' is not a warning band: a distance greater than zero, such as 5, or a percentage of the value compared with, such as 10%.` | A band that is not a number or a percentage, or is 0. |
+| `<test>: assert[<n>].warnWithin widens the numbers a value is compared with, and notEquals says what the value must not be, which has nothing to widen.` | A band beside `notEquals` or `notIn`. |
+| `<test>: assert[<n>].warnWithin 1 is no wider than the tolerance 2 the comparison already allows, so nothing would warn; widen it.` | A band within the tolerance. |
 
 ## See also
 
@@ -642,4 +785,5 @@ Past one of the last four, the assertion does not pass, and its result says why.
 - [sqlflow assertions](../cli/assertions.md): reading the reports from a terminal or a CI job.
 - [Delivery flow](delivery.md): what the tests check.
 - [Mapping assertions](mapping-assertions.md): the rules a mapping states, which the `mapping` subject holds records to.
+- [Known values](known-values.md): proof values of records a sheet names by what they hold.
 - [Templates](../concepts/templates.md): saving the template a test is checked against.

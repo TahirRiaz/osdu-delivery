@@ -12,8 +12,10 @@ namespace SqlFlow.Delivery.Tests;
 /// A stand-in for what an assertion flow reads, built from the pinned contracts: the search service (an exact count, an
 /// aggregation, a page of hits with the index block, and cursor paging with its release), storage's read by id, the legal
 /// service's validation, and the Wellbore DDMS's bulk reads (describe and split pages). Its search understands the queries
-/// the tests write: clauses joined by AND, a field equal to a value, and a range on the index status. Every request is
-/// recorded as <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
+/// the tests and the module write: clauses joined by AND and OR and grouped in parentheses, a field equal to a value (a
+/// phrase, ignoring case), its keyword sub-field equal to one (exactly) or to any of a group of values, a keyword starting
+/// with an escaped prefix, a range on the index status, and a range of dates. Every request is recorded as <see cref="FakeHttpHandler"/>
+/// records them, so the contract harness checks them.
 /// </summary>
 internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
 {
@@ -299,7 +301,11 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
         return hit;
     }
 
-    /// <summary>Whether a record meets a query of AND-joined clauses: field:"value", field:value, or index.statusCode:[low TO high].</summary>
+    /// <summary>
+    /// Whether a record meets a query: clauses joined by OR and AND (AND binding tighter) and grouped in parentheses;
+    /// field:"value" (the phrase, ignoring case); field.keyword:"value" (the whole value, exactly); field:("a" OR "b") (any of
+    /// them); field.keyword:esc\:aped\-prefix* (a keyword starting with the unescaped prefix); and index.statusCode:[low TO high].
+    /// </summary>
     private bool Holds(JsonObject record, string? query)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -313,42 +319,124 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
             text = text[1..^1].Trim();
         }
 
-        var parts = SplitAnd(text);
-        if (parts.Count > 1)
+        var any = SplitTop(text, " OR ");
+        if (any.Count > 1)
         {
-            return parts.All(p => Holds(record, p));
+            return any.Any(p => Holds(record, p));
+        }
+
+        var all = SplitTop(text, " AND ");
+        if (all.Count > 1)
+        {
+            return all.All(p => Holds(record, p));
         }
 
         if (RangeClause().Match(text) is { Success: true } range)
         {
-            var status = IndexStatus.GetValueOrDefault(record["id"]!.GetValue<string>(), 200);
-            var low = range.Groups["low"].Value == "*" ? int.MinValue : int.Parse(range.Groups["low"].Value, CultureInfo.InvariantCulture);
-            var high = range.Groups["high"].Value == "*" ? int.MaxValue : int.Parse(range.Groups["high"].Value, CultureInfo.InvariantCulture);
-            return range.Groups["field"].Value == "index.statusCode" && status >= low && status <= high;
+            if (range.Groups["field"].Value == "index.statusCode")
+            {
+                var status = IndexStatus.GetValueOrDefault(record["id"]!.GetValue<string>(), 200);
+                var low = range.Groups["low"].Value == "*" ? int.MinValue : int.Parse(range.Groups["low"].Value, CultureInfo.InvariantCulture);
+                var high = range.Groups["high"].Value == "*" ? int.MaxValue : int.Parse(range.Groups["high"].Value, CultureInfo.InvariantCulture);
+                return status >= low && status <= high;
+            }
+
+            // A range of dates: [ and ] take their bound in, { and } leave it out.
+            var from = range.Groups["low"].Value == "*" ? (DateTimeOffset?)null : DateTimeOffset.Parse(Unquoted(range.Groups["low"].Value), CultureInfo.InvariantCulture);
+            var to = range.Groups["high"].Value == "*" ? (DateTimeOffset?)null : DateTimeOffset.Parse(Unquoted(range.Groups["high"].Value), CultureInfo.InvariantCulture);
+            return JsonPathReader.SelectNodes(record, range.Groups["field"].Value).Any(v =>
+                v is JsonValue value && value.TryGetValue<string>(out var t)
+                && DateTimeOffset.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at)
+                && (from is null || (range.Groups["open"].Value == "[" ? at >= from : at > from))
+                && (to is null || (range.Groups["close"].Value == "]" ? at <= to : at < to)));
         }
 
         var colon = text.IndexOf(':', StringComparison.Ordinal);
         var field = text[..colon];
-        var value = text[(colon + 1)..].Trim('"');
-        return JsonPathReader.SelectNodes(record, field).Any(v => string.Equals(v is JsonValue s && s.TryGetValue<string>(out var t) ? t : v.ToJsonString(), value, StringComparison.OrdinalIgnoreCase));
+        var operand = text[(colon + 1)..].Trim();
+        var exact = field.EndsWith(KeywordSuffix, StringComparison.Ordinal);
+        if (exact)
+        {
+            field = field[..^KeywordSuffix.Length];
+        }
+
+        var held = JsonPathReader.SelectNodes(record, field).Select(v => v is JsonValue s && s.TryGetValue<string>(out var t) ? t : v.ToJsonString()).ToList();
+        if (operand.StartsWith('(') && operand.EndsWith(')'))
+        {
+            var values = SplitTop(operand[1..^1], " OR ").Select(Unquoted).ToList();
+            return held.Any(h => values.Any(v => Same(h, v, exact)));
+        }
+
+        if (!operand.StartsWith('"') && operand.EndsWith('*'))
+        {
+            var prefix = Unescaped(operand[..^1]);
+            return held.Any(h => h.StartsWith(prefix, StringComparison.Ordinal));
+        }
+
+        var value = Unquoted(operand);
+        return held.Any(h => Same(h, value, exact));
+    }
+
+    private static bool Same(string held, string value, bool exact)
+        => string.Equals(held, value, exact ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A phrase without its quotes and escapes, or a bare term without its escapes.</summary>
+    private static string Unquoted(string term)
+    {
+        var text = term.Trim();
+        return text.Length >= 2 && text[0] == '"' && text[^1] == '"'
+            ? text[1..^1].Replace("\\\"", "\"", StringComparison.Ordinal).Replace("\\\\", "\\", StringComparison.Ordinal)
+            : Unescaped(text);
+    }
+
+    private static string Unescaped(string term)
+    {
+        var text = new StringBuilder(term.Length);
+        for (var i = 0; i < term.Length; i++)
+        {
+            if (term[i] == '\\' && i + 1 < term.Length)
+            {
+                i++;
+            }
+
+            text.Append(term[i]);
+        }
+
+        return text.ToString();
     }
 
     private static int Closing(string text)
     {
         var depth = 0;
+        var quoted = false;
         for (var i = 0; i < text.Length; i++)
         {
-            depth += text[i] switch { '(' => 1, ')' => -1, _ => 0 };
-            if (depth == 0)
+            var c = text[i];
+            if (c == '\\')
             {
-                return i;
+                i++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                quoted = !quoted;
+            }
+            else if (!quoted)
+            {
+                depth += c switch { '(' => 1, ')' => -1, _ => 0 };
+                if (depth == 0)
+                {
+                    return i;
+                }
             }
         }
 
         return -1;
     }
 
-    private static List<string> SplitAnd(string text)
+    /// <summary>The parts of <paramref name="text"/> joined by <paramref name="op"/> outside quotes, parentheses and brackets.</summary>
+    private static List<string> SplitTop(string text, string op)
     {
         var parts = new List<string>();
         var depth = 0;
@@ -357,7 +445,11 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
         for (var i = 0; i < text.Length; i++)
         {
             var c = text[i];
-            if (c == '"')
+            if (c == '\\')
+            {
+                i++;
+            }
+            else if (c == '"')
             {
                 quoted = !quoted;
             }
@@ -369,11 +461,11 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
             {
                 depth--;
             }
-            else if (!quoted && depth == 0 && string.CompareOrdinal(text, i, " AND ", 0, 5) == 0)
+            else if (!quoted && depth == 0 && string.CompareOrdinal(text, i, op, 0, op.Length) == 0)
             {
                 parts.Add(text[start..i].Trim());
-                start = i + 5;
-                i += 4;
+                start = i + op.Length;
+                i += op.Length - 1;
             }
         }
 
@@ -389,6 +481,6 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
     [GeneratedRegex(@"^/api/os-wellbore-ddms/ddms/v3/[a-z]+/(?<id>[^/]+)/data$")]
     private static partial Regex DataPath();
 
-    [GeneratedRegex(@"^(?<field>[\w.]+):\[(?<low>\*|\d+) TO (?<high>\*|\d+)\]$")]
+    [GeneratedRegex(@"^(?<field>[\w.]+):(?<open>[\[{])(?<low>\*|\d+|""[^""]*"") TO (?<high>\*|\d+|""[^""]*"")(?<close>[\]}])$")]
     private static partial Regex RangeClause();
 }

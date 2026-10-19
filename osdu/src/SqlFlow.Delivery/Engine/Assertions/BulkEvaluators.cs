@@ -9,11 +9,15 @@ namespace SqlFlow.Delivery.Engine.Assertions;
 /// <param name="Passed">Whether the record's bulk data meets the assertion.</param>
 /// <param name="Value">What the record held where it failed (a row and its value, an aggregate), or null.</param>
 /// <param name="Reason">Why it failed; empty when it passed.</param>
-public sealed record BulkVerdict(bool Passed, string? Value, string Reason)
+/// <param name="WithinBand">For one that failed: whether it missed only within the assertion's warning band, so it warns.</param>
+public sealed record BulkVerdict(bool Passed, string? Value, string Reason, bool WithinBand = false)
 {
     public static BulkVerdict Pass { get; } = new(true, null, string.Empty);
 
     public static BulkVerdict Fail(string? value, string reason) => new(false, value, reason);
+
+    /// <summary>A record's bulk data that misses the assertion by no more than its warning band: it does not hold, and only warns.</summary>
+    public static BulkVerdict Warn(string? value, string reason) => new(false, value, reason, WithinBand: true);
 }
 
 /// <summary>One record's bulk data held to one assertion: fed the record's rows a page at a time, then settled.</summary>
@@ -40,6 +44,7 @@ public abstract class BulkEvaluator : Evaluator
     private readonly List<AssertionExample> _examples = [];
     private long _records;
     private long _failing;
+    private long _withinBand;
 
     protected BulkEvaluator(int index, TestAssertion assertion, int examples)
         : base(index, assertion, examples)
@@ -64,6 +69,11 @@ public abstract class BulkEvaluator : Evaluator
             if (!verdict.Passed)
             {
                 _failing++;
+                if (verdict.WithinBand)
+                {
+                    _withinBand++;
+                }
+
                 if (_examples.Count < Examples)
                 {
                     _examples.Add(new AssertionExample(id, verdict.Value is null ? null : TestResults.Quote(verdict.Value), verdict.Reason));
@@ -86,7 +96,12 @@ public abstract class BulkEvaluator : Evaluator
             var message = _records == 0
                 ? "No record was there whose bulk data could be checked."
                 : string.Create(CultureInfo.InvariantCulture, $"The bulk data of {_failing} of {_records} record(s) does not meet it.");
-            return Task.FromResult(Result(passed, actual, message, _records, _failing, _records == 0 ? null : 100.0 * (_records - _failing) / _records, _examples.ToList()));
+            var outcome = Result(passed, actual, message, _records, _failing, _records == 0 ? null : 100.0 * (_records - _failing) / _records, _examples.ToList());
+
+            // Every record that misses, misses within the warning band: the assertion warns.
+            return Task.FromResult(!passed && _records > 0 && _withinBand == _failing
+                ? Warned(outcome, string.Create(CultureInfo.InvariantCulture, $"each of the {_failing} misses it within the warning band, so it warns"))
+                : outcome);
         }
     }
 
@@ -332,6 +347,7 @@ internal sealed class ColumnAggregateEvaluator(int index, AggregateAssertion ass
     {
         private readonly Aggregator _aggregator = new(assertion.Function == AggregateFunction.Distinct);
         private long _missing;
+        private long _leftOut;
         private BulkVerdict? _unanswered;
 
         public override bool ReadsRows => true;
@@ -352,13 +368,18 @@ internal sealed class ColumnAggregateEvaluator(int index, AggregateAssertion ass
 
             foreach (var row in frame.Data.EnumerateArray())
             {
-                if (Cell(row, column) is { } value)
+                if (Cell(row, column) is not { } value)
                 {
-                    _aggregator.Add(value);
+                    _missing++;
+                }
+                else if (AggregateEvaluator.LeftOut(assertion, value))
+                {
+                    _leftOut++;
+                    _missing++;
                 }
                 else
                 {
-                    _missing++;
+                    _aggregator.Add(value);
                 }
             }
         }
@@ -376,9 +397,15 @@ internal sealed class ColumnAggregateEvaluator(int index, AggregateAssertion ass
                 return BulkVerdict.Fail(null, why);
             }
 
-            return ValueComparer.Evaluate(assertion.Comparison, value, assertion.Tolerance)
-                ? BulkVerdict.Pass
-                : BulkVerdict.Fail(value.ToString(), $"{AssertionText.Of(assertion.Function)}({assertion.Target}) is {value}{_aggregator.Note()}; expected {assertion.Expected}");
+            if (ValueComparer.Evaluate(assertion.Comparison, value, assertion.Tolerance))
+            {
+                return BulkVerdict.Pass;
+            }
+
+            var reason = $"{AssertionText.Of(assertion.Function)}({assertion.Target}) is {value}{_aggregator.Note()}{AggregateEvaluator.LeftOutNote(assertion, _leftOut)}; expected {assertion.Expected}";
+            return assertion.WarnWithin is { } band && ValueComparer.Within(assertion.Comparison, value, assertion.Tolerance, band)
+                ? BulkVerdict.Warn(value.ToString(), reason + "; " + Evaluator.WithinBand(band, ValueComparer.Miss(assertion.Comparison, value, assertion.Tolerance)))
+                : BulkVerdict.Fail(value.ToString(), reason);
         }
     }
 }
