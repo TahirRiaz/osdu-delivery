@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Hammer, Network } from "lucide-react";
 import { toast } from "sonner";
@@ -10,19 +10,17 @@ import { EmptyState } from "@/components/EmptyState";
 import { ExplainMark, ExplainTip } from "@/components/ExplainTip";
 import { FilterCombobox } from "@/components/FilterCombobox";
 import { RelativeTime } from "@/components/RelativeTime";
-import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { deliveryApi } from "../../../api/delivery";
-import { orderApi, type OrderDirection, type OrderEntity, type OrderGraph as OrderGraphData } from "../../../api/order";
+import { orderApi, type OrderDirection, type OrderEntity, type OrderGraph as OrderGraphData, type OrderGraphEdge } from "../../../api/order";
 import { problemText } from "../problemText";
 import { ProblemView } from "../TemplateSheet";
 import { useWindowFit } from "../useWindowFit";
-import { OrderGraph, type OrderGraphLink, type OrderGraphNode } from "./OrderGraph";
+import { OrderGraph, OrderPanelSection as Section, type OrderGraphDetail, type OrderGraphLink, type OrderGraphNode } from "./OrderGraph";
 
 const BELOW = 24;
 const MIN_GRAPH_HEIGHT = 320;
-const PANEL = "order-entity:";
 const DEPTHS = [1, 2, 3, 4];
 
 const DIRECTIONS: { value: OrderDirection; label: string }[] = [
@@ -89,42 +87,88 @@ function BuildDialog({ open, onClose, onBuilt }: { open: boolean; onClose: () =>
   );
 }
 
-/** One entity type in the bottom panel: its kinds, and the references it makes and is the target of within the part drawn. */
-function EntityDetail({ entity, graph, onDraw }: { entity: OrderEntity; graph: OrderGraphData; onDraw: (entityType: string) => void }) {
+/** The types one entity type refers to, or is referred to by, in the part drawn: each selects its box, with the properties under it. */
+function ReferenceList({ edges, other, onPick, testId }: {
+  edges: OrderGraphEdge[];
+  other: (edge: OrderGraphEdge) => string;
+  onPick: (entityType: string) => void;
+  testId: string;
+}) {
+  return (
+    <ul className="flex flex-col gap-2" data-testid={testId}>
+      {edges.map((edge) => {
+        const entityType = other(edge);
+        return (
+          <li key={`${edge.from}>${edge.to}`} className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 items-baseline gap-2">
+              <button
+                type="button"
+                className="min-w-0 truncate text-left text-[12.5px] font-medium hover:underline focus-visible:outline-1 focus-visible:outline-ring"
+                onClick={() => onPick(entityType)}
+                title={`Show ${entityType}`}
+              >
+                {shortType(entityType)}
+              </button>
+              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{entityType.slice(0, Math.max(0, entityType.indexOf("--")))}</span>
+            </div>
+            <ul className="flex flex-col border-l-2 pl-2.5">
+              {edge.properties.map((property) => (
+                <li key={property} className="font-mono text-[11.5px] text-muted-foreground [overflow-wrap:anywhere]">{property}</li>
+              ))}
+            </ul>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * One entity type in the graph's panel: what it refers to and is referred to by in the release, its kinds, and the
+ * references it makes and is the target of within the part drawn. A type named here selects it in the graph.
+ */
+function EntityDetail({ entity, graph, onPick }: { entity: OrderEntity; graph: OrderGraphData; onPick: (entityType: string) => void }) {
   const out = graph.edges.filter((e) => e.from === entity.entityType);
   const into = graph.edges.filter((e) => e.to === entity.entityType);
   return (
-    <div className="flex flex-col gap-3 p-3 text-[12.5px]" data-testid="order-entity-detail">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <span className="font-medium">{entity.entityType}</span>
-        <span className="text-muted-foreground">refers to {entity.refersTo} · referred to by {entity.referredBy}</span>
-        {entity.entityType !== graph.entity && (
-          <Button variant="outline" size="xs" onClick={() => onDraw(entity.entityType)} data-testid="order-entity-draw">
-            <Network />
-            Draw around it
-          </Button>
-        )}
-      </div>
-      {entity.kinds.length > 0 && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {entity.kinds.map((k) => (
-            <span key={k.kind} className="font-mono text-[12px]">{k.kind}<span className="text-muted-foreground">{k.status === null ? "" : ` ${k.status.toLowerCase()}`}</span></span>
-          ))}
-        </div>
-      )}
-      {[["Refers to", out, (e: typeof out[number]) => e.to] as const, ["Referred to by", into, (e: typeof into[number]) => e.from] as const].map(([title, edges, other]) => edges.length > 0 && (
-        <section key={title} className="flex flex-col gap-1">
-          <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</h3>
+    <div className="flex flex-col" data-testid="order-entity-detail">
+      <Section title="In release" note={graph.release.release}>
+        <dl className="grid grid-cols-[6.5rem_1fr] gap-x-2 gap-y-1 text-[12.5px]">
+          <dt className="text-muted-foreground">Group</dt>
+          <dd className="min-w-0 truncate">{entity.group}</dd>
+          <dt className="text-muted-foreground">Refers to</dt>
+          <dd><span className="font-mono tabular-nums">{entity.refersTo}</span> type{entity.refersTo === 1 ? "" : "s"}</dd>
+          <dt className="text-muted-foreground">Referred to by</dt>
+          <dd><span className="font-mono tabular-nums">{entity.referredBy}</span> type{entity.referredBy === 1 ? "" : "s"}</dd>
+        </dl>
+      </Section>
+
+      <Section title="Kinds" note={entity.kinds.length}>
+        {entity.kinds.length === 0 ? (
+          <p className="text-[12.5px] text-muted-foreground">A group a relationship names alone: a record of any type in it.</p>
+        ) : (
           <ul className="flex flex-col gap-0.5">
-            {edges.map((e) => (
-              <li key={`${e.from}>${e.to}`} className="flex min-w-0 gap-2">
-                <span className="shrink-0">{other(e)}</span>
-                <span className="truncate font-mono text-[11.5px] text-muted-foreground" title={e.properties.join("\n")}>{e.properties.join(", ")}</span>
+            {entity.kinds.map((k) => (
+              <li key={k.kind} className="flex min-w-0 items-baseline gap-2">
+                <span className="min-w-0 font-mono text-[12px] [overflow-wrap:anywhere]">{k.kind}</span>
+                {k.status !== null && <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{k.status.toLowerCase()}</span>}
               </li>
             ))}
           </ul>
-        </section>
-      ))}
+        )}
+      </Section>
+
+      <Section title="Refers to" note={out.length}>
+        {out.length === 0
+          ? <p className="text-[12.5px] text-muted-foreground">Nothing in the part drawn.</p>
+          : <ReferenceList edges={out} other={(e) => e.to} onPick={onPick} testId="order-entity-refers-to" />}
+      </Section>
+
+      <Section title="Referred to by" note={into.length}>
+        {into.length === 0
+          ? <p className="text-[12.5px] text-muted-foreground">Nothing in the part drawn.</p>
+          : <ReferenceList edges={into} other={(e) => e.from} onPick={onPick} testId="order-entity-referred-by" />}
+      </Section>
     </div>
   );
 }
@@ -141,7 +185,7 @@ export function ReleaseLineageTab({ canBuild }: { canBuild: boolean }) {
   const [depth, setDepth] = useState(1);
   const [direction, setDirection] = useState<OrderDirection>("both");
   const [building, setBuilding] = useState(false);
-  const { ownedId, show, close } = useOwnedPanel(PANEL);
+  const [selected, setSelected] = useState<string | null>(null);
   const frame = useRef<HTMLDivElement>(null);
   useWindowFit(frame, BELOW, MIN_GRAPH_HEIGHT, undefined, "height");
 
@@ -185,29 +229,19 @@ export function ReleaseLineageTab({ canBuild }: { canBuild: boolean }) {
     return { nodes: graphNodes, links: graphLinks };
   }, [graph.data]);
 
-  // The panel shows the type picked in the graph, read again whenever the part drawn is.
-  useEffect(() => {
-    if (ownedId === null || graph.data === undefined) {
-      return;
-    }
-
-    const picked = graph.data.nodes.find((n) => n.entityType === ownedId);
-    if (picked === undefined) {
-      close();
-      return;
-    }
-
-    show(ownedId, `Entity type · ${shortType(ownedId)}`, <EntityDetail entity={picked} graph={graph.data} onDraw={setEntity} />);
-  }, [graph.data, ownedId, show, close, setEntity]);
-
-  const pick = (id: string | null) => {
-    const picked = id === null ? undefined : graph.data?.nodes.find((n) => n.entityType === id);
-    if (picked === undefined || graph.data === undefined) {
-      close();
-      return;
-    }
-
-    show(picked.entityType, `Entity type · ${shortType(picked.entityType)}`, <EntityDetail entity={picked} graph={graph.data} onDraw={setEntity} />);
+  // The panel shows the type picked in the graph as the part drawn holds it now; one no longer drawn closes it.
+  const picked = selected === null ? undefined : graph.data?.nodes.find((n) => n.entityType === selected);
+  const detail: OrderGraphDetail | null = picked === undefined || graph.data === undefined ? null : {
+    title: shortType(picked.entityType),
+    subtitle: picked.entityType,
+    testId: "order-entity-panel",
+    actions: picked.entityType !== graph.data.entity && (
+      <Button variant="outline" size="xs" onClick={() => setEntity(picked.entityType)} data-testid="order-entity-draw">
+        <Network />
+        Draw around it
+      </Button>
+    ),
+    body: <EntityDetail entity={picked} graph={graph.data} onPick={setSelected} />,
   };
 
   const buildButton = canBuild && (
@@ -295,7 +329,7 @@ export function ReleaseLineageTab({ canBuild }: { canBuild: boolean }) {
                   title="OSDU's lineage"
                   testId="order-release-about"
                   text={"Every record kind a release publishes and the properties of its schema that refer to other records (x-osdu-relationship). "
-                    + "An arrow goes from the type referred to, which goes first, to the type referring to it. A click on a box shows its references; "
+                    + "An arrow goes from the type referred to, which goes first, to the type referring to it. A click on a box shows its kinds and references; "
                     + "a double click draws around it. A group alone (a dataset of any type) stands as a box of its own."}
                 />
                 <span className="ml-auto">{buildButton}</span>
@@ -310,7 +344,7 @@ export function ReleaseLineageTab({ canBuild }: { canBuild: boolean }) {
               </p>
             )}
             {known && !graph.isError && (
-              <OrderGraph nodes={nodes} links={links} selected={ownedId} onSelect={pick} onOpen={setEntity} testId="order-release-graph" />
+              <OrderGraph nodes={nodes} links={links} selected={detail === null ? null : selected} detail={detail} onSelect={setSelected} onOpen={setEntity} testId="order-release-graph" />
             )}
           </div>
         </>
