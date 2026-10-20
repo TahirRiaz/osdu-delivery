@@ -66,7 +66,8 @@ test.describe.serial("templates and the mapping builder", () => {
     const wellbore = rows.filter({ hasText: WELLBORE_KIND });
     await expect(wellbore).toHaveCount(1, { timeout: 30_000 });
     await expect(wellbore).toContainText(WELLBORE_VERSION);
-    await expect(wellbore).toContainText("1 mapping");
+    // The sample's Wellbore mapping and the fixture's both pin it.
+    await expect(wellbore).toContainText("2 mappings");
     await expect(rows.filter({ hasText: WELLLOG_KIND })).toContainText(WELLLOG_VERSION);
 
     await wellbore.click();
@@ -74,7 +75,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-kind")).toHaveText(WELLBORE_KIND, { timeout: 15_000 });
     await expect(sheet.getByTestId("templates-view-version")).toHaveText(WELLBORE_VERSION);
     await expect(sheet.getByTestId("templates-view-state")).toHaveText("saved");
-    await expect(sheet.getByTestId("templates-view-saved")).toContainText("Pinned by 1 synced mapping");
+    await expect(sheet.getByTestId("templates-view-saved")).toContainText("Pinned by 2 synced mappings");
 
     // The variables a mapping fills are listed; what OSDU Delivery and OSDU write themselves shows only on request.
     // The tree opens fully folded; opening the data section shows what it holds.
@@ -110,10 +111,10 @@ test.describe.serial("templates and the mapping builder", () => {
     await sheet.getByTestId("templates-view-tab-schema").click();
     await expect(sheet.getByTestId("templates-view-schema-json")).toBeVisible({ timeout: 15_000 });
 
-    // The synced Wellbore mapping pins this version, so Delete sits beside the saved state disabled, and says why.
+    // The synced Wellbore mappings pin this version, so Delete sits beside the saved state disabled, and says why.
     await expect(sheet.getByTestId("templates-view-actions").getByTestId("templates-delete")).toBeDisabled();
     await sheet.getByTestId("templates-delete-blocked").hover();
-    await expect(adminPage.getByText(/Pinned by 1 synced mapping\. Move it to another template version/).first()).toBeVisible();
+    await expect(adminPage.getByText(/Pinned by 2 synced mappings\. Move them to another template version/).first()).toBeVisible();
     await expect(rows.filter({ hasText: WELLBORE_KIND })).toHaveCount(1);
   });
 
