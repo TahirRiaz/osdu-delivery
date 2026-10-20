@@ -617,7 +617,7 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("which schedule must run before another schedule", &["delivery-concept-osdu-order"]),
     ("build osdu lineage of a data definitions release", &["delivery-concept-osdu-order"]),
     ("update the cache during a schedule after a delivery", &["delivery-concept-partition-cache", "delivery-decision-0017"]),
-    ("keep a cache type current from the deliveries", &["delivery-concept-partition-cache", "delivery-flow-cache"]),
+    ("update the cache before running a pipeline", &["delivery-concept-partition-cache", "delivery-flow-delivery"]),
     ("refresh only one type of a cache flow", &["delivery-flow-cache"]),
 ];
 

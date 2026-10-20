@@ -1882,7 +1882,7 @@
       "path": "concepts/partition-cache.md",
       "title": "The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery",
       "type": "concept",
-      "summary": "How a partition's cache works: versions, retention, cache flows sharing one cache, deliveries keeping a type current, change tags, rollout, system properties.",
+      "summary": "How a partition's cache works: versions, retention, cache flows sharing one cache, pipelines updating it before and after they run, tags, rollout.",
       "keywords": [
         "partition cache",
         "cache version",
@@ -1905,11 +1905,13 @@
         "osdu.cacheversion",
         "cache warm-up",
         "first render slow",
-        "keepcurrent",
-        "keep a type current",
+        "cache.before",
+        "cache.after",
+        "update the cache before a pipeline",
+        "update the cache after a pipeline",
         "cache step",
-        "cache kept current",
-        "delivery holds a cached record"
+        "delivery holds a cached record",
+        "held record waits for a reference"
       ],
       "related": [
         "delivery-flow-cache",
@@ -1937,6 +1939,8 @@
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheSteps.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/EntryValues.Id.cs",
         "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs",
@@ -2907,19 +2911,21 @@
     {
       "id": "delivery-decision-0017",
       "corpus": "wiki",
-      "path": "0017-deliveries-keep-cache-current.md",
-      "title": "Decision 0017: A delivery keeps the cache types of its kind current as its run ends",
+      "path": "0017-pipelines-update-the-cache.md",
+      "title": "Decision 0017: A pipeline names the cache it needs current before it runs and the cache it updates after",
       "type": "decision",
-      "summary": "Why a delivery run ends by putting what it landed into the cache types declared keepCurrent, read from storage, and how a refresh keeps those records.",
+      "summary": "Why the cache steps belong to the pipeline, why before is mandatory and after is not, why after reads storage, and how held records wait for what they miss.",
       "keywords": [
-        "keepcurrent",
-        "keep the cache current",
-        "cache step",
+        "cache.before",
+        "cache.after",
+        "update the cache before a pipeline",
+        "update the cache after a pipeline",
         "cache update during a schedule",
-        "refresh one type"
+        "held record waits for a reference"
       ],
       "related": [
         "delivery-concept-partition-cache",
+        "delivery-flow-delivery",
         "delivery-flow-cache",
         "delivery-concept-lineage",
         "delivery-decision-0016"
@@ -3023,7 +3029,7 @@
       "path": "flow/cache.md",
       "title": "Cache flow (flowType: cache): OSDU reference data, lookup tables and dictionaries in a partition's cache",
       "type": "flow-reference",
-      "summary": "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, keepCurrent, refresh and plan.",
+      "summary": "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, and refreshing some types.",
       "keywords": [
         "source.paging",
         "createTime paging",
@@ -3042,9 +3048,6 @@
         "cache retention",
         "refresh",
         "$cache",
-        "types[].keepcurrent",
-        "keepcurrent",
-        "keep a type current",
         "payload types",
         "refresh one type"
       ],
@@ -3077,7 +3080,6 @@
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",
-        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/TableCapture.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/DimensionCapture.cs",
@@ -3203,7 +3205,7 @@
       "path": "flow/delivery.md",
       "title": "Delivery flow (flowType: delivery): deliver ingestion table rows to OSDU through a pinned mapping",
       "type": "flow-reference",
-      "summary": "The flowType: delivery document: source tables and keys, the pinned mapping, target endpoint and auth, partitions, reliability, stop rules and schedules.",
+      "summary": "The flowType: delivery document: source tables and keys, the pinned mapping, target and auth, partitions, cache steps, reliability, stop rules, schedules.",
       "keywords": [
         "delivery flow",
         "flowtype delivery",
@@ -3221,7 +3223,12 @@
         "deliver to osdu",
         "literal secret refused",
         "credential header",
-        "provenance columns"
+        "provenance columns",
+        "cache.before",
+        "cache.after",
+        "update the cache before a pipeline",
+        "update the cache after a pipeline",
+        "cache steps"
       ],
       "yamlPath": "(root, flowType: delivery)",
       "related": [
@@ -3242,6 +3249,10 @@
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs",
         "osdu/src/SqlFlow.Delivery/Documents/MappingCatalog.cs",
         "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
+        "osdu/src/SqlFlow.Delivery/Model/FlowCacheSteps.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheSteps.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
         "osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs",
         "osdu/src/SqlFlow.Delivery/Model/DeliveryDestination.cs",
         "osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs",

@@ -2,7 +2,7 @@
 id: delivery-flow-cache
 title: "Cache flow (flowType: cache): OSDU reference data, lookup tables and dictionaries in a partition's cache"
 type: flow-reference
-summary: "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, keepCurrent, refresh and plan."
+summary: "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, and refreshing some types."
 keywords:
   - source.paging
   - createTime paging
@@ -21,9 +21,6 @@ keywords:
   - cache retention
   - refresh
   - "$cache"
-  - "types[].keepcurrent"
-  - keepcurrent
-  - keep a type current
   - payload types
   - refresh one type
 yamlPath: "(root, flowType: cache)"
@@ -54,7 +51,6 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs
-  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/TableCapture.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/DimensionCapture.cs
@@ -210,7 +206,6 @@ fail with `types[<n>] names more than one origin; a type has one: ...`.
 | `dimension`, `dimensionFlow` | dimension | The dimension, and the dimension flow that declares it. Both are required. |
 | `onChange` | all | Overrides the flow's `onChange` for this type. |
 | `partitions` | all | The partitions this type is built for, when not all of the flow's. Needs `partitions` at the top of the document, or a flow that serves every registered partition. |
-| `keepCurrent` | OSDU | `true` has every delivery of a kind the type's `kind` matches, into a partition the type is built for, end its run by putting the records it landed into the type, so the flows that run after it render against them before the next refresh. `false` when left out. Refused on a lookup table and beside `query`. See [Deliveries keep a type current](../concepts/partition-cache.md#deliveries-keep-a-type-current). |
 
 ## The four origins
 
@@ -228,19 +223,8 @@ the kind and the query.`) or when no record carries a path (`no item carried '<p
 kind`). Keep closed vocabularies here; business data that a mapping finds one record of per row (the wellbore a log
 belongs to) can be cached too, or searched for as each record needs it ([lookups](mapping-lookups.md)).
 
-When a delivery flow of the same partition lands the records a type holds (the units a reference flow delivers, which the
-next flow's mapping resolves its references against), declare the type `keepCurrent: true`. Each delivery run of the
-kind then ends by reading what it landed back from OSDU into the type, so a flow later in the same schedule finds the
-records without a refresh in between:
-
-```yaml
-types:
-  - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
-    fields: [data.Code, data.Name]
-    keepCurrent: true
-```
-
-[Deliveries keep a type current](../concepts/partition-cache.md#deliveries-keep-a-type-current) describes the step.
+Which pipelines bring a type up to date before or after they run is the pipelines' to say, not the cache flow's: a
+delivery flow names the types in its `cache` block ([cache](delivery.md#cache)).
 
 ### Ingestion tables (`table`)
 
@@ -389,9 +373,9 @@ partition's cache. So the `ing` flow that loads `OsduData.silver.UnitAlias` runs
 a dimension flow before the cache flow holding its dimension, and the cache flow before every delivery flow whose
 mapping reads its types. Flows sharing one schedule run in that order.
 
-A type declared `keepCurrent: true` is written by the delivery flows of its kind as well, since each of their runs ends by
-putting what it landed into it: a flow reading the type runs after those deliveries, in the same schedule, whether or
-not the cache flow capturing it runs in between.
+A pipeline whose `cache` block names a type writes that type too, since its cache steps bring it up to date
+([cache](delivery.md#cache)): a flow reading the type runs after that pipeline, in the same schedule, whether or not the
+cache flow capturing it runs in between.
 
 A cache type is a lineage node of its partition, so a cache flow and a delivery flow are ordered when they share a
 partition, named under `partitions` or as a literal `data-partition-id` header (a cache flow naming `partitions: [dev]`
@@ -420,8 +404,6 @@ serves the registry and a delivery flow that hard-codes `data-partition-id: dev`
 | `source.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: ...` | A literal secret. |
 | `type '<name>': Dictionary '<dictionary>' was not found under '<folder>'. Expected <dictionary>.yaml or <dictionary>.yml.` | A dictionary type whose file `sqlflow validate` does not find. |
 | `retentionDays is <n>, and it is the number of days ... a whole number from 1 to 36500. Leave it out to keep them 7 days.` | A retention below one day or above a hundred years. |
-| `types[<n>].keepCurrent is for a type of OSDU records: a delivery lands OSDU records, never the rows of a dictionary, a table or a dimension.` | `keepCurrent` on a lookup table. |
-| `types[<n>].keepCurrent adds every record a delivery of the kind lands, and types[<n>].query keeps only the records a search matches, ...` | `keepCurrent` beside `query`: a delivered record the query does not match would stay in the cache. Remove the query, or declare the narrowed type without `keepCurrent`. |
 
 A refresh can also fail when another cache flow of the same partition declares the same type differently (another entity
 type, a field from another path, or a second declaration of a lookup table): `Cache flow '<flow>' disagrees with another

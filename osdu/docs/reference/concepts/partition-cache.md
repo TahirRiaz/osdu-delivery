@@ -2,7 +2,7 @@
 id: delivery-concept-partition-cache
 title: "The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery"
 type: concept
-summary: "How a partition's cache works: versions, retention, cache flows sharing one cache, deliveries keeping a type current, change tags, rollout, system properties."
+summary: "How a partition's cache works: versions, retention, cache flows sharing one cache, pipelines updating it before and after they run, tags, rollout."
 keywords:
   - partition cache
   - cache version
@@ -25,11 +25,13 @@ keywords:
   - osdu.cacheversion
   - cache warm-up
   - first render slow
-  - keepcurrent
-  - keep a type current
+  - cache.before
+  - cache.after
+  - update the cache before a pipeline
+  - update the cache after a pipeline
   - cache step
-  - cache kept current
   - delivery holds a cached record
+  - held record waits for a reference
 related:
   - delivery-flow-cache
   - delivery-flow-dictionary
@@ -55,6 +57,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheSteps.cs
+  - osdu/src/SqlFlow.Delivery/Rendering/EntryValues.Id.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs
@@ -123,7 +127,7 @@ Each refresh that changes what a partition's cache holds writes a new version of
 
 In the database a version is a row of `osdu.CacheVersion`; the records are kept by version range in `osdu.CacheItem`
 (a record is stored once and a new row is written only when it changes, arrives or leaves); `osdu.CacheMember` says
-which cache flow's last capture holds each record, and which delivery landed it when a delivery keeps its type current
+which cache flow's last capture holds each record, and which pipeline landed it when its after step put it in
 (`delivery:<ledger name>`) ([the ledger](ledger.md)).
 
 ## Retention
@@ -194,7 +198,7 @@ needs without copying another project's file. The cache holds the union of what 
   for every pipeline reading the partition, and every flow's query adds records to it.
 - **The newest capture of a record wins.** A captured record replaces what the cache held for it. A record the capturing
   flow no longer finds leaves the cache only when no other flow's last capture still holds it, and no delivery holds it
-  while OSDU still does ([Deliveries keep a type current](#deliveries-keep-a-type-current)). Types a capture does not
+  while OSDU still does ([Pipelines bring the cache up to date](#pipelines-bring-the-cache-up-to-date)). Types a capture does not
   cover stay as they are, except a type no synced flow declares any more, which the merge removes.
 - **A lookup table has one owner.** A table, dictionary or dimension type is declared by one cache flow of a partition:
   its capture replaces the whole type, so a second flow declaring it would replace the first one's rows.
@@ -218,7 +222,7 @@ another flow lets go of the records only the first one kept.
    the dimension's last build. A type that cannot be read whole fails the refresh before anything is written. A run
    that names `types` captures those alone.
 3. Asks OSDU's storage service about the records of each OSDU type that a delivery holds and the search did not find
-   ([below](#deliveries-keep-a-type-current)), and reads the partition's system properties, when it reached OSDU
+   ([below](#pipelines-bring-the-cache-up-to-date)), and reads the partition's system properties, when it reached OSDU
    ([System properties](#system-properties)).
 4. Merges the capture into the current version and writes the next version, unless nothing moved.
 5. Applies the partition's [retention](#retention): prunes the records of the versions it no longer keeps.
@@ -226,46 +230,60 @@ another flow lets go of the records only the first one kept.
 
 A run over several partitions does this for each in turn; a partition that fails leaves the others refreshed.
 
-## Deliveries keep a type current
+## Pipelines bring the cache up to date
 
-A refresh brings the cache up to date on the cache flow's schedule. Within one schedule, a delivery that lands the
-records a later flow looks up (the units the wells refer to, the wellbores the logs belong to) would leave them out of
-the cache until the next refresh, and the later flow would render without them: a reference written unverified, or a
-record held for a reference the cache does not hold. A type of OSDU records declared `keepCurrent: true` closes that gap:
-every delivery run of a kind the type's `kind` matches, into a partition the type is built for, ends with a cache step
-that puts what the run landed into the type.
+A refresh brings the cache up to date on the cache flow's schedule. Within one schedule, a pipeline that lands the records
+a later pipeline looks up (the units the wells refer to, the wellbores the logs belong to) would leave them out of the
+cache until the next refresh, and the later pipeline would render without them: a reference written unverified, or a
+record held for a reference the cache does not hold. So a pipeline says, in its `cache` block, which entities of its
+partition's cache must be current before it runs, and which it brings up to date after it runs
+([cache](../flow/delivery.md#cache)):
 
 ```yaml
-types:
-  - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
-    fields: [data.Code, data.Name]
-    keepCurrent: true
+cache:
+  before: [UnitOfMeasure]
+  after: [master-data--Wellbore]
 ```
 
-The step:
+An entry is a cache type by its name, or an OSDU entity type, which stands for every type of the cache holding records of
+it, whichever repository's cache flow declares it; `auto` works the entries out from the pipeline. The run resolves them
+against what the partition's synced cache flows declare before it reads anything, and stops there, with nothing sent, when
+one names nothing the cache holds or a type the step cannot work on.
 
-1. **Runs as the run ends,** after its last delivery, its fan-out members' too, and after the sweep of unfinished
-   deliveries. A drain of the whole flow ends with it as well; a run that delivered nothing does not take it. It runs
-   whether or not the delivery's own mapping reads the cache: the cache is the one of the partition the flow delivers to.
-2. **Takes what the run landed from the ledger:** the records the flow delivered since the run started (a minute earlier,
-   for the clocks of the nodes a fanned-out run delivers on), at most 50,000. A run landing more is a bulk load: the step
-   reads nothing, and says to run the cache flow's refresh, which reads them more cheaply.
-3. **Reads them back from OSDU's storage service by id** (`POST /api/storage/v2/query/records`, 100 at a time), not the
-   search service, whose index holds a record a moment after it is written. A record storage does not return is counted
-   as missing and left out.
-4. **Keeps of each record the paths the partition keeps for the type,** as a refresh does, and merges them into the
-   partition's cache as the delivery's capture, held under `delivery:<ledger name>`. The merge adds and replaces records
-   and takes none away. When anything moved it writes a version, which becomes current, and tags what the changes reach
-   as a refresh does ([below](#from-a-cache-change-to-osdu)): a reference a record wrote unverified that the cache now
-   holds is tagged `found`.
+**The before step** runs first. For each type it names, every declaring cache flow's kind and query are searched through
+the pipeline's own connection to its partition, with every path the partition keeps for the type, and the capture is
+merged as that flow's own, exactly as a refresh of the flow narrowed to these types would merge it. A record a delivery
+holds that the search did not find stays while OSDU's storage service still holds it. A type whose every declaration
+searches with a query that takes the cache flow's parameters is refused: only that flow's run fills them. The step is the
+run's to complete: when a type cannot be read whole, the run fails before anything is sent.
 
-The step's failure is not the run's: what the run delivered stands in OSDU and in the ledger, the run's log warns that
-the cache was not brought up to date, and the next refresh of the cache flow brings the records in. The run's result
-carries the step under `cacheKept` (the partition, the types, the records landed, read and missing, the version written,
-and a sentence saying it), and the run page shows the sentence under **Cache kept current**:
+**The run then renders against the newest version of the cache**, whatever the step, an earlier pipeline or an earlier
+interface of the same source put in: a source opens every interface before the first runs, and each takes the newest
+version as it starts. A flow that pins `render.cacheVersion` keeps its version.
+
+**The after step** runs as the run ends, after its last delivery, its fan-out members' too, and after the sweep of
+unfinished deliveries; a drain of the whole flow, a removal and a reversal end with it as well.
+
+1. **It takes what the run changed from the ledger:** the records the flow delivered since the run started, and the ones
+   it deleted or reverted (a minute earlier, for the clocks of the nodes a fanned-out run delivers on), at most 50,000. A
+   run changing more is a bulk load: the step reads nothing, and says to run the cache flows' refresh.
+2. **It reads them back from OSDU's storage service by id** (`POST /api/storage/v2/query/records`, 100 at a time), not the
+   search service, whose index holds a record a moment after it is written.
+3. **A record storage returns goes in as it is now,** with the paths the partition keeps for the type, held under
+   `delivery:<ledger name>`; **one storage no longer holds is taken out,** whichever cache flow or delivery held it.
+
+The after step's failure is not the run's: what the run did in OSDU stands, its log warns that the cache was not brought
+up to date, and the next refresh of the cache flows brings the records in. A record deleted from the ledger as well
+(a removal that purges it, or a deletion of the ledger) leaves no row to tell the step, and the next refresh takes it out.
+
+Each step that writes a version tags what its changes reach, as a refresh does ([below](#from-a-cache-change-to-osdu)),
+and carries the approved changes out at once, up to 100,000 records, asking for them to be planned again before the
+pipelines after it run; the control plane's rollout carries the rest at its pace. The run's result carries each step as
+`cacheBefore` and `cacheAfter` (the partition, the types, the records taken in and read, those taken out, the version, the
+records planned again, and a sentence saying it), and the run page shows the sentences under **Cache**:
 
 ```text
-The cache of partition 'dev' (UnitOfMeasure) holds the 12 record(s) the run landed as version 20261020T101500Z.
+The cache of partition 'dev' (Wellbore) took the 5 record(s) the run landed, as version 20261020T101500Z; 12 record(s) built without what changed are planned again.
 ```
 
 A record a delivery holds stays in the cache when a refresh's search does not find it, since the search index may not
@@ -273,13 +291,17 @@ have caught up with it yet. The refresh asks storage about those records alone: 
 no longer holds (deleted, or not readable with the cache flow's credentials) leaves the cache, unless another cache flow's
 last capture still holds it.
 
-- **Any flow declaring the type decides.** When several cache flows declare one type, the deliveries keep it current
-  when any of them says `keepCurrent: true`, and the step keeps every path any of them keeps for the type.
-- **OSDU records only, and every one of the kind.** A lookup table (a table, a dictionary or a dimension) is captured
-  whole by its cache flow and cannot be kept current; a type narrowed by a `query` cannot either, since a delivered
-  record the query does not match would stay in the cache.
-- **Lineage orders it.** A delivery of a kind that keeps a type current writes that type, so a flow reading it runs after
-  the delivery in the same schedule ([lineage](lineage.md)). Flows in other schedules are not waited for.
+Lineage orders the steps: a pipeline writes the types its steps name, so a flow reading one runs after it, and the kinds
+its before step searches are read, so the flows delivering them run first ([lineage](lineage.md)). Flows in other
+schedules are not waited for.
+
+### A record held for a reference waits for it
+
+A record is held when an id its mapping builds names a record of an entity type the cache holds records of, and not this
+one. The held render records the id it looked for, in every type that would hold it. When a later version holds the
+record, by a refresh, a before step or an after step, the change is tagged `found` for the held record, which is asked to be
+planned again, and built against it. A record that was delivered before keeps what its delivered document was built from,
+which is what OSDU holds, so it comes back on its next change or a release instead.
 
 ## From a cache change to OSDU
 
@@ -297,7 +319,7 @@ moved between, and how many delivered records it reaches.
 | `unmatched` | A record no longer matches by the value records found it by. |
 | `listed` | A lookup table now lists a key records looked up and found no row under, or an OSDU type now holds a record by a value records found none by. |
 | `relisted` | The rows a key finds are no longer the ones records read every one of. |
-| `found` | The cache now holds a record that records reference as an unverified id. |
+| `found` | The cache now holds a record that records reference as an unverified id, or that a held record's reference named and the cache did not hold. |
 
 What a tag does depends on the type's `onChange`:
 
@@ -358,9 +380,9 @@ table is never imported: it is captured from its table, dictionary or dimension 
   **Deliveries** lists the changes with what they reach, the approvals waiting, and the records built without something
   the cache did not hold yet. **Setup** lists the cache flows, the types each declares, the retention each declares and
   the one the partition keeps, and the partition's OSDU feature flags.
-- **A cache flow's pipeline page** opens on its **Cache versions** tab.
-- **A delivery run's page** shows what its cache step did under **Cache kept current**, and the Setup tab marks a type
-  the deliveries keep current. A cache flow's run dialog lists its types, to refresh some of them.
+- **A cache flow's pipeline page** opens on its **Cache versions** tab. A cache flow's run dialog lists its types, to
+  refresh some of them.
+- **A delivery run's page** shows what its cache steps did under **Cache**.
 - **`sqlflow cache list <partition>`** prints the partition's retention, the versions, newest first, each pruned one
   marked, and the current version's system properties.
 - **The API** (`/api/v1/delivery`): `GET /caches`, `/cache/versions`, `/cache/items`, `/cache/history`, `/cache/diff`,

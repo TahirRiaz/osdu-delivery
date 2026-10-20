@@ -23,10 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schedules that refer to each other in a circle; a partition's order level by level; and OSDU's lineage of any release
   of the OSDU data definitions, built on demand. The same is served under `/api/v1/delivery/order`
   ([The OSDU order](osdu/docs/reference/concepts/osdu-order.md#in-the-gui-and-the-api)).
-- **Deliveries keep cache types current.** A cache type of OSDU records declared `keepCurrent: true` is brought up to
-  date by every delivery run of its kind as the run ends, so the flows after it in the same schedule render against what
-  it just delivered without waiting for a refresh; the run's page says what the step did
-  ([Deliveries keep a type current](osdu/docs/reference/concepts/partition-cache.md#deliveries-keep-a-type-current)).
+- **A pipeline updates the cache before and after it runs.** A delivery flow's `cache` block names, by cache type or by
+  OSDU entity type, what must be current before it renders (`before`) and what it brings up to date as it ends (`after`),
+  so the pipelines after it in a schedule render against what it delivered; the run page shows what each step did
+  ([cache](osdu/docs/reference/flow/delivery.md#cache)).
+- **A record held for a missing reference comes back by itself.** Once the cache holds the record its reference names, by
+  a refresh or a pipeline's cache step, the held record is planned again
+  ([The partition cache](osdu/docs/reference/concepts/partition-cache.md#a-record-held-for-a-reference-waits-for-it)).
 - **A cache run can refresh some of its types.** Pick them in the run dialog, or name them in the payload's `types`; the
   rest of the partition's cache stays as it is ([Cache flow](osdu/docs/reference/flow/cache.md#operations-and-the-run-payload)).
 
