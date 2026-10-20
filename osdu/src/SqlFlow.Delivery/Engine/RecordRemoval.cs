@@ -314,6 +314,9 @@ public sealed record LedgerDeleteSummary(string Partition, int Removed, int Alre
     /// <summary>What unfinished deliveries left that was undone first, and the ids committed deliveries minted that were removed reversibly.</summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
+    /// <summary>What the pipeline's after step did with the records taken out (osdu/docs/reference/flow/delivery.md, cache); null when it names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
+
     /// <summary>The one line the activity trail and the run log carry.</summary>
     public string Describe() => string.Create(
         CultureInfo.InvariantCulture,

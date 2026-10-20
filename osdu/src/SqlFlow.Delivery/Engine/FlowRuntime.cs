@@ -956,7 +956,14 @@ public sealed class FlowRuntime : IDisposable
     /// the types it names. Null when it names none. Its failure is not the run's: what the run did in OSDU stands, a refresh of
     /// the cache flows brings the records in, and the warning says so.
     /// </summary>
-    private async Task<Snapshots.CacheStepOutcome?> PutIntoCacheAsync(DateTime startedUtc, CancellationToken ct)
+    private Task<Snapshots.CacheStepOutcome?> PutIntoCacheAsync(DateTime startedUtc, CancellationToken ct)
+        => PutIntoCacheAsync(startedUtc, null, ct);
+
+    /// <summary>
+    /// The after step, told besides what the ledger names the OSDU ids <paramref name="alsoChanged"/> the run took out of
+    /// OSDU and deleted from the ledger as it went, which no ledger row names any more.
+    /// </summary>
+    private async Task<Snapshots.CacheStepOutcome?> PutIntoCacheAsync(DateTime startedUtc, IReadOnlyCollection<string>? alsoChanged, CancellationToken ct)
     {
         if (Flow.Cache.After.IsEmpty || _context.Cache is null || _context.Ledger is null)
         {
@@ -982,6 +989,7 @@ public sealed class FlowRuntime : IDisposable
                 Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath,
                 RunId,
                 Actor,
+                alsoChanged,
                 ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or System.Data.Common.DbException or TimeoutException or InvalidOperationException or HttpRequestException
@@ -1565,11 +1573,14 @@ public sealed class FlowRuntime : IDisposable
             }
 
             // What the removal took out of OSDU, or stepped back, leaves the cache types the pipeline puts its records into. A
-            // record deleted from the ledger as well leaves no row to tell it, and a refresh of the cache flows takes it out.
+            // record deleted from the ledger as well leaves no row to tell it, so its id is handed to the step.
+            var purgedIds = purgeLedger
+                ? results.Where(r => r.Outcome is "removed" or "already-gone" && r.TargetId is not null).Select(r => r.TargetId!).ToList()
+                : null;
             var summary = RemovalSummary.Of(scope, keys.Count, results, purged) with
             {
                 Undone = undone,
-                CacheAfter = await PutIntoCacheAsync(removalStarted, ct).ConfigureAwait(false),
+                CacheAfter = await PutIntoCacheAsync(removalStarted, purgedIds, ct).ConfigureAwait(false),
             };
             return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
         }, ct);
@@ -1892,8 +1903,15 @@ public sealed class FlowRuntime : IDisposable
                     $"{left.ToUndo} item(s) the deliveries of '{Flow.Label}' left in OSDU could not be undone ({undone.Describe()}), so the ledger was kept as it was and OSDU holds nothing it forgot. Every record OSDU answered for is marked removed; the sweep goes on undoing the rest, and the ledger can be deleted again once it has."));
             }
 
+            // Every record is marked removed now, and the ledger still names them: what OSDU no longer holds leaves the cache types
+            // the pipeline puts its records into before the ledger is deleted.
+            var cacheAfter = await PutIntoCacheAsync(now, ct).ConfigureAwait(false);
             var deleted = await ledger.DeleteLedgerAsync(Flow.Id, Actor, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            var summary = new LedgerDeleteSummary(partition, tally.Removed, tally.AlreadyGone, tally.AlreadyRemoved, tally.Skipped, deleted) { Undone = undone };
+            var summary = new LedgerDeleteSummary(partition, tally.Removed, tally.AlreadyGone, tally.AlreadyRemoved, tally.Skipped, deleted)
+            {
+                Undone = undone,
+                CacheAfter = cacheAfter,
+            };
             return (summary, summary.Describe(), (Guid?)null, false);
         }, ct);
     }

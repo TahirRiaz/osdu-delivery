@@ -59,14 +59,16 @@ public sealed record CacheStepPlan(IReadOnlyList<CacheStepType> Before, IReadOnl
 
     /// <summary>
     /// The types <c>cache.before: auto</c> stands for: every OSDU type of the partition's cache the mapping reads, by name or
-    /// by the entity type it checks the ids it builds against. A lookup table is its cache flow's to capture, in the order
-    /// lineage gives it, and is left out.
+    /// by the entity type it checks the ids it builds against, and every lookup table from an ingestion table it reads by
+    /// name. A dictionary or a dimension is its cache flow's to capture, in the order lineage gives it, and is left out.
     /// </summary>
     private static List<CacheStepType> AutoBefore(CacheDeclaration declaration, MappingCacheReads reads)
     {
         var entityTypes = reads.EntityTypes.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var named = reads.Types.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return [.. declaration.Steps().Where(type => type.IsOsdu && (named.Contains(type.TypeName) || entityTypes.Contains(type.EntityType)))];
+        return [.. declaration.Steps().Where(type =>
+            (type.IsOsdu && (named.Contains(type.TypeName) || entityTypes.Contains(type.EntityType)))
+            || (type.IsTable && named.Contains(type.TypeName)))];
     }
 
     private static List<CacheStepType> Named(
@@ -104,9 +106,9 @@ public sealed record CacheStepPlan(IReadOnlyList<CacheStepType> Before, IReadOnl
     }
 
     private static string? BeforeProblem(CacheStepType type)
-        => type.IsOsdu
+        => type.IsOsdu || type.IsTable
             ? null
-            : $"{type.TypeName} is a lookup table, which its cache flow captures whole from its table, dictionary or dimension; run that cache flow before the pipeline, as lineage orders it";
+            : $"{type.TypeName} is a lookup table from a dictionary or a dimension, which only its cache flow reads, from the repository or the dimension's build; run that cache flow before the pipeline, as lineage orders it";
 
     private static string? AfterProblem(CacheStepType type, string kind)
     {

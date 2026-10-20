@@ -5,6 +5,7 @@ using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Snapshots;
@@ -141,10 +142,12 @@ public sealed class CacheKeeper
         var names = types.Select(t => t.TypeName).ToList();
 
         // A declaration whose query takes the cache flow's parameters can only be searched by that flow's run, which fills
-        // them; a type every declaration of which does is not one this step can bring up to date.
+        // them; a type every declaration of which does is not one this step can bring up to date. A lookup table from an
+        // ingestion table is read as its cache flow reads it.
         var searched = new List<(string Flow, CacheStepType Type, CacheTypeDeclaration Declaration)>();
+        var tables = types.Where(t => t.IsTable).ToList();
         var problems = new List<string>();
-        foreach (var type in types)
+        foreach (var type in types.Where(t => !t.IsTable))
         {
             var usable = type.Declarations.Where(d => !d.IsLookup && d.Kind is not null && !FlowMapper.Tokens(d.Query).Any()).ToList();
             if (usable.Count == 0)
@@ -163,12 +166,46 @@ public sealed class CacheKeeper
         }
 
         var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
-        using var osdu = await connect(ct).ConfigureAwait(false);
-        var storage = new StorageRecords(osdu.Client, storagePath);
         int found = 0, removed = 0;
         long released = 0;
         string? version = null;
         var written = false;
+
+        // A lookup table is declared by one cache flow, and its capture replaces the whole type, as that flow's refresh does.
+        foreach (var type in tables)
+        {
+            var declared = type.Declarations[0];
+            var spec = new ReferenceTypeSpec
+            {
+                Name = type.TypeName,
+                EntityType = type.EntityType,
+                Origin = CacheOrigin.Table,
+                Table = declared.SourceObject,
+                Key = declared.Key,
+                Fields = declared.Fields,
+                OnChange = declared.OnChange,
+            };
+            var flow = new CacheDefinition { Name = declared.FlowName, Source = new CacheSource { Connection = declared.Connection }, Types = [spec] };
+            var table = await TableCapture.CaptureAsync(flow, spec, _context.Secrets, _logger, ct).ConfigureAwait(false);
+            var builder = new SnapshotBuilder(store, scope, declared.FlowName, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>(), declaration.RetentionDays);
+            var write = await builder.WriteAsync(
+                [table], new CacheCapture(runId, actor, $"{declared.FlowName}'s {type.TypeName} from {declared.SourceObject}, read before pipeline '{pipeline}' ran"), [], ct)
+                .ConfigureAwait(false);
+            found += table.Items.Count;
+            released += await TagAsync(scope, declaration, write, [type.TypeName], ct).ConfigureAwait(false);
+            version = write.Snapshot.Version;
+            written |= write.Written;
+        }
+
+        if (searched.Count == 0)
+        {
+            var only = new CacheStepOutcome(CacheStepOutcome.BeforeStep, scope, names, found, found, removed, version, written, released, null);
+            _logger.LogInformation("{Outcome}", only.Describe());
+            return only;
+        }
+
+        using var osdu = await connect(ct).ConfigureAwait(false);
+        var storage = new StorageRecords(osdu.Client, storagePath);
 
         // One capture per declaring cache flow, merged as that flow's, so each flow keeps exactly what its own query finds.
         foreach (var flow in searched.GroupBy(s => s.Flow, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal))
@@ -224,6 +261,10 @@ public sealed class CacheKeeper
     /// <param name="storagePath">The storage service's batch read (openapi storage v2, POST /query/records).</param>
     /// <param name="runId">The run, which the version written records.</param>
     /// <param name="actor">Who asked for the run.</param>
+    /// <param name="alsoChanged">
+    /// OSDU ids the run changed that the ledger no longer names: the records a removal deleted from the ledger as it took
+    /// them out of OSDU.
+    /// </param>
     /// <param name="ct">Cancels the step; what it merged before stands.</param>
     public async Task<CacheStepOutcome?> AfterAsync(
         string scope,
@@ -235,6 +276,7 @@ public sealed class CacheKeeper
         string storagePath,
         Guid? runId,
         string actor,
+        IReadOnlyCollection<string>? alsoChanged,
         CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
@@ -249,7 +291,9 @@ public sealed class CacheKeeper
         }
 
         var names = types.Select(t => t.TypeName).ToList();
-        var changed = await ledger.ChangedSinceAsync(ledgerFlowId, sinceUtc, MaxRecords + 1, ct).ConfigureAwait(false);
+        IReadOnlyList<string> changed = [
+            .. await ledger.ChangedSinceAsync(ledgerFlowId, sinceUtc, MaxRecords + 1, ct).ConfigureAwait(false),
+            .. alsoChanged ?? []];
         if (changed.Count == 0)
         {
             return new CacheStepOutcome(CacheStepOutcome.AfterStep, scope, names, 0, 0, 0, null, false, 0, null);
@@ -324,6 +368,7 @@ public sealed class CacheKeeper
 
         var analyzer = new CacheImpactAnalyzer(ledger, _context.Time, _logger);
         var tagged = 0;
+        long released = 0;
         foreach (var name in names.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var change = write.Changes.Of(name) ?? CacheTypeChange.Unchanged;
@@ -336,18 +381,19 @@ public sealed class CacheKeeper
                 scope, write.Previous?.Type(name), type, declaration.ModeOf(name, CacheChangeMode.Auto), write.Previous?.Version, write.Snapshot.Version, ct)
                 .ConfigureAwait(false);
             tagged += result.NewTags;
+            released += result.Released;
         }
 
         if (tagged == 0)
         {
-            return 0;
+            return released;
         }
 
-        long marked = 0;
+        var marked = released;
         var approved = await ledger.ListTagsAsync("approved", TagsRead, 0, scope, ct).ConfigureAwait(false);
         foreach (var tag in approved.Where(t => string.Equals(t.ToVersion, write.Snapshot.Version, StringComparison.Ordinal)))
         {
-            while (marked < MaxReleased)
+            while (marked - released < MaxReleased)
             {
                 var batch = await ledger.RollOutTagAsync(tag.TagId, RolloutBatch, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
                 marked += batch.Marked;
