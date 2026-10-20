@@ -15,10 +15,11 @@ namespace SqlFlow.Delivery.ControlPlane.ManagedWorkers;
 /// Starts managed workers as Radix jobs, through the job scheduler Radix runs beside a job component in the same
 /// application and environment (<c>http://&lt;job-name&gt;:&lt;schedulerPort&gt;</c>, which needs no credential because only
 /// the application's own components can reach it). Each worker is one job: its <c>jobId</c> is the worker's name, its
-/// variables name the node, its pool and its drain window, and it never restarts itself (<c>backoffLimit: 0</c>) or lets
-/// the cluster autoscaler move it (<c>safeToRestart: false</c>); the managed fleet replaces a worker that ends. The
-/// worker's node token, the module database and every connection come from the job component's own Radix secrets,
-/// never from a launch request, which Radix stores in the job's specification.
+/// variables name the node, its pool and its drain window, and it never restarts itself (<c>backoffLimit: 0</c>); the
+/// managed fleet replaces a worker that ends. Whether the cluster autoscaler may move a job is the job component's own
+/// setting (<c>safeToRestart: false</c> in radixconfig.yaml), which a job request cannot set. The worker's node token,
+/// the module database and every connection come from the job component's own Radix secrets, never from a launch
+/// request, which Radix stores in the job's specification.
 /// </summary>
 /// <remarks>
 /// Every call runs under <see cref="RadixLauncherOptions.RequestTimeoutSeconds"/>. A start that failed after the request
@@ -155,7 +156,6 @@ public sealed partial class RadixWorkerLauncher : IWorkerLauncher
             variables,
             (long)_options.TimeLimitHours * 3600,
             BackoffLimit: 0,
-            SafeToRestart: false,
             _options.ResourcesFor(launch.Pool)?.ToRequest());
 
         var job = await SendAsync<RadixJobStatus>(HttpMethod.Post, "api/v1/jobs", request, $"start worker '{launch.Name}'", ct, launching: true)
@@ -331,9 +331,9 @@ public sealed partial class RadixWorkerLauncher : IWorkerLauncher
     internal sealed record RadixJobStatus(
         string? Name, string? JobId, string? Status, string? Created, string? Ended, string? Message);
 
-    /// <summary>A job to start (the fields this launcher sends).</summary>
+    /// <summary>A job to start (the fields this launcher sends, each one the scheduler's job description takes).</summary>
     internal sealed record RadixJobRequest(
-        string JobId, Dictionary<string, string> Variables, long TimeLimitSeconds, int BackoffLimit, bool SafeToRestart,
+        string JobId, Dictionary<string, string> Variables, long TimeLimitSeconds, int BackoffLimit,
         RadixResourcesRequest? Resources);
 
     /// <summary>A job's CPU and memory requests and limits, as the scheduler takes them.</summary>

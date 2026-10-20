@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A Radix environment is complete in its configuration.** `radixconfig.yaml` names the workers' credential (the
+  vault's `node-token`, generated before the first deploy in SQLFlow's token form) and the flow repository, as the
+  Terraform estate does, so the control plane adopts the one and registers the other when it starts, and nothing is
+  minted or registered by hand after the first deploy; `git-token` is read as a reference by both tiers rather than
+  mounted. An environment deployed before this mints nothing new: store its token as `node-token` and add the
+  repository's settings ([Setting up a Radix environment](osdu/docs/reference/guides/radix-setup.md)).
+
 - **The Tests page is the Assertions page.** The GUI calls each test of an assertion flow an assertion, as the flow
   type names them, and each of its assertions a check: the page, a flow's tab, the board, the sheet, the run dialog
   (whose operation reads **Check**) and the reports say so. Flow documents, the API and the CLI keep `tests:`,
@@ -57,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Fixed
+
+- **A Radix environment delivers every flow.** The Radix application set only the LogType flow's access groups, so
+  every other delivery flow, which reads `OSDU_ACL_OWNER` and `OSDU_ACL_VIEWER` unless it sets its own, could not
+  resolve its groups; each partition now sets both, and the setup guide's SQL creates the `osdu` schema before it grants
+  the worker's rights on it ([Setting up a Radix environment](osdu/docs/reference/guides/radix-setup.md)).
 
 - **The Nodes page opens while managed workers run.** Each worker's state reached the page as a number rather than its
   name, so the page went blank as soon as a managed worker was listed, locally and on Radix; it now shows each worker

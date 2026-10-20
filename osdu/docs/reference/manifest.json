@@ -4753,7 +4753,7 @@
       "path": "guides/radix.md",
       "title": "Deploying OSDU Delivery on Radix: the control plane, the GUI, the MCP server and the workers",
       "type": "guide",
-      "summary": "Run OSDU Delivery as one Radix application: what to set up per environment, how to build and deploy, and the first start.",
+      "summary": "Run OSDU Delivery as one Radix application: what each component is, how to build and deploy, what the first start does, and why it might not start.",
       "keywords": [
         "radix",
         "radixconfig",
@@ -4770,6 +4770,7 @@
         "osdu partition per environment"
       ],
       "related": [
+        "delivery-guide-radix-setup",
         "delivery-guide-managed-workers",
         "delivery-concept-partitions",
         "delivery-guide-deployment",
@@ -4785,7 +4786,47 @@
         "osdu/deploy/docker/mcp.Dockerfile",
         "osdu/deploy/docker/worker.Dockerfile",
         "osdu/src/SqlFlow.Delivery.ControlPlane/ManagedWorkers/RadixWorkerLauncher.cs",
-        "osdu/src/SqlFlow.Delivery/Catalog/ConfiguredPartitions.cs"
+        "osdu/src/SqlFlow.Delivery/Catalog/ConfiguredPartitions.cs",
+        "sqlflow/src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs"
+      ]
+    },
+    {
+      "id": "delivery-guide-radix-setup",
+      "corpus": "reference",
+      "path": "guides/radix-setup.md",
+      "title": "Setting up a Radix environment by hand: the Azure resources, users and secrets the Radix deploy does not create",
+      "type": "guide",
+      "summary": "What a person sets up once per Radix environment before the first deploy: identities, SQL users, vault secrets, partition, repository, sign-in, network.",
+      "keywords": [
+        "radix setup",
+        "radix checklist",
+        "manual steps",
+        "before the first deploy",
+        "workload identity",
+        "federated credential",
+        "key vault secrets",
+        "node-token",
+        "jwt-signing-key",
+        "azure sql users",
+        "osdu schema",
+        "radixconfig placeholders",
+        "private endpoint"
+      ],
+      "related": [
+        "delivery-guide-radix",
+        "delivery-guide-managed-workers",
+        "delivery-concept-partitions",
+        "delivery-guide-deployment",
+        "guide-chat-assistant",
+        "concept-authentication-and-identity"
+      ],
+      "sourceRefs": [
+        "osdu/deploy/radix/radixconfig.yaml",
+        "osdu/deploy/radix/radix-deploy.workflow.yml",
+        "osdu/deploy/terraform/main.tf",
+        "osdu/src/SqlFlow.Delivery/Catalog/ConfiguredPartitions.cs",
+        "sqlflow/src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs",
+        "sqlflow/src/SqlFlow.ControlPlane/Security/AccessTokenGenerator.cs"
       ]
     },
     {

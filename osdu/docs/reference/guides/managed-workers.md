@@ -59,9 +59,10 @@ gives every pod 30 seconds to stop. Managed workers need neither: the workers ar
 control plane starts one job per worker through the component's job scheduler.
 
 `osdu/deploy/radix/radixconfig.yaml` is the whole application (the control plane, the GUI, the MCP server and the
-worker job component), and [Deploying on Radix](radix.md) says what to set up, how to deploy, and how the first
-worker gets its credential: a personal access token with the `node` scope, stored as `node-token` in the environment's
-Key Vault after the first deploy. The first worker starts on the next check after that.
+worker job component), and [Deploying on Radix](radix.md) says how to deploy and
+[Setting up a Radix environment](radix-setup.md) what a person sets up once per environment. The workers' credential
+is the `node-token` secret of the environment's Key Vault, generated before the first deploy: the control plane makes it
+the admin's node token when it starts (`ControlPlane__Bootstrap__NodeTokenReference`), and every worker presents it.
 
 What each part does:
 
@@ -73,9 +74,10 @@ What each part does:
   secrets are every worker's: the node token, `SQLFLOW_OSDU_DB`, the flows' connections,
   `SQLFLOW_URL=http://controlplane:8080`.
 - **Each job** the control plane starts carries only the worker's name (its `jobId` and `SQLFLOW_NODE_NAME`), its pool
-  (`SQLFLOW_WORKER_POOL`), its drain window, its time limit, `backoffLimit: 0` and `safeToRestart: false`, and the
-  pool's CPU and memory when set. No credential is ever in a job request, which Radix stores in the job's
-  specification.
+  (`SQLFLOW_WORKER_POOL`), its drain window, its time limit, `backoffLimit: 0`, and the pool's CPU and memory when
+  set. The job component's own `safeToRestart: false` keeps the cluster autoscaler from moving a worker, and its
+  `timeLimitSeconds` is what a job falls back to. No credential is ever in a job request, which Radix stores in the
+  job's specification.
 
 `ControlPlane:ManagedWorkers:Radix`:
 

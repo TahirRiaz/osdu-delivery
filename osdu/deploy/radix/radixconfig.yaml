@@ -1,9 +1,10 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/equinor/radix-operator/release/json-schema/radixapplication.json
 #
 # OSDU Delivery on Radix: the control plane, the GUI, the MCP server the assistant's model calls, and the workers,
-# which the control plane starts and stops itself as jobs of the worker job component (managed workers). How to set
-# up what this file names (identities, databases, Key Vault, Entra, AI Foundry, the registry) and how to deploy is in
-# osdu/docs/reference/guides/radix.md; register the application in Radix with this file's path as its config file.
+# which the control plane starts and stops itself as jobs of the worker job component (managed workers). What a person
+# sets up once per environment (identities, databases, Key Vault, Entra, AI Foundry, the registry) is in
+# osdu/docs/reference/guides/radix-setup.md and how to deploy in osdu/docs/reference/guides/radix.md; register the
+# application in Radix with this file's path as its config file.
 #
 # Every value in angle brackets is the estate's own and must be replaced before the first deploy; Radix refuses a
 # client id that is not a GUID, so a forgotten one stops the deploy rather than a running component.
@@ -20,8 +21,10 @@
 #
 # Images are built by the Radix workflow (radix-deploy.workflow.yml beside this file, a sample to copy into
 # .github/workflows) from osdu/deploy/docker and deployed pinned to the commit they were built from. No secret is ever
-# written here: the ones a component needs as raw values come from the environment's Key Vault through secretRefs, the
-# others are ${keyvault:...} references the application resolves.
+# written here: the one a component needs as a raw value (the JWT signing key) comes from the environment's Key Vault
+# through secretRefs, every other one is a ${keyvault:...} reference the application resolves with its workload identity
+# when it needs it. The estate's configuration is complete here, as the Terraform estate's is: the partitions, the node
+# credential and the flow repository are settings, and nothing is set up by hand after the first deploy.
 apiVersion: radix.equinor.com/v1
 kind: RadixApplication
 metadata:
@@ -129,6 +132,16 @@ spec:
             ControlPlane__Cors__AllowedOrigins__0: https://gui-osdu-delivery-dev.<radix cluster domain>
             ControlPlane__AzureAd__ClientId: <dev sign-in app registration client id>
             ControlPlane__Bootstrap__AdminPasswordReference: ${keyvault:<dev key vault>/admin-password}
+            # The workers' credential, generated into the vault before the first deploy in SQLFlow's token form
+            # (osdu/docs/reference/guides/radix-setup.md): the control plane makes it the admin's node token when it
+            # starts, and every worker presents it (the job component's SQLFLOW_TOKEN names the same secret).
+            ControlPlane__Bootstrap__NodeTokenReference: ${keyvault:<dev key vault>/node-token}
+            # The flow repository the control plane syncs, registered at start and kept as set here (rename estate to
+            # the repository's own name). Its token is the vault's git-token, which the control plane resolves to sync
+            # and a worker resolves to check out the commit a run is pinned to; a public repository needs no reference.
+            ControlPlane__Bootstrap__Repositories__estate__RemoteUrl: https://github.com/<owner>/<flow repository>
+            ControlPlane__Bootstrap__Repositories__estate__Branch: main
+            ControlPlane__Bootstrap__Repositories__estate__CredentialReference: ${keyvault:<dev key vault>/git-token}
             ControlPlane__Assistant__Foundry__ProjectEndpoint: https://<dev foundry account>.services.ai.azure.com/api/projects/<dev project>
             ControlPlane__Assistant__Foundry__ModelDeploymentName: <dev model deployment>
             ControlPlane__Assistant__Mcp__ServerUrl: https://mcp-osdu-delivery-dev.<radix cluster domain>/mcp
@@ -151,6 +164,11 @@ spec:
             Osdu__Partitions__dev__Properties__OSDU_CLIENT_ID: <dev osdu client id>
             Osdu__Partitions__dev__Properties__OSDU_CLIENT_SECRET: ${keyvault:<dev key vault>/osdu-client-secret}
             Osdu__Partitions__dev__Properties__OSDU_LEGAL_TAG: <dev legal tag>
+            # The access groups every delivery writes unless its flow sets its own (the delivery kind reads
+            # OSDU_ACL_OWNER and OSDU_ACL_VIEWER, as the Terraform estate sets them), and the ones a flow spells by
+            # another name, here the LogType flow's.
+            Osdu__Partitions__dev__Properties__OSDU_ACL_OWNER: <dev owners group>
+            Osdu__Partitions__dev__Properties__OSDU_ACL_VIEWER: <dev viewers group>
             Osdu__Partitions__dev__Properties__OSDU_LOGTYPE_ACL_OWNER: <dev owners group>
             Osdu__Partitions__dev__Properties__OSDU_LOGTYPE_ACL_VIEWER: <dev viewers group>
           secretRefs:
@@ -160,8 +178,6 @@ spec:
                 items:
                   - name: jwt-signing-key
                     envVar: ControlPlane__Jwt__SigningKey
-                  - name: git-token
-                    envVar: SQLFLOW_GIT_TOKEN
         - environment: test
           replicas: 1
           imageTagName: test
@@ -172,6 +188,10 @@ spec:
             ControlPlane__Cors__AllowedOrigins__0: https://gui-osdu-delivery-test.<radix cluster domain>
             ControlPlane__AzureAd__ClientId: <test sign-in app registration client id>
             ControlPlane__Bootstrap__AdminPasswordReference: ${keyvault:<test key vault>/admin-password}
+            ControlPlane__Bootstrap__NodeTokenReference: ${keyvault:<test key vault>/node-token}
+            ControlPlane__Bootstrap__Repositories__estate__RemoteUrl: https://github.com/<owner>/<flow repository>
+            ControlPlane__Bootstrap__Repositories__estate__Branch: main
+            ControlPlane__Bootstrap__Repositories__estate__CredentialReference: ${keyvault:<test key vault>/git-token}
             ControlPlane__Assistant__Foundry__ProjectEndpoint: https://<test foundry account>.services.ai.azure.com/api/projects/<test project>
             ControlPlane__Assistant__Foundry__ModelDeploymentName: <test model deployment>
             ControlPlane__Assistant__Mcp__ServerUrl: https://mcp-osdu-delivery-test.<radix cluster domain>/mcp
@@ -185,6 +205,8 @@ spec:
             Osdu__Partitions__test__Properties__OSDU_CLIENT_ID: <test osdu client id>
             Osdu__Partitions__test__Properties__OSDU_CLIENT_SECRET: ${keyvault:<test key vault>/osdu-client-secret}
             Osdu__Partitions__test__Properties__OSDU_LEGAL_TAG: <test legal tag>
+            Osdu__Partitions__test__Properties__OSDU_ACL_OWNER: <test owners group>
+            Osdu__Partitions__test__Properties__OSDU_ACL_VIEWER: <test viewers group>
             Osdu__Partitions__test__Properties__OSDU_LOGTYPE_ACL_OWNER: <test owners group>
             Osdu__Partitions__test__Properties__OSDU_LOGTYPE_ACL_VIEWER: <test viewers group>
           secretRefs:
@@ -194,8 +216,6 @@ spec:
                 items:
                   - name: jwt-signing-key
                     envVar: ControlPlane__Jwt__SigningKey
-                  - name: git-token
-                    envVar: SQLFLOW_GIT_TOKEN
         - environment: prod
           replicas: 1
           imageTagName: latest
@@ -206,6 +226,10 @@ spec:
             ControlPlane__Cors__AllowedOrigins__0: https://gui-osdu-delivery-prod.<radix cluster domain>
             ControlPlane__AzureAd__ClientId: <prod sign-in app registration client id>
             ControlPlane__Bootstrap__AdminPasswordReference: ${keyvault:<prod key vault>/admin-password}
+            ControlPlane__Bootstrap__NodeTokenReference: ${keyvault:<prod key vault>/node-token}
+            ControlPlane__Bootstrap__Repositories__estate__RemoteUrl: https://github.com/<owner>/<flow repository>
+            ControlPlane__Bootstrap__Repositories__estate__Branch: main
+            ControlPlane__Bootstrap__Repositories__estate__CredentialReference: ${keyvault:<prod key vault>/git-token}
             ControlPlane__Assistant__Foundry__ProjectEndpoint: https://<prod foundry account>.services.ai.azure.com/api/projects/<prod project>
             ControlPlane__Assistant__Foundry__ModelDeploymentName: <prod model deployment>
             ControlPlane__Assistant__Mcp__ServerUrl: https://mcp-osdu-delivery-prod.<radix cluster domain>/mcp
@@ -219,6 +243,8 @@ spec:
             Osdu__Partitions__prod__Properties__OSDU_CLIENT_ID: <prod osdu client id>
             Osdu__Partitions__prod__Properties__OSDU_CLIENT_SECRET: ${keyvault:<prod key vault>/osdu-client-secret}
             Osdu__Partitions__prod__Properties__OSDU_LEGAL_TAG: <prod legal tag>
+            Osdu__Partitions__prod__Properties__OSDU_ACL_OWNER: <prod owners group>
+            Osdu__Partitions__prod__Properties__OSDU_ACL_VIEWER: <prod viewers group>
             Osdu__Partitions__prod__Properties__OSDU_LOGTYPE_ACL_OWNER: <prod owners group>
             Osdu__Partitions__prod__Properties__OSDU_LOGTYPE_ACL_VIEWER: <prod viewers group>
           secretRefs:
@@ -228,8 +254,6 @@ spec:
                 items:
                   - name: jwt-signing-key
                     envVar: ControlPlane__Jwt__SigningKey
-                  - name: git-token
-                    envVar: SQLFLOW_GIT_TOKEN
 
     # --------------------------------------------------------------------------------------------------------- GUI ---
     - name: gui
@@ -346,9 +370,8 @@ spec:
             azure:
               clientId: <dev worker identity client id>
           variables:
-            # The worker's node credential: a personal access token with the 'node' scope, minted once the control plane
-            # runs and stored as node-token. Resolved by the worker when it starts, so the vault can get it after the
-            # first deploy; until then each worker exits at once and the control plane backs the pool off.
+            # The worker's node credential: the vault's node-token, the same secret the control plane's
+            # ControlPlane__Bootstrap__NodeTokenReference names, resolved by the worker with its identity when it starts.
             SQLFLOW_TOKEN: ${keyvault:<dev key vault>/node-token}
             # The osdu schema the worker verifies before it polls, in the catalog database; and the catalog itself, which
             # the estate's dimension and curve flows name.
@@ -356,14 +379,8 @@ spec:
             SQLFLOW_CATALOG_DB: Server=tcp:<dev sql server>.database.windows.net,1433;Database=OsduDelivery;Authentication=Active Directory Default;Encrypt=True;
             OSDU_DATA_DB: Server=tcp:<dev sql server>.database.windows.net,1433;Database=OsduData;Authentication=Active Directory Default;Encrypt=True;
             # The OSDU values a run needs come with the run, from the partition it is bound to (the control plane's
-            # Osdu__Partitions__...), so a worker holds none of its own.
-          secretRefs:
-            azureKeyVaults:
-              - name: <dev key vault>
-                useAzureIdentity: true
-                items:
-                  - name: git-token
-                    envVar: SQLFLOW_GIT_TOKEN
+            # Osdu__Partitions__...), and so does the flow repository's credential reference, so a worker holds none of
+            # its own.
         - environment: test
           imageTagName: test
           identity:
@@ -374,13 +391,6 @@ spec:
             SQLFLOW_OSDU_DB: Server=tcp:<test sql server>.database.windows.net,1433;Database=OsduDelivery;Authentication=Active Directory Default;Encrypt=True;
             SQLFLOW_CATALOG_DB: Server=tcp:<test sql server>.database.windows.net,1433;Database=OsduDelivery;Authentication=Active Directory Default;Encrypt=True;
             OSDU_DATA_DB: Server=tcp:<test sql server>.database.windows.net,1433;Database=OsduData;Authentication=Active Directory Default;Encrypt=True;
-          secretRefs:
-            azureKeyVaults:
-              - name: <test key vault>
-                useAzureIdentity: true
-                items:
-                  - name: git-token
-                    envVar: SQLFLOW_GIT_TOKEN
         - environment: prod
           imageTagName: latest
           identity:
@@ -391,10 +401,3 @@ spec:
             SQLFLOW_OSDU_DB: Server=tcp:<prod sql server>.database.windows.net,1433;Database=OsduDelivery;Authentication=Active Directory Default;Encrypt=True;
             SQLFLOW_CATALOG_DB: Server=tcp:<prod sql server>.database.windows.net,1433;Database=OsduDelivery;Authentication=Active Directory Default;Encrypt=True;
             OSDU_DATA_DB: Server=tcp:<prod sql server>.database.windows.net,1433;Database=OsduData;Authentication=Active Directory Default;Encrypt=True;
-          secretRefs:
-            azureKeyVaults:
-              - name: <prod key vault>
-                useAzureIdentity: true
-                items:
-                  - name: git-token
-                    envVar: SQLFLOW_GIT_TOKEN
