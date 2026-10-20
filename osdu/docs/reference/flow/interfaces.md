@@ -150,7 +150,7 @@ an `after:`. [One source, several kinds](../guides/multi-kind-source.md) builds 
 Everything outside `interfaces` is the source's, shared by every interface: `name`, `batch`, `parameters`, `partitions`,
 `keepLedger`, `schedule`, `source.connection`, `source.work`, `render.mappings`, `target` (the endpoint, auth, headers and
 the services under it), and the defaults an interface may override: `source.lastModified`, `source.systemColumns`,
-`source.incremental`, `render.cacheVersion`, `render.parameters`, `change`, `reliability`, `verify`, `failWhen`,
+`source.incremental`, `render.cacheVersion`, `render.parameters`, `change`, `reliability`, `verify`, `failWhen`, `cache`,
 `target.protocolOptions` and `target.validation`. The keys are the single form's ([delivery flow](delivery.md)); as
 there, `source.work` and every payload `root` hold no `${...}` reference, since a location is read as written.
 
@@ -177,6 +177,7 @@ The same message names `source.datasets`, `source.payloads`, `render.mapping`, `
 | `ledger` | The name of an existing flow whose ledger the interface keeps. See [Ledger identity](#ledger-identity). |
 | `after` | Interfaces of this document it waits for, beside the ones its references imply. See [Order](#order). |
 | `failWhen` | Its stop rules, laid over the source's. See [When an interface stops](#when-an-interface-stops). |
+| `cache` | Its cache steps, replacing the source's whole: an interface delivers a kind of its own ([cache](delivery.md#cache)). |
 | `description` | Free text. |
 | `lastModified`, `systemColumns`, `incremental` | The source's settings, overridden for this interface. |
 | `render` | `cacheVersion`, and `parameters` merged over the source's `render.parameters`. |

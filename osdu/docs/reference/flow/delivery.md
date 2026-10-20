@@ -2,7 +2,7 @@
 id: delivery-flow-delivery
 title: "Delivery flow (flowType: delivery): deliver ingestion table rows to OSDU through a pinned mapping"
 type: flow-reference
-summary: "The flowType: delivery document: source tables and keys, the pinned mapping, target endpoint and auth, partitions, reliability, stop rules and schedules."
+summary: "The flowType: delivery document: source tables and keys, the pinned mapping, target and auth, partitions, cache steps, reliability, stop rules, schedules."
 keywords:
   - delivery flow
   - "flowtype delivery"
@@ -21,6 +21,11 @@ keywords:
   - literal secret refused
   - credential header
   - provenance columns
+  - cache.before
+  - cache.after
+  - update the cache before a pipeline
+  - update the cache after a pipeline
+  - cache steps
 yamlPath: "(root, flowType: delivery)"
 related:
   - delivery-flow-interfaces
@@ -39,6 +44,10 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingCatalog.cs
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
+  - osdu/src/SqlFlow.Delivery/Model/FlowCacheSteps.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheSteps.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
   - osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs
   - osdu/src/SqlFlow.Delivery/Model/DeliveryDestination.cs
   - osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs
@@ -207,6 +216,7 @@ schedule:
 | `reliability` | map | no | Concurrency, retries, timeouts, batches and fan-out. See [reliability](#reliability). |
 | `verify` | map | no | What a verify run does with drift. See [verify](#verify). |
 | `failWhen` | map | no | When record failures stop the run. See [failWhen](#failwhen). |
+| `cache` | map | no | The types of the partition's cache the pipeline brings up to date before it runs and after it. See [cache](#cache). |
 | `interfaces` | map | no | The interface form. See [a source with interfaces](interfaces.md). |
 
 ## source
@@ -490,6 +500,50 @@ A stopped run hands back the records it had not sent without charging them a try
 (`stopped: <why>`) and ends failed; the next run sends what is left. In the interface form the same rules stop one
 interface ([when an interface stops](interfaces.md#when-an-interface-stops)).
 
+## cache
+
+A pipeline says which entities of its partition's cache must be current before it runs, and which it brings up to date
+after it runs, so the pipelines that follow it in a schedule render against what it delivered:
+
+```yaml
+cache:
+  before: [UnitOfMeasure]            # brought up to date from OSDU before the run renders
+  after: [master-data--Wellbore]     # what the run delivers goes in as it ends
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `cache.before` | none | The types brought up to date from OSDU before the run renders. Each declaring cache flow's kind and query are searched through this pipeline's own connection to its partition, and the capture is merged as that flow's, so the run renders against what OSDU holds now, whoever delivered it. |
+| `cache.after` | none | The types the records the run changes in OSDU go into as it ends: what it delivered, removed or reverted is read back from OSDU's storage service by id; a record storage returns goes in as it is now, and one it no longer holds is taken out. |
+
+Each step is `auto`, or a list of at most 64 entries, each once. An entry is a type of the partition's cache by its name
+(`UnitOfMeasure`), or an OSDU entity type (`reference-data--UnitOfMeasure`), which stands for every type of the cache
+holding records of it, whichever repository's cache flow declares it. `auto` works the entries out:
+
+- **`before: auto`** takes the OSDU types the mapping reads, by name or by the entity type it checks the ids it builds
+  against.
+- **`after: auto`** takes every type holding the kind the pipeline delivers that some cache flow declares without a query.
+
+A run resolves the entries against what the partition's synced cache flows declare, and refuses before it reads or sends
+anything an entry naming nothing the cache holds, a lookup table (its cache flow captures it whole, in the order lineage
+gives), in `after` a type holding another kind than the pipeline delivers, and a type every declaring flow narrows with a
+query, since a delivered record the query does not match would stay in the cache.
+
+The two steps differ in what their failure means. **The before step is the run's to complete:** when a type cannot be read
+whole, the run fails before anything is sent, as a cache it must not render without demands. **The after step's failure is
+not the run's:** what the run did in OSDU stands, the run's result says what the step could not do, and the next refresh of
+the cache flows brings the records in. A run changing more than 50,000 records reads none back and says to run the
+refresh, which reads them more cheaply.
+
+Both steps tag what their changes reach, as a refresh does, and ask for those records to be planned again at once (up to
+100,000; the control plane's rollout carries the rest), so a pipeline later in the schedule finds them due: a record held
+because a reference named an id the cache did not hold is built again once the id is there. A deliver or replan run takes
+both steps; a drain of the whole flow, a removal and a reversal take the after step. In a source with interfaces, `cache`
+is every interface's unless the interface sets its own, which replaces it whole, and each interface renders against the
+newest cache when it starts, so the logs see the wellbores the interface before them put in. The run page shows what each
+step did under **Cache**, and the run's result carries it as `cacheBefore` and `cacheAfter`. [The partition
+cache](../concepts/partition-cache.md#pipelines-bring-the-cache-up-to-date) describes the steps in full.
+
 ## Schedules
 
 The `schedule:` key is SQLFlow's ([schedule](../../../../sqlflow/docs/reference/flow/schedule.md)): a schedule name, a
@@ -545,6 +599,10 @@ Every message starts with the file. A sample of what `sqlflow validate` refuses:
 | `render.cache` | `render.cache is not a setting any more: a flow reads the cache of the partition it delivers to (target.headers.data-partition-id), which every cache flow of that partition fills. Remove render.cache.` |
 | A missing hash column | `the flow decides payload changes by content hash, so source.payloads.curves.hashColumn must name the record column holding it; or take the files' modified times instead with change.payloadDetect: lastModified.` |
 | OAuth without a token block | `target.auth of type oauth2ClientCredentials needs a 'token' block with the token endpoint url and body.` |
+| A cache step that is neither auto nor a list | `cache.before is 'everything': write auto, or list the types of the partition's cache by name (UnitOfMeasure) or by OSDU entity type (reference-data--UnitOfMeasure), for example [UnitOfMeasure].` |
+| `auto` among a step's entries | `cache.after lists auto among its entries; auto stands alone: write cache.after: auto.` |
+| An after step on the dspdm route | `cache.after is set, and the dspdm route writes DSPDM rows, which are no OSDU records a type of the partition's cache holds. Remove it.` |
+| An entry the partition's cache does not hold (at run time) | `Pipeline '<name>' names in its cache steps what the cache of partition '<p>' cannot bring up to date, so nothing was read or sent: cache.after names '<entry>', which is neither a type of the partition's cache nor an entity type one holds; it holds ...` |
 
 `validate` also finds and reads the mapping the flow pins, as a run finds it (`render.mappings`, else the nearest
 `mappings` folder walking up), and refuses the flow when it is missing or does not load. What validate cannot check (the
