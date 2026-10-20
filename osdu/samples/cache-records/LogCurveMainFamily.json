@@ -1,13 +1,13 @@
 {
   "entityType": "reference-data--LogCurveMainFamily",
   "items": [
-    { "id": "dev:reference-data--LogCurveMainFamily:GammaRay", "Code": "GammaRay", "Name": "GammaRay" },
-    { "id": "dev:reference-data--LogCurveMainFamily:PhotoelectricFactor", "Code": "PhotoelectricFactor", "Name": "PhotoelectricFactor" },
-    { "id": "dev:reference-data--LogCurveMainFamily:Resistivity", "Code": "Resistivity", "Name": "Resistivity" },
-    { "id": "dev:reference-data--LogCurveMainFamily:BoreholeProperties", "Code": "BoreholeProperties", "Name": "BoreholeProperties" },
-    { "id": "dev:reference-data--LogCurveMainFamily:Reference", "Code": "Reference", "Name": "Reference" },
+    { "id": "dev:reference-data--LogCurveMainFamily:BoreholeProperties", "Code": "BoreholeProperties", "Name": "Borehole Properties" },
     { "id": "dev:reference-data--LogCurveMainFamily:Density", "Code": "Density", "Name": "Density" },
-    { "id": "dev:reference-data--LogCurveMainFamily:Slowness", "Code": "Slowness", "Name": "Slowness" },
-    { "id": "dev:reference-data--LogCurveMainFamily:Porosity", "Code": "Porosity", "Name": "Porosity" }
+    { "id": "dev:reference-data--LogCurveMainFamily:GammaRay", "Code": "GammaRay", "Name": "Gamma Ray" },
+    { "id": "dev:reference-data--LogCurveMainFamily:PhotoelectricFactor", "Code": "PhotoelectricFactor", "Name": "Photoelectric Factor" },
+    { "id": "dev:reference-data--LogCurveMainFamily:Porosity", "Code": "Porosity", "Name": "Porosity" },
+    { "id": "dev:reference-data--LogCurveMainFamily:Reference", "Code": "Reference", "Name": "Reference" },
+    { "id": "dev:reference-data--LogCurveMainFamily:Resistivity", "Code": "Resistivity", "Name": "Resistivity" },
+    { "id": "dev:reference-data--LogCurveMainFamily:Slowness", "Code": "Slowness", "Name": "Slowness" }
   ]
 }

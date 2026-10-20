@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The sample is a complete package.** Beside its well logs, the welldb sample delivers the wells and wellbores they
+  are logged in and every OSDU reference value its records refer to, OSDU's own published values and the well
+  database's own curve types, so it fills an empty partition with records whose references all resolve. Lineage
+  orders it: reference data, the caches capturing it, wells, wellbores, then logs. The reference values and the order
+  are explained on [Lineage](osdu/docs/reference/concepts/lineage.md#known-limits) and in the
+  [sample](osdu/samples/welldb).
+
 ### Changed
 
 - **The sample estate's lookup tables and reference records cover the sample's own curves.** The welldb curve

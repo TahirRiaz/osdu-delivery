@@ -1,0 +1,44 @@
+# Pre-ingestion: the well database's well files into the pre layer.
+#
+# The first flow of the chain welldb-well-03-delivery reads. It lands the CSV files under ../data/well into [pre].[Well]
+# as raw text and refreshes the typed view [pre].[v_Well] that welldb-well-02-ing reads. The files hold one row per well
+# of the well database with the elevation its logs are measured from, with its unit and reference point; the sample's
+# are made up by osdu/tools/SampleData, from the same seed as the logs, so every log's wellbore and every wellbore's
+# well is a row here.
+name: welldb-well-01-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/well
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: Well
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: false
+  onConvertError: fail
+  columns:
+    - { name: well_name, type: nvarchar(200) }
+    - { name: elevation, type: "decimal(38,18)" }
+    - { name: elevation_unit, type: varchar(20) }
+    - { name: elevation_reference, type: varchar(50) }
+    - { name: update_date, type: datetime2 }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-master

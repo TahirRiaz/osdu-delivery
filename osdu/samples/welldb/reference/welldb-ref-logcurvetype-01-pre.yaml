@@ -1,0 +1,46 @@
+# Pre-ingestion: LogCurveType reference values into the pre layer.
+#
+# The first flow of the chain welldb-ref-03-delivery reads for LogCurveType: the well database's own curve types, which
+# its curve dictionary files each mnemonic under. It lands the CSV files under data/log-curve-type into
+# [pre].[LogCurveType] as raw text and refreshes the typed view [pre].[v_LogCurveType] that
+# welldb-ref-logcurvetype-02-ing reads. The file holds the well database's own curve types, written by
+# osdu/tools/SampleData (--reference) from its curve dictionary. Every column is declared: a reference value is text the
+# record carries as it stands, whatever a value looks like.
+name: welldb-ref-logcurvetype-01-pre
+batch: welldb
+
+source:
+  type: csv
+  location: data/log-curve-type
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: LogCurveType
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: false
+  onConvertError: fail
+  columns:
+    - { name: code, type: "nvarchar(200)" }
+    - { name: name, type: "nvarchar(400)" }
+    - { name: description, type: "nvarchar(4000)" }
+    - { name: unit_quantity, type: "nvarchar(200)" }
+    - { name: attribution_authority, type: "nvarchar(200)" }
+    - { name: commit_date, type: "varchar(40)" }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-reference

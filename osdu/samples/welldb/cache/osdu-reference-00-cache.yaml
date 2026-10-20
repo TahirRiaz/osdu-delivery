@@ -1,10 +1,11 @@
 # Cache flow: osdu-reference-00-cache
 #
-# The OSDU reference data the WellLog mapping resolves its references against, captured from the partition itself: the
-# records of every reference type a well log of the well database points to. The mapping finds each reference in this
-# cache by its code and writes the id of the record it found, so a log goes out only with references to records the
-# partition holds, and a value the partition has no record for holds the log with the reason, instead of reaching OSDU as
-# a reference to nothing.
+# The OSDU reference data the sample's mappings resolve their references against, captured from the partition itself:
+# the records of every reference type a well, a wellbore or a well log of the well database points to, which
+# welldb-ref-03-delivery delivers, so lineage runs this flow after it. The mapping finds each reference in this cache by
+# its code and writes the id of the record it found, so a log goes out only with references to records the partition
+# holds, and a value the partition has no record for holds the log with the reason, instead of reaching OSDU as a
+# reference to nothing.
 #
 # Units are matched on ID, Code and Name, the fields a unit is known by. The translations the platform does not hold
 # (the well database's unit spellings and its curve dictionary) stay lookup tables, in welldb-lookups-00-cache: the
@@ -18,8 +19,8 @@ name: osdu-reference-00-cache
 batch: welldb
 
 # The OSDU partitions whose reference data this flow captures, each into that partition's own cache and with that
-# partition's data-partition-id on every request. A refresh names one of them (the partition run value: a dropdown in the
-# GUI, --set partition=<name> on the CLI, values in a schedule), or captures each in turn when it names none.
+# partition's data-partition-id on every request. A refresh names one of them (the partition run value: a dropdown in
+# the GUI, --set partition=<name> on the CLI, values in a schedule), or captures each in turn when it names none.
 partitions: [dev]
 
 source:

@@ -1,8 +1,8 @@
 source_unit,osdu_unit
-B/E,b/e
-B/ELEC,b/e
+B/E,Euc
+B/ELEC,Euc
 DEG,dega
-FRAC,v/v
+FRAC,m3/m3
 G/CC,g/cm3
 G/CM3,g/cm3
 GAPI,gAPI
@@ -13,4 +13,4 @@ OHM.M,ohm.m
 OHMM,ohm.m
 US/F,us/ft
 US/FT,us/ft
-V/V,v/v
+V/V,m3/m3

@@ -1,16 +1,16 @@
 {
   "entityType": "reference-data--LogCurveFamily",
   "items": [
-    { "id": "dev:reference-data--LogCurveFamily:Gamma%20Ray", "Code": "Gamma Ray", "Name": "Gamma Ray" },
-    { "id": "dev:reference-data--LogCurveFamily:Photoelectric%20Factor", "Code": "Photoelectric Factor", "Name": "Photoelectric Factor" },
-    { "id": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep", "Code": "Resistivity - Deep", "Name": "Resistivity - Deep" },
-    { "id": "dev:reference-data--LogCurveFamily:Caliper", "Code": "Caliper", "Name": "Caliper" },
-    { "id": "dev:reference-data--LogCurveFamily:Local-Bit%20Size", "Code": "Local-Bit Size", "Name": "Local-Bit Size" },
-    { "id": "dev:reference-data--LogCurveFamily:Local-Measured%20Depth", "Code": "Local-Measured Depth", "Name": "Local-Measured Depth" },
+    { "id": "dev:reference-data--LogCurveFamily:Bit%20Size", "Code": "Bit Size", "Name": "Bit Size" },
     { "id": "dev:reference-data--LogCurveFamily:Bulk%20Density", "Code": "Bulk Density", "Name": "Bulk Density" },
     { "id": "dev:reference-data--LogCurveFamily:Bulk%20Density%20Correction", "Code": "Bulk Density Correction", "Name": "Bulk Density Correction" },
+    { "id": "dev:reference-data--LogCurveFamily:Caliper", "Code": "Caliper", "Name": "Caliper" },
     { "id": "dev:reference-data--LogCurveFamily:Compressional%20Slowness", "Code": "Compressional Slowness", "Name": "Compressional Slowness" },
-    { "id": "dev:reference-data--LogCurveFamily:Shear%20Slowness", "Code": "Shear Slowness", "Name": "Shear Slowness" },
-    { "id": "dev:reference-data--LogCurveFamily:Local-Neutron%20Porosity", "Code": "Local-Neutron Porosity", "Name": "Local-Neutron Porosity" }
+    { "id": "dev:reference-data--LogCurveFamily:Gamma%20Ray", "Code": "Gamma Ray", "Name": "Gamma Ray" },
+    { "id": "dev:reference-data--LogCurveFamily:Measured%20Depth", "Code": "Measured Depth", "Name": "Measured Depth" },
+    { "id": "dev:reference-data--LogCurveFamily:Neutron%20Porosity", "Code": "Neutron Porosity", "Name": "Neutron Porosity" },
+    { "id": "dev:reference-data--LogCurveFamily:Photoelectric%20Factor", "Code": "Photoelectric Factor", "Name": "Photoelectric Factor" },
+    { "id": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep", "Code": "Resistivity - Deep", "Name": "Resistivity - Deep" },
+    { "id": "dev:reference-data--LogCurveFamily:Shear%20Slowness", "Code": "Shear Slowness", "Name": "Shear Slowness" }
   ]
 }

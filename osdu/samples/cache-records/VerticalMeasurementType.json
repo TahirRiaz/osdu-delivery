@@ -1,8 +1,6 @@
 {
   "entityType": "reference-data--VerticalMeasurementType",
   "items": [
-    { "id": "dev:reference-data--VerticalMeasurementType:KB", "Code": "KB", "Name": "Kelly bushing" },
-    { "id": "dev:reference-data--VerticalMeasurementType:KellyBushing", "Code": "KellyBushing", "Name": "Kelly bushing" },
-    { "id": "dev:reference-data--VerticalMeasurementType:RotaryTable", "Code": "RotaryTable", "Name": "Rotary table" }
+    { "id": "dev:reference-data--VerticalMeasurementType:KellyBushing", "Code": "KellyBushing", "Name": "Kelly bushing" }
   ]
 }

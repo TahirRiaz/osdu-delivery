@@ -42,6 +42,8 @@
     <!-- The key census files the editor analyses the module's documents with, checked against the loaders. -->
     <Content Include="..\..\docs\census\*.json" Link="census\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\flows\**" Link="samples\welldb\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The reference data the sample's records refer to: its flows, and the files its pre flows read. -->
+    <Content Include="..\..\samples\welldb\reference\**" Link="samples\welldb\reference\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\cache-records\**" Link="samples\cache-records\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- The source's drop-off folder: what the pre-ingestion flows read and the payload files the delivery streams. The
@@ -59,6 +61,7 @@
     <!-- The generator the sample estate's data is written with, so a suite can check that the committed files are exactly
          what it writes (SampleDataGeneratorTests). -->
     <Compile Include="..\..\tools\SampleData\SyntheticEstate.cs" Link="SampleData\SyntheticEstate.cs" />
+    <Compile Include="..\..\tools\SampleData\OsduReferenceValues.cs" Link="SampleData\OsduReferenceValues.cs" />
   </ItemGroup>
 
   <ItemGroup>

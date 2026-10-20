@@ -1,0 +1,61 @@
+# Mapping: the well database's wellbores into the master-data--Wellbore 1.3.0 template.
+#
+# One record per wellbore, its id the delivery key (a UUIDv5 over the system and the wellbore's name). The well database
+# names a wellbore's well by the well's name, which is the FacilityName of the well record welldb-well-03-delivery
+# delivers, so the well is searched for on the platform by that name: the same way the well log mapping finds a log's
+# wellbore. In lineage the search reads the Well kind, which orders the well delivery first.
+documentType: mapping
+name: Wellbore
+version: 1.3.0
+template:
+  kind: osdu:wks:master-data--Wellbore:1.3.0
+  version: 58d6bdbd9d066a06
+description: The well database's wellbores (one record per wellbore), each naming its well.
+
+dataset:
+  system: welldb
+  key: [wellbore_name]
+  label: "{wellbore_name} ({well_name})"
+  identity: [wellbore_name, well_name]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+# A wellbore's well, found by the name the well database gives it.
+searches:
+  Well:
+    kind: "osdu:wks:master-data--Well:*"
+    schema:
+      kind: osdu:wks:master-data--Well:1.2.0
+      version: d61b5c4745d024fc
+    description: The partition's wells, found by name.
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+
+  data:
+    FacilityName:
+      $from: wellbore_name
+      $modifiers: [trim]
+    WellID:
+      $search: Well
+      $findBy:
+        - data.FacilityName = well_name

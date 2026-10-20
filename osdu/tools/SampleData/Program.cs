@@ -6,24 +6,38 @@ namespace SqlFlow.Delivery.Tools.SampleData;
 
 /// <summary>
 /// Writes the sample estate's data: a handful of made-up well logs (the header file, the curve file and one parquet chunk
-/// per log, as the sample flows read them), or the lookup tables the sample mapping translates their values through. The
-/// data is synthetic and deterministic (<see cref="SyntheticEstate"/>): the same seed writes the same bytes, nothing is read
-/// from a network or a database, and no credential is needed. The committed files of <c>osdu/samples/welldb</c> are what
-/// <c>--out osdu/samples/welldb/data --date 20260924</c> and <c>--lookups osdu/samples/welldb/cache/data --date 20260901</c>
-/// write with the default seed, which the suites check (SampleDataGeneratorTests).
+/// per log, as the sample flows read them) with the wells and wellbores they are logged in, the lookup tables the sample
+/// mapping translates their values through, or the reference data the sample's records refer to. The logs, wells,
+/// wellbores and lookup tables are synthetic and deterministic (<see cref="SyntheticEstate"/>): the same seed writes the
+/// same bytes, nothing is read from a network or a database, and no credential is needed. The reference data is OSDU's
+/// own, read from a local checkout of the OSDU data definitions (<see cref="OsduReferenceValues"/>). The committed files of
+/// <c>osdu/samples/welldb</c> are what <c>--out osdu/samples/welldb/data --date 20260924</c>,
+/// <c>--lookups osdu/samples/welldb/cache/data --date 20260901</c> and <c>--reference osdu/samples/welldb/reference/data
+/// --osdu &lt;manifests&gt; --cache-records osdu/samples/cache-records --date 20261005</c> write, which the suites check
+/// (SampleDataGeneratorTests).
 /// </summary>
 public static partial class Program
 {
     private const string Usage = """
         Usage: SampleData --out <data folder> [--logs <n>] [--seed <n>] [--date <yyyyMMdd>]
                SampleData --lookups <cache data folder> [--date <yyyyMMdd>]
+               SampleData --reference <reference data folder> --osdu <manifests folder> [--cache-records <folder>] [--date <yyyyMMdd>]
 
           --out <folder>       Writes the well logs: <folder>/welllog/welllog_<date>.csv, <folder>/curves-meta/curves_<date>.csv
-                               and <folder>/curves/<project>/<log id>/chunk_00000.parquet, replacing the files the generator
-                               wrote there before.
+                               and <folder>/curves/<project>/<log id>/chunk_00000.parquet, and the wells and wellbores they
+                               are logged in: <folder>/well/well_<date>.csv and <folder>/wellbore/wellbore_<date>.csv,
+                               replacing the files the generator wrote there before.
           --lookups <folder>   Writes the lookup tables: <folder>/unit-alias/unit_alias_<date>.csv,
                                <folder>/depth-unit-alias/depth_unit_alias_<date>.csv and
                                <folder>/curve-dictionary/curve_dictionary_<date>.csv, replacing the files there before.
+          --reference <folder> Writes the reference data the sample's records refer to, one folder per kind
+                               (<folder>/unit-of-measure/unit_of_measure_<date>.csv, ...), replacing the files there before:
+                               OSDU's values, read from the reference value manifests of a checkout of the OSDU data
+                               definitions, and the well database's own curve types.
+          --osdu <folder>      The checkout's ReferenceValues/Manifests/reference-data folder (with --reference).
+          --cache-records <folder>
+                               Also writes the records a refresh of the reference cache captures once that data is
+                               delivered, one <entity type>.json per kind (with --reference).
           --logs <n>           How many logs to write, 1 to 40 (default 5).
           --seed <n>           The seed the values are drawn from, an unsigned 64-bit integer (default 20260924).
           --date <yyyyMMdd>    The date the file names carry (default today, UTC).
@@ -59,6 +73,10 @@ public static partial class Program
             {
                 await WriteLookupsAsync(lookups, options.Date).ConfigureAwait(false);
             }
+            else if (options.Reference is { } reference)
+            {
+                await WriteReferenceAsync(reference, options.Osdu!, options.CacheRecords, options.Date).ConfigureAwait(false);
+            }
             else
             {
                 await WriteLogsAsync(options.Out!, options.Logs, options.Seed, options.Date).ConfigureAwait(false);
@@ -80,8 +98,11 @@ public static partial class Program
         Clear(root, SampleWellLogs.LogFolder, "*.csv", SearchOption.TopDirectoryOnly);
         Clear(root, SampleWellLogs.CurveFolder, "*.csv", SearchOption.TopDirectoryOnly);
         Clear(root, SampleWellLogs.PayloadFolder, SampleWellLogs.ChunkFileName, SearchOption.AllDirectories);
+        Clear(root, SyntheticEstate.WellFolder, "*.csv", SearchOption.TopDirectoryOnly);
+        Clear(root, SyntheticEstate.WellboreFolder, "*.csv", SearchOption.TopDirectoryOnly);
 
         await SampleWellLogs.WriteAsync(root, logs, date).ConfigureAwait(false);
+        await SyntheticEstate.WriteMasterDataAsync(root, count, seed, date).ConfigureAwait(false);
 
         // Read back through the same reader the suites use, which checks every header's payload hash against its chunk.
         var reread = await SampleWellLogs.LoadAsync(root).ConfigureAwait(false);
@@ -91,6 +112,28 @@ public static partial class Program
             Console.WriteLine(string.Create(
                 CultureInfo.InvariantCulture,
                 $"  {log.WellboreUwi} {log.SourceProject}/{log.LogId}: {log.Curves.Count} curve(s), {log.Depths.Count} depth(s), payload hash {log.GridHash()}, delivery key {log.Key}"));
+        }
+    }
+
+    private static async Task WriteReferenceAsync(string root, string manifests, string? cacheRecords, string date)
+    {
+        Directory.CreateDirectory(root);
+        foreach (var folder in OsduReferenceValues.Kinds.Select(k => k.Folder).Append(OsduReferenceValues.LogCurveTypeFolder))
+        {
+            Clear(root, folder, "*.csv", SearchOption.TopDirectoryOnly);
+        }
+
+        await OsduReferenceValues.WriteAsync(root, manifests, date).ConfigureAwait(false);
+        foreach (var folder in OsduReferenceValues.Kinds.Select(k => k.Folder).Append(OsduReferenceValues.LogCurveTypeFolder))
+        {
+            var file = Directory.GetFiles(Path.Combine(root, folder), "*.csv").Single();
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {SampleWellLogs.ReadCsv(file).Count} row(s) to {file}."));
+        }
+
+        if (cacheRecords is not null)
+        {
+            await OsduReferenceValues.WriteCacheRecordsAsync(cacheRecords, root).ConfigureAwait(false);
+            Console.WriteLine($"Wrote the reference cache's records under {cacheRecords}.");
         }
     }
 
@@ -159,12 +202,15 @@ public static partial class Program
         }
     }
 
-    private sealed record Options(string? Out, string? Lookups, int Logs, ulong Seed, string Date)
+    private sealed record Options(string? Out, string? Lookups, string? Reference, string? Osdu, string? CacheRecords, int Logs, ulong Seed, string Date)
     {
         public static Options Parse(string[] args)
         {
             string? output = null;
             string? lookups = null;
+            string? reference = null;
+            string? osdu = null;
+            string? cacheRecords = null;
             int? logs = null;
             ulong? seed = null;
             string? date = null;
@@ -191,6 +237,15 @@ public static partial class Program
                     case "--lookups":
                         lookups = Folder(name, value);
                         break;
+                    case "--reference":
+                        reference = Folder(name, value);
+                        break;
+                    case "--osdu":
+                        osdu = Folder(name, value);
+                        break;
+                    case "--cache-records":
+                        cacheRecords = Folder(name, value);
+                        break;
                     case "--logs":
                         logs = int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var count) && count is >= 1 and <= SyntheticEstate.MaxLogs
                             ? count
@@ -211,19 +266,27 @@ public static partial class Program
                 }
             }
 
-            if ((output is null) == (lookups is null))
+            if (new[] { output, lookups, reference }.Count(o => o is not null) != 1)
             {
-                throw new ArgumentException("Name exactly one of --out (the well logs) and --lookups (the lookup tables).");
+                throw new ArgumentException("Name exactly one of --out (the well logs), --lookups (the lookup tables) and --reference (the reference data).");
             }
 
-            if (lookups is not null && (logs is not null || seed is not null))
+            if (output is null && (logs is not null || seed is not null))
             {
-                throw new ArgumentException("--logs and --seed choose the well logs; the lookup tables take neither.");
+                throw new ArgumentException("--logs and --seed choose the well logs; the lookup tables and the reference data take neither.");
+            }
+
+            if ((reference is null) != (osdu is null) || (cacheRecords is not null && reference is null))
+            {
+                throw new ArgumentException("--reference reads the OSDU values from --osdu, and --osdu and --cache-records go with --reference alone.");
             }
 
             return new Options(
                 output,
                 lookups,
+                reference,
+                osdu,
+                cacheRecords,
                 logs ?? SyntheticEstate.DefaultLogs,
                 seed ?? SyntheticEstate.DefaultSeed,
                 date ?? DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture));

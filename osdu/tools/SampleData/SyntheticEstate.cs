@@ -120,10 +120,11 @@ public static class SyntheticEstate
     /// </summary>
     public static IReadOnlyList<IReadOnlyDictionary<string, string?>> UnitAliasRows() => Rows(UnitAliasColumns,
     [
-        ["B/E", "b/e"],
-        ["B/ELEC", "b/e"],
+        // OSDU's unit catalog has no barn per electron: its Photoelectric Factor family is dimensionless, written in euclid.
+        ["B/E", "Euc"],
+        ["B/ELEC", "Euc"],
         ["DEG", "dega"],
-        ["FRAC", "v/v"],
+        ["FRAC", "m3/m3"],
         ["G/CC", "g/cm3"],
         ["G/CM3", "g/cm3"],
         ["GAPI", "gAPI"],
@@ -134,7 +135,7 @@ public static class SyntheticEstate
         ["OHMM", "ohm.m"],
         ["US/F", "us/ft"],
         ["US/FT", "us/ft"],
-        ["V/V", "v/v"],
+        ["V/V", "m3/m3"],
     ]);
 
     /// <summary>The depth and elevation unit spellings the well database writes, each with the UnitOfMeasure code it means.</summary>
@@ -147,27 +148,144 @@ public static class SyntheticEstate
     ]);
 
     /// <summary>
-    /// The curve dictionary: what each mnemonic is, as the codes of the partition's LogCurveType, LogCurveMainFamily and
-    /// LogCurveFamily records its id ends with (percent-escaped, as an id writes them), the unit quantity, and the unit
-    /// of a curve of that type. A type the partition defines itself carries the <c>Local-</c> prefix. The comment is the
-    /// word null where an entry has none, as the export writes it. The dictionary lists the mnemonics the sample logs carry,
-    /// and one mnemonic the well database files under another (GRC under GR).
+    /// The curve dictionary: what each mnemonic is, as the codes of the LogCurveType, LogCurveMainFamily and LogCurveFamily
+    /// records its id ends with (percent-escaped, as an id writes them), the unit quantity, and the unit of a curve of that
+    /// type. The curve types are the well database's own, named as OSDU names a company's (<c>WellDB:GR</c>, as OSDU's
+    /// values hold <c>Schlumberger:GR</c>), since a partition defines its LogCurveType values itself; the families, main
+    /// families, quantities and units are OSDU's published reference values. The comment is the word null where an entry
+    /// has none, as the export writes it. The dictionary lists the mnemonics the sample logs carry, and one mnemonic the
+    /// well database files under another (GRC under GR).
     /// </summary>
     public static IReadOnlyList<IReadOnlyDictionary<string, string?>> CurveDictionaryRows() => Rows(CurveDictionaryColumns,
     [
-        ["MD", "Local-DEPTH", "Reference", "Local-Measured%20Depth", "length", "m", "null"],
-        ["BS", "Local-BS", "BoreholeProperties", "Local-Bit%20Size", "length", "in", "null"],
-        ["CALI", "Local-CALI", "BoreholeProperties", "Caliper", "length", "in", "null"],
-        ["GR", "Local-GR", "GammaRay", "Gamma%20Ray", "API%20gamma%20ray", "gAPI", "null"],
-        ["GRC", "Local-GR", "GammaRay", "Gamma%20Ray", "API%20gamma%20ray", "gAPI", "Environmentally corrected gamma ray; filed as GR"],
-        ["RD", "Local-RD", "Resistivity", "Resistivity%20-%20Deep", "electrical%20resistivity", "ohm.m", "null"],
-        ["RHOB", "Local-RHOB", "Density", "Bulk%20Density", "mass%20per%20volume", "g/cm3", "null"],
-        ["DRHO", "Local-DRHO", "Density", "Bulk%20Density%20Correction", "mass%20per%20volume", "g/cm3", "null"],
-        ["NPHI", "Local-NPHI", "Porosity", "Local-Neutron%20Porosity", "volume%20per%20volume", "v/v", "null"],
-        ["DT", "Local-DT", "Slowness", "Compressional%20Slowness", "time%20per%20length", "us/ft", "null"],
-        ["DTS", "Local-DTS", "Slowness", "Shear%20Slowness", "time%20per%20length", "us/ft", "null"],
-        ["PEF", "Local-PEF", "PhotoelectricFactor", "Photoelectric%20Factor", "dimensionless", "b/e", "null"],
+        ["MD", "WellDB:MD", "Reference", "Measured%20Depth", "length", "m", "null"],
+        ["BS", "WellDB:BS", "BoreholeProperties", "Bit%20Size", "length", "in", "null"],
+        ["CALI", "WellDB:CALI", "BoreholeProperties", "Caliper", "length", "in", "null"],
+        ["GR", "WellDB:GR", "GammaRay", "Gamma%20Ray", "API%20gamma%20ray", "gAPI", "null"],
+        ["GRC", "WellDB:GR", "GammaRay", "Gamma%20Ray", "API%20gamma%20ray", "gAPI", "Environmentally corrected gamma ray; filed as GR"],
+        ["RD", "WellDB:RD", "Resistivity", "Resistivity%20-%20Deep", "electrical%20resistivity", "ohm.m", "null"],
+        ["RHOB", "WellDB:RHOB", "Density", "Bulk%20Density", "mass%20per%20volume", "g/cm3", "null"],
+        ["DRHO", "WellDB:DRHO", "Density", "Bulk%20Density%20Correction", "mass%20per%20volume", "g/cm3", "null"],
+        ["NPHI", "WellDB:NPHI", "Porosity", "Neutron%20Porosity", "dimensionless", "m3/m3", "null"],
+        ["DT", "WellDB:DT", "Slowness", "Compressional%20Slowness", "time%20per%20length", "us/ft", "null"],
+        ["DTS", "WellDB:DTS", "Slowness", "Shear%20Slowness", "time%20per%20length", "us/ft", "null"],
+        ["PEF", "WellDB:PEF", "PhotoelectricFactor", "Photoelectric%20Factor", "dimensionless", "Euc", "null"],
     ]);
+
+    /// <summary>
+    /// The reference values the sample's mappings write as fixed codes rather than read from a source column, by entity
+    /// type: a log's type, its sampling domain and its technical assurance, the curves' business value, and the point a
+    /// well's elevation is measured from. With the codes the lookup tables translate to, they are the OSDU reference
+    /// values the sample's records refer to, and the sample delivers each of them (<see cref="OsduReferenceValues"/>).
+    /// </summary>
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> MappedCodes { get; } = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+    {
+        ["LogType"] = ["Interpreted"],
+        ["WellLogSamplingDomainType"] = ["Depth"],
+        ["TechnicalAssuranceType"] = ["Unevaluated"],
+        ["LogCurveBusinessValue"] = ["High"],
+        ["VerticalMeasurementType"] = ["KellyBushing"],
+    };
+
+    /// <summary>The columns of the well database's curve type file.</summary>
+    public static IReadOnlyList<string> LogCurveTypeColumns { get; } =
+        ["code", "name", "description", "unit_quantity", "attribution_authority", "commit_date"];
+
+    /// <summary>
+    /// The curve types the well database defines, one row per type its curve dictionary files a mnemonic under: the code
+    /// (also its name, as OSDU's curve types are named), a description in the form OSDU's curve types carry, and the unit
+    /// quantity a curve of the type is measured in, as the code of an OSDU UnitQuantity record.
+    /// </summary>
+    public static IReadOnlyList<IReadOnlyDictionary<string, string?>> LogCurveTypeRows()
+    {
+        var rows = new List<IReadOnlyDictionary<string, string?>>();
+        foreach (var entry in CurveDictionaryRows().GroupBy(r => r["log_curve_type_id"]!, StringComparer.Ordinal))
+        {
+            var row = entry.First();
+            var mnemonic = entry.Key[(entry.Key.IndexOf(':', StringComparison.Ordinal) + 1)..];
+            var quantity = Uri.UnescapeDataString(row["unit_quantity_id"]!);
+            var name = mnemonic == SampleWellLogs.IndexCurveId ? "Measured Depth" : CurveTypes[mnemonic].Description;
+            rows.Add(new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["code"] = entry.Key,
+                ["name"] = entry.Key,
+                ["description"] = $"{name}; Company: WellDB; UnitQuantity: {quantity}",
+                ["unit_quantity"] = quantity,
+                ["attribution_authority"] = SourceSystem,
+                ["commit_date"] = "2026-09-01T00:00:00Z",
+            });
+        }
+
+        return rows;
+    }
+
+    /// <summary>The columns of the well file.</summary>
+    public static IReadOnlyList<string> WellColumns { get; } = ["well_name", "elevation", "elevation_unit", "elevation_reference", "update_date"];
+
+    /// <summary>The columns of the wellbore file.</summary>
+    public static IReadOnlyList<string> WellboreColumns { get; } = ["wellbore_name", "well_name", "update_date"];
+
+    /// <summary>The folder under the data root the pre flow reads the well file from.</summary>
+    public const string WellFolder = "well";
+
+    /// <summary>The folder under the data root the pre flow reads the wellbore file from.</summary>
+    public const string WellboreFolder = "wellbore";
+
+    /// <summary>The name a well of the estate has: its letter.</summary>
+    public static string WellName(int well)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(well);
+        return string.Create(CultureInfo.InvariantCulture, $"Well {(char)('A' + well)}");
+    }
+
+    /// <summary>
+    /// The wells and wellbores the first <paramref name="count"/> logs of <paramref name="seed"/> are logged in: one well
+    /// row per well, with the elevation its logs are measured from and when the well database last changed it, and one
+    /// wellbore row per wellbore, naming its well. Both are in the order a well database lists them (by name), and every
+    /// log's wellbore and every wellbore's well is a row here, so the master data and the logs agree by construction.
+    /// </summary>
+    public static (IReadOnlyList<IReadOnlyDictionary<string, string?>> Wells, IReadOnlyList<IReadOnlyDictionary<string, string?>> Wellbores) MasterData(int count, ulong seed)
+    {
+        if (count is < 1 or > MaxLogs)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"A sample estate holds between 1 and {MaxLogs} logs.");
+        }
+
+        var wells = new SortedDictionary<string, IReadOnlyDictionary<string, string?>>(StringComparer.Ordinal);
+        var wellbores = new SortedDictionary<string, IReadOnlyDictionary<string, string?>>(StringComparer.Ordinal);
+        for (var index = 0; index < count; index++)
+        {
+            var (well, _, _) = WellboreOf(index);
+            var (elevation, updated) = WellFacts(well, seed);
+            var stamp = updated.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            wells[WellName(well)] = new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["well_name"] = WellName(well),
+                ["elevation"] = elevation.ToString("0.0", CultureInfo.InvariantCulture),
+                ["elevation_unit"] = "M",
+                ["elevation_reference"] = "KB",
+                ["update_date"] = stamp,
+            };
+            wellbores[WellboreName(index)] = new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["wellbore_name"] = WellboreName(index),
+                ["well_name"] = WellName(well),
+                ["update_date"] = stamp,
+            };
+        }
+
+        return ([.. wells.Values], [.. wellbores.Values]);
+    }
+
+    /// <summary>Writes the well and wellbore files under <paramref name="dataRoot"/>, named for <paramref name="date"/> (yyyyMMdd).</summary>
+    public static async Task WriteMasterDataAsync(string dataRoot, int count, ulong seed, string date, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(date);
+        var (wells, wellbores) = MasterData(count, seed);
+        await SampleWellLogs.WriteCsvAsync(Path.Combine(dataRoot, WellFolder, $"well_{date}.csv"), WellColumns, wells, ct).ConfigureAwait(false);
+        await SampleWellLogs.WriteCsvAsync(Path.Combine(dataRoot, WellboreFolder, $"wellbore_{date}.csv"), WellboreColumns, wellbores, ct).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Writes the lookup tables under <paramref name="cacheDataRoot"/>: one file per table in a folder of its own, named for
@@ -227,19 +345,29 @@ public static class SyntheticEstate
         return (well + (3 * (index / Wellbores.Length)), wellbore, sidetrack);
     }
 
+    /// <summary>
+    /// What belongs to a well: the elevation its logs are measured from and the moment the well database last changed it,
+    /// drawn from a stream of the well's own, so every log and the well row agree.
+    /// </summary>
+    private static (double Elevation, DateTime Updated) WellFacts(int well, ulong seed)
+    {
+        var wellRandom = new SplitMix64(seed ^ (0xC2B2AE3D27D4EB4FUL * (ulong)(well + 1)));
+        var elevation = Math.Round(wellRandom.Between(20, 90), 1, MidpointRounding.AwayFromZero);
+        var updated = new DateTime(2026, 8, 18, 10, 0, 0, DateTimeKind.Utc).AddSeconds(Math.Floor(wellRandom.Between(0, 7200)));
+        return (elevation, updated);
+    }
+
     private static SampleLog WellLog(int index, ulong seed)
     {
         // Each log draws from a stream of its own, so its values depend on the seed and its position alone.
         var random = new SplitMix64(seed ^ (0x9E3779B97F4A7C15UL * (ulong)(index + 1)));
         var (well, _, _) = WellboreOf(index);
-        var wellRandom = new SplitMix64(seed ^ (0xC2B2AE3D27D4EB4FUL * (ulong)(well + 1)));
         var suite = Suites[index % Suites.Length];
         var logId = LogId(index);
 
         // The wellbore's elevation and the moment the log last changed belong to the well, so the two sidetracks of one
         // wellbore were measured from the same point and updated together.
-        var elevation = Math.Round(wellRandom.Between(20, 90), 1, MidpointRounding.AwayFromZero);
-        var updated = new DateTime(2026, 8, 18, 10, 0, 0, DateTimeKind.Utc).AddSeconds(Math.Floor(wellRandom.Between(0, 7200)));
+        var (elevation, updated) = WellFacts(well, seed);
         var recorded = new DateTime(2021, 11, 10, 6, 0, 0, DateTimeKind.Utc)
             .AddDays(index * 2)
             .AddSeconds(Math.Floor(random.Between(0, 43200)));

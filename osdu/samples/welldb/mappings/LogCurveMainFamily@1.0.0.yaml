@@ -1,0 +1,68 @@
+# Mapping: LogCurveMainFamily reference values into the reference-data--LogCurveMainFamily 1.0.0 template.
+#
+# One record per value: the main families the curve dictionary files the sample's curves under. The values are OSDU's
+# own values (LOCAL governance), as the OSDU data definitions publish them, without their name aliases, which would
+# bring in the alias types and standards organisations they name. The record's id is made from its code (dataset.idFrom:
+# key), as OSDU names its reference values, so dev:reference-data--LogCurveMainFamily:<code> is the same record wherever
+# the value comes from.
+documentType: mapping
+name: LogCurveMainFamily
+version: 1.0.0
+template:
+  kind: osdu:wks:reference-data--LogCurveMainFamily:1.0.0
+  version: f427ef2eecfaa4ac
+description: The LogCurveMainFamily values the sample's records refer to.
+
+dataset:
+  system: welldb
+  key: [code]
+  idFrom: key
+  label: "{name} ({code})"
+  identity: [code]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+
+  data:
+    Code: { $from: code }
+    Name: { $from: name }
+    Description:
+      $from: description
+      $required: false
+    AttributionAuthority:
+      $from: attribution_authority
+      $required: false
+    AttributionPublication:
+      $from: attribution_publication
+      $required: false
+    AttributionRevision:
+      $from: attribution_revision
+      $required: false
+    Source:
+      $from: source
+      $required: false
+    CommitDate:
+      $from: commit_date
+      $modifiers: [date]
+      $required: false

@@ -2,13 +2,25 @@
 # fires its flows as one group in lineage order (pre-ingestion, then ingestion, then what reads the ingestion tables), and
 # "Run now" on the Schedules page (POST /api/v1/schedules/{id}/run) runs the whole chain on demand. A single flow still
 # runs on its own from the Pipelines page or with `sqlflow run <flow>`.
+#
+# The nightly chain fills an empty partition in the order its records refer to each other: the reference data first,
+# then the caches capture it, then the wells and wellbores, which refer to it. Each link fires when the one before it has
+# run (`after:`), and lineage orders the flows inside each link.
 schedules:
-  # Nightly: the lookup tables land and are keyed (unit spellings, curve dictionary), then the lookups cache captures
-  # them, and the reference cache captures the partition's reference data from OSDU. Well before the hourly delivery, so
-  # a delivery renders against a cache captured the same day.
-  welldb-cache:
-    cron: "30 1 * * *"
+  # Nightly: the reference values the estate's records refer to land, are keyed and are delivered.
+  welldb-reference:
+    cron: "0 1 * * *"
     timezone: UTC
+
+  # After the reference data: the lookup tables land and are keyed (unit spellings, curve dictionary), then the lookups
+  # cache captures them, and the reference cache captures the partition's reference data, the values just delivered
+  # among them.
+  welldb-cache:
+    after: welldb-reference
+
+  # After the caches: the wells, then the wellbores, which search for their wells by name.
+  welldb-master:
+    after: welldb-cache
 
   # Hourly: the well log header and curve files land and are keyed, then the delivery sends what changed to the
   # wellbore DDMS. The delivery flow's one required parameter is the log source it delivers.

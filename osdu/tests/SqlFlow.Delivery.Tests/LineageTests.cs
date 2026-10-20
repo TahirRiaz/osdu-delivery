@@ -53,7 +53,7 @@ public sealed class LineageTests : IDisposable
     public LineageTests()
     {
         Directory.CreateDirectory(_root);
-        foreach (var folder in new[] { "flows", "cache", "mappings", "data" })
+        foreach (var folder in new[] { "flows", "reference", "cache", "mappings", "data" })
         {
             Copy(Path.Combine(Samples.Source, folder), Path.Combine(_root, Source, folder));
         }
@@ -363,6 +363,17 @@ public sealed class LineageTests : IDisposable
         Assert.True(WaveOf(report, "welldb-lookups-00-cache") < WaveOf(report, "welldb-welllog-03-header-delivery"));
         Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-04-metadata-retrieval"));
 
+        // The sample fills an empty partition in the order its records refer to each other, each step after what it reads:
+        // the unit quantities, their capture, the reference data checked against it, the capture of that, the wells, the
+        // wellbores that search for them, and the logs that search for the wellbores.
+        string[] order =
+        [
+            "welldb-ref-unitquantity-03-delivery", "osdu-unitquantity-00-cache", "welldb-ref-03-delivery", "osdu-reference-00-cache",
+            "welldb-well-03-delivery", "welldb-wellbore-03-delivery", "welldb-welllog-03-header-delivery",
+        ];
+        Assert.All(order.Zip(order.Skip(1)), step => Assert.True(
+            WaveOf(report, step.First) < WaveOf(report, step.Second), $"{step.First} runs before {step.Second}"));
+
         // The assertion flow reads the kind the well log delivery writes, so its tests run once the logs have landed.
         Assert.True(WaveOf(report, "welldb-welllog-03-header-delivery") < WaveOf(report, "welldb-welllog-04-header-assertion"));
         Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-04-header-assertion" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellLogKind));
@@ -374,8 +385,13 @@ public sealed class LineageTests : IDisposable
             [
                 InRepo("cache/data/curve-dictionary"), InRepo("cache/data/depth-unit-alias"), InRepo("cache/data/unit-alias"),
                 InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"),
-                InRepo("data/stations"), InRepo("data/wellbore"),
+                InRepo("data/stations"), InRepo("data/well"), InRepo("data/wellbore"),
                 InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("flows/samples/wells/out/metadata"),
+                InRepo("reference/data/log-curve-business-value"), InRepo("reference/data/log-curve-family"),
+                InRepo("reference/data/log-curve-main-family"), InRepo("reference/data/log-curve-type"),
+                InRepo("reference/data/log-type"), InRepo("reference/data/technical-assurance-type"),
+                InRepo("reference/data/unit-of-measure"), InRepo("reference/data/unit-quantity"),
+                InRepo("reference/data/vertical-measurement-type"), InRepo("reference/data/well-log-sampling-domain-type"),
             ],
             files);
 
@@ -425,7 +441,12 @@ public sealed class LineageTests : IDisposable
         // system.
         Assert.Contains(report.Edges, e => e.Flow == "wells-source-03-interfaces-delivery" && e.ViaModule is null && e.Relation == LineageRelation.Reads && e.ObjectKey == wellLog);
         Assert.Equal(
-            ["Document@1.0.0", "WellLog@1.4.0", "Wellbore@1.0.0", "WellboreTrajectory@1.3.0"],
+            [
+                "Document@1.0.0", "LogCurveBusinessValue@1.0.0", "LogCurveFamily@1.1.0", "LogCurveMainFamily@1.0.0", "LogCurveType@1.1.0",
+                "LogType@1.0.0", "TechnicalAssuranceType@1.0.0", "UnitOfMeasure@1.0.0", "UnitQuantity@1.0.0",
+                "VerticalMeasurementType@1.0.3", "Well@1.2.0", "WellLog@1.4.0", "WellLogSamplingDomainType@1.0.0", "Wellbore@1.0.0",
+                "Wellbore@1.3.0", "WellboreTrajectory@1.3.0",
+            ],
             types.Values.Where(o => ServerIdentity.DatasetSystem(o.Key) == OsduLineage.MappingSystem).Select(o => o.Name).Order(StringComparer.Ordinal).ToList());
         Assert.Contains(report.Edges, e => e.Flow == "wells-osdu-04-metadata-retrieval" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
 

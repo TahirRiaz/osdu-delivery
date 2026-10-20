@@ -1,0 +1,12 @@
+code,name,description,unit_quantity,attribution_authority,commit_date
+WellDB:MD,WellDB:MD,Measured Depth; Company: WellDB; UnitQuantity: length,length,WELLDB,2026-09-01T00:00:00Z
+WellDB:BS,WellDB:BS,Bit Size; Company: WellDB; UnitQuantity: length,length,WELLDB,2026-09-01T00:00:00Z
+WellDB:CALI,WellDB:CALI,Caliper [hole diameter]; Company: WellDB; UnitQuantity: length,length,WELLDB,2026-09-01T00:00:00Z
+WellDB:GR,WellDB:GR,Gamma Ray; Company: WellDB; UnitQuantity: API gamma ray,API gamma ray,WELLDB,2026-09-01T00:00:00Z
+WellDB:RD,WellDB:RD,Deep resistivity; Company: WellDB; UnitQuantity: electrical resistivity,electrical resistivity,WELLDB,2026-09-01T00:00:00Z
+WellDB:RHOB,WellDB:RHOB,Bulk Density; Company: WellDB; UnitQuantity: mass per volume,mass per volume,WELLDB,2026-09-01T00:00:00Z
+WellDB:DRHO,WellDB:DRHO,Density correction; Company: WellDB; UnitQuantity: mass per volume,mass per volume,WELLDB,2026-09-01T00:00:00Z
+WellDB:NPHI,WellDB:NPHI,Neutron Porosity; Company: WellDB; UnitQuantity: dimensionless,dimensionless,WELLDB,2026-09-01T00:00:00Z
+WellDB:DT,WellDB:DT,Compressional Slowness; Company: WellDB; UnitQuantity: time per length,time per length,WELLDB,2026-09-01T00:00:00Z
+WellDB:DTS,WellDB:DTS,Shear Slowness; Company: WellDB; UnitQuantity: time per length,time per length,WELLDB,2026-09-01T00:00:00Z
+WellDB:PEF,WellDB:PEF,Photoelectric Factor; Company: WellDB; UnitQuantity: dimensionless,dimensionless,WELLDB,2026-09-01T00:00:00Z

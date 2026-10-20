@@ -537,10 +537,10 @@ public class ReferenceCacheTests
     /// <summary>
     /// The sample mapping once declared the source unit `V/V` as `%`, so a neutron porosity of 0.21 was published as 0.21
     /// percent, a hundredth of what the curve carries. `V/V` is a volume fraction, which the well database's unit spellings
-    /// translate to the partition's `v/v`. The sample mapping's own curve unit entry is rendered here against the sample template and
-    /// cache, through the curve unit map it reads from the cache, so the map and the cached reference data have to agree for
-    /// this to pass. The cache holds `%` as well as `v/v`, so replacing the unit back with `%` would resolve rather than
-    /// hold: only the rendered id catches it.
+    /// translate to OSDU's `m3/m3` (cubic metre per cubic metre). The sample mapping's own curve unit entry is rendered here
+    /// against the sample template and cache, through the curve unit map it reads from the cache, so the map and the cached
+    /// reference data have to agree for this to pass, and the rendered id is checked as well, so a map that resolved to
+    /// another unit the cache holds would not pass either.
     /// </summary>
     [Fact]
     public async Task The_sample_mapping_renders_the_porosity_unit_as_a_volume_fraction()
@@ -549,7 +549,7 @@ public class ReferenceCacheTests
         var curveUnit = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveUnit");
         Assert.Equal("UnitAlias", curveUnit.Modifiers.Single(m => m.Kind == ModifierKind.Replace).Table!.CacheType);
         var units = Samples.SampleLookups().Single(t => t.Name == "UnitAlias");
-        Assert.Equal("v/v", units.Match("source_unit", "V/V")!.Select("osdu_unit")!.Text);
+        Assert.Equal("m3/m3", units.Match("source_unit", "V/V")!.Select("osdu_unit")!.Text);
 
         var version = await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope);
         Assert.NotNull(version);
@@ -590,7 +590,7 @@ public class ReferenceCacheTests
 
         Assert.False(porosity.IsHeld, string.Join("; ", porosity.Holds));
         var curve = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
-        Assert.Equal("dev:reference-data--UnitOfMeasure:v%2Fv:", curve!["CurveUnit"]!.GetValue<string>());
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m3%2Fm3:", curve!["CurveUnit"]!.GetValue<string>());
     }
 }
 

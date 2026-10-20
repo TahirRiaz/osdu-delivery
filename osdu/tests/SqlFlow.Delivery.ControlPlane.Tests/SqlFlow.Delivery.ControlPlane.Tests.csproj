@@ -56,6 +56,7 @@
     <!-- The sample estate the submission and template suites run against, copied next to the binaries so the suites
          work wherever the build output lands. The data files come too: a submission lands its records beside them. -->
     <Content Include="..\..\samples\welldb\flows\**" Link="samples\welldb\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\reference\**" Link="samples\welldb\reference\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\mappings\**" Link="samples\welldb\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\cache\**" Link="samples\welldb\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\data\**" Link="samples\welldb\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />

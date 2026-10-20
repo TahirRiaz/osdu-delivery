@@ -55,6 +55,94 @@ public sealed class SampleDataGeneratorTests
     }
 
     [Fact]
+    public async Task The_committed_wells_and_wellbores_are_what_the_generator_writes_with_its_default_seed()
+    {
+        var root = Samples.NewTempDirectory();
+        try
+        {
+            await SyntheticEstate.WriteMasterDataAsync(root, SyntheticEstate.DefaultLogs, SyntheticEstate.DefaultSeed, "20260924");
+            foreach (var folder in new[] { SyntheticEstate.WellFolder, SyntheticEstate.WellboreFolder })
+            {
+                var written = Directory.GetFiles(Path.Combine(root, folder), "*.csv").Single();
+                var committed = Directory.GetFiles(Path.Combine(Samples.Data, folder), "*.csv").Single();
+                Assert.Equal(Path.GetFileName(written), Path.GetFileName(committed));
+                Assert.Equal(
+                    (await File.ReadAllTextAsync(written)).ReplaceLineEndings("\n"),
+                    (await File.ReadAllTextAsync(committed)).ReplaceLineEndings("\n"));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Every_log_names_a_wellbore_of_the_sample_and_every_wellbore_a_well_measured_from_where_its_logs_are()
+    {
+        var wells = Single(Path.Combine(Samples.Data, SyntheticEstate.WellFolder)).ToDictionary(r => r["well_name"]!, StringComparer.Ordinal);
+        var wellbores = Single(Path.Combine(Samples.Data, SyntheticEstate.WellboreFolder)).ToDictionary(r => r["wellbore_name"]!, StringComparer.Ordinal);
+        var logs = SampleWellLogs.Logs();
+
+        foreach (var log in logs)
+        {
+            Assert.True(wellbores.TryGetValue(log.WellboreUwi, out var wellbore), $"{log.LogId} is logged in {log.WellboreUwi}, which the wellbore file does not hold.");
+            var well = wells[wellbore!["well_name"]!];
+            Assert.Equal(log.ElevMeasRef, $"{well["elevation"]} {well["elevation_unit"]}");
+            Assert.Equal(log.LogsMeasFrom, well["elevation_reference"]);
+        }
+
+        // Nothing is delivered that no log needs: every wellbore has a log, and every well a wellbore.
+        Assert.Equal(wellbores.Keys.Order(StringComparer.Ordinal), logs.Select(l => l.WellboreUwi).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+        Assert.Equal(wells.Keys.Order(StringComparer.Ordinal), wellbores.Values.Select(w => w["well_name"]!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_committed_curve_types_and_reference_cache_records_are_what_the_generator_writes()
+    {
+        var curveTypes = Single(Path.Combine(ReferenceData, OsduReferenceValues.LogCurveTypeFolder));
+        Assert.Equal(
+            SyntheticEstate.LogCurveTypeRows().Select(r => string.Join("|", SyntheticEstate.LogCurveTypeColumns.Select(c => r[c]))),
+            curveTypes.Select(r => string.Join("|", SyntheticEstate.LogCurveTypeColumns.Select(c => r[c]))));
+
+        foreach (var (entity, items) in OsduReferenceValues.CacheRecords(ReferenceData))
+        {
+            var committed = await File.ReadAllTextAsync(Path.Combine(Samples.SampleCacheRecords, entity + ".json"));
+            Assert.Equal(OsduReferenceValues.CacheFile(entity, items), committed.ReplaceLineEndings("\n"));
+        }
+    }
+
+    [Fact]
+    public void The_reference_data_holds_every_value_the_sample_refers_to_and_nothing_else()
+    {
+        var codes = OsduReferenceValues.Kinds.Select(k => (k.Entity, k.Folder))
+            .Append(("LogCurveType", OsduReferenceValues.LogCurveTypeFolder))
+            .ToDictionary(k => k.Item1, k => Single(Path.Combine(ReferenceData, k.Item2)), StringComparer.Ordinal);
+        static IEnumerable<string> Column(IEnumerable<IReadOnlyDictionary<string, string?>> rows, string column) =>
+            rows.Select(r => r[column]!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+
+        foreach (var (entity, referenced) in OsduReferenceValues.ReferencedCodes())
+        {
+            Assert.Equal(referenced.Order(StringComparer.Ordinal), Column(codes[entity], "code"));
+        }
+
+        Assert.Equal(Column(SyntheticEstate.CurveDictionaryRows(), "log_curve_type_id"), Column(codes["LogCurveType"], "code"));
+
+        // The unit quantities are the ones the units, families and curve types are measured in, so each of those
+        // references names a record the sample delivers.
+        var quantities = codes["UnitOfMeasure"].Concat(codes["LogCurveFamily"]).Concat(codes["LogCurveType"]);
+        Assert.Equal(Column(quantities, "unit_quantity"), Column(codes["UnitQuantity"], "code"));
+
+        // Every code is one OSDU's ids carry as the record's key: no value of a kind is written twice.
+        Assert.All(codes, kind => Assert.Equal(kind.Value.Count, Column(kind.Value, "code").Count()));
+    }
+
+    private static string ReferenceData => Path.Combine(Samples.Source, "reference", "data");
+
+    private static IReadOnlyList<IReadOnlyDictionary<string, string?>> Single(string folder) =>
+        SampleWellLogs.ReadCsv(Directory.GetFiles(folder, "*.csv").Single());
+
+    [Fact]
     public void A_seed_names_one_estate_and_more_logs_leave_the_earlier_ones_as_they_were()
     {
         var once = SyntheticEstate.WellLogs(5, 7);

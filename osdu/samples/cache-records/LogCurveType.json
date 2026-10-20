@@ -1,16 +1,16 @@
 {
   "entityType": "reference-data--LogCurveType",
   "items": [
-    { "id": "dev:reference-data--LogCurveType:Local-GR", "Code": "Local-GR", "Name": "Local-GR" },
-    { "id": "dev:reference-data--LogCurveType:Local-PEF", "Code": "Local-PEF", "Name": "Local-PEF" },
-    { "id": "dev:reference-data--LogCurveType:Local-RD", "Code": "Local-RD", "Name": "Local-RD" },
-    { "id": "dev:reference-data--LogCurveType:Local-CALI", "Code": "Local-CALI", "Name": "Local-CALI" },
-    { "id": "dev:reference-data--LogCurveType:Local-BS", "Code": "Local-BS", "Name": "Local-BS" },
-    { "id": "dev:reference-data--LogCurveType:Local-DEPTH", "Code": "Local-DEPTH", "Name": "Local-DEPTH" },
-    { "id": "dev:reference-data--LogCurveType:Local-RHOB", "Code": "Local-RHOB", "Name": "Local-RHOB" },
-    { "id": "dev:reference-data--LogCurveType:Local-DRHO", "Code": "Local-DRHO", "Name": "Local-DRHO" },
-    { "id": "dev:reference-data--LogCurveType:Local-DT", "Code": "Local-DT", "Name": "Local-DT" },
-    { "id": "dev:reference-data--LogCurveType:Local-DTS", "Code": "Local-DTS", "Name": "Local-DTS" },
-    { "id": "dev:reference-data--LogCurveType:Local-NPHI", "Code": "Local-NPHI", "Name": "Local-NPHI" }
+    { "id": "dev:reference-data--LogCurveType:WellDB:MD", "Code": "WellDB:MD", "Name": "WellDB:MD" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:BS", "Code": "WellDB:BS", "Name": "WellDB:BS" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:CALI", "Code": "WellDB:CALI", "Name": "WellDB:CALI" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:GR", "Code": "WellDB:GR", "Name": "WellDB:GR" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:RD", "Code": "WellDB:RD", "Name": "WellDB:RD" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:RHOB", "Code": "WellDB:RHOB", "Name": "WellDB:RHOB" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:DRHO", "Code": "WellDB:DRHO", "Name": "WellDB:DRHO" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:NPHI", "Code": "WellDB:NPHI", "Name": "WellDB:NPHI" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:DT", "Code": "WellDB:DT", "Name": "WellDB:DT" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:DTS", "Code": "WellDB:DTS", "Name": "WellDB:DTS" },
+    { "id": "dev:reference-data--LogCurveType:WellDB:PEF", "Code": "WellDB:PEF", "Name": "WellDB:PEF" }
   ]
 }
