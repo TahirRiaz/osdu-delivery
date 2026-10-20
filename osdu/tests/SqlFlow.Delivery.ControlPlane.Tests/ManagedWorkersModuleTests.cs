@@ -1,6 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Catalog.Modules;
+using SqlFlow.ControlPlane.Infrastructure;
 using SqlFlow.Delivery.ControlPlane;
 using SqlFlow.Delivery.ControlPlane.ManagedWorkers;
+using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Tests;
 using SqlFlow.Dispatch.ManagedWorkers;
 using Xunit;
@@ -78,6 +82,50 @@ public sealed class ManagedWorkersModuleTests
     }
 
     [Fact]
+    public async Task TheProcessLauncher_HandsAWorkerTheModuleDatabaseThisControlPlaneOpens()
+    {
+        // A local setup keeps the osdu schema in the catalog's database and sets no SQLFLOW_OSDU_DB. A worker never gets
+        // the catalog connection and reads that variable alone, so it is handed the connection this control plane opens
+        // the module database on, or it refuses to start.
+        var folder = Directory.CreateTempSubdirectory("sqlflow-module-launcher-").FullName;
+        try
+        {
+            await using var factory = Host()
+                .WithSetting("ControlPlane:ManagedWorkers:Enabled", "true")
+                .WithSetting("ControlPlane:ManagedWorkers:Launcher", "process")
+                .WithSetting("ControlPlane:ManagedWorkers:Process:Command", StandInWorker(folder))
+                .WithSetting("ControlPlane:ManagedWorkers:Process:ControlPlaneUrl", "http://localhost:5299");
+            using var client = factory.CreateClient();
+            var launcher = factory.Services.GetServices<IWorkerLauncher>().Single(l => l.Name == ProcessWorkerLauncher.LauncherName);
+
+            await launcher.LaunchAsync(new WorkerLaunch("worker-default-0123456789", ""), CancellationToken.None);
+            var handed = await ReadWhenWrittenAsync(Path.Combine(folder, "osdu.txt"));
+
+            var opened = factory.Services.GetRequiredService<IModuleDatabaseConnections>()
+                .ConnectionString(factory.Services.GetRequiredService<ModuleDatabase<OsduDbContext>>());
+            Assert.Equal(opened, handed);
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(OsduModuleDatabase.ConnectionVariable)))
+            {
+                Assert.Equal(factory.Services.GetRequiredService<CatalogConnectionProvider>().ConnectionString, handed);
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(folder, recursive: true);
+            }
+            catch (IOException)
+            {
+                // The stand-in may still hold its folder for a moment; the temp folder is the OS's.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    [Fact]
     public void OnWithAMisnamedLauncher_TheHostRefusesToStart_NamingTheOnesItHas()
     {
         using var factory = Host()
@@ -109,6 +157,49 @@ public sealed class ManagedWorkersModuleTests
             .WithModules(new DeliveryControlPlaneModule())
             .WithSetting("ControlPlane:Worker:Enabled", "false")
             .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+
+    /// <summary>A stand-in worker host that records the module database it was handed, then exits.</summary>
+    private static string StandInWorker(string folder)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var path = Path.Combine(folder, "worker.cmd");
+            // The redirection comes first: a value ending in a digit (ConnectRetryCount=0) would otherwise read as "0>".
+            File.WriteAllText(path, "@echo off\r\n> \"%~dp0osdu.txt\" echo %SQLFLOW_OSDU_DB%\r\n");
+            return path;
+        }
+
+        var script = Path.Combine(folder, "worker.sh");
+        File.WriteAllText(script, "#!/bin/sh\necho \"$SQLFLOW_OSDU_DB\" > \"$(dirname \"$0\")/osdu.txt\"\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return script;
+    }
+
+    private static async Task<string> ReadWhenWrittenAsync(string path)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (true)
+        {
+            try
+            {
+                if (File.Exists(path) && (await File.ReadAllTextAsync(path)).Trim() is { Length: > 0 } text)
+                {
+                    return text;
+                }
+            }
+            catch (IOException)
+            {
+                // The stand-in is still writing it.
+            }
+
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException($"The stand-in worker wrote nothing to {path} within 30 seconds.");
+            }
+
+            await Task.Delay(100);
+        }
+    }
 
     private static string Flatten(Exception ex)
     {

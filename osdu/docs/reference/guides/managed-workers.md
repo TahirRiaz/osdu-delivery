@@ -110,8 +110,11 @@ launcher builds the worker host and starts the control plane API-only with the `
 worker is a `SqlFlow.Delivery.Worker.Host` process, named `worker-<pool>-<id>`, polling `http://localhost:5000`. It
 inherits the control plane's environment (the same `.sqlflow\env`, so the same databases and Azure sign-in), and gets
 a credential in its environment only, issued by the control plane for it: the `node` scope only, refused everywhere
-but the node protocol. Its output appears in the control plane's window under its name, and it loads its own copy of
-the current cache version when it starts. `dev.bat api` does the same without the GUI. `dev.bat single` (and F5)
+but the node protocol. Its module database is the control plane's: `SQLFLOW_OSDU_DB` is set in its environment to the
+connection the control plane opens the `osdu` schema on, whichever way the control plane was given it, so a setup that
+keeps the `osdu` schema in the catalog's database and sets no `SQLFLOW_OSDU_DB` still starts its workers (a worker
+never gets the catalog connection, and reads that variable alone). Its output appears in the control plane's window
+under its name, and it loads its own copy of the current cache version when it starts. `dev.bat api` does the same without the GUI. `dev.bat single` (and F5)
 starts no workers: the control plane runs runs on its own node, and the Nodes page says that nothing there starts a
 worker. `dev.bat managed` still names the default.
 

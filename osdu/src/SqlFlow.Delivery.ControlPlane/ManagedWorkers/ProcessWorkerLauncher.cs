@@ -7,7 +7,9 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Logging;
 using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.ControlPlane.Security;
+using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Hosting;
 using SqlFlow.Dispatch.ManagedWorkers;
 using SqlFlow.Node;
 
@@ -20,8 +22,11 @@ namespace SqlFlow.Delivery.ControlPlane.ManagedWorkers;
 /// credential this control plane issues for it (valid a little longer than the worker may live, and accepted by the
 /// node protocol alone). The worker inherits the control plane's environment, so it reaches the same databases and
 /// secrets, except what only the control plane may hold: its own settings (<c>ControlPlane__*</c>, the token signing
-/// key among them) and the catalog connection, which a node never opens. Its output is written to the control plane's
-/// log under its name.
+/// key among them) and the catalog connection, which a node never opens. Its module database is this control plane's:
+/// <c>SQLFLOW_OSDU_DB</c> is set, in its environment only, to the connection the control plane opens the osdu schema
+/// on, whichever way the control plane was given it (<c>Osdu:Database:Connection</c>, <c>SQLFLOW_OSDU_DB</c>, or the
+/// catalog's own database when neither is set, as a local setup usually has it), because a node reads that variable
+/// alone and refuses to start without it. Its output is written to the control plane's log under its name.
 /// </summary>
 /// <remarks>
 /// The workers belong to this control plane: when it stops, they are ended with it (and any run they held is requeued
@@ -40,20 +45,23 @@ public sealed partial class ProcessWorkerLauncher : IWorkerLauncher, IDisposable
     private readonly TimeSpan _credentialLifetime;
     private readonly TokenIssuer _tokens;
     private readonly IServer _server;
+    private readonly Func<string> _moduleDatabaseConnection;
     private readonly TimeProvider _clock;
     private readonly ILogger<ProcessWorkerLauncher> _logger;
     private readonly ConcurrentDictionary<string, LocalWorker> _workers = new(StringComparer.Ordinal);
     private int _disposed;
 
     /// <summary>Creates the launcher. <paramref name="maxLifetimeHours"/> is how long the fleet keeps a worker, which the
-    /// credential it is given outlives by the drain window and an hour.</summary>
+    /// credential it is given outlives by the drain window and an hour. <paramref name="moduleDatabaseConnection"/>
+    /// resolves the connection this control plane opens the module database on, read at every start.</summary>
     public ProcessWorkerLauncher(
-        ProcessLauncherOptions options, int maxLifetimeHours, TokenIssuer tokens, IServer server, TimeProvider clock,
-        ILogger<ProcessWorkerLauncher> logger)
+        ProcessLauncherOptions options, int maxLifetimeHours, TokenIssuer tokens, IServer server,
+        Func<string> moduleDatabaseConnection, TimeProvider clock, ILogger<ProcessWorkerLauncher> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(tokens);
         ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(moduleDatabaseConnection);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
         _options = options;
@@ -62,6 +70,7 @@ public sealed partial class ProcessWorkerLauncher : IWorkerLauncher, IDisposable
         _credentialLifetime = TimeSpan.FromHours(maxLifetimeHours) + TimeSpan.FromMinutes(2L * options.DrainMinutes) + TimeSpan.FromHours(1);
         _tokens = tokens;
         _server = server;
+        _moduleDatabaseConnection = moduleDatabaseConnection;
         _clock = clock;
         _logger = logger;
     }
@@ -105,6 +114,7 @@ public sealed partial class ProcessWorkerLauncher : IWorkerLauncher, IDisposable
         ArgumentNullException.ThrowIfNull(launch);
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         var url = ControlPlaneUrl();
+        var moduleDatabase = ModuleDatabaseConnection();
         var now = _clock.GetUtcNow().UtcDateTime;
         var credential = _tokens.IssueNodeCredential(launch.Name, _credentialLifetime, now);
 
@@ -140,8 +150,10 @@ public sealed partial class ProcessWorkerLauncher : IWorkerLauncher, IDisposable
             start.Environment.Remove(key);
         }
 
-        // The credential travels in the worker's environment only: never on its command line, never in a log line.
+        // The credential and the module database travel in the worker's environment only: never on its command line,
+        // never in a log line.
         start.Environment["SQLFLOW_TOKEN"] = credential.Token;
+        start.Environment[OsduModuleDatabase.ConnectionVariable] = moduleDatabase;
         start.Environment[NodeIdentity.EnvironmentVariable] = launch.Name;
         start.Environment.Remove("SQLFLOW_URL");
         start.Environment.Remove("SQLFLOW_WORKER_POOL");
@@ -218,6 +230,33 @@ public sealed partial class ProcessWorkerLauncher : IWorkerLauncher, IDisposable
         }
 
         _workers.Clear();
+    }
+
+    /// <summary>The connection this control plane opens the module database on, for the worker to open it on too. A
+    /// reference that cannot be resolved refuses the start, saying why, so the pool backs off with the reason on the
+    /// Nodes page rather than starting a worker that refuses to run.</summary>
+    private string ModuleDatabaseConnection()
+    {
+        string connection;
+        try
+        {
+            connection = _moduleDatabaseConnection();
+        }
+        catch (Exception ex) when (ex is SqlFlowException or InvalidOperationException)
+        {
+            throw new WorkerLauncherException(
+                $"the module database this control plane uses could not be resolved for the worker: {SecretHygiene.RedactedMessage(ex)}",
+                mayHaveStarted: false, ex);
+        }
+
+        if (string.IsNullOrWhiteSpace(connection))
+        {
+            throw new WorkerLauncherException(
+                "the module database this control plane uses resolved to an empty connection, so a worker could not open it",
+                mayHaveStarted: false);
+        }
+
+        return connection;
     }
 
     /// <summary>The URL the workers poll: the configured one, else this host's own first HTTP address with a wildcard host

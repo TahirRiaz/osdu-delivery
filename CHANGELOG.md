@@ -53,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Nodes page opens while managed workers run.** Each worker's state reached the page as a number rather than its
+  name, so the page went blank as soon as a managed worker was listed, locally and on Radix; it now shows each worker
+  as starting, ready, leaving and so on ([Managed workers](osdu/docs/reference/guides/managed-workers.md#watching-it)).
+- **Local managed workers start when the osdu schema is in the catalog's database.** A setup with no `SQLFLOW_OSDU_DB`
+  of its own, as `.sqlflow/env` usually is, started workers that exited at once ("exited with code 1 before its first
+  poll"); each worker is now handed the module database the control plane uses, and no setting needs adding
+  ([Managed workers on a developer's machine](osdu/docs/reference/guides/managed-workers.md#on-a-developers-machine-devbat)).
 - **A tolerance is the number written.** A `tolerance` with few decimals, such as `0.0005`, was read as
   0.000500000024, which let a value a hair further off hold and showed that number in reports; it is now compared and
   shown as written. A test with such a tolerance is shown as changed once, until it runs again
