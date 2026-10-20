@@ -298,6 +298,18 @@ never costs other flows their lineage. The common ones:
   repository's cache flow is not shown as read by an `id` or a `ref`; a type a mapping names is a node whoever writes it.
 - **A mapping no delivery flow pins is not in the graph.** A mapping is a node because a flow reads it.
 - **Payload files** are placed at the payload root; the per-record folder below it is only known when a record is read.
+- **A cache flow that captures what the delivery reading it writes is not ordered against that delivery.** Reference
+  data that refers to other reference data (a unit to its unit quantity) is checked against the cache those kinds are
+  captured into, so the delivery and the capture each read what the other writes, and lineage orders neither: the
+  capture can run first and miss what the delivery is about to send. Deliver such reference data in tiers, each captured
+  by a cache flow of its own before the tier that refers to it is delivered. The sample delivers its unit quantities,
+  captures them, delivers the rest of its reference data checked against them, and captures that
+  ([the sample estate](../../../samples/welldb)).
+- **Waves order flows, not OSDU's search index.** A cache refresh and a mapping's search read the search index, which
+  holds a record a moment after it is written, so a flow may not yet find what the wave before it delivered. A record
+  held because a search found nothing goes out when it is released or its row changes; a reference written with
+  `$unverified` goes out and is marked found by the next refresh
+  ([searches](../flow/mapping-lookups.md#searches-and-search), [`$unverified`](../flow/mapping-modifiers.md#id)).
 
 ## Where you see it
 

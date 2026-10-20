@@ -1,0 +1,143 @@
+# Flow: welldb-ref-03-delivery
+#
+# Delivers the reference data the sample's records refer to, one interface per reference kind, so a partition that has
+# none of it receives everything the sample's wells, wellbores and logs point at. Each value is OSDU's own, as the OSDU
+# data definitions publish it, except the curve types, which are the well database's own (a partition defines its
+# LogCurveType values itself, and OSDU names a company's as <Company>:<mnemonic>, so these are WellDB:GR and so on).
+#
+# Every record's id is made from its code (each mapping's dataset.idFrom: key), as OSDU names reference values:
+# dev:reference-data--UnitOfMeasure:g%2Fcm3. A partition that already holds a value under that id (OSDU's reference data
+# is loaded into most partitions) keeps its record: the record is held, naming the id, and nothing is sent over it.
+#
+# The reference data is delivered in two tiers, because some of it refers to other reference data. A unit, a curve
+# family and a curve type each refer to the unit quantity they are measured in, and that reference is checked against
+# the partition's unit quantities, which ../cache/osdu-unitquantity-00-cache.yaml captures once
+# welldb-ref-unitquantity-03-delivery has delivered them. So lineage runs the unit quantities' delivery, then their
+# cache, then this flow. The reference cache flow ../cache/osdu-reference-00-cache.yaml captures every kind delivered
+# here, and the master data and the logs are checked against what it captured, so lineage runs it after this flow and
+# the deliveries after it.
+#
+# The unit quantities cannot be an interface of this source: this source would then both read the cache their capture
+# writes and write what that capture reads, and lineage orders neither of two flows that each read what the other
+# writes (osdu/docs/reference/concepts/lineage.md, How the nodes order flows), so the capture could run first.
+flowType: delivery
+name: welldb-ref-03-delivery
+batch: welldb
+
+partitions:
+  - name: dev
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  # OSDU's commit date of the value: a value OSDU publishes again with a later date is delivered again.
+  lastModified: commit_date
+  work: ../.work/reference
+
+interfaces:
+  unitofmeasure:
+    description: >-
+      One reference-data--UnitOfMeasure record per value (OPEN governance in OSDU), the units the sample's curves,
+      depths and elevations are written in.
+    record:
+      object: OsduData.silver.UnitOfMeasure
+      key: [code]
+      primaryKey: RecId
+    mapping: UnitOfMeasure@1.0.0
+  logcurvefamily:
+    description: >-
+      One reference-data--LogCurveFamily record per value (LOCAL governance in OSDU), the curve families the curve
+      dictionary files the sample's curves under.
+    record:
+      object: OsduData.silver.LogCurveFamily
+      key: [code]
+      primaryKey: RecId
+    mapping: LogCurveFamily@1.1.0
+  logcurvemainfamily:
+    description: >-
+      One reference-data--LogCurveMainFamily record per value (LOCAL governance in OSDU), the main families the curve
+      dictionary files the sample's curves under.
+    record:
+      object: OsduData.silver.LogCurveMainFamily
+      key: [code]
+      primaryKey: RecId
+    mapping: LogCurveMainFamily@1.0.0
+  logcurvetype:
+    description: >-
+      One reference-data--LogCurveType record per value (LOCAL governance in OSDU), the well database's own curve types,
+      which its curve dictionary files each mnemonic under.
+    record:
+      object: OsduData.silver.LogCurveType
+      key: [code]
+      primaryKey: RecId
+    mapping: LogCurveType@1.1.0
+  logcurvebusinessvalue:
+    description: >-
+      One reference-data--LogCurveBusinessValue record per value (LOCAL governance in OSDU), the business value the
+      sample's curves carry.
+    record:
+      object: OsduData.silver.LogCurveBusinessValue
+      key: [code]
+      primaryKey: RecId
+    mapping: LogCurveBusinessValue@1.0.0
+  logtype:
+    description: >-
+      One reference-data--LogType record per value (LOCAL governance in OSDU), the type every sample log is filed under.
+    record:
+      object: OsduData.silver.LogType
+      key: [code]
+      primaryKey: RecId
+    mapping: LogType@1.0.0
+  welllogsamplingdomaintype:
+    description: >-
+      One reference-data--WellLogSamplingDomainType record per value (OPEN governance in OSDU), the domain the sample
+      logs are sampled in.
+    record:
+      object: OsduData.silver.WellLogSamplingDomainType
+      key: [code]
+      primaryKey: RecId
+    mapping: WellLogSamplingDomainType@1.0.0
+  technicalassurancetype:
+    description: >-
+      One reference-data--TechnicalAssuranceType record per value (FIXED governance in OSDU), the technical assurance
+      every sample log is delivered with.
+    record:
+      object: OsduData.silver.TechnicalAssuranceType
+      key: [code]
+      primaryKey: RecId
+    mapping: TechnicalAssuranceType@1.0.0
+  verticalmeasurementtype:
+    description: >-
+      One reference-data--VerticalMeasurementType record per value (OPEN governance in OSDU), the point the sample's
+      wells and logs measure depths and elevations from.
+    record:
+      object: OsduData.silver.VerticalMeasurementType
+      key: [code]
+      primaryKey: RecId
+    mapping: VerticalMeasurementType@1.0.3
+
+change:
+  detect: renderedHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+schedule: welldb-reference
+
+verify:
+  reconcile: false

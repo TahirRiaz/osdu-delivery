@@ -1,0 +1,53 @@
+# Flow: welldb-well-03-delivery
+#
+# Delivers the well database's wells as master-data--Well 1.2.0 records through the storage service, from the ingestion
+# table welldb-well-02-ing loads, rendered with ../mappings/Well@1.2.0.yaml. A well's elevation refers to a unit and a
+# vertical measurement type, which welldb-ref-03-delivery delivers and the reference cache captures, so lineage runs
+# this flow after that cache; the wellbore delivery searches for the wells this flow delivers, so it runs after this
+# flow.
+flowType: delivery
+name: welldb-well-03-delivery
+batch: welldb
+
+partitions:
+  - name: dev
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.Well
+    key: [well_name]
+    primaryKey: RecId
+  lastModified: update_date
+  work: ../.work/well
+
+render:
+  mapping: Well@1.2.0
+
+change:
+  detect: renderedHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+schedule: welldb-master
+
+verify:
+  reconcile: false

@@ -1,0 +1,56 @@
+# Flow: welldb-wellbore-03-delivery
+#
+# Delivers the well database's wellbores as master-data--Wellbore 1.3.0 records through the storage service, from the
+# ingestion table welldb-wellbore-02-ing loads, rendered with ../mappings/Wellbore@1.3.0.yaml. A wellbore names its
+# well, which the mapping searches the platform for by name, so lineage runs this flow after welldb-well-03-delivery;
+# the well log delivery searches for the wellbores this flow delivers, so it runs after this flow.
+#
+# OSDU's search index is eventually consistent: a well delivered moments before is found once the indexer has picked it
+# up. A wellbore whose well is not found yet is held, naming the search, and goes out when it is released or its row
+# changes (osdu/docs/reference/flow/mapping-lookups.md, searches and $search).
+flowType: delivery
+name: welldb-wellbore-03-delivery
+batch: welldb
+
+partitions:
+  - name: dev
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.Wellbore
+    key: [wellbore_name]
+    primaryKey: RecId
+  lastModified: update_date
+  work: ../.work/wellbore
+
+render:
+  mapping: Wellbore@1.3.0
+
+change:
+  detect: renderedHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+schedule: welldb-master
+
+verify:
+  reconcile: false

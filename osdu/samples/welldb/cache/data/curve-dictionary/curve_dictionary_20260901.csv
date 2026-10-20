@@ -1,13 +1,13 @@
 mnemonic,log_curve_type_id,log_curve_main_family_id,log_curve_family_id,unit_quantity_id,unit,comment
-MD,Local-DEPTH,Reference,Local-Measured%20Depth,length,m,null
-BS,Local-BS,BoreholeProperties,Local-Bit%20Size,length,in,null
-CALI,Local-CALI,BoreholeProperties,Caliper,length,in,null
-GR,Local-GR,GammaRay,Gamma%20Ray,API%20gamma%20ray,gAPI,null
-GRC,Local-GR,GammaRay,Gamma%20Ray,API%20gamma%20ray,gAPI,Environmentally corrected gamma ray; filed as GR
-RD,Local-RD,Resistivity,Resistivity%20-%20Deep,electrical%20resistivity,ohm.m,null
-RHOB,Local-RHOB,Density,Bulk%20Density,mass%20per%20volume,g/cm3,null
-DRHO,Local-DRHO,Density,Bulk%20Density%20Correction,mass%20per%20volume,g/cm3,null
-NPHI,Local-NPHI,Porosity,Local-Neutron%20Porosity,volume%20per%20volume,v/v,null
-DT,Local-DT,Slowness,Compressional%20Slowness,time%20per%20length,us/ft,null
-DTS,Local-DTS,Slowness,Shear%20Slowness,time%20per%20length,us/ft,null
-PEF,Local-PEF,PhotoelectricFactor,Photoelectric%20Factor,dimensionless,b/e,null
+MD,WellDB:MD,Reference,Measured%20Depth,length,m,null
+BS,WellDB:BS,BoreholeProperties,Bit%20Size,length,in,null
+CALI,WellDB:CALI,BoreholeProperties,Caliper,length,in,null
+GR,WellDB:GR,GammaRay,Gamma%20Ray,API%20gamma%20ray,gAPI,null
+GRC,WellDB:GR,GammaRay,Gamma%20Ray,API%20gamma%20ray,gAPI,Environmentally corrected gamma ray; filed as GR
+RD,WellDB:RD,Resistivity,Resistivity%20-%20Deep,electrical%20resistivity,ohm.m,null
+RHOB,WellDB:RHOB,Density,Bulk%20Density,mass%20per%20volume,g/cm3,null
+DRHO,WellDB:DRHO,Density,Bulk%20Density%20Correction,mass%20per%20volume,g/cm3,null
+NPHI,WellDB:NPHI,Porosity,Neutron%20Porosity,dimensionless,m3/m3,null
+DT,WellDB:DT,Slowness,Compressional%20Slowness,time%20per%20length,us/ft,null
+DTS,WellDB:DTS,Slowness,Shear%20Slowness,time%20per%20length,us/ft,null
+PEF,WellDB:PEF,PhotoelectricFactor,Photoelectric%20Factor,dimensionless,Euc,null

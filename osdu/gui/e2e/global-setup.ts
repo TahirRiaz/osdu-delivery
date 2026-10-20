@@ -196,6 +196,17 @@ export const INTERFACES_FLOW = "wells-source-03-interfaces-delivery";
 export const TEMPLATES = [
   { kind: "osdu:wks:work-product-component--WellLog:1.4.0", file: join("samples", "templates", "osdu_wks_work-product-component--WellLog_1.4.0.json"), version: "26a3c3441882db4f" },
   { kind: "osdu:wks:master-data--Wellbore:1.3.0", file: join("samples", "templates", "osdu_wks_master-data--Wellbore_1.3.0.json"), version: "58d6bdbd9d066a06" },
+  { kind: "osdu:wks:master-data--Well:1.2.0", file: join("samples", "templates", "osdu_wks_master-data--Well_1.2.0.json"), version: "d61b5c4745d024fc" },
+  { kind: "osdu:wks:reference-data--UnitQuantity:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--UnitQuantity_1.0.0.json"), version: "7af71b10e691c21f" },
+  { kind: "osdu:wks:reference-data--UnitOfMeasure:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--UnitOfMeasure_1.0.0.json"), version: "bb4bd8e91683061d" },
+  { kind: "osdu:wks:reference-data--LogCurveFamily:1.1.0", file: join("samples", "templates", "osdu_wks_reference-data--LogCurveFamily_1.1.0.json"), version: "faf2a52e39a7928e" },
+  { kind: "osdu:wks:reference-data--LogCurveMainFamily:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--LogCurveMainFamily_1.0.0.json"), version: "f427ef2eecfaa4ac" },
+  { kind: "osdu:wks:reference-data--LogCurveType:1.1.0", file: join("samples", "templates", "osdu_wks_reference-data--LogCurveType_1.1.0.json"), version: "cb4614b0dc3c2871" },
+  { kind: "osdu:wks:reference-data--LogCurveBusinessValue:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--LogCurveBusinessValue_1.0.0.json"), version: "b6cc6d13a63e2ce8" },
+  { kind: "osdu:wks:reference-data--LogType:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--LogType_1.0.0.json"), version: "643f542b69519f32" },
+  { kind: "osdu:wks:reference-data--WellLogSamplingDomainType:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--WellLogSamplingDomainType_1.0.0.json"), version: "e05745bb62213c7a" },
+  { kind: "osdu:wks:reference-data--TechnicalAssuranceType:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--TechnicalAssuranceType_1.0.0.json"), version: "9687cd156c86735a" },
+  { kind: "osdu:wks:reference-data--VerticalMeasurementType:1.0.3", file: join("samples", "templates", "osdu_wks_reference-data--VerticalMeasurementType_1.0.3.json"), version: "29e50d85666ca947" },
   { kind: "osdu:wks:work-product-component--Document:1.0.0", file: join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "templates", "osdu_wks_work-product-component--Document_1.0.0.json"), version: "5c6898ebc6775f6e" },
   { kind: "osdu:wks:work-product-component--WellboreTrajectory:1.3.0", file: join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "templates", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"), version: "bfbc5973bbdeb7ec" },
 ] as const;

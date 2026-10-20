@@ -1,0 +1,31 @@
+# Ingestion: the typed pre view into the keyed ingestion table welldb-wellbore-03-delivery reads.
+#
+# One row per wellbore of the well database, keyed by its name, with SQLFlow's system columns saying when the row last
+# changed and which file it came from, so every delivered record traces back to FileName_DW and RowNumber_DW.
+flowType: ing
+name: welldb-wellbore-02-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_Wellbore
+
+target:
+  server: osduData
+  object: OsduData.silver.Wellbore
+  identityColumn: RecId
+
+load:
+  keyColumns: [wellbore_name]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-master

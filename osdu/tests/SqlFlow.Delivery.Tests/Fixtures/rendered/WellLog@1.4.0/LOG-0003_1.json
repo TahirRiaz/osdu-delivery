@@ -17,9 +17,9 @@
         "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
         "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
         "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
-        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Local-Measured%20Depth:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Measured%20Depth:",
         "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Reference:",
-        "LogCurveTypeID": "dev:reference-data--LogCurveType:Local-DEPTH:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:WellDB:MD:",
         "Mnemonic": "MD",
         "TopDepth": 1787.9568
       },
@@ -34,7 +34,7 @@
         "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
         "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Gamma%20Ray:",
         "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:GammaRay:",
-        "LogCurveTypeID": "dev:reference-data--LogCurveType:Local-GR:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:WellDB:GR:",
         "Mnemonic": "GR",
         "TopDepth": 1787.9568
       },
@@ -48,7 +48,7 @@
         "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
         "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep:",
         "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Resistivity:",
-        "LogCurveTypeID": "dev:reference-data--LogCurveType:Local-RD:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:WellDB:RD:",
         "Mnemonic": "RD",
         "TopDepth": 1789.176
       }

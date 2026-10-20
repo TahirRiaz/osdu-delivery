@@ -157,14 +157,20 @@ signed-in person's own permissions. See the [MCP guide](osdu/docs/reference/guid
 
 ## Try it
 
-The sample in [osdu/samples/welldb](osdu/samples/welldb) delivers a handful of synthetic well logs, with their curve
-data, to the Wellbore DDMS. It has all three parts: a drop-off zone with sample files and the flows that load them, the
-WellLog template (in [osdu/samples/templates](osdu/samples/templates)), and cache flows for the lookup tables and OSDU's
-reference data. The mapping above, the delivery flow and a data quality test complete it.
+The sample in [osdu/samples/welldb](osdu/samples/welldb) is a complete package that fills an empty partition: the OSDU
+reference values its records refer to (units, unit quantities, curve families, log and measurement types), the well
+database's own curve types, three wells, five wellbores and five synthetic well logs with their curve data. Every
+reference a record makes names a record the package delivers, and the suites check that it does. Lineage orders the
+deliveries the way the records refer to each other: the reference data, the caches that capture it, the wells, the
+wellbores that name them, and the logs, whose curves go to the Wellbore DDMS. It has all three parts: a drop-off zone
+with sample files and the flows that load them, the templates its mappings pin (in
+[osdu/samples/templates](osdu/samples/templates)), and cache flows for the lookup tables and the partition's reference
+data. A data quality test checks the logs once they land. `sqlflow lineage welldb` prints the order.
 
 You need a SQL Server and an OSDU instance you can write to. The
 [getting started guide](osdu/docs/reference/guides/getting-started.md) sets up the databases and the OSDU connection,
-saves the template and fills the cache; after that, delivering the sample takes four commands:
+saves the templates and fills the cache. The sample's schedules then deliver the reference data nightly, with the caches,
+wells and wellbores chained after it. Once the wellbores are in OSDU, delivering the logs takes four commands:
 
 ```bash
 cd osdu/samples

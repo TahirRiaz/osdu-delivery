@@ -57,7 +57,7 @@ internal static class SampleEstate
     /// and the drop-off folder. Neither the templates nor the cache records are among them, because neither is
     /// repository content: both live in the module's database, and the repository holds only what declares them.
     /// </summary>
-    private static readonly string[] Parts = ["flows", "cache", "mappings", "data"];
+    private static readonly string[] Parts = ["flows", "reference", "cache", "mappings", "data"];
 
     /// <summary>The schedule library every flow of the estate joins a schedule of.</summary>
     private const string ScheduleLibrary = "schedules.yaml";

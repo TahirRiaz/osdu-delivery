@@ -1,0 +1,58 @@
+# Flow: welldb-ref-unitquantity-03-delivery
+#
+# Delivers the unit quantities the sample's units, curve families and curve types are measured in, as
+# reference-data--UnitQuantity 1.0.0 records through the storage service: the first tier of the sample's reference data,
+# since it refers to no other reference data. Each value is OSDU's own, as the OSDU data definitions publish it, and its
+# id is made from its code (dataset.idFrom: key): dev:reference-data--UnitQuantity:M%2FL3. A partition that already
+# holds a value under that id keeps its record: the record is held, naming the id, and nothing is sent over it.
+#
+# ../cache/osdu-unitquantity-00-cache.yaml captures what this flow delivers, and welldb-ref-03-delivery checks the
+# references of its units, families and curve types against that capture, so lineage runs this flow, then the capture,
+# then the rest of the reference data.
+flowType: delivery
+name: welldb-ref-unitquantity-03-delivery
+batch: welldb
+
+partitions:
+  - name: dev
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  record:
+    object: OsduData.silver.UnitQuantity
+    key: [code]
+    primaryKey: RecId
+  # OSDU's commit date of the value: a value OSDU publishes again with a later date is delivered again.
+  lastModified: commit_date
+  work: ../.work/reference-unitquantity
+
+render:
+  mapping: UnitQuantity@1.0.0
+
+change:
+  detect: renderedHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  protocol: storage
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+schedule: welldb-reference
+
+verify:
+  reconcile: false

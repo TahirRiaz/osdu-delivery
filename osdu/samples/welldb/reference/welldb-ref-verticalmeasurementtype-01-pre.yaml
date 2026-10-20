@@ -1,0 +1,48 @@
+# Pre-ingestion: VerticalMeasurementType reference values into the pre layer.
+#
+# The first flow of the chain welldb-ref-03-delivery reads for VerticalMeasurementType: the point the sample's wells and
+# logs measure depths and elevations from. It lands the CSV files under data/vertical-measurement-type into
+# [pre].[VerticalMeasurementType] as raw text and refreshes the typed view [pre].[v_VerticalMeasurementType] that
+# welldb-ref-verticalmeasurementtype-02-ing reads. The file holds OSDU's own values, as the OSDU data definitions
+# publish them, written by osdu/tools/SampleData (--reference) from the reference value manifests. Every column is
+# declared: a reference value is text the record carries as it stands, whatever a value looks like.
+name: welldb-ref-verticalmeasurementtype-01-pre
+batch: welldb
+
+source:
+  type: csv
+  location: data/vertical-measurement-type
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: VerticalMeasurementType
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: false
+  onConvertError: fail
+  columns:
+    - { name: code, type: "nvarchar(200)" }
+    - { name: name, type: "nvarchar(400)" }
+    - { name: description, type: "nvarchar(4000)" }
+    - { name: attribution_authority, type: "nvarchar(200)" }
+    - { name: attribution_publication, type: "nvarchar(400)" }
+    - { name: attribution_revision, type: "nvarchar(100)" }
+    - { name: source, type: "nvarchar(1000)" }
+    - { name: commit_date, type: "varchar(40)" }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-reference

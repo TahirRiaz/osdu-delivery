@@ -694,7 +694,7 @@ public sealed class OsduCacheStoreTests : IDisposable
         // The well database's translations, loaded from the files in cache/data: the curve unit spellings, the depth unit
         // spellings, and the curve dictionary giving each mnemonic the codes of the records it is filed under.
         Assert.Equal("source_unit", version.Type("UnitAlias")!.Key);
-        Assert.Equal("v/v", version.Type("UnitAlias")!.Value(version.Type("UnitAlias")!.Match("source_unit", "V/V")!, "osdu_unit")!.Text);
+        Assert.Equal("m3/m3", version.Type("UnitAlias")!.Value(version.Type("UnitAlias")!.Match("source_unit", "V/V")!, "osdu_unit")!.Text);
         Assert.Equal("ft", version.Type("DepthUnitAlias")!.Value(version.Type("DepthUnitAlias")!.Match("source_unit", "FEET")!, "osdu_unit")!.Text);
         Assert.Equal("Gamma%20Ray", version.Type("CurveDictionary")!.Value(version.Type("CurveDictionary")!.Match("mnemonic", "GR")!, "log_curve_family_id")!.Text);
 

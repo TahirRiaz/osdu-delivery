@@ -145,8 +145,17 @@ public sealed class SearchTermCatalogTests : IDisposable
         Assert.Contains(unit.Routes, r => r.Kind == "steps" && r.Problem!.Contains("UnitAlias", StringComparison.Ordinal));
         Assert.Contains(unit.Routes, r => r.Kind == "lookup" && r.Problem!.Contains("no saved template of osdu:wks:reference-data--UnitOfMeasure:*", StringComparison.Ordinal));
 
+        // Every kind the sample delivers is listed: the logs, the wells and wellbores they hang off, and the reference data
+        // their records refer to.
         var types = await WithDirectoryAsync(d => d.EntityTypesAsync(CancellationToken.None));
-        Assert.Equal(WellLog, Assert.Single(types).EntityType);
+        Assert.Equal(
+            [
+                "master-data--Well", "master-data--Wellbore", "reference-data--LogCurveBusinessValue", "reference-data--LogCurveFamily",
+                "reference-data--LogCurveMainFamily", "reference-data--LogCurveType", "reference-data--LogType",
+                "reference-data--TechnicalAssuranceType", "reference-data--UnitOfMeasure", "reference-data--UnitQuantity",
+                "reference-data--VerticalMeasurementType", "reference-data--WellLogSamplingDomainType", WellLog,
+            ],
+            types.Select(t => t.EntityType).Order(StringComparer.Ordinal));
     }
 
     [Fact]

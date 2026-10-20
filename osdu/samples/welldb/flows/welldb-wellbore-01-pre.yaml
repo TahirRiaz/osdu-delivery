@@ -1,0 +1,42 @@
+# Pre-ingestion: the well database's wellbore files into the pre layer.
+#
+# The first flow of the chain welldb-wellbore-03-delivery reads. It lands the CSV files under ../data/wellbore into
+# [pre].[Wellbore] as raw text and refreshes the typed view [pre].[v_Wellbore] that welldb-wellbore-02-ing reads. The
+# files hold one row per wellbore of the well database with its well, by name; the sample's are made up by
+# osdu/tools/SampleData, from the same seed as the logs, so every log's wellbore and every wellbore's well is a row
+# here.
+name: welldb-wellbore-01-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/wellbore
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: Wellbore
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: false
+  onConvertError: fail
+  columns:
+    - { name: wellbore_name, type: nvarchar(200) }
+    - { name: well_name, type: nvarchar(200) }
+    - { name: update_date, type: datetime2 }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-master

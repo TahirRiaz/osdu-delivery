@@ -34,10 +34,16 @@ public sealed class DeliveryModuleDatabaseTests
     private static readonly DateTime Now = new(2026, 9, 18, 9, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The mapping documents a copy of the sample estate holds, which is what a reconciliation of it writes: the well
-    /// database's well log mapping, and the wellbore fixture mapping the copy puts beside it (<see cref="SampleEstate.CopyTo"/>).
+    /// The mapping documents a copy of the sample estate holds, which is what a reconciliation of it writes: every mapping of
+    /// the sample, and the wellbore fixture mapping the copy puts beside them (<see cref="SampleEstate.CopyTo"/>).
     /// </summary>
-    private static readonly string[] SampleMappings = ["WellLog@1.4.0", SampleEstate.WellboreMapping];
+    private static readonly string[] SampleMappings =
+    [
+        .. Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "samples", "welldb", "mappings"), "*.yaml")
+            .Select(file => Path.GetFileName(file)[..^".yaml".Length])
+            .Append(SampleEstate.WellboreMapping)
+            .Order(StringComparer.Ordinal),
+    ];
 
     /// <summary>The partition the sample cache flow declares its types for.</summary>
     private const string SampleScope = "dev";

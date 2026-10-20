@@ -1,0 +1,64 @@
+# Mapping: LogCurveType reference values into the reference-data--LogCurveType 1.1.0 template.
+#
+# One record per value: the well database's own curve types, which its curve dictionary files each mnemonic under. The
+# values are the well database's own curve types (LogCurveType is LOCAL governance in OSDU: a partition defines its
+# own). The record's id is made from its code (dataset.idFrom: key), as OSDU names its reference values, so
+# dev:reference-data--LogCurveType:<code> is the same record wherever the value comes from.
+documentType: mapping
+name: LogCurveType
+version: 1.1.0
+template:
+  kind: osdu:wks:reference-data--LogCurveType:1.1.0
+  version: cb4614b0dc3c2871
+description: The LogCurveType values the sample's records refer to.
+
+dataset:
+  system: welldb
+  key: [code]
+  idFrom: key
+  label: "{name} ({code})"
+  identity: [code]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+
+  data:
+    Code: { $from: code }
+    Name: { $from: name }
+    Description:
+      $from: description
+      $required: false
+    AttributionAuthority:
+      $from: attribution_authority
+      $required: false
+    CommitDate:
+      $from: commit_date
+      $modifiers: [date]
+      $required: false
+    # The unit quantity the value is measured in, which welldb-ref-unitquantity-03-delivery delivers: checked against
+    # the partition's unit quantities, as osdu-unitquantity-00-cache captured them.
+    UnitQuantityID:
+      $from: unit_quantity
+      $modifiers:
+        - ref: reference-data--UnitQuantity

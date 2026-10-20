@@ -241,9 +241,9 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("tests", described.Current.CapturedBy);
             Assert.Equal(cacheFlowName, described.Current.Flow);
             Assert.Equal(1, described.Versions);
-            Assert.Equal(3, Assert.Single(described.Types, t => t.Name == "VerticalMeasurementType").Items);
+            Assert.Equal(1, Assert.Single(described.Types, t => t.Name == "VerticalMeasurementType").Items);
             var measurementTypes = await ReadAsync<PagedResult<DeliveryCachedItemDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/items?scope={scope}&type=VerticalMeasurementType"));
-            Assert.Equal(3, measurementTypes.Total);
+            Assert.Equal(1, measurementTypes.Total);
             Assert.All(measurementTypes.Items, item => Assert.Equal(ReferenceVersion, item.Version));
             var history = await ReadAsync<List<DeliveryCacheHistoryEntryDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/history?scope={scope}"));
             var only = Assert.Single(history);

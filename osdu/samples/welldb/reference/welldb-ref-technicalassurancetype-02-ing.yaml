@@ -1,0 +1,32 @@
+# Ingestion: the typed pre view of the TechnicalAssuranceType values into the keyed ingestion table
+# welldb-ref-03-delivery reads.
+#
+# One row per value, keyed by its code, the key OSDU names a reference value by; SQLFlow's system columns say when the
+# row last changed and which file it came from, so every delivered record traces back to FileName_DW and RowNumber_DW.
+flowType: ing
+name: welldb-ref-technicalassurancetype-02-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_TechnicalAssuranceType
+
+target:
+  server: osduData
+  object: OsduData.silver.TechnicalAssuranceType
+  identityColumn: RecId
+
+load:
+  keyColumns: [code]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-reference

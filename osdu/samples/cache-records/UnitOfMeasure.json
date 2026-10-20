@@ -1,15 +1,15 @@
 {
   "entityType": "reference-data--UnitOfMeasure",
   "items": [
-    { "id": "dev:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" },
-    { "id": "dev:reference-data--UnitOfMeasure:ft", "Code": "ft", "Name": "foot", "ID": "ft" },
+    { "id": "dev:reference-data--UnitOfMeasure:Euc", "Code": "Euc", "Name": "euclid", "ID": "Euc" },
     { "id": "dev:reference-data--UnitOfMeasure:dega", "Code": "dega", "Name": "angular degree", "ID": "dega" },
-    { "id": "dev:reference-data--UnitOfMeasure:gAPI", "Code": "gAPI", "Name": "API gamma ray unit", "ID": "gAPI" },
+    { "id": "dev:reference-data--UnitOfMeasure:ft", "Code": "ft", "Name": "foot", "ID": "ft" },
     { "id": "dev:reference-data--UnitOfMeasure:g%2Fcm3", "Code": "g/cm3", "Name": "gram per cubic centimetre", "ID": "g/cm3" },
-    { "id": "dev:reference-data--UnitOfMeasure:v%2Fv", "Code": "v/v", "Name": "volume per volume", "ID": "v/v" },
-    { "id": "dev:reference-data--UnitOfMeasure:in", "Code": "in", "Name": "in", "ID": "in" },
-    { "id": "dev:reference-data--UnitOfMeasure:b%2Fe", "Code": "b/e", "Name": "b/e", "ID": "b/e" },
-    { "id": "dev:reference-data--UnitOfMeasure:ohm.m", "Code": "ohm.m", "Name": "ohm.m", "ID": "ohm.m" },
-    { "id": "dev:reference-data--UnitOfMeasure:us%2Fft", "Code": "us/ft", "Name": "us/ft", "ID": "us/ft" }
+    { "id": "dev:reference-data--UnitOfMeasure:gAPI", "Code": "gAPI", "Name": "API gamma ray unit", "ID": "gAPI" },
+    { "id": "dev:reference-data--UnitOfMeasure:in", "Code": "in", "Name": "inch", "ID": "in" },
+    { "id": "dev:reference-data--UnitOfMeasure:m", "Code": "m", "Name": "metre", "ID": "m" },
+    { "id": "dev:reference-data--UnitOfMeasure:m3%2Fm3", "Code": "m3/m3", "Name": "cubic metre per cubic metre", "ID": "m3/m3" },
+    { "id": "dev:reference-data--UnitOfMeasure:ohm.m", "Code": "ohm.m", "Name": "ohm metre", "ID": "ohm.m" },
+    { "id": "dev:reference-data--UnitOfMeasure:us%2Fft", "Code": "us/ft", "Name": "microsecond per foot", "ID": "us/ft" }
   ]
 }

@@ -1,0 +1,2 @@
+code,name,description,attribution_authority,attribution_publication,attribution_revision,source,commit_date
+Unevaluated,Unevaluated,"A record's quality and suitability for business use has not been assessed by a data quality process or otherwise assumed. ""Unevaluated"" is used as the ""absent value"" for TechnicalAssurance.",OSDU,https://gitlab.opengroup.org/osdu/subcommittees/data-def/work-products/reference-values/-/blob/master/Manifests/README.md,M10,Workbook ReferenceValues/Published/TechnicalAssuranceType.1.xlsx; commit SHA 56f7c736.,2024-02-09T16:51:15+00:00
