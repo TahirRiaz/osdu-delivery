@@ -13,7 +13,8 @@ import { RecordName } from "../RecordName";
 import { RunRef } from "../DeliveryRefs";
 import { ProblemView } from "../TemplateSheet";
 import { GridFooter } from "../dimensions/DimensionGrid";
-import { ExplainTip, FindingGlyph, RunStatusPill } from "./InventoryBadges";
+import { ExplainTip } from "@/components/ExplainTip";
+import { FindingGlyph, RunStatusPill } from "./InventoryBadges";
 import { findingVisual } from "./inventoryFormat";
 
 /** The workbench's bottom panel content the removals raise: a removal's number after this prefix. */

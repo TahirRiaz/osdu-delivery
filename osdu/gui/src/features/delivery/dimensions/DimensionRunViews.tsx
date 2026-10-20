@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import type { RunDetail } from "@/api/types";
 import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
-import { ExplainTip } from "../inventories/InventoryBadges";
+import { ExplainTip } from "@/components/ExplainTip";
 import { runResult } from "../runOutcome";
 import { CheckGlyph, NotesMark } from "./DimensionViewBadges";
 import { runViewsOf, viewHref, type RunView } from "./dimensionViewFormat";

@@ -1,37 +1,9 @@
-import type { ReactNode } from "react";
 import { CircleCheck, CircleX, Loader2 } from "lucide-react";
-import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { CopyButton } from "@/components/CopyButton";
 import { OutcomePill } from "@/components/StatusBadge";
 import { RichTooltip } from "@/components/RichTooltip";
 import { cn } from "@/lib/utils";
 import type { InventoryCount } from "../../../api/inventories";
 import { STANDING_VISUALS, findingVisual, type InventoryStanding } from "./inventoryFormat";
-
-/**
- * An explanation behind what it explains: what a finding means, why an id has it, what a run did. It opens on hover over its
- * trigger and stays while the pointer is in it, so its Copy button can be reached; the page itself keeps to one line per row.
- */
-export function ExplainTip({ title, text, children, testId, side = "top" }: {
-  title: string;
-  text: string;
-  children: ReactNode;
-  testId: string;
-  side?: "top" | "right" | "bottom" | "left";
-}) {
-  return (
-    <HoverCard openDelay={350} closeDelay={150}>
-      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
-      <HoverCardContent side={side} align="start" className="w-80 p-3" data-testid={`${testId}-tip`}>
-        <div className="flex items-start justify-between gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</span>
-          <CopyButton iconOnly label={`Copy: ${title.toLowerCase()}`} text={text} testId={`${testId}-copy`} />
-        </div>
-        <p className="mt-1 whitespace-pre-wrap break-words text-[12.5px] leading-snug">{text}</p>
-      </HoverCardContent>
-    </HoverCard>
-  );
-}
 
 /** A finding's glyph: in its tone when ids have it, muted when none does or it needs no look. */
 export function FindingGlyph({ finding, quiet = false, className }: { finding: string; quiet?: boolean; className?: string }) {

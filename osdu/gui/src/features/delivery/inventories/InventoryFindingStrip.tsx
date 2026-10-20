@@ -5,7 +5,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { InventoryCount } from "../../../api/inventories";
-import { ExplainTip, FindingGlyph } from "./InventoryBadges";
+import { ExplainTip } from "@/components/ExplainTip";
+import { FindingGlyph } from "./InventoryBadges";
 import { findingVisual } from "./inventoryFormat";
 
 /** The room between two tabs of the strip, in pixels, as its gap class sets it. */

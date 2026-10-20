@@ -14,7 +14,7 @@ import type {
   DeliveryDimensionViewJoin, DeliveryDimensionViewJoinVerdict,
 } from "../../../api/delivery";
 import { counted, duration } from "../assertions/assertionFormat";
-import { ExplainTip } from "../inventories/InventoryBadges";
+import { ExplainTip } from "@/components/ExplainTip";
 import { shortId } from "../idTail";
 import { useWindowFit } from "../useWindowFit";
 import { DimensionGrid } from "./DimensionGrid";
