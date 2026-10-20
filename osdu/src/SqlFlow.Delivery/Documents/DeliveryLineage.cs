@@ -132,6 +132,14 @@ public static class DeliveryLineage
                 Add(datasets, OsduLineage.Type(
                     LineageRelation.Writes, endpoint, partition, mapping.Kind, who, $"the kind of mapping '{mapping.Reference}'", warnings));
 
+                // A type the partition's deliveries of this kind keep current is written by the delivery's run as it ends, so
+                // a flow reading it runs after the delivery, whether or not the cache flow capturing it runs in between
+                // (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current).
+                foreach (var kept in scan.KeptCurrentBy(partition, mapping.Kind))
+                {
+                    Add(datasets, OsduLineage.CacheType(LineageRelation.Writes, kept.Partition, kept.Name, who, warnings));
+                }
+
                 var reads = MappingReads(mapping, endpoint, partition, scan, who, warnings);
                 reads = [.. reads, .. OrderReads(flow, mapping, endpoint, partition, scan, who, warnings).Where(r => !reads.Contains(r))];
                 if (OsduLineage.Mapping(endpoint, partition, found.Directory, mapping.Reference, who, warnings) is { } node)
@@ -390,6 +398,14 @@ public static class DeliveryLineage
             return holders.Count > 0
                 && holders.All(f => f.Held.Any(h => SamePartition(h.Partition, partition) && string.Equals(h.EntityType, writtenEntity, StringComparison.OrdinalIgnoreCase)));
         }
+
+        /// <summary>
+        /// The types the cache flows of the scanned estate hold, in <paramref name="partition"/> or for every partition, that
+        /// deliveries of <paramref name="kind"/> keep current; for a delivery to every partition, those of any partition.
+        /// </summary>
+        public IReadOnlyList<CacheLineage.HeldType> KeptCurrentBy(string partition, string kind)
+            => [.. Held.Where(h => h.KeepCurrent && h.Kind is { } pattern && Engine.Dimensions.KindPatterns.Matches(pattern, kind)
+                && (SamePartition(h.Partition, partition) || h.Partition == PartitionNames.Every || partition == PartitionNames.Every))];
 
         /// <summary>Every cache flow of the scanned estate with the types it holds, as <see cref="Held"/> lists them together.</summary>
         private IReadOnlyList<(string Flow, IReadOnlyList<CacheLineage.HeldType> Held)> HeldByFlow => _heldByFlow ??= context.Estate

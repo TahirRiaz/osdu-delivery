@@ -373,7 +373,7 @@ public sealed partial class SnapshotBuilder
     }
 
     /// <summary>Projects one search hit onto the declared paths, keeping whatever shape each path yields.</summary>
-    private static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields, StringPool pool)
+    internal static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields, StringPool pool)
     {
         var id = hit["id"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(id))

@@ -1311,6 +1311,27 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<string>> LandedSinceAsync(Guid flowId, DateTime sinceUtc, int max, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(max);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        // The ledger's (PartitionId, FlowId, LastDeliveredUtc) index answers the range; the status leaves out a record sent
+        // since and removed or reverted after.
+        var delivered = StatusText.Of(RecordStatus.Delivered);
+        return await ReadAsync(
+            db => db.DeliveryRecords.AsNoTracking()
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && r.LastDeliveredUtc != null && r.LastDeliveredUtc >= sinceUtc
+                    && r.Status == delivered && r.TargetId != null)
+                .Select(r => r.TargetId!)
+                .Take(max)
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);

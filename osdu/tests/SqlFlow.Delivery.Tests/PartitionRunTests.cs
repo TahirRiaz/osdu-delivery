@@ -105,19 +105,19 @@ public sealed class PartitionRunTests
     }
 
     [Fact]
-    public void A_cache_run_takes_the_configuration_and_its_partition_and_nothing_else()
+    public void A_cache_run_takes_the_configuration_its_partition_and_the_types_it_names_and_nothing_else()
     {
         var kind = new CacheFlowKind(new DeliveryDocumentLoader());
         var configured = new RunParameters
         {
             Values = new Dictionary<string, string>(StringComparer.Ordinal) { ["partition"] = "test" },
-            Payload = new DeliveryRunPayload { References = Base, PartitionReferences = Partitions }.ToJson(),
+            Payload = new DeliveryRunPayload { References = Base, PartitionReferences = Partitions, Types = ["UnitOfMeasure"] }.ToJson(),
         };
 
         kind.ValidateParameters(configured);
 
         var ex = Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Payload = """{"submissionId":"0d1e6f3c-9a4b-4c1e-8e7a-2b3c4d5e6f70"}""" }));
-        Assert.Contains("carries only the central configuration", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("a cache flow's payload names only types", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

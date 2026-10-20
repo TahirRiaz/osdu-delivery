@@ -309,6 +309,52 @@ public sealed class OrderLineageTests : IDisposable
         Assert.Contains(lineage.Warnings, w => w.Contains("is not ordered by what its records refer to", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void A_delivery_writes_the_cache_types_its_kind_keeps_current_so_their_readers_run_after_it()
+    {
+        Schema("reference-data--UnitOfMeasure");
+        Schema("master-data--Well", ("ElevationUnitID", "reference-data--UnitOfMeasure"));
+        Delivery("units", "reference-data--UnitOfMeasure");
+        _estate.CacheKeptCurrent("reference-cache", "reference-data--UnitOfMeasure");
+        Delivery("wells", "master-data--Well", refChecked: ("ElevationUnitID", "reference-data--UnitOfMeasure"));
+
+        Assert.Contains(KeptCacheWrites("flows/units.yaml"), d => d.Name == "UnitOfMeasure" && d.Namespace == Partition);
+        Assert.Empty(KeptCacheWrites("flows/wells.yaml"));
+        var report = Scan();
+        Assert.Empty(report.ExecutionPlan.Unordered);
+        Assert.True(WaveOf(report, "units") < WaveOf(report, "reference-cache"));
+        Assert.True(WaveOf(report, "reference-cache") < WaveOf(report, "wells"));
+
+        // Not kept current, the cache type is written by its cache flow alone.
+        Cache("reference-cache", "reference-data--UnitOfMeasure");
+        Assert.Empty(KeptCacheWrites("flows/units.yaml"));
+    }
+
+    [Fact]
+    public void A_delivery_that_checks_references_against_a_type_it_keeps_current_is_still_ordered()
+    {
+        // A wellbore refers to its parent wellbore: the delivery reads the type it keeps current, which is no cycle with
+        // another flow, so the estate is ordered and the cache flow still runs after the delivery.
+        Schema("master-data--Wellbore", ("ParentWellboreID", "master-data--Wellbore"));
+        Delivery("wellbores", "master-data--Wellbore", refChecked: ("ParentWellboreID", "master-data--Wellbore"));
+        _estate.CacheKeptCurrent("wellbore-cache", "master-data--Wellbore");
+
+        Assert.Contains(KeptCacheWrites("flows/wellbores.yaml"), d => d.Name == "Wellbore");
+        var report = Scan();
+        Assert.Empty(report.ExecutionPlan.Unordered);
+        Assert.True(WaveOf(report, "wellbores") < WaveOf(report, "wellbore-cache"));
+    }
+
+    [Fact]
+    public void A_delivery_to_every_partition_keeps_current_the_types_a_named_partition_declares()
+    {
+        Schema("reference-data--LogType");
+        Delivery("log-types", "reference-data--LogType", partition: null);
+        _estate.CacheKeptCurrent("reference-cache", "reference-data--LogType");
+
+        Assert.Contains(KeptCacheWrites("flows/log-types.yaml"), d => d.Name == "LogType" && d.Namespace == Partition);
+    }
+
     // ---------------------------------------------------------------------------------------------------------------- estate
 
     private const string Partition = OrderEstate.Partition;
@@ -361,6 +407,9 @@ public sealed class OrderLineageTests : IDisposable
         var document = Assert.IsAssignableFrom<RegisteredFlowDocument>(loader.LoadFile(path));
         return document.DescribeLineage(new RegisteredLineageContext(path, _root) { Estate = estate });
     }
+
+    private IReadOnlyList<DeclaredDataset> KeptCacheWrites(string relative)
+        => [.. Describe(relative).Datasets.Where(d => d.Relation == LineageRelation.Writes && d.System == OsduLineage.CacheSystem)];
 
     private static IEnumerable<string> Reads(RegisteredFlowLineage lineage)
         => lineage.Derivations.SelectMany(d => d.From).Concat(lineage.Datasets).Where(d => d.Relation == LineageRelation.Reads).Select(d => $"{d.Namespace}/{d.Name}");

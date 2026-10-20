@@ -17,11 +17,18 @@ public sealed record CacheTypeDeclaration(
     CacheChangeMode OnChange,
     CacheOrigin Origin = CacheOrigin.Osdu,
     string? Key = null,
-    int RetentionDays = CacheRetention.DefaultDays)
+    int RetentionDays = CacheRetention.DefaultDays,
+    bool KeepCurrent = false)
 {
     /// <summary>True for a table or a dictionary, whose rows are not OSDU records.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
 }
+
+/// <summary>
+/// A type of a partition's cache the partition's deliveries keep current, as every synced cache flow declares it together:
+/// its name and entity type, and every path the cache keeps for it.
+/// </summary>
+public sealed record KeptCurrentType(string TypeName, string EntityType, IReadOnlyList<ReferenceFieldSpec> Fields);
 
 /// <summary>
 /// What one partition's cache holds as every synced cache flow declares it (osdu/docs/reference/concepts/partition-cache.md,
@@ -73,6 +80,20 @@ public sealed class CacheDeclaration
         }
 
         return fields;
+    }
+
+    /// <summary>
+    /// The types the deliveries of <paramref name="kind"/> keep current (osdu/docs/reference/concepts/partition-cache.md,
+    /// Deliveries keep a type current): every OSDU type some synced cache flow declares with <c>keepCurrent: true</c> whose
+    /// kind pattern matches the exact kind a delivery writes, each with every path the partition keeps for it, in name order.
+    /// </summary>
+    public IReadOnlyList<KeptCurrentType> KeptCurrentBy(string kind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        return [.. _byType
+            .Where(t => t.Value.Any(d => d.KeepCurrent && !d.IsLookup && d.Kind is { } pattern && Engine.Dimensions.KindPatterns.Matches(pattern, kind)))
+            .OrderBy(t => t.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(t => new KeptCurrentType(t.Value[0].TypeName, t.Value[0].EntityType, FieldsOf(t.Key)))];
     }
 
     /// <summary>The partition's retention: the longest its synced cache flows declare, or the default when none is synced.</summary>
@@ -208,7 +229,8 @@ public sealed record CacheMergePlan(ReferenceSnapshot Snapshot, IReadOnlyList<st
 /// How one cache flow's capture enters its partition's cache. A captured record replaces what the cache held for it, so the
 /// newest capture of a record is what every pipeline reads, whichever flow made it. A record the cache holds that the capture
 /// did not find leaves only when no other flow's last capture still holds it, because another project's query may be what
-/// keeps it. Types the capture does not cover are untouched, except a type no synced flow declares any more.
+/// keeps it, and no delivery holds it. Types the capture does not cover are untouched, except a type no synced flow declares
+/// any more. A capture that adds (what a delivery landed) replaces and adds records and takes none away.
 /// </summary>
 public static class CacheMerge
 {
@@ -225,6 +247,7 @@ public static class CacheMerge
     /// What the platform's services said about the partition's system properties during the capture
     /// (<see cref="SystemProperties.Merge"/>); none for an import from files, which keeps the current ones.
     /// </param>
+    /// <param name="adds">Whether the capture adds what it holds and takes nothing away (<see cref="CacheCapture.Adds"/>).</param>
     public static CacheMergePlan Apply(
         ReferenceSnapshot? current,
         IReadOnlyDictionary<CacheMemberKey, IReadOnlySet<string>> members,
@@ -233,7 +256,8 @@ public static class CacheMerge
         IReadOnlyCollection<string> declaredTypes,
         string version,
         DateTimeOffset capturedUtc,
-        IReadOnlyList<SystemPropertyReading>? readings = null)
+        IReadOnlyList<SystemPropertyReading>? readings = null,
+        bool adds = false)
     {
         ArgumentNullException.ThrowIfNull(members);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -260,6 +284,12 @@ public static class CacheMerge
             // the capture is the type: a row it no longer holds is gone, and no other flow keeps one.
             if (capture.IsLookup)
             {
+                if (adds)
+                {
+                    throw new DeliveryException(
+                        $"'{flowName}' added rows to lookup table {capture.Name}; only OSDU records are added to a cache, a lookup table is captured whole by its cache flow.");
+                }
+
                 types[capture.Name] = new ReferenceType(existing?.Name ?? capture.Name, capture.EntityType, capture.Items, capture.Key);
                 continue;
             }
@@ -277,7 +307,7 @@ public static class CacheMerge
                 found.Add(item.Id);
             }
 
-            foreach (var id in items.Keys.Where(id => !found.Contains(id)).ToList())
+            foreach (var id in adds ? [] : items.Keys.Where(id => !found.Contains(id)).ToList())
             {
                 var holders = members.TryGetValue(new CacheMemberKey(capture.Name, id), out var flows) ? flows : NoFlows;
                 if (!holders.Any(flow => !string.Equals(flow, flowName, StringComparison.Ordinal)))

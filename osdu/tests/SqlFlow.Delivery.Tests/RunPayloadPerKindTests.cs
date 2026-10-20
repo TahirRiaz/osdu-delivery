@@ -131,7 +131,7 @@ public sealed class RunPayloadPerKindTests
             Refusal(new InventoryFlowKind(Loader), Payloads[DeliveryRunPayload.RunIdProperty]));
 
         Assert.Equal(
-            "payload submissionId does not apply to a cache flow: only a delivery flow's runs name a submission; a cache flow's payload carries only the central configuration the control plane supplies.",
+            "payload submissionId does not apply to a cache flow: only a delivery flow's runs name a submission; a cache flow's payload names only types.",
             Refusal(new CacheFlowKind(Loader), Payloads[DeliveryRunPayload.SubmissionIdProperty]));
     }
 
@@ -146,6 +146,7 @@ public sealed class RunPayloadPerKindTests
         new DeliveryFlowKind(Loader).ValidateParameters(With(DeliveryOperations.DeleteLedger, "\"confirm\":\"dev\""));
         new RetrievalFlowKind(Loader).ValidateParameters(With(null, "\"force\":true"));
         new CacheFlowKind(Loader).ValidateParameters(With(null, string.Empty));
+        new CacheFlowKind(Loader).ValidateParameters(With(DeliveryOperations.Plan, "\"types\":[\"UnitOfMeasure\"]"));
         new AssertionFlowKind(Loader).ValidateParameters(With(null, "\"tests\":[\"wellbores\"],\"tags\":[\"smoke\"]"));
         new DimensionFlowKind(Loader).ValidateParameters(With(DeliveryOperations.Plan, "\"dimensions\":[\"Field\"]"));
         new InventoryFlowKind(Loader).ValidateParameters(With(DeliveryOperations.Reconcile, "\"inventories\":[\"WellLogs\"]"));

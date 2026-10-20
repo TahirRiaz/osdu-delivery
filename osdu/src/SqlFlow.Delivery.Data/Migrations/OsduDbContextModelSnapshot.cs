@@ -526,6 +526,11 @@ namespace SqlFlow.Delivery.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<bool>("KeepCurrent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("KeyField")
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");

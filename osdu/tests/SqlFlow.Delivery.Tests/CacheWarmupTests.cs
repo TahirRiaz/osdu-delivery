@@ -263,6 +263,9 @@ public class CacheWarmupTests
 
         public Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default) => Task.FromResult(new CacheDeclaration(scope, []));
 
+        public Task<IReadOnlySet<string>> HeldByDeliveriesAsync(string scope, string typeName, IReadOnlyCollection<string> ids, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(StringComparer.Ordinal));
+
         public Task<CacheWrite> MergeAsync(
             string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc,
             IReadOnlyList<SystemPropertyReading>? readings = null, CancellationToken ct = default)

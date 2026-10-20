@@ -814,6 +814,9 @@ public sealed record DeliverOutcome(
     /// <summary>What the sweep the run ended with undid of unfinished deliveries (osdu/docs/reference/concepts/removal-and-reversal.md, Unfinished deliveries and their undo).</summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
+    /// <summary>What the run's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current); null when it had nothing to keep current.</summary>
+    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+
     /// <summary>
     /// A run's counts are its own work (<see cref="RunResult.Own"/>): a run re-sending two records of a delivered submission
     /// reports two, and one that found the submission already completed reports none, while a fan-out root reports the
@@ -833,6 +836,7 @@ public sealed record DeliverOutcome(
             requested.Passes)
         {
             Undone = run.Undone,
+            CacheKept = run.CacheKept,
         };
     }
 }
@@ -962,6 +966,9 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
     /// <summary>What the sweep a drain of the whole flow ends with undid of unfinished deliveries; empty for a drain of one submission.</summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
+    /// <summary>What the drain's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current); null when it had nothing to keep current.</summary>
+    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+
     public static DrainOutcome From(DrainResult drained, Guid? submissionId)
     {
         ArgumentNullException.ThrowIfNull(drained);
@@ -970,6 +977,7 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
             DeliveryOperations.Drain, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches, summary.Waiting)
         {
             Undone = drained.Undone,
+            CacheKept = drained.CacheKept,
         };
     }
 }

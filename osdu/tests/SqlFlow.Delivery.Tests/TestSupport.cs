@@ -98,6 +98,9 @@ public sealed class FixedCacheStore : ICacheStore
     public Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default)
         => Task.FromResult(scope == _scope ? _declaration : CacheDeclaration.None(scope));
 
+    public Task<IReadOnlySet<string>> HeldByDeliveriesAsync(string scope, string typeName, IReadOnlyCollection<string> ids, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(StringComparer.Ordinal));
+
     public Task<CacheWrite> MergeAsync(
         string scope,
         string flowName,

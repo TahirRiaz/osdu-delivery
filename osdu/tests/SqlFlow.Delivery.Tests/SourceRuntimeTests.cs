@@ -265,6 +265,42 @@ public sealed class SourceRuntimeTests : IDisposable
         => Assert.IsType<SourceRunOutcome>(result.Result);
 
     [Fact]
+    public async Task An_interface_whose_mapping_reads_no_cache_still_ends_with_the_cache_step_of_its_partition()
+    {
+        // The wellbores render with a mapping that reads no cache; the partition keeps its wellbores current, so the
+        // interface's run ends with the step all the same. The placeholder target answers no storage read: the step says
+        // so and the run stands. The well logs keep nothing current.
+        var caches = _db.Caches();
+        await Samples.ImportSampleCacheAsync(caches);
+        await _db.DeclareCacheAsync(Samples.SampleCacheScope, "wells-wellbore-cache", new Snapshots.ReferenceTypeSpec
+        {
+            Name = "Wellbore",
+            EntityType = "master-data--Wellbore",
+            Kind = "osdu:wks:master-data--Wellbore:*",
+            Fields = [new Snapshots.ReferenceFieldSpec("data.FacilityName")],
+            KeepCurrent = true,
+        });
+        var source = Load(SourceYaml());
+        var engine = Engine(await EstateAsync()) with { Cache = caches };
+
+        var result = await RunAsync(engine, source);
+
+        Assert.True(result.Success, result.Error);
+        var outcome = Outcome(result);
+        var wellbores = Assert.IsType<DeliverOutcome>(outcome.Interfaces[0].Result);
+        Assert.Equal(2, wellbores.Delivered);
+        var kept = Assert.IsType<Engine.Snapshots.CacheKeptOutcome>(wellbores.CacheKept);
+        Assert.Equal(Samples.SampleCacheScope, kept.Scope);
+        Assert.Contains("A refresh of the cache flow brings the records in", kept.Skipped, StringComparison.Ordinal);
+        Assert.Null(Assert.IsType<DeliverOutcome>(outcome.Interfaces[1].Result).CacheKept);
+
+        // The run's artifact carries the step's sentence for the run page.
+        var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result.RunDirectory!, "run.json"))).RootElement;
+        var summary = artifact.GetProperty("result").GetProperty("interfaces")[0].GetProperty("result").GetProperty("cacheKept").GetProperty("summary").GetString();
+        Assert.StartsWith($"The cache of partition '{Samples.SampleCacheScope}' was not brought up to date: ", summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_source_delivers_every_interface_in_the_waves_of_its_dependencies_under_a_ledger_each()
     {
         var source = Load(SourceYaml());

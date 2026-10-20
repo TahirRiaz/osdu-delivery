@@ -20,6 +20,12 @@ namespace SqlFlow.Delivery.Engine;
 /// </summary>
 public sealed class CacheExecutor : IFlowDocumentExecutor
 {
+    /// <summary>
+    /// What a cache run's payload takes besides the central configuration: the types it refreshes or plans
+    /// (osdu/docs/reference/flow/cache.md, Operations and the run payload). The kind checks a run with it as it is queued.
+    /// </summary>
+    public static readonly IReadOnlyCollection<string> PayloadTakes = [DeliveryRunPayload.TypesProperty];
+
     private readonly IServiceProvider _provider;
 
     public CacheExecutor(IServiceProvider provider)
@@ -124,7 +130,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         EngineContext context, CacheDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
         var payload = DeliveryRunPayload.Parse(parameters);
-        payload.RefuseOtherThan(CacheDefinition.FlowTypeName, []);
+        payload.RefuseOtherThan(CacheDefinition.FlowTypeName, PayloadTakes);
 
         var (partition, supplied) = PartitionNames.SplitRunValues(
             parameters.Values, keptAsParameter: !flow.Partitioned && flow.Parameters.ContainsKey(PartitionNames.RunValue));
@@ -140,7 +146,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         {
             // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run
             // resolves them from the central configuration the control plane supplied before the node's own.
-            return await RunOneAsync(context.WithSuppliedReferences(payload.ReferencesFor(bound[0].Partition)), bound[0], operation, values, runId, actor, log, ct)
+            return await RunOneAsync(context.WithSuppliedReferences(payload.ReferencesFor(bound[0].Partition)), bound[0], operation, values, payload.Types, runId, actor, log, ct)
                 .ConfigureAwait(false);
         }
 
@@ -151,7 +157,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
             log.LogInformation("partition '{Partition}': {Operation}", one.Partition, operation);
             try
             {
-                var outcome = await RunOneAsync(context.WithSuppliedReferences(payload.ReferencesFor(one.Partition)), one, operation, values, runId, actor, log, ct)
+                var outcome = await RunOneAsync(context.WithSuppliedReferences(payload.ReferencesFor(one.Partition)), one, operation, values, payload.Types, runId, actor, log, ct)
                     .ConfigureAwait(false);
                 outcomes.Add(new CachePartitionOutcome(one.Partition!, outcome, null));
             }
@@ -170,12 +176,15 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
     }
 
     private static async Task<object> RunOneAsync(
-        EngineContext context, CacheDefinition flow, string operation, IReadOnlyDictionary<string, string> values, Guid runId, string actor, ILogger log, CancellationToken ct)
+        EngineContext context, CacheDefinition flow, string operation, IReadOnlyDictionary<string, string> values, IReadOnlyList<string> types, Guid runId, string actor,
+        ILogger log, CancellationToken ct)
     {
+        // A run naming types refreshes or plans those alone; the rest of the partition's cache is left as it is.
+        var narrowed = CacheRefresher.Narrow(flow, types);
         var refresher = new CacheRefresher(context, log);
         return operation == DeliveryOperations.Plan
-            ? await refresher.PlanAsync(flow, values, ct).ConfigureAwait(false)
-            : await refresher.RefreshAsync(flow, values, runId, actor, ct).ConfigureAwait(false);
+            ? await refresher.PlanAsync(narrowed, values, ct).ConfigureAwait(false)
+            : await refresher.RefreshAsync(narrowed, values, runId, actor, ct).ConfigureAwait(false);
     }
 }
 

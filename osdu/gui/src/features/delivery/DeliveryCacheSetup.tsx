@@ -536,6 +536,7 @@ function TypeDetail({ type, onNode, onOpen }: {
                     <span>declared by</span>
                     <NodeLink label={source.flow} onClick={() => onNode(`flow:${source.flow}`)} />
                     {source.query !== null && source.query !== "*" && <span className="font-mono">where {source.query}</span>}
+                    {source.keepCurrent === true && <span data-testid="delivery-cache-source-keep-current">, keepCurrent</span>}
                   </span>
                 </span>
               ))}
@@ -548,6 +549,13 @@ function TypeDetail({ type, onNode, onOpen }: {
             </Fact>
           )}
           <Fact label="When a value changes"><ChangeRule onChange={type.onChange} /></Fact>
+          {type.keepCurrent === true && (
+            <Fact label="Kept current" testId="delivery-cache-type-keep-current">
+              <span className="text-[12.5px]">
+                by every delivery of its kind: a run ends by putting the records it landed into this type, so the flows after it find them before the next refresh
+              </span>
+            </Fact>
+          )}
           <Fact label="Held now">
             <span className="font-mono text-[12.5px] tabular-nums">{type.items.toLocaleString()}</span>
             <span className="text-muted-foreground"> {type.key === null ? "record" : "row"}{type.items === 1 ? "" : "s"} in the current version</span>

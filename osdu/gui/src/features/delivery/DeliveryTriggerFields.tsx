@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,6 +13,7 @@ import { useActivePartition } from "./activePartition";
 import { lines, parseValues } from "./runValues";
 import { ScopeParameterFields } from "./ScopeParameterFields";
 import { PLANNED_PER_PASS } from "./ReleaseDialog";
+import { counted } from "./assertions/assertionFormat";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** An interface's name: a letter, then letters, digits, '_' and '-' (SourceDefinition.IsInterfaceName). */
@@ -107,9 +109,26 @@ function useFlowPartitions(flowKind: string, pipelineId: string | null) {
 
     return null;
   }, [flowKind, delivery.data, caches.data, pipelineId]);
+  // The types a cache flow declares, for each partition it fills: a type may be built for some of its partitions only.
+  const cacheTypes = useMemo(() => {
+    if (flowKind !== "cache") {
+      return [];
+    }
+
+    return (caches.data ?? []).flatMap((cache) => cache.flows
+      .filter((f) => f.pipelineId === pipelineId)
+      .map((f) => ({ scope: cache.scope, types: f.types })));
+  }, [flowKind, caches.data, pipelineId]);
   const loading = pipelineId !== null
     && ((flowKind === "delivery" && delivery.isPending) || (flowKind === "cache" && caches.isPending));
-  return { partitions, headerPartition, loading, interfaces: flowKind === "delivery" ? delivery.data : undefined };
+  return { partitions, headerPartition, loading, interfaces: flowKind === "delivery" ? delivery.data : undefined, cacheTypes };
+}
+
+/** The types of a cache flow a run in `scope` may name: those it declares there, or every one it declares when the partition is not known yet. */
+function typesIn(listed: readonly { scope: string; types: string[] }[], scope: string | null): string[] {
+  const here = scope === null ? undefined : listed.find((entry) => entry.scope === scope);
+  const names = here?.types ?? listed.flatMap((entry) => entry.types);
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -136,12 +155,11 @@ function listed(names: readonly string[]): string {
 }
 
 /** The payload keys these fields own; anything else the run being repeated carried goes with it unchanged. */
-const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "rerender", "interface", "interfaces"]);
+const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "rerender", "interface", "interfaces", "types"]);
 
 const FORCE_HINTS: Record<string, string> = {
   delivery: "Look at every record even when no source row changed, re-plan a completed submission, verify records verified recently. A record that renders and hashes as it was delivered is still not sent: Send again does that.",
   retrieval: "Start again at the declared start instead of continuing from the last run's watermark.",
-  cache: "Capture every declared type again, even where the last refresh found nothing to change.",
 };
 
 /**
@@ -225,6 +243,10 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const [carried] = useState<Record<string, unknown>>(
     () => Object.fromEntries(Object.entries(initialPayload ?? {}).filter(([key]) => !OWNED_KEYS.has(key))),
   );
+  // A cache run may refresh or plan some of the flow's types; a run being repeated opens with the ones it named.
+  const [pickedTypes, setPickedTypes] = useState<ReadonlySet<string>>(() => new Set(
+    Array.isArray(initialPayload?.types) ? initialPayload.types.filter((name): name is string => typeof name === "string") : [],
+  ));
 
   const effectiveOperation = operation ?? DEFAULT_OPERATION[flowKind] ?? null;
   const deliveryKind = flowKind === "delivery";
@@ -236,8 +258,10 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const takesSubmission = deliveryKind
     && (effectiveOperation === "deliver" || effectiveOperation === "intake" || effectiveOperation === "drain");
   const takesRecordScope = deliveryKind && (effectiveOperation === "deliver" || effectiveOperation === "verify" || effectiveOperation === "sync");
-  // A drain delivers what a submission planned and a sync reads every row it is given: neither has a gate to force.
-  const takesForce = !(deliveryKind && (effectiveOperation === "drain" || effectiveOperation === "sync"));
+  // A drain delivers what a submission planned and a sync reads every row it is given: neither has a gate to force. A
+  // refresh captures every type it is given in full, so a cache run has none either.
+  const takesForce = flowKind !== "cache" && !(deliveryKind && (effectiveOperation === "drain" || effectiveOperation === "sync"));
+  const takesTypes = flowKind === "cache";
   const recordKeys = useMemo(() => lines(recordKeysText), [recordKeysText]);
   const takesRedeliver = deliveryKind && effectiveOperation === "deliver";
   // Records named by key are always sent again or brought up to date, so naming them makes "only what changed" everything.
@@ -249,12 +273,13 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   }, [recordKeys.length, repeatedPart]);
   const takesInterfaces = deliveryKind && effectiveOperation !== null;
   const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
-  const { partitions, headerPartition, loading: partitionsLoading, interfaces } = useFlowPartitions(flowKind, pipelineId);
+  const { partitions, headerPartition, loading: partitionsLoading, interfaces, cacheTypes } = useFlowPartitions(flowKind, pipelineId);
   const takesPartition = partitions.length > 0;
   // A flow that works in partitions runs in the title bar's partition when it serves it, and not at all otherwise; a flow
   // whose partition is its header's takes none, and runs only while the title bar is on the partition its header names.
   const partition = takesPartition && active !== null && partitions.includes(active) ? active : null;
   const declared = useMemo(() => (deliveryKind ? declaredParameters(interfaces, partition) : undefined), [deliveryKind, interfaces, partition]);
+  const typeNames = useMemo(() => typesIn(cacheTypes, partition ?? headerPartition), [cacheTypes, partition, headerPartition]);
   const verb = deliveryKind ? "deliver to" : "build a cache for";
   const partitionError = partitionsLoading
     ? "Reading the partitions the flow serves."
@@ -295,7 +320,9 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
             ? "An interface's name is a letter, then letters, digits, '_' and '-' (one per line)."
             : takesInterfaces && new Set(interfaceNames).size !== interfaceNames.length
               ? "The same interface is named twice."
-              : null);
+              : takesTypes && typeNames.length > 0 && [...pickedTypes].some((name) => !typeNames.includes(name))
+                ? `The flow declares no type named ${[...pickedTypes].filter((name) => !typeNames.includes(name)).join(", ")} here; clear it to run.`
+                : null);
 
     const payload: Record<string, unknown> = { ...carried };
     if (takesForce && force) {
@@ -320,6 +347,10 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       payload.interfaces = interfaceNames;
     }
 
+    if (takesTypes && pickedTypes.size > 0) {
+      payload.types = [...pickedTypes].sort((a, b) => a.localeCompare(b));
+    }
+
     const values: Record<string, string> = { ...parsed.values };
     if (partition !== null) {
       values[PARTITION] = partition;
@@ -332,8 +363,17 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
     };
   }, [
     carried, carriesLedgerWork, force, interfaceNames, movedFrom, partition, partitionError, recordKeys, sendAgain, submissionId, takesForce,
-    takesInterfaces, takesRecordScope, takesRedeliver, takesSubmission, takesValues, valuesText, declared, fieldValues,
+    takesInterfaces, takesRecordScope, takesRedeliver, takesSubmission, takesValues, valuesText, declared, fieldValues, takesTypes, typeNames, pickedTypes,
   ]);
+
+  const toggleType = (name: string) => setPickedTypes((was) => {
+    const next = new Set(was);
+    if (!next.delete(name)) {
+      next.add(name);
+    }
+
+    return next;
+  });
 
   useEffect(() => {
     onChange(body);
@@ -479,6 +519,32 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
                 : sendAgain === "uptodate"
                   ? "Delivery keys to bring up to date; empty brings every record the flow has delivered up to date."
                   : "Delivery keys to send again, changed or not; empty leaves it to Send again, over every record the flow has delivered."}
+          </p>
+        </div>
+      )}
+      {takesTypes && typeNames.length > 0 && (
+        <div className="flex flex-col gap-2" data-testid="trigger-cache-types">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-[13px] font-medium">Types</span>
+            <span className="text-xs text-muted-foreground" data-testid="trigger-cache-types-summary">
+              {pickedTypes.size === 0
+                ? `Every type (${typeNames.length}).`
+                : `${counted(pickedTypes.size, "type")} of ${typeNames.length}.`}
+            </span>
+          </div>
+          <div className="max-h-48 overflow-y-auto rounded-md border" data-testid="trigger-cache-types-list">
+            {typeNames.map((name) => {
+              const id = `${idPrefix}-type-${name}`;
+              return (
+                <label key={name} htmlFor={id} className="flex cursor-pointer items-center gap-2.5 border-b px-2.5 py-1.5 last:border-b-0 hover:bg-muted/50">
+                  <Checkbox id={id} checked={pickedTypes.has(name)} onCheckedChange={() => toggleType(name)} data-testid={`trigger-cache-type-${name}`} />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{name}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Pick types to {effectiveOperation === "plan" ? "count" : "refresh"} only those; the others keep what the cache holds of them.
           </p>
         </div>
       )}

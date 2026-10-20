@@ -92,6 +92,14 @@ public sealed record ReferenceTypeSpec
     /// </summary>
     public IReadOnlyList<string> Partitions { get; init; } = [];
 
+    /// <summary>
+    /// For an OSDU type: whether the deliveries of the partition keep it current (<c>types[].keepCurrent</c>,
+    /// osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current): a delivery run that lands records
+    /// of the type's kind reads them back from OSDU's storage service as it ends and merges them into the cache, so the
+    /// flows that run after it render against them.
+    /// </summary>
+    public bool KeepCurrent { get; init; }
+
     /// <summary>True for a type whose records are not OSDU records: a table, a dictionary or a dimension.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
 
