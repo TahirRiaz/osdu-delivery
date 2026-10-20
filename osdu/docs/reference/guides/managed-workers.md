@@ -11,6 +11,7 @@ keywords:
   - launcher
   - process launcher
   - dev.bat managed
+  - dev.bat single
   - worker pools
   - scale to demand
   - minimum workers
@@ -31,6 +32,7 @@ sourceRefs:
   - osdu/deploy/radix/radixconfig.yaml
   - osdu/deploy/README.md
   - dev.bat
+  - dev.sh
 ---
 
 # Managed workers: the control plane starts its own workers
@@ -45,7 +47,7 @@ This page covers the two launchers OSDU Delivery offers and how to run each.
 | Launcher | A worker is | Use it for |
 | --- | --- | --- |
 | `radix` | a Radix job of the `worker` job component | an estate on Radix |
-| `process` | a local `SqlFlow.Delivery.Worker.Host` process | trying managed workers with `dev.bat managed` |
+| `process` | a local `SqlFlow.Delivery.Worker.Host` process | a developer's machine: `dev.bat` and `./dev.sh` start it unless told `single` |
 
 Both are registered while managed workers are on, and only the one `ControlPlane:ManagedWorkers:Launcher` names has
 its settings checked. A host started with any other name refuses to start and names these two.
@@ -96,18 +98,22 @@ worker nearing the job's time limit drains in time to finish its runs, even when
 control plane logs that as a warning. Radix keeps only the last ten finished jobs; the Nodes page's
 recent actions and the control plane's log are the record of what was started, drained and stopped, and why.
 
-## On a developer's machine: `dev.bat managed`
+## On a developer's machine: `dev.bat`
 
 ```bat
-dev.bat managed
+dev.bat
 ```
 
-`dev.bat` builds the worker host and starts the control plane API-only with the `process` launcher: each managed
+Managed workers are how `dev.bat` and `./dev.sh` start, because every deployment runs its work in workers rather than
+in the control plane, so a local run crosses the same node protocol and the Nodes page's scaling acts here too. The
+launcher builds the worker host and starts the control plane API-only with the `process` launcher: each managed
 worker is a `SqlFlow.Delivery.Worker.Host` process, named `worker-<pool>-<id>`, polling `http://localhost:5000`. It
 inherits the control plane's environment (the same `.sqlflow\env`, so the same databases and Azure sign-in), and gets
 a credential in its environment only, issued by the control plane for it: the `node` scope only, refused everywhere
-but the node protocol. Its output appears in the control plane's window under its name. `dev.bat managed api` does the
-same without the GUI.
+but the node protocol. Its output appears in the control plane's window under its name, and it loads its own copy of
+the current cache version when it starts. `dev.bat api` does the same without the GUI. `dev.bat single` (and F5)
+starts no workers: the control plane runs runs on its own node, and the Nodes page says that nothing there starts a
+worker. `dev.bat managed` still names the default.
 
 At most 4 workers start unless `.sqlflow\env` sets `ControlPlane__ManagedWorkers__MaxWorkers`; any other
 `ControlPlane__ManagedWorkers__*` setting there applies as well (a lower `IdleMinutes` shows a worker leaving sooner).
@@ -119,7 +125,7 @@ does not have.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `Command` | none | The worker host to start. Required; `dev.bat managed` sets it. |
+| `Command` | none | The worker host to start. Required; `dev.bat` and `./dev.sh` set it. |
 | `Arguments` | none | Arguments before the node's own options (`worker` when the command is the CLI host). |
 | `WorkingDirectory` | the command's folder | Where the worker runs. |
 | `ControlPlaneUrl` | this host's own address | The URL the workers poll. |

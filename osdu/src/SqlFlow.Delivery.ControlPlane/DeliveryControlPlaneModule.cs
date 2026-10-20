@@ -157,7 +157,7 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
 
     /// <summary>
     /// The launchers this module offers SQLFlow's managed workers (osdu/docs/reference/guides/managed-workers.md): Radix
-    /// jobs for an estate on Radix, and local processes for <c>dev.bat managed</c>. Both are registered while managed
+    /// jobs for an estate on Radix, and local processes for <c>dev.bat</c> and <c>./dev.sh</c>. Both are registered while managed
     /// workers are on, so a misnamed launcher is refused naming them; only the selected one's settings are checked.
     /// </summary>
     private static void AddWorkerLaunchers(ControlPlaneModuleServices services)

@@ -2,11 +2,13 @@
 REM ============================================================================
 REM  OSDU Delivery local dev, on Windows (./dev.sh on macOS and Linux). Run this instead of deploying to try something.
 REM
-REM      dev.bat          start the GUI and the control plane
-REM      dev.bat api      control plane only (no GUI window, so no Node.js needed)
-REM      dev.bat managed  managed workers: the control plane starts and stops its own worker
-REM                       processes (the 'process' launcher) instead of running an in-process node.
-REM                       Combine with api: dev.bat managed api
+REM      dev.bat          start the GUI, the control plane and its managed workers: worker processes
+REM                       the control plane starts and stops itself (the 'process' launcher), as a
+REM                       deployment's workers run, so the Nodes page's scaling acts here too
+REM      dev.bat api      control plane and workers only (no GUI window, so no Node.js needed)
+REM      dev.bat single   one process: the control plane runs runs on its own node and starts no
+REM                       worker processes (what F5 runs). Combine with api: dev.bat single api
+REM      dev.bat managed  the default, accepted as before
 REM      dev.bat setup    ask the setup questions again (the SQL Server, OSDU, a repository), then start
 REM      dev.bat check    say what this machine has and what it is missing, test the OSDU sign-in,
 REM                       and start nothing
@@ -21,15 +23,16 @@ REM  check cleared.
 REM
 REM  What comes up:
 REM      GUI            http://localhost:5173   (Vite, hot-reloads on save)
-REM      Control plane  http://localhost:5000   (API + scheduler + dispatcher + in-process node)
-REM      Workers        with 'managed': SqlFlow.Delivery.Worker.Host processes the control plane
-REM                     starts, named worker-<pool>-<id>, ended with it
+REM      Control plane  http://localhost:5000   (API + scheduler + dispatcher; with 'single', its own node)
+REM      Workers        SqlFlow.Delivery.Worker.Host processes the control plane starts, named
+REM                     worker-<pool>-<id>, at least one and at most 4 unless .sqlflow\env sets
+REM                     ControlPlane__ManagedWorkers__MaxWorkers, ended with it; none with 'single'
 REM
 REM  Everything runs here, against the databases and the OSDU partition .sqlflow\env names. Flows read
 REM  and WRITE them exactly as a deployed estate does.
 REM
-REM  If .sqlflow\env names a catalog a deployed estate also uses, you share that estate's work: this
-REM  process's in-process node can take runs the estate's workers would have run, and its scheduler
+REM  If .sqlflow\env names a catalog a deployed estate also uses, you share that estate's work: these
+REM  workers (or, with 'single', this process's own node) can take runs the estate's workers would have run, and its scheduler
 REM  competes to fire schedules (every claim is compare-and-swap, so nothing runs twice). Close the
 REM  window when you are done. Starting dev.bat again stops whatever the last run left behind.
 REM
@@ -41,17 +44,26 @@ setlocal
 
 cd /d "%~dp0"
 set "_root=%~dp0"
-REM --- Arguments: 'api', 'managed', 'setup' and 'check', in any order ---
+REM --- Arguments: 'api', 'single', 'managed', 'setup' and 'check', in any order ---
+REM Managed workers are the default; 'single' is the one-process mode, and 'managed' names the default.
 set "_api="
-set "_managed="
+set "_managed=1"
+set "_single="
+set "_namedmanaged="
 set "_asksetup="
 set "_check="
 for %%a in (%*) do (
     if /i "%%~a"=="api" set "_api=1"
-    if /i "%%~a"=="managed" set "_managed=1"
+    if /i "%%~a"=="single" set "_single=1"
+    if /i "%%~a"=="managed" set "_namedmanaged=1"
     if /i "%%~a"=="setup" set "_asksetup=1"
     if /i "%%~a"=="check" set "_check=1"
 )
+if defined _single if defined _namedmanaged (
+    echo [X] 'single' runs no worker processes and 'managed' starts them: name one of the two.
+    exit /b 1
+)
+if defined _single set "_managed="
 set "_apiflag="
 if defined _api set "_apiflag=--api"
 
@@ -158,11 +170,12 @@ if errorlevel 1 (
     echo     schema will error until:  "%_cli%" db migrate
 )
 
-REM --- Managed workers: the control plane starts its own worker processes ---
+REM --- Managed workers (the default): the control plane starts its own worker processes ---
 REM The worker host is built here because the control plane starts it, it does not build it. The
 REM control plane then runs API-only and keeps at least one worker running per managed pool, starting
 REM more for queued runs and asking idle ones to leave, at most 4 unless .sqlflow\env sets
 REM ControlPlane__ManagedWorkers__MaxWorkers (any other ControlPlane__ManagedWorkers__* setting there applies too).
+REM 'single' skips all of this: the control plane runs runs on its own node, as .sqlflow\env configures it.
 if defined _managed (
     echo Building the worker host for managed workers ...
     dotnet build osdu\hosts\SqlFlow.Delivery.Worker.Host -v q -nologo
@@ -207,6 +220,7 @@ echo   GUI:      http://localhost:5173
 echo   API:      http://localhost:5000
 echo   Catalog:  the one .sqlflow\env names (dev.bat check says which, and what it holds)
 if defined _managed echo   Workers:  managed: the control plane starts worker processes itself (see the Nodes page).
+if defined _single echo   Workers:  none: the control plane runs runs on its own node ('single').
 echo   Ctrl+C    stops the control plane. The GUI has its own window.
 echo.
 REM 'dotnet run' takes the project directory as its content root, where there is no appsettings.json

@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values are past their day shows that it needs new proof values, the Definition tab says where the schema comes from
   and how long the proof values hold, and a skipped result no longer reads as an error
   ([The GUI](osdu/docs/reference/concepts/gui.md#in-osdu)).
+- **A local start runs its work in workers, as a deployment does.** `dev.bat` and `./dev.sh` start the control plane
+  with managed workers: worker processes it starts for queued runs and lets leave when idle, so Spawn, Always on and the
+  target act on the Nodes page here too. `dev.bat single` (`./dev.sh single`) is the one-process start that ran by
+  default before, and `managed` still names the default
+  ([Managed workers on a developer's machine](osdu/docs/reference/guides/managed-workers.md#on-a-developers-machine-devbat)).
+- **The Nodes page says when nothing starts workers.** With managed workers off and the control plane running runs on
+  its own node (`dev.bat single`, F5), Worker pools names that node and shows a pool short of its target as below target
+  rather than starting, and Spawn and Always on say they only record a target
+  ([The control plane](sqlflow/docs/reference/concepts/control-plane.md)).
 
 ### Added
 
@@ -48,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.000500000024, which let a value a hair further off hold and showed that number in reports; it is now compared and
   shown as written. A test with such a tolerance is shown as changed once, until it runs again
   ([Conditions](osdu/docs/reference/flow/assertion.md#conditions)).
+- **A worker pool asks only for workers that would get a run.** A schedule fire's members beyond its `maxConcurrency`,
+  and a second queued run of a flow, counted as demand until the first started, so Azure and Kubernetes started workers
+  that found nothing to run and were scaled away again. The target now counts what the pool's workers would start, and
+  the Nodes page marks the members waiting their turn as at the group cap
+  ([Deployment](sqlflow/docs/reference/guides/deployment.md)).
 
 ## [1.0.1] - 2026-10-19
 
