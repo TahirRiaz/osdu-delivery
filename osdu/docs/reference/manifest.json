@@ -1882,7 +1882,7 @@
       "path": "concepts/partition-cache.md",
       "title": "The partition cache: one versioned cache per OSDU partition, filled by cache flows and read by every delivery",
       "type": "concept",
-      "summary": "How a partition's cache works: versions and their retention, several cache flows sharing one cache, change tags, approval, rollout, system properties.",
+      "summary": "How a partition's cache works: versions, retention, cache flows sharing one cache, deliveries keeping a type current, change tags, rollout, system properties.",
       "keywords": [
         "partition cache",
         "cache version",
@@ -1904,7 +1904,12 @@
         "cache import",
         "osdu.cacheversion",
         "cache warm-up",
-        "first render slow"
+        "first render slow",
+        "keepcurrent",
+        "keep a type current",
+        "cache step",
+        "cache kept current",
+        "delivery holds a cached record"
       ],
       "related": [
         "delivery-flow-cache",
@@ -1931,6 +1936,8 @@
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/SystemPropertyCapture.cs",
@@ -2898,6 +2905,28 @@
       "sourceRefs": []
     },
     {
+      "id": "delivery-decision-0017",
+      "corpus": "wiki",
+      "path": "0017-deliveries-keep-cache-current.md",
+      "title": "Decision 0017: A delivery keeps the cache types of its kind current as its run ends",
+      "type": "decision",
+      "summary": "Why a delivery run ends by putting what it landed into the cache types declared keepCurrent, read from storage, and how a refresh keeps those records.",
+      "keywords": [
+        "keepcurrent",
+        "keep the cache current",
+        "cache step",
+        "cache update during a schedule",
+        "refresh one type"
+      ],
+      "related": [
+        "delivery-concept-partition-cache",
+        "delivery-flow-cache",
+        "delivery-concept-lineage",
+        "delivery-decision-0016"
+      ],
+      "sourceRefs": []
+    },
+    {
       "id": "delivery-flow-assertion",
       "corpus": "reference",
       "path": "flow/assertion.md",
@@ -2994,7 +3023,7 @@
       "path": "flow/cache.md",
       "title": "Cache flow (flowType: cache): OSDU reference data, lookup tables and dictionaries in a partition's cache",
       "type": "flow-reference",
-      "summary": "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, and the refresh and plan operations.",
+      "summary": "The flowType: cache document: kind, table, dictionary and dimension types, partitions, source, onChange, retentionDays, keepCurrent, refresh and plan.",
       "keywords": [
         "source.paging",
         "createTime paging",
@@ -3012,7 +3041,12 @@
         "retentiondays",
         "cache retention",
         "refresh",
-        "$cache"
+        "$cache",
+        "types[].keepcurrent",
+        "keepcurrent",
+        "keep a type current",
+        "payload types",
+        "refresh one type"
       ],
       "yamlPath": "(root, flowType: cache)",
       "related": [
@@ -3043,6 +3077,7 @@
         "osdu/src/SqlFlow.Delivery/Engine/CacheExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheRefresh.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/TableCapture.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/DimensionCapture.cs",

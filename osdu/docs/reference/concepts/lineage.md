@@ -101,7 +101,7 @@ A few rules follow from the identity:
 | --- | --- | --- |
 | File flow (SQLFlow) | Its source files, at their repository-relative location | Its `pre` table and typed view |
 | `ing` (SQLFlow) | The typed view | Its keyed ingestion table |
-| `delivery` | Its record table and every `source.datasets` table, on the server `source.connection` names; the payload files under the root of each payload set its route sends; the mapping it pins, as a node of its own | The OSDU type its mapping fills (`template.kind`); for the routes that register datasets (`file`, `manifest`, `dataset`, `fileAndDdms`, `manifestAndDdms`, and `workflow` when it writes the record to storage with files) also `protocolOptions.datasetKind`; for the workflow route each input's dataset kind |
+| `delivery` | Its record table and every `source.datasets` table, on the server `source.connection` names; the payload files under the root of each payload set its route sends; the mapping it pins, as a node of its own | The OSDU type its mapping fills (`template.kind`); for the routes that register datasets (`file`, `manifest`, `dataset`, `fileAndDdms`, `manifestAndDdms`, and `workflow` when it writes the record to storage with files) also `protocolOptions.datasetKind`; for the workflow route each input's dataset kind; every cache type of its partition that the kind keeps current (`keepCurrent: true`) |
 | Mapping (a node read by the flow, not a flow) | Every cache type it names; every cache type of the partition holding records of an entity type its ids are checked against; every kind its searches look in | Nothing: the flow reading it writes the OSDU type |
 | `cache` | Each OSDU type's kind (wildcards allowed); each table type's ingestion table, on `source.connection`; each dictionary type's file; each dimension type's dimension | Each declared type, as a cache type of its partition |
 | `retrieval` | Each of `source.kinds` (wildcards allowed) | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location`, as a file drop |
@@ -213,6 +213,8 @@ Reads and writes of OSDU types, cache types and dimensions order flows exactly a
   its records refer to, however its mapping writes the reference ([the OSDU order](osdu-order.md)).
 - A cache flow runs after the `ing` flows loading its table types, after the delivery flows writing the kinds it
   captures, and after the dimension flows building its dimension types.
+- A flow reading a cache type the deliveries keep current runs after those deliveries as well as after the cache flow
+  capturing it ([Deliveries keep a type current](partition-cache.md#deliveries-keep-a-type-current)).
 - Retrieval, assertion, dimension and inventory flows run after the delivery flows writing the kinds they read; a file
   flow reading a retrieval's folder runs after the retrieval.
 - A delivery does not read a cache type when every cache flow capturing it also captures what the delivery writes: that

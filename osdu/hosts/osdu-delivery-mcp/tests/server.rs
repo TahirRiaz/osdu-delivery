@@ -616,6 +616,9 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("in which order are wells, wellbores and well logs delivered", &["delivery-concept-osdu-order"]),
     ("which schedule must run before another schedule", &["delivery-concept-osdu-order"]),
     ("build osdu lineage of a data definitions release", &["delivery-concept-osdu-order"]),
+    ("update the cache during a schedule after a delivery", &["delivery-concept-partition-cache", "delivery-decision-0017"]),
+    ("keep a cache type current from the deliveries", &["delivery-concept-partition-cache", "delivery-flow-cache"]),
+    ("refresh only one type of a cache flow", &["delivery-flow-cache"]),
 ];
 
 #[tokio::test(flavor = "multi_thread")]
