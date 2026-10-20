@@ -38,6 +38,14 @@ public enum CacheUsageKind
     /// key, drops one, or lists the first, reaches every record built without it.
     /// </summary>
     Listed,
+
+    /// <summary>
+    /// An id a node built that names a record the cache did not hold, although it held records of its entity type, so the
+    /// record was held (osdu/docs/reference/concepts/partition-cache.md, A record held for a reference waits for it). The item
+    /// is the record id, the path <c>id</c> and the value the id as built. When a later version holds the record, by a
+    /// refresh or a pipeline's cache step, the held record is planned again and built against it.
+    /// </summary>
+    Missing,
 }
 
 /// <summary>

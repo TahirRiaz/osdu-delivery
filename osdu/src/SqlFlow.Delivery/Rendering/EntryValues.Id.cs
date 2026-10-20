@@ -181,6 +181,13 @@ internal static partial class EntryValues
             return true;
         }
 
+        // The record is held. The render notes the id it looked for in every type that would hold the record, so a version that
+        // brings the record in, by a refresh or a pipeline's cache step, plans the held record again.
+        foreach (var type in holding)
+        {
+            usages.Add(new CacheUsage(type.Name, reference.Id, "id", id, CacheUsageKind.Missing));
+        }
+
         missing =
             $"{entry.Target.Text}: the id {template} gives {id}, and {CacheLabel(renderer.Context)} holds no such {reference.EntityType} record in {string.Join(", ", holding.Select(t => t.Name))}, so the reference would point at nothing";
         return false;

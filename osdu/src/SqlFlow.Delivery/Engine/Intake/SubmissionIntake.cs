@@ -509,7 +509,12 @@ public sealed class SubmissionIntake
                             _logger.LogWarning("{Record} is held: {Reason}", RunTrace.Record(entry.SourceKey, entry.Label, entry.Key.Value), Http.HeaderRedaction.RedactMessage(entry.Reason));
                         }
 
-                        held.Add(HeldState(flow, submission, entry, header.Mapping));
+                        // What the held render read, the ids it found missing among them, becomes the record's set, so a cache
+                        // version that brings a missing one in plans the record again.
+                        var heldSet = entry.Render is { CacheUsages.Count: > 0 } heldRender && header.Mapping.Context.CacheScope is { } heldScope
+                            ? await _ledger.EnsureCacheSetAsync(heldScope, heldRender.CacheUsages, ct).ConfigureAwait(false)
+                            : (long?)null;
+                        held.Add(HeldState(flow, submission, entry, header.Mapping) with { CacheSetId = heldSet });
                         if (held.Count >= Planner.RenderBatch)
                         {
                             await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);

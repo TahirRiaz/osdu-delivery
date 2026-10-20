@@ -46,6 +46,9 @@ internal sealed class FlowYaml
 
     public FailWhenYaml? FailWhen { get; set; }
 
+    /// <summary>What the pipeline brings up to date in its partition's cache before and after it runs.</summary>
+    public FlowCacheYaml? Cache { get; set; }
+
     /// <summary>The source's interfaces, by name, in document order; null for the single form.</summary>
     public OrderedDictionary<string, InterfaceYaml?>? Interfaces { get; set; }
 
@@ -90,6 +93,9 @@ internal sealed class InterfaceYaml
 
     public FailWhenYaml? FailWhen { get; set; }
 
+    /// <summary>The interface's own cache steps, which replace the source's.</summary>
+    public FlowCacheYaml? Cache { get; set; }
+
     public InterfaceRenderYaml? Render { get; set; }
 
     public FlowChangeYaml? Change { get; set; }
@@ -103,6 +109,17 @@ internal sealed class InterfaceYaml
 
     /// <summary>The source's <c>target.validation</c>, with this interface's keys laid over it.</summary>
     public ValidationYaml? Validation { get; set; }
+}
+
+/// <summary>
+/// A pipeline's cache steps: each <c>auto</c>, or a list of the cache types and entity types it brings up to date. A plain
+/// object, since a step is either a word or a list.
+/// </summary>
+internal sealed class FlowCacheYaml
+{
+    public object? Before { get; set; }
+
+    public object? After { get; set; }
 }
 
 /// <summary>The workflow route's declaration (<c>interfaces.&lt;name&gt;.workflow</c>, or <c>target.workflow</c> in the single form).</summary>
@@ -995,9 +1012,6 @@ internal sealed class CachedTypeYaml
 
     /// <summary>The partitions of the flow this type is built for; every partition of the flow when left out.</summary>
     public List<string>? Partitions { get; set; }
-
-    /// <summary>Whether a delivery run that lands records of the type's kind merges them into the cache as it ends.</summary>
-    public bool? KeepCurrent { get; set; }
 }
 
 internal sealed class RetrievalSourceYaml

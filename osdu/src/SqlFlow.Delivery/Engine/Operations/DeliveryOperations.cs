@@ -329,6 +329,9 @@ public sealed class DeleteRecordOperation : DeliveryOperation
             summary.Truncated,
             // What the records' unfinished deliveries left, undone before anything was removed.
             undone = summary.Undone,
+
+            // What the pipeline's after step did with what the removal changed in OSDU; absent when it names none.
+            cacheAfter = summary.CacheAfter,
             records = summary.Records,
             summary = summary.Describe(),
             actor = runtime.Actor,

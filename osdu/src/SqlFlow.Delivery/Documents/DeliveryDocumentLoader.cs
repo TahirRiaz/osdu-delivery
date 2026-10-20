@@ -691,10 +691,81 @@ internal static partial class FlowMapper
             Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
             FailWhen = MapFailWhen(y.FailWhen, source, paths),
+            Cache = MapCacheSteps(y.Cache, source, paths),
         };
 
         Validate(flow, source, paths);
         return flow;
+    }
+
+    /// <summary>
+    /// A pipeline's cache steps (osdu/docs/reference/flow/delivery.md, cache): each <c>auto</c>, or the cache types and
+    /// entity types it brings up to date, at least one and at most <see cref="CacheStepEntries.MaxNamed"/>, each once. Which
+    /// types an entry stands for is the partition's cache's to say, so a run resolves them against it before it sends
+    /// anything.
+    /// </summary>
+    private static FlowCacheSteps MapCacheSteps(FlowCacheYaml? declared, string source, KeyPaths paths)
+        => declared is null
+            ? new FlowCacheSteps()
+            : new FlowCacheSteps
+            {
+                Before = MapCacheEntries(declared.Before, paths.Shared("cache.before"), source),
+                After = MapCacheEntries(declared.After, paths.Shared("cache.after"), source),
+            };
+
+    private static CacheStepEntries MapCacheEntries(object? declared, string where, string source)
+    {
+        const string Shape = "write auto, or list the types of the partition's cache by name (UnitOfMeasure) or by OSDU entity type (reference-data--UnitOfMeasure), for example [UnitOfMeasure]";
+        switch (declared)
+        {
+            case null:
+                return CacheStepEntries.None;
+
+            case string word when word.Trim().Equals(CacheStepEntries.AutoWord, StringComparison.Ordinal):
+                return new CacheStepEntries { Auto = true };
+
+            case string word:
+                throw new FlowValidationException($"{source}: {where} is '{word.Trim()}': {Shape}.");
+
+            case IList<object?> list:
+                if (list.Count == 0)
+                {
+                    throw new FlowValidationException($"{source}: {where} lists nothing. Leave it out, or {Shape}.");
+                }
+
+                if (list.Count > CacheStepEntries.MaxNamed)
+                {
+                    throw new FlowValidationException($"{source}: {where} lists {list.Count} entries, more than the {CacheStepEntries.MaxNamed} a step names; write auto, or name fewer.");
+                }
+
+                var named = new List<string>(list.Count);
+                foreach (var item in list)
+                {
+                    var entry = (item as string)?.Trim();
+                    if (string.Equals(entry, CacheStepEntries.AutoWord, StringComparison.Ordinal))
+                    {
+                        throw new FlowValidationException($"{source}: {where} lists auto among its entries; auto stands alone: write {where.Split(' ')[0]}: auto.");
+                    }
+
+                    if (!CacheStepEntries.IsEntry(entry))
+                    {
+                        throw new FlowValidationException(
+                            $"{source}: {where} holds '{item}', which names neither a type of the partition's cache nor an OSDU entity type: a name of at most {CacheStepEntries.MaxNameLength} characters, without spaces, wildcards, ':' or '|'.");
+                    }
+
+                    if (named.Contains(entry!, StringComparer.OrdinalIgnoreCase))
+                    {
+                        throw new FlowValidationException($"{source}: {where} names '{entry}' twice.");
+                    }
+
+                    named.Add(entry!);
+                }
+
+                return new CacheStepEntries { Named = named };
+
+            default:
+                throw new FlowValidationException($"{source}: {where} is a map: {Shape}.");
+        }
     }
 
     /// <summary>
@@ -940,6 +1011,9 @@ internal static partial class FlowMapper
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
             FailWhen = YamlOverlay.Apply(y.FailWhen, i.FailWhen),
+
+            // An interface delivers a kind of its own, so its cache steps replace the source's whole rather than merge.
+            Cache = i.Cache ?? y.Cache,
         };
     }
 
@@ -1621,6 +1695,13 @@ internal static partial class FlowMapper
     private static void Validate(FlowDefinition flow, string source, KeyPaths paths)
     {
         ValidateSource(flow, source, paths);
+
+        // A DSPDM row is no OSDU record a cache type could hold, so a dspdm route has nothing to put in the cache.
+        if (flow.Target.Protocol == DeliveryProtocol.Dspdm && !flow.Cache.After.IsEmpty)
+        {
+            throw new FlowValidationException(
+                $"{source}: {paths.Shared("cache.after")} is set, and the dspdm route writes DSPDM rows, which are no OSDU records a type of the partition's cache holds. Remove it.");
+        }
 
         if (flow.Change.Detect == ChangeDetection.LastModified)
         {

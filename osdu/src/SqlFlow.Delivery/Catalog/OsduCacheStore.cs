@@ -198,7 +198,7 @@ public sealed class OsduCacheStore : ICacheStore
         var rows = await db.DeliveryCacheDefinitions.AsNoTracking()
             .Where(d => d.Scope == scope)
             .OrderBy(d => d.FlowName).ThenBy(d => d.Name).ThenBy(d => d.RepoId)
-            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField, d.RetentionDays, d.KeepCurrent })
+            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField, d.RetentionDays })
             .ToListAsync(ct).ConfigureAwait(false);
 
         // A flow is named once per catalog; the sync warns when two repositories declare the same one, and the first row wins here.
@@ -217,8 +217,7 @@ public sealed class OsduCacheStore : ICacheStore
                 row.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase) ? CacheChangeMode.Approve : CacheChangeMode.Auto,
                 CacheOrigins.Parse(row.Origin),
                 row.KeyField,
-                row.RetentionDays,
-                row.KeepCurrent));
+                row.RetentionDays));
         }
 
         return new CacheDeclaration(scope, declarations);
@@ -299,6 +298,7 @@ public sealed class OsduCacheStore : ICacheStore
                 // Records OSDU no longer holds that only deliveries held lose the deliveries' hold first, so the merge takes
                 // them out unless another cache flow still holds them.
                 await ReleaseGoneAsync(db, scope, capture.Gone, ct).ConfigureAwait(false);
+                await ReleaseRemovedAsync(db, scope, capture.Removed, ct).ConfigureAwait(false);
 
                 var memberRows = await db.DeliveryCacheMembers.AsNoTracking()
                     .Where(m => m.Scope == scope && typeNames.Contains(m.TypeName))
@@ -316,7 +316,7 @@ public sealed class OsduCacheStore : ICacheStore
                     .Distinct()
                     .ToListAsync(ct).ConfigureAwait(false);
 
-                var plan = CacheMerge.Apply(current, members, flowName, captured, declared, label, capturedUtc, readings, capture.Adds);
+                var plan = CacheMerge.Apply(current, members, flowName, captured, declared, label, capturedUtc, readings, capture.Adds, capture.Removed);
                 var hash = plan.Snapshot.ContentHash();
                 if (current is not null && string.Equals(hash, current.ContentHash(), StringComparison.Ordinal))
                 {
@@ -906,6 +906,20 @@ public sealed class OsduCacheStore : ICacheStore
         }
 
         return held;
+    }
+
+    /// <summary>Drops every hold of the records a run found OSDU no longer holds (<see cref="CacheCapture.Removed"/>).</summary>
+    private static async Task ReleaseRemovedAsync(OsduDbContext db, string scope, IReadOnlyDictionary<string, IReadOnlySet<string>> removed, CancellationToken ct)
+    {
+        foreach (var (typeName, ids) in removed)
+        {
+            foreach (var chunk in ids.Chunk(IdChunk))
+            {
+                await db.DeliveryCacheMembers
+                    .Where(m => m.Scope == scope && m.TypeName == typeName && chunk.Contains(m.RecordId))
+                    .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>Drops the deliveries' hold of the records OSDU no longer holds (<see cref="CacheCapture.Gone"/>).</summary>

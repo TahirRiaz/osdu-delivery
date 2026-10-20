@@ -175,6 +175,12 @@ public sealed record FlowDefinition
     public FlowFailWhen FailWhen { get; init; } = new();
 
     /// <summary>
+    /// What the pipeline brings up to date in its partition's cache before it renders and after it delivers (<c>cache:</c>,
+    /// osdu/docs/reference/flow/delivery.md, cache).
+    /// </summary>
+    public FlowCacheSteps Cache { get; init; } = new();
+
+    /// <summary>
     /// Why the interface goes by the route <see cref="FlowTarget.Protocol"/> names: what it declared that decided it. Null for
     /// the single form, whose document names its protocol itself.
     /// </summary>

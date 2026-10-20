@@ -946,6 +946,14 @@ public sealed partial class OsduLedger : ILedger
                 entity.PendingPayload = false;
                 entity.Blocked = asked is null;
                 entity.UpdatedUtc = now;
+
+                // A record never delivered points at what its held render read, the ids it found missing among them, so a cache
+                // version that brings one in plans it again. A delivered record keeps the set its delivered document was built
+                // from, which is what OSDU holds.
+                if (entity.LastDeliveredUtc is null)
+                {
+                    entity.CacheSetId = record.CacheSetId;
+                }
                 held.Add(record.DeliveryKey);
                 db.DeliveryAttempts.Add(new DeliveryAttempt
                 {
@@ -1311,7 +1319,7 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<string>> LandedSinceAsync(Guid flowId, DateTime sinceUtc, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> ChangedSinceAsync(Guid flowId, DateTime sinceUtc, int max, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(max);
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
@@ -1319,10 +1327,13 @@ public sealed partial class OsduLedger : ILedger
             return [];
         }
 
-        // The ledger's (PartitionId, FlowId, LastDeliveredUtc) index answers the range; the status leaves out a record sent
-        // since and removed or reverted after.
+        // Two ranges, each on an index of its own: (PartitionId, FlowId, LastDeliveredUtc) for what was sent, and
+        // (PartitionId, FlowId, Status, UpdatedUtc) for what was deleted or reverted. A record sent and then removed in the same
+        // run is answered by the second; the reader asks OSDU what it holds of each either way.
         var delivered = StatusText.Of(RecordStatus.Delivered);
-        return await ReadAsync(
+        var deleted = StatusText.Of(RecordStatus.Deleted);
+        var reverted = StatusText.Of(RecordStatus.Reverted);
+        var sent = await ReadAsync(
             db => db.DeliveryRecords.AsNoTracking()
                 .Where(r => r.PartitionId == partition && r.FlowId == flowId && r.LastDeliveredUtc != null && r.LastDeliveredUtc >= sinceUtc
                     && r.Status == delivered && r.TargetId != null)
@@ -1330,6 +1341,20 @@ public sealed partial class OsduLedger : ILedger
                 .Take(max)
                 .ToListAsync(ct),
             ct).ConfigureAwait(false);
+        if (sent.Count >= max)
+        {
+            return sent;
+        }
+
+        var taken = await ReadAsync(
+            db => db.DeliveryRecords.AsNoTracking()
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && (r.Status == deleted || r.Status == reverted) && r.UpdatedUtc >= sinceUtc
+                    && r.TargetId != null)
+                .Select(r => r.TargetId!)
+                .Take(max - sent.Count)
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        return [.. sent, .. taken];
     }
 
     public async Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default)
@@ -2785,13 +2810,14 @@ public sealed partial class OsduLedger : ILedger
         var unverified = KindText(Snapshots.CacheUsageKind.Unverified);
         var listed = KindText(Snapshots.CacheUsageKind.Listed);
         var emptied = KindText(Snapshots.CacheUsageKind.Empty);
+        var absent = KindText(Snapshots.CacheUsageKind.Missing);
         // Stands for every key of a $findAll: a change to what one key finds changes what the whole node found.
         const string AnyListing = "\n";
         return await ReadAsync(
             async db =>
             {
                 var entries = db.DeliveryCacheSetEntries.Where(e => e.Scope == scope
-                    && (e.Kind == unlisted || e.Kind == unverified || (e.Kind == listed && e.ValueText == string.Empty) || (empty && e.Kind == emptied)));
+                    && (e.Kind == unlisted || e.Kind == unverified || e.Kind == absent || (e.Kind == listed && e.ValueText == string.Empty) || (empty && e.Kind == emptied)));
                 if (typeName is not null)
                 {
                     entries = entries.Where(e => e.TypeName == typeName);
@@ -3257,6 +3283,7 @@ public sealed partial class OsduLedger : ILedger
         Snapshots.CacheUsageKind.Unlisted => "unlisted",
         Snapshots.CacheUsageKind.Unverified => "unverified",
         Snapshots.CacheUsageKind.Listed => "listed",
+        Snapshots.CacheUsageKind.Missing => "missing",
         _ => "value",
     };
 
@@ -3266,6 +3293,7 @@ public sealed partial class OsduLedger : ILedger
             : kind.Equals("unlisted", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unlisted
             : kind.Equals("unverified", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unverified
             : kind.Equals("listed", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Listed
+            : kind.Equals("missing", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Missing
             : Snapshots.CacheUsageKind.Value;
 
     private static List<long> ParseSets(string setIds)

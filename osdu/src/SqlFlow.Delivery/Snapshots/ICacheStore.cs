@@ -10,11 +10,17 @@ public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin)
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether the capture adds the records it holds and takes none away: the records a delivery run landed
-    /// (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current), not everything a cache flow's query
-    /// matched. The capture's holder keeps every record it held before beside the ones it adds.
+    /// Whether the capture adds the records it holds and takes none away but <see cref="Removed"/>: the records a pipeline's
+    /// run changed (osdu/docs/reference/concepts/partition-cache.md, Pipelines bring the cache up to date), not everything a
+    /// cache flow's query matched. The capture's holder keeps every record it held before beside the ones it adds.
     /// </summary>
     public bool Adds { get; init; }
+
+    /// <summary>
+    /// By type name, records OSDU's storage service no longer holds, known for certain because the run that changed them read
+    /// them back: they leave the type whichever flow or delivery held them.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlySet<string>> Removed { get; init; } = NoneGone;
 
     /// <summary>
     /// By type name, records OSDU's storage service no longer holds, which a cache flow's capture did not find and only
@@ -25,7 +31,7 @@ public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin)
 
 /// <summary>
 /// Who holds a cached record besides the cache flows: a delivery that landed it, named after the ledger that delivered it
-/// (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current).
+/// (osdu/docs/reference/concepts/partition-cache.md, Pipelines bring the cache up to date).
 /// </summary>
 public static class CacheHolders
 {

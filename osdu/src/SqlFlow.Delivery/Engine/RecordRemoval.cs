@@ -358,6 +358,9 @@ public sealed record RemovalSummary(
     /// </summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
+    /// <summary>What the pipeline's after step did with what the removal changed in OSDU (osdu/docs/reference/flow/delivery.md, cache); null when it names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
+
     public static RemovalSummary Of(RemovalChoice scope, int selected, IReadOnlyList<RemovalRecordResult> results, int purged = 0)
     {
         ArgumentNullException.ThrowIfNull(results);

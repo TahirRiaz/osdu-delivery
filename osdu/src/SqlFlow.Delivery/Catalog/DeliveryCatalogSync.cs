@@ -947,19 +947,17 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson),
         type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve",
         cache.Partitioned,
-        cache.RetentionDays,
-        type.Origin == Snapshots.CacheOrigin.Osdu && type.KeepCurrent);
+        cache.RetentionDays);
 
     private sealed record CacheDefinitionRow(
         string Origin, string? Endpoint, string? Connection, string? SourceObject, string? KeyField, string? DictionaryPath, string RelativePath,
-        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange, bool DeclaresPartitions, int RetentionDays,
-        bool KeepCurrent)
+        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange, bool DeclaresPartitions, int RetentionDays)
     {
         public bool Matches(DeliveryCacheDefinition row)
             => row.Origin == Origin && row.Endpoint == Endpoint && row.Connection == Connection && row.SourceObject == SourceObject
                && row.KeyField == KeyField && row.DictionaryPath == DictionaryPath && row.RelativePath == RelativePath && row.Name == Name
                && row.EntityType == EntityType && row.Kind == Kind && row.Query == Query && row.FieldsJson == FieldsJson && row.OnChange == OnChange
-               && row.DeclaresPartitions == DeclaresPartitions && row.RetentionDays == RetentionDays && row.KeepCurrent == KeepCurrent;
+               && row.DeclaresPartitions == DeclaresPartitions && row.RetentionDays == RetentionDays;
 
         public void WriteTo(DeliveryCacheDefinition row)
         {
@@ -978,7 +976,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             row.OnChange = OnChange;
             row.DeclaresPartitions = DeclaresPartitions;
             row.RetentionDays = RetentionDays;
-            row.KeepCurrent = KeepCurrent;
         }
     }
 }

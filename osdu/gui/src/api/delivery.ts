@@ -492,8 +492,6 @@ export interface DeliveryCacheTypeSource {
   sourceObject: string | null;
   keyField: string | null;
   dictionaryPath: string | null;
-  /** True when this flow declares the type `keepCurrent: true`; absent from a control plane that predates it. */
-  keepCurrent?: boolean;
 }
 
 /**
@@ -512,11 +510,6 @@ export interface DeliveryCacheType {
   origin: DeliveryCacheOrigin;
   /** For a lookup table (a table or a dictionary), the name each row's key is kept under; null for OSDU records. */
   key: string | null;
-  /**
-   * True when the deliveries of the type's kind keep it current: each delivery run ends by putting the records it landed
-   * into the type (any declaring flow's `keepCurrent: true`). Absent from a control plane that predates it.
-   */
-  keepCurrent?: boolean;
 }
 
 /** A schedule that refreshes a cache flow: its cadence, or that it fires behind other schedules. */

@@ -34,6 +34,9 @@ public static class ReversalLimits
 /// <param name="Counts">The reversal's records by outcome, across every run.</param>
 public sealed record ReversalSummary(long ReversalId, long Records, long Taken, long Restored, long Removed, long Skipped, long Failed, ReversalCounts Counts)
 {
+    /// <summary>What the pipeline's after step did with what the reversal changed in OSDU (osdu/docs/reference/flow/delivery.md, cache); null when it names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
+
     /// <summary>The one line the activity trail carries.</summary>
     public string Describe(ReversalSource source)
     {

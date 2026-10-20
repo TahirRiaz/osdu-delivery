@@ -72,7 +72,7 @@ public sealed class CacheImpactAnalyzer
         if (moved.Count > 0)
         {
             holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, moved, ct).ConfigureAwait(false))
-                .Where(use => use.Kind is not (CacheUsageKind.Unlisted or CacheUsageKind.Unverified or CacheUsageKind.Listed)));
+                .Where(use => use.Kind is not (CacheUsageKind.Unlisted or CacheUsageKind.Unverified or CacheUsageKind.Listed or CacheUsageKind.Missing)));
         }
 
         if (listed.Count > 0)
@@ -84,7 +84,7 @@ public sealed class CacheImpactAnalyzer
         if (found.Count > 0)
         {
             holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, found, ct).ConfigureAwait(false))
-                .Where(use => use.Kind == CacheUsageKind.Unverified));
+                .Where(use => use.Kind is CacheUsageKind.Unverified or CacheUsageKind.Missing));
         }
 
         if (keyed.Count > 0)
@@ -201,7 +201,7 @@ public sealed class CacheImpactAnalyzer
             return found.IsCaseAmbiguous ? ("listed", null, found.CaseVariants[0].Id) : null;
         }
 
-        if (use.Kind == CacheUsageKind.Unverified)
+        if (use.Kind is CacheUsageKind.Unverified or CacheUsageKind.Missing)
         {
             // An id written without its record: the type holds the record now, so the reference the record carries names
             // a record the partition holds, and the record is built again against it.
@@ -264,7 +264,7 @@ public sealed class CacheImpactAnalyzer
             return uses.MaxBy(u => u.SetId)!.ValueText;
         }
 
-        if (sample.Kind is CacheUsageKind.Match or CacheUsageKind.Unlisted or CacheUsageKind.Unverified)
+        if (sample.Kind is CacheUsageKind.Match or CacheUsageKind.Unlisted or CacheUsageKind.Unverified or CacheUsageKind.Missing)
         {
             return string.Join(", ", uses.Select(u => u.ValueText).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase));
         }
@@ -299,7 +299,7 @@ public sealed class CacheImpactAnalyzer
             case CacheUsageKind.Unlisted:
                 return type.Key is null ? default : Found(type, type.Find(type.Key, use.ValueText), use.Path);
 
-            case CacheUsageKind.Unverified:
+            case CacheUsageKind.Unverified or CacheUsageKind.Missing:
                 return new Answer(items.ContainsKey(use.ItemId), null, null);
 
             default:

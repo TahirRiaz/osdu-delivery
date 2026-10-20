@@ -265,11 +265,11 @@ public sealed class SourceRuntimeTests : IDisposable
         => Assert.IsType<SourceRunOutcome>(result.Result);
 
     [Fact]
-    public async Task An_interface_whose_mapping_reads_no_cache_still_ends_with_the_cache_step_of_its_partition()
+    public async Task An_interface_whose_mapping_reads_no_cache_still_takes_the_after_step_its_cache_block_names()
     {
-        // The wellbores render with a mapping that reads no cache; the partition keeps its wellbores current, so the
-        // interface's run ends with the step all the same. The placeholder target answers no storage read: the step says
-        // so and the run stands. The well logs keep nothing current.
+        // The wellbores render with a mapping that reads no cache, and their interface names the wellbores of the partition's
+        // cache for its after step; the well logs name none. The placeholder target answers no storage read: the step says so
+        // and the run stands.
         var caches = _db.Caches();
         await Samples.ImportSampleCacheAsync(caches);
         await _db.DeclareCacheAsync(Samples.SampleCacheScope, "wells-wellbore-cache", new Snapshots.ReferenceTypeSpec
@@ -278,9 +278,8 @@ public sealed class SourceRuntimeTests : IDisposable
             EntityType = "master-data--Wellbore",
             Kind = "osdu:wks:master-data--Wellbore:*",
             Fields = [new Snapshots.ReferenceFieldSpec("data.FacilityName")],
-            KeepCurrent = true,
         });
-        var source = Load(SourceYaml());
+        var source = Load(SourceYaml(wellbores: "cache: { after: [master-data--Wellbore] }"));
         var engine = Engine(await EstateAsync()) with { Cache = caches };
 
         var result = await RunAsync(engine, source);
@@ -289,15 +288,15 @@ public sealed class SourceRuntimeTests : IDisposable
         var outcome = Outcome(result);
         var wellbores = Assert.IsType<DeliverOutcome>(outcome.Interfaces[0].Result);
         Assert.Equal(2, wellbores.Delivered);
-        var kept = Assert.IsType<Engine.Snapshots.CacheKeptOutcome>(wellbores.CacheKept);
-        Assert.Equal(Samples.SampleCacheScope, kept.Scope);
-        Assert.Contains("A refresh of the cache flow brings the records in", kept.Skipped, StringComparison.Ordinal);
-        Assert.Null(Assert.IsType<DeliverOutcome>(outcome.Interfaces[1].Result).CacheKept);
+        var after = Assert.IsType<Engine.Snapshots.CacheStepOutcome>(wellbores.CacheAfter);
+        Assert.Equal(Samples.SampleCacheScope, after.Scope);
+        Assert.Contains("A refresh of the cache flows brings the records in", after.Skipped, StringComparison.Ordinal);
+        Assert.Null(Assert.IsType<DeliverOutcome>(outcome.Interfaces[1].Result).CacheAfter);
 
         // The run's artifact carries the step's sentence for the run page.
         var artifact = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result.RunDirectory!, "run.json"))).RootElement;
-        var summary = artifact.GetProperty("result").GetProperty("interfaces")[0].GetProperty("result").GetProperty("cacheKept").GetProperty("summary").GetString();
-        Assert.StartsWith($"The cache of partition '{Samples.SampleCacheScope}' was not brought up to date: ", summary, StringComparison.Ordinal);
+        var summary = artifact.GetProperty("result").GetProperty("interfaces")[0].GetProperty("result").GetProperty("cacheAfter").GetProperty("summary").GetString();
+        Assert.StartsWith($"The cache of partition '{Samples.SampleCacheScope}' was not brought up to date after the run: ", summary, StringComparison.Ordinal);
     }
 
     [Fact]

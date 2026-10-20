@@ -73,13 +73,15 @@ internal sealed class OrderEstate
         string? partition = Partition,
         string? searched = null,
         (string Property, string Target)? refChecked = null,
-        (string Property, string Value)[]? literals = null)
+        (string Property, string Value)[]? literals = null,
+        string? cache = null)
     {
         WriteMapping(name, entityType, columns ?? [], searched, refChecked, literals);
         Write($"flows/{name}.yaml", $$"""
             flowType: delivery
             name: {{name}}
             {{Partitions(partition)}}
+            {{(cache is null ? string.Empty : $"cache: {cache}")}}
             source:
               connection: ${env:OSDU_DATA_DB}
               record:
@@ -142,19 +144,13 @@ internal sealed class OrderEstate
 
     public void Cache(string name, params string[] entityTypes) => CacheIn(Partition, name, entityTypes);
 
-    /// <summary>A cache flow of <paramref name="name"/> whose types the partition's deliveries keep current (<c>keepCurrent: true</c>).</summary>
-    public void CacheKeptCurrent(string name, params string[] entityTypes) => CacheIn(Partition, name, keepCurrent: true, entityTypes);
-
     /// <summary>A cache flow of <paramref name="name"/> capturing every record of each entity type; <paramref name="partition"/> null leaves it to the registry.</summary>
-    public void CacheIn(string? partition, string name, params string[] entityTypes) => CacheIn(partition, name, keepCurrent: false, entityTypes);
-
-    private void CacheIn(string? partition, string name, bool keepCurrent, string[] entityTypes)
+    public void CacheIn(string? partition, string name, params string[] entityTypes)
     {
-        var kept = keepCurrent ? "\n    keepCurrent: true" : string.Empty;
         var types = string.Join("\n", entityTypes.Select(e => $$"""
               - kind: "osdu:wks:{{e}}:*"
                 name: {{e[(e.IndexOf("--", StringComparison.Ordinal) + 2)..]}}
-                fields: [data.Name]{{kept}}
+                fields: [data.Name]
             """));
         Write($"cache/{name}.yaml", $$"""
             flowType: cache

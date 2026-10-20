@@ -219,8 +219,6 @@ export interface CachedTypeSummary {
   fields: DeliveryCacheField[];
   /** approve or auto: what a changed value does to the records built from it. */
   onChange: string;
-  /** True when the deliveries of the type's kind keep it current. */
-  keepCurrent: boolean;
 }
 
 /** The types a partition's cache holds, sorted the way the type picker lists them: by family, then by name. */
@@ -236,7 +234,6 @@ export function summarizeTypes(cache: DeliveryCache | null): CachedTypeSummary[]
       items: type.items,
       fields: type.fields,
       onChange: type.onChange,
-      keepCurrent: type.keepCurrent === true,
     }))
     .sort((a, b) => compareFamilies(a.family, b.family) || a.name.localeCompare(b.name));
 }
