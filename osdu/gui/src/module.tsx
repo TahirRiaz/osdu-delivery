@@ -1,5 +1,5 @@
 import {
-  ClipboardList, CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch,
+  ClipboardList, CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, Network, PackageCheck, PackageSearch,
   ScrollText, Shapes, ShieldCheck, Telescope, TextSearch, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
@@ -32,6 +32,7 @@ const DeliverySubmissionPage = lazyRoute("DeliverySubmissionPage", () => import(
 const DeliveryActivityPage = lazyRoute("DeliveryActivityPage", () => import("./features/delivery/DeliveryActivityPage"));
 const DeliveryDocumentsPage = lazyRoute("DeliveryDocumentsPage", () => import("./features/delivery/DeliveryDocumentsPage"));
 const TemplatesPage = lazyRoute("TemplatesPage", () => import("./features/delivery/TemplatesPage"));
+const OrderPage = lazyRoute("OrderPage", () => import("./features/delivery/order/OrderPage"));
 const MappingBuilderPage = lazyRoute("MappingBuilderPage", () => import("./features/delivery/MappingBuilderPage"));
 const DeliveryCachePage = lazyRoute("DeliveryCachePage", () => import("./features/delivery/DeliveryCachePage"));
 const DeliveryPartitionsPage = lazyRoute("DeliveryPartitionsPage", () => import("./features/delivery/DeliveryPartitionsPage"));
@@ -327,6 +328,7 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/activity", component: DeliveryActivityPage },
     { path: "/delivery/documents", component: DeliveryDocumentsPage },
     { path: "/delivery/templates", component: TemplatesPage },
+    { path: "/delivery/order", component: OrderPage },
     { path: "/delivery/mappings/build", component: MappingBuilderPage },
     { path: "/delivery/cache", component: DeliveryCachePage },
     { path: "/delivery/partitions", component: DeliveryPartitionsPage },
@@ -379,6 +381,7 @@ export const osduDeliveryModule: GuiModule = {
     },
     { group: OSDU_GROUP, section: "build", label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
     { group: OSDU_GROUP, section: "build", label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
+    { group: OSDU_GROUP, section: "build", label: "Order", to: "/delivery/order", icon: Network, testId: "nav-delivery-order" },
     { group: OSDU_GROUP, section: "setup", label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
     { group: OSDU_GROUP, section: "setup", label: "Search terms", to: "/delivery/search-terms", icon: TextSearch, testId: "nav-delivery-search-terms" },
   ],
