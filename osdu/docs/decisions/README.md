@@ -21,6 +21,7 @@ isolates each one so overturning it is a contained change.
 | [0013](0013-inventory-flows.md) | Inventory flows read what OSDU serves and compare it with every ledger of the partition. | Proposed |
 | [0014](0014-inventory-removals.md) | An inventory flow may remove the orphan, stale and forgotten ids it found, when its document allows it. | Proposed |
 | [0015](0015-lost-records.md) | A record OSDU lost is delivered again under its own id, and under a new one only when an operator asks. | Proposed |
+| [0016](0016-osdu-order.md) | OSDU's relationships order a repository's waves, and dependencies between schedules are shown, not enforced. | Proposed |
 
 Not decided here, and still open: storage access grants, Change Data Feed, library ownership between
 osdu-client and osdu-csharp-client, and whether the other packages adopt the same contract.

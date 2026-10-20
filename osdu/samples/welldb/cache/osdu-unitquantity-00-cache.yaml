@@ -6,8 +6,8 @@
 # flow and before welldb-ref-03-delivery: the second step of the sample's two tiers of reference data.
 #
 # The unit quantities are a cache of their own rather than a type of osdu-reference-00-cache, because that flow captures
-# what welldb-ref-03-delivery delivers: one cache flow both read by and reading the same delivery would leave the two
-# unordered.
+# what welldb-ref-03-delivery delivers, so lineage runs it after that delivery; the delivery checks its unit quantities
+# against the cache when it renders, so they must be captured before it runs.
 flowType: cache
 name: osdu-unitquantity-00-cache
 batch: welldb

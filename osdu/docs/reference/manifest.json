@@ -980,7 +980,8 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryValueCheckEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs",
         "sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlanePolicies.cs",
-        "sqlflow/src/SqlFlow.ControlPlane/Api/Contracts.cs"
+        "sqlflow/src/SqlFlow.ControlPlane/Api/Contracts.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryOrderEndpoints.cs"
       ]
     },
     {
@@ -1657,7 +1658,8 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs",
         "sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlaneHost.cs",
-        "sqlflow/gui/src/auth/AuthContext.tsx"
+        "sqlflow/gui/src/auth/AuthContext.tsx",
+        "osdu/gui/src/features/delivery/order/OrderPage.tsx"
       ]
     },
     {
@@ -1749,11 +1751,13 @@
         "delivery-flow-cache",
         "delivery-concept-partition-cache",
         "delivery-concept-templates",
-        "delivery-flow-interfaces"
+        "delivery-flow-interfaces",
+        "delivery-concept-osdu-order"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Documents/OsduLineage.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryLineage.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/OrderLineage.cs",
         "osdu/src/SqlFlow.Delivery/Documents/MappingLineage.cs",
         "osdu/src/SqlFlow.Delivery/Documents/CacheLineage.cs",
         "osdu/src/SqlFlow.Delivery/Documents/RetrievalLineage.cs",
@@ -1771,6 +1775,57 @@
         "sqlflow/src/SqlFlow.ControlPlane/Api/LineageEndpoints.cs",
         "sqlflow/src/SqlFlow.Lineage/Graph/LineageGraphBuilder.cs",
         "sqlflow/src/SqlFlow.Lineage/Collection/FlowSetCollector.cs"
+      ]
+    },
+    {
+      "id": "delivery-concept-osdu-order",
+      "corpus": "reference",
+      "path": "concepts/osdu-order.md",
+      "title": "The OSDU order: wells before wellbores before logs, from OSDU's schemas, in waves and across schedules",
+      "type": "concept",
+      "summary": "In which order records reach OSDU, how lineage orders delivery flows by what each kind refers to, and which schedules must run before another.",
+      "keywords": [
+        "order",
+        "delivery order",
+        "referential order",
+        "wellbore before well log",
+        "reference data first",
+        "x-osdu-relationship",
+        "waves",
+        "schedule dependencies",
+        "run before",
+        "cross schedule",
+        "circle",
+        "osdu lineage",
+        "data definitions release",
+        "build lineage"
+      ],
+      "related": [
+        "delivery-concept-lineage",
+        "delivery-decision-0016",
+        "delivery-flow-interfaces",
+        "delivery-flow-mapping",
+        "delivery-concept-templates",
+        "delivery-concept-api",
+        "delivery-concept-gui",
+        "concept-lineage-graph-and-plan"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery.Order/OsduOrder.cs",
+        "osdu/src/SqlFlow.Delivery.Order/OsduEntity.cs",
+        "osdu/src/SqlFlow.Delivery.Order/OsduSchemaGraph.cs",
+        "osdu/src/SqlFlow.Delivery.Order/OrderCheck.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/OrderDeliveries.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/OrderCatalog.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/RepositoryOrder.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/ScheduleOrders.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/SchemaLineageStore.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/SchemaLineageBuilder.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/OrderLineage.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryLineage.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryOrderEndpoints.cs",
+        "osdu/gui/src/features/delivery/order/OrderPage.tsx"
       ]
     },
     {
@@ -2813,6 +2868,32 @@
         "delivery-decision-0013",
         "delivery-flow-inventory",
         "delivery-concept-removal-and-reversal"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-decision-0016",
+      "corpus": "wiki",
+      "path": "0016-osdu-order.md",
+      "title": "Decision 0016: OSDU's relationships order a repository's waves, and dependencies between schedules are shown, not enforced",
+      "type": "decision",
+      "summary": "Why lineage orders delivery flows by the relationships OSDU's schemas declare, and why schedules that depend on each other are shown rather than chained.",
+      "keywords": [
+        "osdu order",
+        "referential order",
+        "relationship",
+        "x-osdu-relationship",
+        "waves",
+        "schedule dependencies",
+        "cross schedule",
+        "osdu lineage by release"
+      ],
+      "related": [
+        "delivery-concept-osdu-order",
+        "delivery-concept-lineage",
+        "delivery-flow-interfaces",
+        "delivery-decision-0009",
+        "concept-lineage-graph-and-plan"
       ],
       "sourceRefs": []
     },

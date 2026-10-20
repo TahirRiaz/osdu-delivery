@@ -28,9 +28,11 @@ related:
   - delivery-concept-partition-cache
   - delivery-concept-templates
   - delivery-flow-interfaces
+  - delivery-concept-osdu-order
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/OsduLineage.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryLineage.cs
+  - osdu/src/SqlFlow.Delivery/Documents/OrderLineage.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingLineage.cs
   - osdu/src/SqlFlow.Delivery/Documents/CacheLineage.cs
   - osdu/src/SqlFlow.Delivery/Documents/RetrievalLineage.cs
@@ -207,14 +209,15 @@ writes (or what a flow rendering through a mapping writes) are never bound to it
 Reads and writes of OSDU types, cache types and dimensions order flows exactly as table reads and writes do:
 
 - A delivery flow runs after the `ing` flows writing its tables, after the cache flows writing what its mapping reads,
-  and after the delivery flows writing the kinds its mapping searches.
+  after the delivery flows writing the kinds its mapping searches, and after the delivery flows writing the entity types
+  its records refer to, however its mapping writes the reference ([the OSDU order](osdu-order.md)).
 - A cache flow runs after the `ing` flows loading its table types, after the delivery flows writing the kinds it
   captures, and after the dimension flows building its dimension types.
 - Retrieval, assertion, dimension and inventory flows run after the delivery flows writing the kinds they read; a file
   flow reading a retrieval's folder runs after the retrieval.
-- Two flows that each read what the other writes (a delivery whose mapping looks up the very type it writes, and the cache
-  flow capturing that type) are not ordered against each other. Longer loops are reported as dependency cycles and their
-  flows go to SQLFlow's fallback wave.
+- A delivery does not read a cache type when every cache flow capturing it also captures what the delivery writes: that
+  cache flow runs after the delivery. Two other flows that each read what the other writes are not ordered against each
+  other. Longer loops are reported as dependency cycles and their flows go to SQLFlow's fallback wave.
 
 For the example estate of this corpus (wellbores, well logs with curves, a lookup table, a dictionary and the reference
 data cache), `sqlflow lineage` lays out:
@@ -255,10 +258,9 @@ The reads through the mapping are `derived`: the flow inherits them from the map
 mapping's bare `ref`s could not be resolved (no database was named), so `osdu-reference-00-cache` is not yet a dependency
 of the well log delivery and sits in wave 1. With the pinned template saved and readable, the mapping also reads the
 reference cache types holding `UnitOfMeasure` and `WellLogSamplingDomainType` records, and the well log delivery waits
-for that cache flow too. Its `ref` to the wellbore is read the same way, as a check against cached wellbore records, and
-no cache flow of this estate captures any, so lineage does not order the well log delivery after the wellbore delivery;
-delivered as interfaces of one source, the two are ordered by that reference
-([one source, several kinds](../guides/multi-kind-source.md)).
+for that cache flow too. With the template saved, the OSDU order also has the well log delivery read
+`*:*:master-data--Wellbore:*`, since its mapping fills `WellboreID`, and lineage runs it after the wellbore delivery
+([the OSDU order](osdu-order.md#lineage-takes-the-order)).
 
 The same waves are what the repository sync stamps on each pipeline and what a schedule fires its member flows in, so
 "run a flow and its descendants" from a pre flow also runs the cache, assertion and other flows downstream of its
@@ -274,6 +276,8 @@ reasons, because a delivery flow's lineage depends on documents that are not flo
   `ref` could not be resolved without it.
 - The stored graph holds a delivery flow writing an OSDU type with no read of a mapping node, which is what a graph drawn
   before mappings were nodes looks like. The first ordinary sync after an upgrade draws it again.
+- A release of OSDU's lineage holding a kind one of the repository's mappings fills, with no template of it saved, was
+  built after the sync that last saw the mapping ([OSDU's lineage by release](osdu-order.md#osdus-lineage-by-release)).
 
 ## Warnings
 
@@ -289,6 +293,8 @@ never costs other flows their lineage. The common ones:
 | `cache flow '<flow>': type '<type>' holds dictionary <name>, which was not found in a dictionaries/ directory above the flow, so its lineage leaves the file out.` | The dictionary file is not where a refresh would look for it. |
 | `retrieval flow '<flow>': target.location '<path>' is a relative path; a retrieval run resolves it against the working directory of the process running it, not the flow file, ...` | Use an absolute path or a storage URI, so the node is where the files land. |
 | `<flow> shows no OSDU type for <what>: '<kind>' is not an exact kind.` | A write needs an exact kind, version included. |
+| `delivery flow '<flow>' is not ordered by what its records refer to: mapping '<ref>' fills <kind>, whose template ...` | The OSDU order cannot read what the kind refers to; save the template, or build a release of OSDU's lineage holding the kind ([the OSDU order](osdu-order.md)). |
+| `delivery flow '<flow>' is not ordered against every delivery it refers to: ...` | Its type and another refer to each other in a circle the order leaves unordered ([cycles](osdu-order.md#cycles-and-how-they-are-cut)). |
 
 ## Known limits
 
@@ -298,13 +304,8 @@ never costs other flows their lineage. The common ones:
   repository's cache flow is not shown as read by an `id` or a `ref`; a type a mapping names is a node whoever writes it.
 - **A mapping no delivery flow pins is not in the graph.** A mapping is a node because a flow reads it.
 - **Payload files** are placed at the payload root; the per-record folder below it is only known when a record is read.
-- **A cache flow that captures what the delivery reading it writes is not ordered against that delivery.** Reference
-  data that refers to other reference data (a unit to its unit quantity) is checked against the cache those kinds are
-  captured into, so the delivery and the capture each read what the other writes, and lineage orders neither: the
-  capture can run first and miss what the delivery is about to send. Deliver such reference data in tiers, each captured
-  by a cache flow of its own before the tier that refers to it is delivered. The sample delivers its unit quantities,
-  captures them, delivers the rest of its reference data checked against them, and captures that
-  ([the sample estate](../../../samples/welldb)).
+- **Lineage orders the flows of one repository.** Another repository's flows run in its own schedules; which of them
+  run best before this repository's is shown, not enforced ([which schedules run before which](osdu-order.md#which-schedules-run-before-which)).
 - **Waves order flows, not OSDU's search index.** A cache refresh and a mapping's search read the search index, which
   holds a record a moment after it is written, so a flow may not yet find what the wave before it delivered. A record
   held because a search found nothing goes out when it is released or its row changes; a reference written with
