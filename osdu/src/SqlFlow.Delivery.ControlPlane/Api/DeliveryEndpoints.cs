@@ -204,29 +204,24 @@ public sealed record DeliveryMappingDetailDto(DeliveryMappingDto Mapping, string
 /// <summary>One cache flow's declaration of a type: the kind it searches, its query, and what a change does in its declaration.</summary>
 /// <summary>
 /// One cache flow's declaration of a type: where it takes the records from (<c>Origin</c>: osdu, table or dictionary), for an
-/// OSDU type the kind and query it searches and whether the deliveries of the kind keep it current, for a table type the
-/// connection reference and table it reads and the key column, and for a dictionary type the document's file and the name
-/// of its key.
+/// OSDU type the kind and query it searches, for a table type the connection reference and table it reads and the key column,
+/// and for a dictionary type the document's file and the name of its key.
 /// </summary>
 public sealed record DeliveryCacheTypeSourceDto(
     string Flow, string Origin, string? Kind, string? Query, string OnChange, string? Connection = null, string? SourceObject = null, string? KeyField = null,
-    string? DictionaryPath = null, bool KeepCurrent = false);
+    string? DictionaryPath = null);
 
 /// <summary>One path the cache keeps for a type: the path, the name it is cached under, and the cache flows that declare it.</summary>
 public sealed record DeliveryCacheFieldDto(string Path, string As, IReadOnlyList<string> Flows);
 
 /// <summary>
 /// A type of a partition's cache: the union of what its cache flows declare (each flow's kind and query, and every path any of
-/// them keeps), what a change does (it waits for approval when any flow asks for that), how many records the current
-/// version holds, and whether the deliveries of its kind keep it current (when any flow declares <c>keepCurrent</c>).
+/// them keeps), what a change does (it waits for approval when any flow asks for that), and how many records the current
+/// version holds.
 /// </summary>
 public sealed record DeliveryCacheTypeDto(
     string Name, string EntityType, IReadOnlyList<DeliveryCacheTypeSourceDto> Sources, IReadOnlyList<DeliveryCacheFieldDto> Fields, string OnChange, long Items,
-    string Origin = CacheOrigins.OsduText, string? Key = null)
-{
-    /// <summary>True when a delivery of the type's kind ends its run by putting what it landed into the type (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current).</summary>
-    public bool KeepCurrent => Sources.Any(s => s.KeepCurrent);
-}
+    string Origin = CacheOrigins.OsduText, string? Key = null);
 
 /// <summary>A schedule that refreshes a cache flow: its cadence, or that it fires behind other schedules.</summary>
 public sealed record DeliveryCacheScheduleDto(Guid Id, string Name, string? Cron, int? IntervalSeconds, bool Chained);
@@ -1490,7 +1485,7 @@ public static class DeliveryEndpoints
                         return new DeliveryCacheTypeDto(
                             first.Name, first.EntityType,
                             ordered.Select(d => new DeliveryCacheTypeSourceDto(
-                                d.FlowName, d.Origin, d.Kind, d.Query, d.OnChange, d.Connection, d.SourceObject, d.KeyField, d.DictionaryPath, d.KeepCurrent)).ToList(),
+                                d.FlowName, d.Origin, d.Kind, d.Query, d.OnChange, d.Connection, d.SourceObject, d.KeyField, d.DictionaryPath)).ToList(),
                             fields.Select(f => new DeliveryCacheFieldDto(f.Path, f.As, f.Flows)).ToList(),
                             onChange, held.GetValueOrDefault(first.Name), first.Origin, keys.GetValueOrDefault(first.Name) ?? first.KeyField);
                     })

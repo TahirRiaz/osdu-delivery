@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/cache.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 80,
+  "keyCount": 79,
   "keys": [
     {
       "path": "batch",
@@ -517,14 +517,6 @@
       "required": false,
       "description": "The column each row of the table is keyed by, and the one a mapping finds the row by. A key is trimmed, and a key that is empty, longer than 256 characters, or held by two rows once trimmed refuses the capture, naming the rows.",
       "appliesWhen": "Table origin only: a type with `table`, read from an ingestion table. Required there; refused on an OSDU type, whose records are kept under their id, and on a dictionary type, whose document names its own key."
-    },
-    {
-      "path": "types[].keepCurrent",
-      "type": "boolean",
-      "required": false,
-      "description": "Whether the partition's deliveries keep the type current: a delivery run that lands records of the type's kind reads them back from OSDU's storage service as it ends and merges them into the cache, held by the delivery, so the flows that run after it render against them. A refresh takes such a record out only once storage no longer holds it.",
-      "default": "false",
-      "appliesWhen": "OSDU origin only: refused on a dictionary, table or dimension type."
     },
     {
       "path": "types[].kind",

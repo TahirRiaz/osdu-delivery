@@ -24,8 +24,7 @@ public static class CacheLineage
     /// <param name="Name">The type's name, as mappings read it.</param>
     /// <param name="EntityType">The entity type of its records, or a lookup table's own.</param>
     /// <param name="Kind">For an OSDU type, the kind pattern it captures; null for a lookup table.</param>
-    /// <param name="KeepCurrent">Whether the partition's deliveries of that kind keep the type current (<c>types[].keepCurrent</c>).</param>
-    public sealed record HeldType(string Partition, string Name, string EntityType, string? Kind = null, bool KeepCurrent = false);
+    public sealed record HeldType(string Partition, string Name, string EntityType, string? Kind = null);
 
     /// <summary>
     /// The types <paramref name="flow"/> writes into the cache of each partition it serves, exactly the cache type nodes
@@ -46,7 +45,7 @@ public static class CacheLineage
         return PartitionOf(flow, who, unused) is { } partition
             ? flow.Types
                 .Where(type => OsduLineage.CacheType(LineageRelation.Writes, partition, type.Name, who, unused) is not null)
-                .Select(type => new HeldType(partition, type.Name.Trim(), type.EntityType, type.IsLookup ? null : type.Kind, type.KeepCurrent))
+                .Select(type => new HeldType(partition, type.Name.Trim(), type.EntityType, type.IsLookup ? null : type.Kind))
                 .Distinct()
                 .ToList()
             : [];

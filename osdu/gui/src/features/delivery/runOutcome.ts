@@ -62,35 +62,43 @@ export function runRecordCounts(result: Record<string, unknown> | null): RunReco
   };
 }
 
-/** What a delivery run's cache step said for one partition: its sentence, and whether the cache was left as it was. */
-export interface RunCacheKept {
+/** What one of a pipeline's cache steps said: before or after the run, its sentence, and whether it left the cache as it was. */
+export interface RunCacheStep {
+  step: "before" | "after";
   scope: string;
   summary: string;
   skipped: boolean;
 }
 
-function cacheKeptOf(value: unknown): RunCacheKept | null {
-  const kept = isRecord(value) ? value.cacheKept : null;
-  if (!isRecord(kept) || typeof kept.summary !== "string") {
-    return null;
+function cacheStepsOf(value: unknown): RunCacheStep[] {
+  if (!isRecord(value)) {
+    return [];
   }
 
-  return { scope: typeof kept.scope === "string" ? kept.scope : "", summary: kept.summary, skipped: typeof kept.skipped === "string" };
+  const steps: RunCacheStep[] = [];
+  for (const [field, step] of [["cacheBefore", "before"], ["cacheAfter", "after"]] as const) {
+    const said = value[field];
+    if (isRecord(said) && typeof said.summary === "string") {
+      steps.push({ step, scope: typeof said.scope === "string" ? said.scope : "", summary: said.summary, skipped: typeof said.skipped === "string" });
+    }
+  }
+
+  return steps;
 }
 
 /**
- * What the cache step a deliver or drain run ends with did (osdu/docs/reference/concepts/partition-cache.md, Deliveries
- * keep a type current): the run's own, or for a run of a source of several interfaces, each interface's. Empty when no
- * type is kept current by what the run delivered.
+ * What a pipeline's cache steps did (osdu/docs/reference/flow/delivery.md, cache): the step before the run renders and the
+ * step after it changed OSDU, the run's own or, for a run of a source of several interfaces, each interface's. Empty when
+ * the pipeline names no cache step.
  */
-export function runCacheKept(result: Record<string, unknown> | null): RunCacheKept[] {
-  const own = cacheKeptOf(result);
-  if (own !== null) {
-    return [own];
+export function runCacheSteps(result: Record<string, unknown> | null): RunCacheStep[] {
+  const own = cacheStepsOf(result);
+  if (own.length > 0) {
+    return own;
   }
 
   const interfaces = isRecord(result) && Array.isArray(result.interfaces) ? result.interfaces : [];
-  return interfaces.map((entry) => cacheKeptOf(isRecord(entry) ? entry.result : null)).filter((found): found is RunCacheKept => found !== null);
+  return interfaces.flatMap((entry) => cacheStepsOf(isRecord(entry) ? entry.result : null));
 }
 
 /** The submission a run worked on: the one its trigger named, else the one its result reports. */

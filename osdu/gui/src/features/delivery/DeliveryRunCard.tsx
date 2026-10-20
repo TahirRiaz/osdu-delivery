@@ -8,7 +8,7 @@ import { CodeView } from "@/components/CodeView";
 import { deliveryApi, type ReversalSource } from "../../api/delivery";
 import { prettyJson } from "./prettyJson";
 import { ReversalCard } from "./ReversalCard";
-import { runCacheKept, runRequest, runResult, runScope } from "./runOutcome";
+import { runCacheSteps, runRequest, runResult, runScope } from "./runOutcome";
 import { undoneFirst, undoRunCounts } from "../../api/artifacts";
 import { UndoneFirst } from "./ArtifactMarks";
 import { DimensionRunViews } from "./dimensions/DimensionRunViews";
@@ -59,8 +59,8 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
   const ledgerUndone = run.operation === "delete-ledger" ? undoneFirst(result) : null;
   // A deliver, replan or drain run ends with the sweep that undoes what unfinished deliveries left.
   const sweptUndone = run.operation === null || run.operation === "deliver" || run.operation === "replan" || run.operation === "drain" ? undoneFirst(result) : null;
-  // It ends with the cache step too, which reads what it landed into the cache types its deliveries keep current.
-  const cacheKept = run.flowKind === "delivery" ? runCacheKept(result) : [];
+  // A pipeline's cache steps: what it brought up to date before it rendered, and what it put into the cache after.
+  const cacheSteps = run.flowKind === "delivery" ? runCacheSteps(result) : [];
 
   return (
     <>
@@ -141,13 +141,13 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
         </Card>
       )}
 
-      {cacheKept.length > 0 && (
-        <Card className="gap-1 rounded-lg p-3" data-testid="run-cache-kept">
-          <h2 className="text-[13px] font-medium">Cache kept current</h2>
-          {cacheKept.map((kept, index) => (
-            <p key={`${kept.scope}-${index}`} className="flex items-start gap-1.5 text-[12.5px] text-muted-foreground" data-testid="run-cache-kept-line">
-              {kept.skipped && <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-label="Not brought up to date" />}
-              <span>{kept.summary}</span>
+      {cacheSteps.length > 0 && (
+        <Card className="gap-1 rounded-lg p-3" data-testid="run-cache-steps">
+          <h2 className="text-[13px] font-medium">Cache</h2>
+          {cacheSteps.map((said, index) => (
+            <p key={`${said.step}-${said.scope}-${index}`} className="flex items-start gap-1.5 text-[12.5px] text-muted-foreground" data-testid={`run-cache-${said.step}`}>
+              {said.skipped && <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-label="Not brought up to date" />}
+              <span>{said.summary}</span>
             </p>
           ))}
         </Card>

@@ -13,17 +13,19 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// Deliveries keep a type current, on SQL Server (osdu/docs/reference/concepts/partition-cache.md): what a delivery adds
-/// stays beside what it added before and survives a cache flow's capture that does not find it, until a refresh finds OSDU's
-/// storage no longer holds it; the ledger names what a run landed; and a delivery run's records, read back from storage,
-/// reach the cache types its kind keeps current, held by its ledger, and only those.
+/// A pipeline's cache steps on SQL Server (osdu/docs/reference/concepts/partition-cache.md, Pipelines bring the cache up to
+/// date): what a delivery adds stays beside what it added before and survives a cache flow's capture that does not find it,
+/// until a refresh finds OSDU's storage no longer holds it; what a run finds OSDU no longer holds leaves whoever held it; the
+/// ledger names what a run changed; the after step reads it back into the types it names, and only those; the before step
+/// captures each declaring flow's records as that flow's own; and a run's steps are refused, or do not fail it, as they should.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 [Trait("Category", "Integration")]
-public sealed class CacheKeepCurrentStoreTests : IDisposable
+public sealed class CacheStepsStoreTests : IDisposable
 {
     private const string Scope = "dev";
     private const string LogKind = "osdu:wks:work-product-component--WellLog:1.4.0";
+    private const string UnitKind = "osdu:wks:reference-data--UnitOfMeasure:1.0.0";
 
     private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
@@ -84,7 +86,26 @@ public sealed class CacheKeepCurrentStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task A_delivery_run_s_records_are_read_back_into_the_types_its_kind_keeps_current_and_only_those()
+    public async Task What_OSDU_no_longer_holds_leaves_the_type_whoever_held_it()
+    {
+        var store = _db.Caches();
+        var capture = new CacheCapture(null, "tests", "tests");
+        const string Delivery = "delivery:welldb-unit-delivery";
+        await store.MergeAsync(Scope, "reference-cache", [Units(("m", "metre"), ("ft", "foot"))], capture, T(0));
+        await store.MergeAsync(Scope, Delivery, [Units(("s", "second"))], capture with { Adds = true }, T(1));
+
+        // A run found the foot (a cache flow's) and the second (a delivery's) gone from OSDU: both leave, with every hold.
+        IReadOnlySet<string> gone = new HashSet<string>(StringComparer.Ordinal) { "ft", "s" };
+        var removed = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase) { ["UnitOfMeasure"] = gone };
+        var written = await store.MergeAsync(Scope, Delivery, [Units()], capture with { Adds = true, Removed = removed }, T(2));
+
+        Assert.Equal(["m"], Ids(written.Snapshot));
+        Assert.Empty(await HeldAsync(Delivery));
+        Assert.Equal(["m"], await HeldAsync("reference-cache"));
+    }
+
+    [Fact]
+    public async Task The_after_step_reads_back_what_the_run_changed_and_takes_out_what_OSDU_no_longer_holds()
     {
         var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime.AddMinutes(-5), time: _clock);
         var ledger = _db.Ledger(_clock);
@@ -100,7 +121,6 @@ public sealed class CacheKeepCurrentStoreTests : IDisposable
             EntityType = "work-product-component--WellLog",
             Kind = "osdu:wks:work-product-component--WellLog:*",
             Fields = [new ReferenceFieldSpec("data.Name")],
-            KeepCurrent = true,
         });
         await _db.DeclareCacheAsync(Scope, "welldb-wellbore-cache", new ReferenceTypeSpec
         {
@@ -108,7 +128,6 @@ public sealed class CacheKeepCurrentStoreTests : IDisposable
             EntityType = "master-data--Wellbore",
             Kind = "osdu:wks:master-data--Wellbore:*",
             Fields = [new ReferenceFieldSpec("data.FacilityName")],
-            KeepCurrent = true,
         });
 
         var started = _clock.GetUtcNow().UtcDateTime;
@@ -119,42 +138,100 @@ public sealed class CacheKeepCurrentStoreTests : IDisposable
         await runtime.Intake.CompleteAsync(intake.Submission.SubmissionId, runtime.Flow.Id);
         Assert.True(work.Delivered > 1);
 
-        // The ledger names what the run landed, and nothing landed before it.
-        var landed = await ledger.LandedSinceAsync(runtime.Flow.Id, started, 1_000);
-        Assert.Equal(work.Delivered, landed.Count);
-        Assert.Empty(await ledger.LandedSinceAsync(runtime.Flow.Id, _clock.GetUtcNow().UtcDateTime.AddMinutes(1), 1_000));
+        // The ledger names what the run changed in OSDU, and nothing changed before it.
+        var changed = await ledger.ChangedSinceAsync(runtime.Flow.Id, started, 1_000);
+        Assert.Equal(work.Delivered, changed.Count);
+        Assert.Empty(await ledger.ChangedSinceAsync(runtime.Flow.Id, _clock.GetUtcNow().UtcDateTime.AddMinutes(1), 1_000));
 
         // OSDU holds every record but one, which a cleanup took meanwhile.
         using var platform = new FakeOsduPlatform();
-        foreach (var id in landed.Skip(1))
+        foreach (var id in changed.Skip(1))
         {
             platform.Put(FakeOsduPlatform.Record(id, LogKind, new JsonObject { ["Name"] = $"log {id}" }));
         }
 
         using var rig = new StorageRig(platform);
-        var keeper = new CacheKeeper(engine with { Cache = _db.Caches() }, NullLogger.Instance);
-        var kept = await keeper.KeepCurrentAsync(
-            Scope, LogKind, runtime.Flow.Id, runtime.Flow.LedgerName, started, _ => Task.FromResult(rig.Client), OsduRecordProtocol.DefaultVerifyBatchPath,
-            Guid.NewGuid(), "tests", CancellationToken.None);
+        var caches = _db.Caches();
+        var declaration = await caches.DeclarationAsync(Scope);
+        var keeper = new CacheKeeper(engine with { Cache = caches }, NullLogger.Instance);
+        var after = await keeper.AfterAsync(
+            Scope, [declaration.Step("WellLog")!], runtime.Flow.Id, runtime.Flow.LedgerName, started, _ => Task.FromResult(rig.Client),
+            OsduRecordProtocol.DefaultVerifyBatchPath, Guid.NewGuid(), "tests", CancellationToken.None);
 
-        Assert.NotNull(kept);
-        Assert.Equal(["WellLog"], kept.Types);
-        Assert.Equal((landed.Count, landed.Count - 1, 1, true), (kept.Landed, kept.Read, kept.Missing, kept.Written));
-        var cached = await _db.Caches().LoadAsync(Scope, kept.Version!);
+        Assert.NotNull(after);
+        Assert.Equal(["WellLog"], after.Types);
+        Assert.Equal((changed.Count, changed.Count - 1, 1, true), (after.Records, after.Read, after.Removed, after.Written));
+        var cached = await caches.LoadAsync(Scope, after.Version!);
         var logs = cached!.Type("WellLog")!;
-        Assert.Equal(landed.Count - 1, logs.Items.Count);
+        Assert.Equal(changed.Count - 1, logs.Items.Count);
         Assert.All(logs.Items, item => Assert.Equal($"log {item.Id}", item.Fields["Name"].Text));
         Assert.Null(cached.Type("Wellbore"));
-        Assert.Equal(landed.Count - 1, (await HeldAsync(CacheHolders.Delivery(runtime.Flow.LedgerName), "WellLog")).Count);
+        Assert.Equal(changed.Count - 1, (await HeldAsync(CacheHolders.Delivery(runtime.Flow.LedgerName), "WellLog")).Count);
 
-        // A kind no type keeps current keeps nothing current, and does not read storage.
-        Assert.Null(await keeper.KeepCurrentAsync(
-            Scope, "osdu:wks:master-data--Well:1.0.0", runtime.Flow.Id, runtime.Flow.LedgerName, started, _ => throw new InvalidOperationException("storage is not read"),
+        // A step naming no type does nothing, and does not read storage.
+        Assert.Null(await keeper.AfterAsync(
+            Scope, [], runtime.Flow.Id, runtime.Flow.LedgerName, started, _ => throw new InvalidOperationException("storage is not read"),
             OsduRecordProtocol.DefaultVerifyBatchPath, null, "tests", CancellationToken.None));
     }
 
     [Fact]
-    public async Task A_deliver_run_ends_with_the_cache_step_and_a_step_that_cannot_reach_storage_does_not_fail_it()
+    public async Task The_before_step_captures_each_declaring_flow_s_records_as_that_flow_s_own()
+    {
+        var caches = _db.Caches();
+        await _db.DeclareCacheAsync(Scope, "reference-cache", new ReferenceTypeSpec
+        {
+            Name = "UnitOfMeasure",
+            EntityType = "reference-data--UnitOfMeasure",
+            Kind = "osdu:wks:reference-data--UnitOfMeasure:*",
+            Fields = [new ReferenceFieldSpec("data.Code")],
+        });
+
+        using var platform = new FakeOsduPlatform();
+        platform.Put(FakeOsduPlatform.Record("dev:reference-data--UnitOfMeasure:m", UnitKind, new JsonObject { ["Code"] = "m" }));
+        platform.Put(FakeOsduPlatform.Record("dev:reference-data--UnitOfMeasure:ft", UnitKind, new JsonObject { ["Code"] = "ft" }));
+        var declaration = await caches.DeclarationAsync(Scope);
+        var keeper = new CacheKeeper(Samples.Engine(_db.Ledger(_clock), _clock, cache: caches), NullLogger.Instance);
+
+        var before = await keeper.BeforeAsync(
+            Scope, [declaration.Step("UnitOfMeasure")!], "welldb-wells", token => Connect(platform, token),
+            OsduRecordProtocol.DefaultVerifyBatchPath, Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((2, true), (before.Records, before.Written));
+        var cached = await caches.LoadAsync(Scope, before.Version!);
+        Assert.Equal(["dev:reference-data--UnitOfMeasure:ft", "dev:reference-data--UnitOfMeasure:m"], cached!.Type("UnitOfMeasure")!.Items.Select(i => i.Id).Order(StringComparer.Ordinal));
+        Assert.Equal(2, (await HeldAsync("reference-cache")).Count);
+
+        // Taken again with nothing new in OSDU, the step writes no version.
+        var again = await keeper.BeforeAsync(
+            Scope, [declaration.Step("UnitOfMeasure")!], "welldb-wells", token => Connect(platform, token),
+            OsduRecordProtocol.DefaultVerifyBatchPath, Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.False(again.Written);
+        Assert.Equal(before.Version, again.Version);
+    }
+
+    [Fact]
+    public async Task A_before_step_on_a_type_only_its_cache_flow_s_parameters_can_search_is_refused()
+    {
+        var caches = _db.Caches();
+        await _db.DeclareCacheAsync(Scope, "reference-cache", new ReferenceTypeSpec
+        {
+            Name = "UnitOfMeasure",
+            EntityType = "reference-data--UnitOfMeasure",
+            Kind = "osdu:wks:reference-data--UnitOfMeasure:*",
+            Query = "data.Source:\"{source}\"",
+            Fields = [new ReferenceFieldSpec("data.Code")],
+        });
+        var declaration = await caches.DeclarationAsync(Scope);
+        var keeper = new CacheKeeper(Samples.Engine(_db.Ledger(_clock), _clock, cache: caches), NullLogger.Instance);
+
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => keeper.BeforeAsync(
+            Scope, [declaration.Step("UnitOfMeasure")!], "welldb-wells", _ => throw new InvalidOperationException("OSDU is not searched"),
+            OsduRecordProtocol.DefaultVerifyBatchPath, null, "tests", CancellationToken.None));
+        Assert.Contains("takes the flow's parameters", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_deliver_run_ends_with_its_after_step_and_a_step_that_cannot_reach_storage_does_not_fail_it()
     {
         var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime.AddMinutes(-5), time: _clock);
         var ledger = _db.Ledger(_clock);
@@ -166,26 +243,56 @@ public sealed class CacheKeepCurrentStoreTests : IDisposable
             EntityType = "work-product-component--WellLog",
             Kind = "osdu:wks:work-product-component--WellLog:*",
             Fields = [new ReferenceFieldSpec("data.Name")],
-            KeepCurrent = true,
         });
         var engine = Samples.Engine(ledger, _clock, sources: tables, cache: caches) with { Protocols = new FakeProtocolFactory(new FakeProtocol()) };
-        using var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(_root), SampleEstate.Values);
+        var flow = Samples.LocalFlow(_root) with { Cache = new Model.FlowCacheSteps { After = new Model.CacheStepEntries { Named = ["WellLog"] } } };
+        using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
         await ledger.RegisterAsync(runtime.Flow);
 
         // The sample flow's target is a placeholder no one answers on: the records land through the fake protocol, and the
         // step that reads them back cannot reach storage. The run stands, and says what the step could not do.
         var run = await runtime.RunAsync(force: false);
         Assert.True(run.Work.Delivered > 0);
-        var kept = Assert.IsType<CacheKeptOutcome>(run.CacheKept);
-        Assert.Equal(Scope, kept.Scope);
-        Assert.Contains("A refresh of the cache flow brings the records in", kept.Skipped, StringComparison.Ordinal);
+        var after = Assert.IsType<CacheStepOutcome>(run.CacheAfter);
+        Assert.Equal((CacheStepOutcome.AfterStep, Scope), (after.Step, after.Scope));
+        Assert.Contains("A refresh of the cache flows brings the records in", after.Skipped, StringComparison.Ordinal);
+        Assert.Null(run.CacheBefore);
 
-        // A run that sends nothing has nothing to keep current.
+        // A run that sends nothing has nothing to put into the cache.
         _clock.Advance(TimeSpan.FromHours(1));
         var idle = await runtime.RunAsync(force: false);
         Assert.Equal(0, idle.Work.Delivered);
-        Assert.Null(idle.CacheKept);
+        Assert.Null(idle.CacheAfter);
     }
+
+    [Fact]
+    public async Task A_run_naming_a_type_the_partition_s_cache_does_not_hold_stops_before_it_reads_anything()
+    {
+        var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime.AddMinutes(-5), time: _clock);
+        var ledger = _db.Ledger(_clock);
+        var caches = _db.Caches();
+        await Samples.ImportSampleCacheAsync(caches);
+        var protocol = new FakeProtocol();
+        var engine = Samples.Engine(ledger, _clock, sources: tables, cache: caches) with { Protocols = new FakeProtocolFactory(protocol) };
+        var flow = Samples.LocalFlow(_root) with { Cache = new Model.FlowCacheSteps { After = new Model.CacheStepEntries { Named = ["NoSuchType"] } } };
+        using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
+
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => runtime.RunAsync(force: false));
+        Assert.Contains("names 'NoSuchType'", refused.Message, StringComparison.Ordinal);
+        Assert.Empty(protocol.Deliveries);
+    }
+
+    private static Task<OsduConnection> Connect(FakeOsduPlatform platform, CancellationToken ct)
+        => OsduConnection.CreateAsync(
+            FakeOsduPlatform.Endpoint,
+            new Model.TargetAuth { Type = Model.TargetAuthType.None },
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = Scope },
+            new Model.FlowReliability { Retry = new Model.FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
+            new Core.Secrets.SecretResolver([new Core.Secrets.EnvSecretProvider()]),
+            handler: platform,
+            allowLoopback: true,
+            ct: ct);
 
     private static DateTimeOffset T(int hours) => new DateTimeOffset(2026, 10, 20, 12, 0, 0, TimeSpan.Zero).AddHours(hours);
 

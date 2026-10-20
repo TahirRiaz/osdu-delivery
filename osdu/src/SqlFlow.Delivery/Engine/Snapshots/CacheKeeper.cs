@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Identity;
@@ -9,21 +10,30 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
 /// <summary>
-/// What a delivery run's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current):
-/// the partition and the types it kept current, how many records the run landed, how many of them it read back from OSDU's
-/// storage service and how many storage did not return, the version of the cache it left current and whether it wrote it,
-/// and, when it did nothing, why.
+/// What one of a pipeline's cache steps did (osdu/docs/reference/flow/delivery.md, cache): which step, the partition and the
+/// types it brought up to date, how many records it took in (the records the searches found before the run, or the records
+/// the run changed in OSDU after it) and how many of those OSDU's storage service returned, how many it took out because
+/// OSDU no longer holds them, the version of the cache it left current and whether it wrote it, how many records built from
+/// what moved it asked to be planned again, and, when it did nothing, why.
 /// </summary>
-public sealed record CacheKeptOutcome(
+public sealed record CacheStepOutcome(
+    string Step,
     string Scope,
     IReadOnlyList<string> Types,
-    int Landed,
+    int Records,
     int Read,
-    int Missing,
+    int Removed,
     string? Version,
     bool Written,
+    long Released,
     string? Skipped)
 {
+    /// <summary>The step that brings the cache up to date before the run renders.</summary>
+    public const string BeforeStep = "before";
+
+    /// <summary>The step that puts what the run changed in OSDU into the cache as it ends.</summary>
+    public const string AfterStep = "after";
+
     /// <summary>The step in one sentence, as the run's result carries it for the run page.</summary>
     public string Summary => Describe();
 
@@ -34,38 +44,54 @@ public sealed record CacheKeptOutcome(
         var types = Types.Count == 0 ? string.Empty : $" ({string.Join(", ", Types)})";
         var cache = Scope.Length == 0 ? "the partition's cache" : $"the cache of partition '{Scope}'";
         var subject = Scope.Length == 0 ? "The partition's cache" : $"The cache of partition '{Scope}'";
+        var when = Step == BeforeStep ? "before the run" : "after the run";
         if (Skipped is not null)
         {
-            return $"{subject}{types} was not brought up to date: {Skipped}";
+            return $"{subject}{types} was not brought up to date {when}: {Skipped}";
         }
 
-        if (Landed == 0)
+        var removed = Removed == 0 ? string.Empty : $", taking out {Removed} OSDU no longer holds";
+        var state = Written ? $"as version {Version}" : $"unchanged at version {Version}";
+        var released = Released == 0 ? string.Empty : $"; {Released} record(s) built without what changed are planned again";
+        if (Step == BeforeStep)
         {
-            return $"The run landed no record {cache} keeps current{types}.";
+            return $"{subject}{types} was brought up to date {when} from the {Records} record(s) OSDU holds{removed}, {state}{released}.";
         }
 
-        var missing = Missing == 0 ? string.Empty : $"; storage did not return {Missing}";
-        return Written
-            ? $"{subject}{types} holds the {Read} record(s) the run landed as version {Version}{missing}."
-            : $"{subject}{types} already held the {Read} record(s) the run landed, at version {Version}{missing}.";
+        return Records == 0
+            ? $"The run changed no record in OSDU that {cache}{types} holds."
+            : $"{subject}{types} took the {Read} record(s) the run landed{removed}, {state}{released}.";
     }
 }
 
 /// <summary>
-/// The step a delivery run ends with (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current): when
-/// a synced cache flow of the run's partition declares a type of the kind the run delivers with <c>keepCurrent: true</c>,
-/// the records the run landed are read back from OSDU's storage service by id and merged into the partition's cache, held
-/// by the delivery, so the flows that run after it render against them. Storage is read rather than the search index,
-/// which holds a record a moment after it is written. The merge adds records and takes none away; a cache flow's refresh
-/// takes out a record a delivery holds only once storage no longer holds it.
+/// A pipeline's cache steps (osdu/docs/reference/flow/delivery.md, cache; osdu/docs/reference/concepts/partition-cache.md,
+/// Pipelines bring the cache up to date). Before the run renders, the types it names are brought up to date from OSDU as their
+/// cache flows would capture them, searched through the pipeline's own connection to its partition, so the run renders against
+/// what OSDU holds now whoever delivered it. As the run ends, the records it changed in OSDU are read back from the storage
+/// service by id and put into the types it names, so the pipelines after it render against them; storage is read because
+/// the search index holds a record only a moment after it is written. Each step tags what its changes reach, as a refresh
+/// does, and asks for those records to be planned again at once, so a pipeline later in the schedule finds them due.
 /// </summary>
 public sealed class CacheKeeper
 {
     /// <summary>
-    /// The most records one run reads back. A run landing more is a bulk load, for which the cache flow's refresh is the
-    /// cheaper way to bring the cache up to date; the step then says so and reads nothing.
+    /// The most records the after step reads back. A run changing more is a bulk load, for which the cache flow's refresh is
+    /// the cheaper way to bring the cache up to date; the step then says so and reads nothing.
     /// </summary>
     public const int MaxRecords = 50_000;
+
+    /// <summary>
+    /// The most records a step asks to plan again itself; the control plane's rollout carries the rest of a change at its
+    /// own pace.
+    /// </summary>
+    public const long MaxReleased = 100_000;
+
+    /// <summary>The records one rollout batch marks.</summary>
+    private const int RolloutBatch = 5_000;
+
+    /// <summary>The newest approved changes of the partition a step looks through for its own.</summary>
+    private const int TagsRead = 1_000;
 
     private readonly EngineContext _context;
     private readonly ILogger _logger;
@@ -79,23 +105,129 @@ public sealed class CacheKeeper
     }
 
     /// <summary>
-    /// Brings the types of <paramref name="scope"/>'s cache that the deliveries of <paramref name="kind"/> keep current up to
-    /// date with what the ledger <paramref name="ledgerFlowId"/> (named <paramref name="ledgerName"/>) landed since
-    /// <paramref name="sinceUtc"/>. Null when no such type is declared, or the host has no ledger or cache.
+    /// Brings <paramref name="types"/> of <paramref name="scope"/>'s cache up to date from OSDU before a run renders: each
+    /// declaring cache flow's kind and query are searched with every path the partition keeps for the type, and the capture is
+    /// merged as that flow's own, exactly as a refresh of the flow narrowed to these types would merge it. A record a delivery
+    /// holds that the search did not find stays while OSDU's storage service still holds it. The step is the run's to
+    /// complete: anything that keeps a type from being read whole fails it, and the run with it, before anything is sent.
     /// </summary>
-    /// <param name="scope">The partition whose cache the run's records go into: the one the run rendered against.</param>
-    /// <param name="kind">The exact kind the run delivers, which the kept types' kinds are matched against.</param>
+    /// <param name="scope">The partition the pipeline delivers to, whose cache the step brings up to date.</param>
+    /// <param name="types">The types <c>cache.before</c> names, resolved (<see cref="CacheStepPlan"/>).</param>
+    /// <param name="pipeline">The pipeline, as the version's origin names it.</param>
+    /// <param name="connect">Opens a search connection to the pipeline's platform and partition, under its own auth.</param>
+    /// <param name="storagePath">The storage service's batch read (openapi storage v2, POST /query/records).</param>
+    /// <param name="runId">The run, which a version written records.</param>
+    /// <param name="actor">Who asked for the run.</param>
+    /// <param name="ct">Cancels the step.</param>
+    /// <exception cref="DeliveryException">A type cannot be searched as its cache flows declare it, or its capture failed.</exception>
+    public async Task<CacheStepOutcome> BeforeAsync(
+        string scope,
+        IReadOnlyList<CacheStepType> types,
+        string pipeline,
+        Func<CancellationToken, Task<OsduConnection>> connect,
+        string storagePath,
+        Guid? runId,
+        string actor,
+        CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(types);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeline);
+        ArgumentNullException.ThrowIfNull(connect);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storagePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        var store = _context.Cache ?? throw new DeliveryException(
+            $"Pipeline '{pipeline}' brings the cache of partition '{scope}' up to date before it runs, and caches live in the module's database, which this host was started without.");
+        var names = types.Select(t => t.TypeName).ToList();
+
+        // A declaration whose query takes the cache flow's parameters can only be searched by that flow's run, which fills
+        // them; a type every declaration of which does is not one this step can bring up to date.
+        var searched = new List<(string Flow, CacheStepType Type, CacheTypeDeclaration Declaration)>();
+        var problems = new List<string>();
+        foreach (var type in types)
+        {
+            var usable = type.Declarations.Where(d => !d.IsLookup && d.Kind is not null && !FlowMapper.Tokens(d.Query).Any()).ToList();
+            if (usable.Count == 0)
+            {
+                problems.Add($"{type.TypeName}: every cache flow declaring it searches it with a query that takes the flow's parameters ({string.Join(", ", type.Declarations.Select(d => d.FlowName))}), which only that flow's run fills");
+                continue;
+            }
+
+            searched.AddRange(usable.Select(d => (d.FlowName, type, d)));
+        }
+
+        if (problems.Count > 0)
+        {
+            throw new DeliveryException(
+                $"Pipeline '{pipeline}' cannot bring the cache of partition '{scope}' up to date before it runs, so nothing was read or sent: {string.Join("; ", problems)}. Run those cache flows before the pipeline, or leave the types out of cache.before.");
+        }
+
+        var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
+        using var osdu = await connect(ct).ConfigureAwait(false);
+        var storage = new StorageRecords(osdu.Client, storagePath);
+        int found = 0, removed = 0;
+        long released = 0;
+        string? version = null;
+        var written = false;
+
+        // One capture per declaring cache flow, merged as that flow's, so each flow keeps exactly what its own query finds.
+        foreach (var flow in searched.GroupBy(s => s.Flow, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var builder = new SnapshotBuilder(store, scope, flow.Key, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>(), declaration.RetentionDays);
+            var captured = new List<ReferenceType>();
+            foreach (var (_, type, declared) in flow)
+            {
+                captured.Add(await builder.CaptureTypeAsync(
+                    osdu,
+                    new ReferenceTypeSpec
+                    {
+                        Name = type.TypeName,
+                        EntityType = type.EntityType,
+                        Kind = declared.Kind,
+                        Query = declared.Query,
+                        Fields = type.Fields,
+                        OnChange = declared.OnChange,
+                    },
+                    ct).ConfigureAwait(false));
+            }
+
+            var gone = await CacheRefresher.GoneAsync(store, scope, storage, captured, _logger, ct).ConfigureAwait(false);
+            var capture = new CacheCapture(runId, actor, $"{flow.Key}'s {string.Join(", ", captured.Select(c => c.Name))}, searched before pipeline '{pipeline}' ran, through its connection")
+            {
+                Gone = gone,
+            };
+            var write = await builder.WriteAsync(captured, capture, [], ct).ConfigureAwait(false);
+            found += captured.Sum(c => c.Items.Count);
+            removed += gone.Values.Sum(ids => ids.Count);
+            released += await TagAsync(scope, declaration, write, captured.Select(c => c.Name), ct).ConfigureAwait(false);
+            version = write.Snapshot.Version;
+            written |= write.Written;
+        }
+
+        var outcome = new CacheStepOutcome(CacheStepOutcome.BeforeStep, scope, names, found, found, removed, version, written, released, null);
+        _logger.LogInformation("{Outcome}", outcome.Describe());
+        return outcome;
+    }
+
+    /// <summary>
+    /// Puts what the ledger <paramref name="ledgerFlowId"/> (named <paramref name="ledgerName"/>) changed in OSDU since
+    /// <paramref name="sinceUtc"/> into <paramref name="types"/> of <paramref name="scope"/>'s cache as a run ends: the records
+    /// it delivered, removed or reverted are read back from OSDU's storage service by id; a record storage returns is put in
+    /// as it is now, held by the delivery, and one storage no longer holds is taken out of the types whoever held it.
+    /// </summary>
+    /// <param name="scope">The partition the run delivered to.</param>
+    /// <param name="types">The types <c>cache.after</c> names, resolved (<see cref="CacheStepPlan"/>).</param>
     /// <param name="ledgerFlowId">The ledger the run delivered into.</param>
     /// <param name="ledgerName">The ledger's name, which the delivery's hold of its records is named after.</param>
     /// <param name="sinceUtc">When the run started, less a margin for the clocks of the nodes that delivered for it.</param>
     /// <param name="client">Opens the connection to OSDU the run delivered through, used only when there is something to read.</param>
     /// <param name="storagePath">The storage service's batch read (openapi storage v2, POST /query/records).</param>
     /// <param name="runId">The run, which the version written records.</param>
-    /// <param name="actor">Who asked for the run, which the version written and the retention record.</param>
+    /// <param name="actor">Who asked for the run.</param>
     /// <param name="ct">Cancels the step; what it merged before stands.</param>
-    public async Task<CacheKeptOutcome?> KeepCurrentAsync(
+    public async Task<CacheStepOutcome?> AfterAsync(
         string scope,
-        string kind,
+        IReadOnlyList<CacheStepType> types,
         Guid ledgerFlowId,
         string ledgerName,
         DateTime sinceUtc,
@@ -106,46 +238,39 @@ public sealed class CacheKeeper
         CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
-        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentNullException.ThrowIfNull(types);
         ArgumentException.ThrowIfNullOrWhiteSpace(ledgerName);
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(storagePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
-        if (_context.Cache is not { } store || _context.Ledger is not { } ledger)
+        if (types.Count == 0 || _context.Cache is not { } store || _context.Ledger is not { } ledger)
         {
             return null;
         }
 
-        var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
-        var kept = declaration.KeptCurrentBy(kind);
-        if (kept.Count == 0)
+        var names = types.Select(t => t.TypeName).ToList();
+        var changed = await ledger.ChangedSinceAsync(ledgerFlowId, sinceUtc, MaxRecords + 1, ct).ConfigureAwait(false);
+        if (changed.Count == 0)
         {
-            return null;
+            return new CacheStepOutcome(CacheStepOutcome.AfterStep, scope, names, 0, 0, 0, null, false, 0, null);
         }
 
-        var names = kept.Select(t => t.TypeName).ToList();
-        var landed = await ledger.LandedSinceAsync(ledgerFlowId, sinceUtc, MaxRecords + 1, ct).ConfigureAwait(false);
-        if (landed.Count == 0)
+        if (changed.Count > MaxRecords)
         {
-            return new CacheKeptOutcome(scope, names, 0, 0, 0, null, false, null);
-        }
-
-        if (landed.Count > MaxRecords)
-        {
-            return new CacheKeptOutcome(
-                scope, names, landed.Count, 0, 0, null, false,
-                $"the run landed more than {MaxRecords:N0} records, which the cache flow's refresh reads more cheaply than storage does one by one. Run the refresh of the cache flow declaring {string.Join(", ", names)}.");
+            return new CacheStepOutcome(
+                CacheStepOutcome.AfterStep, scope, names, changed.Count, 0, 0, null, false, 0,
+                $"the run changed more than {MaxRecords:N0} records, which the cache flows' refresh reads more cheaply than storage does one by one. Run the refresh of the cache flows declaring {string.Join(", ", names)}.");
         }
 
         // A cached record is kept under its id without a version, as the search index answers it.
-        var ids = landed.Select(id => TargetId.WithoutVersion(id).TrimEnd(':')).Distinct(StringComparer.Ordinal).ToList();
+        var ids = changed.Select(id => TargetId.WithoutVersion(id).TrimEnd(':')).Distinct(StringComparer.Ordinal).ToList();
         var storage = new StorageRecords(await client(ct).ConfigureAwait(false), storagePath);
         var records = new List<JsonObject>(ids.Count);
-        var missing = 0;
+        var missing = new HashSet<string>(StringComparer.Ordinal);
         foreach (var batch in ids.Chunk(StorageRecords.Batch))
         {
             var read = await storage.ReadAsync(batch, null, ct).ConfigureAwait(false);
-            missing += read.Missing.Count;
+            missing.UnionWith(read.Missing.Select(id => TargetId.WithoutVersion(id).TrimEnd(':')));
             foreach (var record in read.Records)
             {
                 if (JsonNode.Parse(record.GetRawText()) is JsonObject parsed)
@@ -156,7 +281,7 @@ public sealed class CacheKeeper
         }
 
         var pool = new StringPool();
-        var captured = kept
+        var captured = types
             .Select(type => new ReferenceType(
                 type.TypeName,
                 type.EntityType,
@@ -168,32 +293,71 @@ public sealed class CacheKeeper
                     .OrderBy(item => item.Id, StringComparer.Ordinal)))
             .ToList();
 
+        var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
         var holder = CacheHolders.Delivery(ledgerName);
         var builder = new SnapshotBuilder(store, scope, holder, _context.Time, _context.Loggers.CreateLogger<SnapshotBuilder>(), declaration.RetentionDays);
-        var capture = new CacheCapture(runId, actor, $"{records.Count} record(s) of {kind} {ledgerName} delivered, read back from OSDU's storage service") { Adds = true };
-        var write = await builder.WriteAsync(captured, capture, [], ct).ConfigureAwait(false);
-
-        // What changed reaches the records built from the cache as a refresh's changes do: a reference written unverified that
-        // the cache now holds is tagged found, and a moved value is tagged for the records built from it.
-        if (write.Written)
+        IReadOnlySet<string> gone = missing;
+        var capture = new CacheCapture(runId, actor, $"{records.Count} record(s) {ledgerName} changed in OSDU, read back from its storage service")
         {
-            var analyzer = new CacheImpactAnalyzer(ledger, _context.Time, _logger);
-            foreach (var name in names)
-            {
-                var change = write.Changes.Of(name) ?? CacheTypeChange.Unchanged;
-                if (change == CacheTypeChange.Unchanged || write.Snapshot.Type(name) is not { } type)
-                {
-                    continue;
-                }
+            Adds = true,
+            Removed = names.ToDictionary(name => name, _ => gone, StringComparer.OrdinalIgnoreCase),
+        };
+        var write = await builder.WriteAsync(captured, capture, [], ct).ConfigureAwait(false);
+        var released = await TagAsync(scope, declaration, write, names, ct).ConfigureAwait(false);
+        var outcome = new CacheStepOutcome(
+            CacheStepOutcome.AfterStep, scope, names, ids.Count, records.Count, missing.Count, write.Snapshot.Version, write.Written, released, null);
+        _logger.LogInformation("{Outcome}", outcome.Describe());
+        return outcome;
+    }
 
-                await analyzer.AnalyzeAsync(
-                    scope, write.Previous?.Type(name), type, declaration.ModeOf(name, CacheChangeMode.Auto), write.Previous?.Version, write.Snapshot.Version, ct)
-                    .ConfigureAwait(false);
+    /// <summary>
+    /// Tags what a step's version changed for the records built from it, as a refresh's changes are tagged, and carries the
+    /// approved changes out at once, up to <see cref="MaxReleased"/> records: the records built without a value the step
+    /// brought in are asked to be planned again before the pipelines after it run. Returns how many it asked for.
+    /// </summary>
+    private async Task<long> TagAsync(string scope, CacheDeclaration declaration, CacheWrite write, IEnumerable<string> names, CancellationToken ct)
+    {
+        if (!write.Written || _context.Ledger is not { } ledger)
+        {
+            return 0;
+        }
+
+        var analyzer = new CacheImpactAnalyzer(ledger, _context.Time, _logger);
+        var tagged = 0;
+        foreach (var name in names.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var change = write.Changes.Of(name) ?? CacheTypeChange.Unchanged;
+            if (change == CacheTypeChange.Unchanged || write.Snapshot.Type(name) is not { } type)
+            {
+                continue;
+            }
+
+            var result = await analyzer.AnalyzeAsync(
+                scope, write.Previous?.Type(name), type, declaration.ModeOf(name, CacheChangeMode.Auto), write.Previous?.Version, write.Snapshot.Version, ct)
+                .ConfigureAwait(false);
+            tagged += result.NewTags;
+        }
+
+        if (tagged == 0)
+        {
+            return 0;
+        }
+
+        long marked = 0;
+        var approved = await ledger.ListTagsAsync("approved", TagsRead, 0, scope, ct).ConfigureAwait(false);
+        foreach (var tag in approved.Where(t => string.Equals(t.ToVersion, write.Snapshot.Version, StringComparison.Ordinal)))
+        {
+            while (marked < MaxReleased)
+            {
+                var batch = await ledger.RollOutTagAsync(tag.TagId, RolloutBatch, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+                marked += batch.Marked;
+                if (batch.Completed || batch.Marked == 0)
+                {
+                    break;
+                }
             }
         }
 
-        var outcome = new CacheKeptOutcome(scope, names, ids.Count, records.Count, missing, write.Snapshot.Version, write.Written, null);
-        _logger.LogInformation("{Outcome}", outcome.Describe());
-        return outcome;
+        return marked;
     }
 }

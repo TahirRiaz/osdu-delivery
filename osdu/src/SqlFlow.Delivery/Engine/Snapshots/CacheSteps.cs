@@ -1,0 +1,134 @@
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
+
+namespace SqlFlow.Delivery.Engine.Snapshots;
+
+/// <summary>
+/// The types of a partition's cache a pipeline's cache steps bring up to date (osdu/docs/reference/flow/delivery.md, cache),
+/// resolved against what the partition's synced cache flows declare. An entry names a type of the cache by its name, or an
+/// OSDU entity type, which stands for every type of the cache holding records of it, whichever repository's cache flow
+/// declares it: the steps work on the OSDU dataset's own terms, not on one repository's names.
+/// </summary>
+public sealed record CacheStepPlan(IReadOnlyList<CacheStepType> Before, IReadOnlyList<CacheStepType> After)
+{
+    /// <summary>A pipeline that brings nothing up to date.</summary>
+    public static CacheStepPlan None { get; } = new([], []);
+
+    /// <summary>True when neither step has a type to work on.</summary>
+    public bool IsEmpty => Before.Count == 0 && After.Count == 0;
+
+    /// <summary>
+    /// The types <paramref name="steps"/> name in the partition's cache <paramref name="declaration"/>, for a pipeline that
+    /// delivers <paramref name="kind"/> and whose mapping reads <paramref name="reads"/>. Everything a step cannot do is
+    /// refused here, before the run reads or sends anything, with every finding at once.
+    /// </summary>
+    /// <param name="flow">The pipeline, as its messages name it.</param>
+    /// <param name="steps">The pipeline's <c>cache:</c> block.</param>
+    /// <param name="declaration">What the partition's synced cache flows declare.</param>
+    /// <param name="kind">The exact kind the pipeline's mapping writes.</param>
+    /// <param name="reads">The cache types the mapping reads by name, and the entity types it checks the ids it builds against.</param>
+    /// <exception cref="DeliveryException">An entry names nothing the partition's cache holds, or a type a step cannot work on.</exception>
+    public static CacheStepPlan Resolve(string flow, FlowCacheSteps steps, CacheDeclaration declaration, string kind, MappingCacheReads reads)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flow);
+        ArgumentNullException.ThrowIfNull(steps);
+        ArgumentNullException.ThrowIfNull(declaration);
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        ArgumentNullException.ThrowIfNull(reads);
+        if (steps.IsEmpty)
+        {
+            return None;
+        }
+
+        var problems = new List<string>();
+        var before = steps.Before.Auto
+            ? AutoBefore(declaration, reads)
+            : Named(steps.Before, "cache.before", declaration, problems, type => BeforeProblem(type));
+        var after = steps.After.Auto
+            ? [.. declaration.Steps().Where(type => type.Holds(kind) && TakesEveryRecord(type))]
+            : Named(steps.After, "cache.after", declaration, problems, type => AfterProblem(type, kind));
+        if (problems.Count > 0)
+        {
+            throw new DeliveryException(
+                $"Pipeline '{flow}' names in its cache steps what the cache of partition '{declaration.Scope}' cannot bring up to date, so nothing was read or sent: {string.Join("; ", problems)}.");
+        }
+
+        return new CacheStepPlan(before, after);
+    }
+
+    /// <summary>
+    /// The types <c>cache.before: auto</c> stands for: every OSDU type of the partition's cache the mapping reads, by name or
+    /// by the entity type it checks the ids it builds against. A lookup table is its cache flow's to capture, in the order
+    /// lineage gives it, and is left out.
+    /// </summary>
+    private static List<CacheStepType> AutoBefore(CacheDeclaration declaration, MappingCacheReads reads)
+    {
+        var entityTypes = reads.EntityTypes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var named = reads.Types.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return [.. declaration.Steps().Where(type => type.IsOsdu && (named.Contains(type.TypeName) || entityTypes.Contains(type.EntityType)))];
+    }
+
+    private static List<CacheStepType> Named(
+        CacheStepEntries entries, string key, CacheDeclaration declaration, List<string> problems, Func<CacheStepType, string?> problemOf)
+    {
+        var types = new List<CacheStepType>();
+        foreach (var entry in entries.Named)
+        {
+            var found = CacheStepEntries.IsEntityType(entry)
+                ? declaration.Steps().Where(type => string.Equals(type.EntityType, entry, StringComparison.OrdinalIgnoreCase)).ToList()
+                : declaration.Step(entry) is { } one ? [one] : [];
+            if (found.Count == 0)
+            {
+                var held = declaration.Steps().Select(t => $"{t.TypeName} ({t.EntityType})").ToList();
+                problems.Add(held.Count == 0
+                    ? $"{key} names '{entry}', and no synced cache flow declares anything for the partition"
+                    : $"{key} names '{entry}', which is neither a type of the partition's cache nor an entity type one holds; it holds {string.Join(", ", held)}");
+                continue;
+            }
+
+            foreach (var type in found)
+            {
+                if (problemOf(type) is { } problem)
+                {
+                    problems.Add($"{key} names '{entry}': {problem}");
+                }
+                else if (!types.Any(t => string.Equals(t.TypeName, type.TypeName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    types.Add(type);
+                }
+            }
+        }
+
+        return types;
+    }
+
+    private static string? BeforeProblem(CacheStepType type)
+        => type.IsOsdu
+            ? null
+            : $"{type.TypeName} is a lookup table, which its cache flow captures whole from its table, dictionary or dimension; run that cache flow before the pipeline, as lineage orders it";
+
+    private static string? AfterProblem(CacheStepType type, string kind)
+    {
+        if (!type.IsOsdu)
+        {
+            return $"{type.TypeName} is a lookup table, and the pipeline delivers OSDU records, which a lookup table does not hold";
+        }
+
+        if (!type.Holds(kind))
+        {
+            return $"{type.TypeName} holds {string.Join(", ", type.Declarations.Select(d => d.Kind).Distinct(StringComparer.Ordinal))}, and the pipeline delivers {kind}";
+        }
+
+        return TakesEveryRecord(type)
+            ? null
+            : $"every cache flow declaring {type.TypeName} narrows it with a query, so a delivered record the query does not match would stay in the cache; declare it without a query in one cache flow, or leave it out";
+    }
+
+    /// <summary>
+    /// True when some flow declares the type without narrowing it, so every record of its kind belongs in it: what a delivery
+    /// adds is then what a refresh would have found.
+    /// </summary>
+    private static bool TakesEveryRecord(CacheStepType type)
+        => type.Declarations.Any(d => string.IsNullOrWhiteSpace(d.Query) || d.Query.Trim() == "*");
+}

@@ -167,8 +167,8 @@ internal sealed class ScopedReferenceResolver(IReadOnlyDictionary<string, string
 /// </summary>
 public sealed record DrainResult(WorkerSummary Work, UndoSummary Undone)
 {
-    /// <summary>What the drain's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current); null when it had nothing to keep current.</summary>
-    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+    /// <summary>What the drain's after step did (osdu/docs/reference/flow/delivery.md, cache); null when the pipeline names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
 
     public override string ToString() => Undone.Idle ? Work.ToString() : $"{Work}; {Undone.Describe()}";
 }
@@ -183,11 +183,16 @@ public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, Submissi
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
     /// <summary>
-    /// What the run's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current): the
-    /// records it landed, read back into the partition's cache for the types its deliveries keep current. Null when no
-    /// type of the partition is kept current by the kind the run delivers.
+    /// What the run's before step did (osdu/docs/reference/flow/delivery.md, cache): the types it brought up to date from
+    /// OSDU before it rendered. Null when the pipeline names none.
     /// </summary>
-    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+    public Snapshots.CacheStepOutcome? CacheBefore { get; init; }
+
+    /// <summary>
+    /// What the run's after step did (osdu/docs/reference/flow/delivery.md, cache): the records it changed in OSDU, read back
+    /// into the types it names. Null when the pipeline names none.
+    /// </summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
 
     /// <summary>
     /// What the run did itself: a run re-sending two records of a delivered submission counts two, and one that found the
@@ -269,7 +274,12 @@ public sealed class FlowRuntime : IDisposable
     private int _keylessNamed;
 
     private readonly EngineContext _context;
-    private readonly ResolvedMapping? _mapping;
+    // Resolved when the runtime opens, and again as a run starts when the partition's cache moved since: a source opens every
+    // interface before the first runs, and an interface renders against what the ones before it put into the cache.
+    private ResolvedMapping? _mapping;
+
+    /// <summary>The pipeline's cache steps resolved against its partition's cache, once per runtime.</summary>
+    private (string Scope, Snapshots.CacheStepPlan Plan)? _cacheSteps;
     private readonly ILogger _log;
     private readonly TargetConnection _target;
 
@@ -665,6 +675,10 @@ public sealed class FlowRuntime : IDisposable
         {
             var started = _context.Time.GetUtcNow().UtcDateTime;
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
+
+            // The cache the pipeline needs current is brought up to date before anything is read; when it cannot be, the run
+            // stops here, with nothing sent.
+            var before = await BringCacheUpToDateAsync(ct).ConfigureAwait(false);
             await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             FanOutHandle? handle = null;
             try
@@ -692,14 +706,19 @@ public sealed class FlowRuntime : IDisposable
                     var swept = await SweepAfterRunAsync(ct).ConfigureAwait(false);
                     if (sent.Processed == 0 && leftovers.Processed == 0 && sent.Waiting == 0 && leftovers.Waiting == 0)
                     {
-                        return Tracked(new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers) { Undone = swept });
+                        return Tracked(new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers)
+                        {
+                            Undone = swept,
+                            CacheBefore = before,
+                            CacheAfter = swept.Idle ? null : await PutIntoCacheAsync(started, ct).ConfigureAwait(false),
+                        });
                     }
 
                     var settled = sent.Processed > 0 || sent.Waiting > 0
                         ? await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false)
                         : intake.Submission;
-                    var sentKept = sent.Delivered + leftovers.Delivered > 0 ? await KeepCacheCurrentAsync(started, ct).ConfigureAwait(false) : null;
-                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers) { Undone = swept, CacheKept = sentKept });
+                    var sentAfter = await PutIntoCacheAsync(started, ct).ConfigureAwait(false);
+                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers) { Undone = swept, CacheBefore = before, CacheAfter = sentAfter });
                 }
 
                 var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);
@@ -713,10 +732,15 @@ public sealed class FlowRuntime : IDisposable
                 // Every delivery of the run has ended, its fan-out members' too: what unfinished deliveries left is undone now.
                 var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
 
-                // The records the run landed, its members' too, go into the cache types its deliveries keep current, so the
-                // flows that run after it render against them.
-                var kept = await KeepCacheCurrentAsync(started, ct).ConfigureAwait(false);
-                return Tracked(new RunResult(intake, work.Add(unattended), submission, intakeMembers, drainMembers) { Undone = undone, CacheKept = kept });
+                // What the run changed in OSDU, its members' too, goes into the cache types the pipeline names, so the pipelines
+                // that run after it render against it.
+                var after = await PutIntoCacheAsync(started, ct).ConfigureAwait(false);
+                return Tracked(new RunResult(intake, work.Add(unattended), submission, intakeMembers, drainMembers)
+                {
+                    Undone = undone,
+                    CacheBefore = before,
+                    CacheAfter = after,
+                });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -781,6 +805,13 @@ public sealed class FlowRuntime : IDisposable
         => TrackAsync("drain", new { once, submissionId }, null, async () =>
         {
             var started = _context.Time.GetUtcNow().UtcDateTime;
+            if (submissionId is null)
+            {
+                // A drain of the whole flow ends with the after step, so a step the partition's cache cannot take is refused
+                // before anything is sent.
+                await CacheStepsAsync(ct).ConfigureAwait(false);
+            }
+
             await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             var worker = await WorkerAsync(ct).ConfigureAwait(false);
             if (submissionId is { } s)
@@ -808,9 +839,9 @@ public sealed class FlowRuntime : IDisposable
             // A drain of the whole flow ends with the sweep a deliver run ends with. A drain of a submission does not: it is what a
             // fan-out member runs while its coordinator and other members deliver, and the coordinator sweeps once they are done.
             var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
-            var kept = summary.Delivered > 0 ? await KeepCacheCurrentAsync(started, ct).ConfigureAwait(false) : null;
+            var after = summary.Delivered > 0 || !undone.Idle ? await PutIntoCacheAsync(started, ct).ConfigureAwait(false) : null;
             var headline = undone.Idle ? summary.Headline : $"{summary.Headline}; {undone.Describe()}";
-            return (new DrainResult(summary, undone) { CacheKept = kept }, headline, submissionId, summary.Idle && undone.Idle);
+            return (new DrainResult(summary, undone) { CacheAfter = after }, headline, submissionId, summary.Idle && undone.Idle);
         }, ct);
 
     /// <summary>
@@ -828,34 +859,122 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
 
     /// <summary>
-    /// How far before a run's start its cache step looks for what it landed: the nodes a fanned-out run delivers on keep
+    /// How far before a run's start its after step looks for what it changed: the nodes a fanned-out run delivers on keep
     /// their own clocks. Reading a record a moment older again changes nothing.
     /// </summary>
     private static readonly TimeSpan CacheStepMargin = TimeSpan.FromMinutes(1);
 
     /// <summary>
-    /// The cache step a deliver run and a flow-wide drain end with (osdu/docs/reference/concepts/partition-cache.md,
-    /// Deliveries keep a type current): the records the flow landed since <paramref name="startedUtc"/>, read back from OSDU's
-    /// storage service into the cache types of its partition that the kind it delivers keeps current. Null when the runtime
-    /// has no mapping, cache or ledger, or no such type is declared. Its failure is not the run's: what the run delivered
-    /// stands, a refresh of the cache flow brings the records in, and the warning says so.
+    /// The pipeline's cache steps resolved against its partition's cache (osdu/docs/reference/flow/delivery.md, cache), once
+    /// per runtime, or null when it names none. An entry naming nothing the cache holds, or a type a step cannot work on, is
+    /// refused here, before the run reads or sends anything.
     /// </summary>
-    private async Task<Snapshots.CacheKeptOutcome?> KeepCacheCurrentAsync(DateTime startedUtc, CancellationToken ct)
+    /// <exception cref="DeliveryException">An entry cannot be resolved, or the host has no cache.</exception>
+    private async Task<(string Scope, Snapshots.CacheStepPlan Plan)?> CacheStepsAsync(CancellationToken ct)
     {
-        if (_mapping is not { } mapping || _context.Cache is null || _context.Ledger is null)
+        if (Flow.Cache.IsEmpty)
         {
             return null;
         }
 
-        // The cache is the one of the partition the flow delivers to, whether or not its own mapping reads it: a delivery of
-        // reference data usually reads none, and the flows after it read what it landed.
+        if (_cacheSteps is { } known)
+        {
+            return known;
+        }
+
+        var store = _context.Cache ?? throw new DeliveryException(
+            $"Pipeline '{Flow.Label}' names cache steps, and caches live in the module's database, which this host was started without. Start it with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB).");
+        var scope = await LedgerRegistration.PartitionAsync(Flow, _context.Secrets, ct).ConfigureAwait(false);
+        var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
+
+        // A runtime opened for target work has no resolved mapping: the kind comes from the mapping's own header, and what the
+        // mapping reads matters only to the before step, which such a run does not take.
+        var kind = _mapping?.Mapping.Kind ?? Mappings.Load(Flow.Render.Mapping).Kind;
+        var reads = _mapping is { } resolved ? MappingCacheReads.Of(resolved.Mapping, resolved.Schema) : new MappingCacheReads([], [], []);
+        var plan = Snapshots.CacheStepPlan.Resolve(Flow.Label, Flow.Cache, declaration, kind, reads);
+        _cacheSteps = (scope, plan);
+        return _cacheSteps;
+    }
+
+    /// <summary>
+    /// The before step a deliver run starts with (osdu/docs/reference/flow/delivery.md, cache): the types the pipeline names
+    /// brought up to date from OSDU, searched through its own connection to its partition. Then, whatever this step, an earlier
+    /// pipeline or an earlier interface of the source wrote, the run renders against the newest version of the cache. The
+    /// step is the run's to complete: its failure fails the run before anything is read or sent.
+    /// </summary>
+    private async Task<Snapshots.CacheStepOutcome?> BringCacheUpToDateAsync(CancellationToken ct)
+    {
+        Snapshots.CacheStepOutcome? outcome = null;
+        if (await CacheStepsAsync(ct).ConfigureAwait(false) is { Plan.Before.Count: > 0 } steps)
+        {
+            outcome = await new Snapshots.CacheKeeper(_context, _context.Loggers.CreateLogger<Snapshots.CacheKeeper>()).BeforeAsync(
+                steps.Scope,
+                steps.Plan.Before,
+                Flow.Label,
+                token => Snapshots.OsduConnection.CreateAsync(
+                    Flow.Target.Endpoint, Flow.Target.Auth, Flow.Target.Headers, Flow.Reliability, _context.Secrets,
+                    allowLoopback: EngineContext.LoopbackAllowed, observer: _context.HttpObserver, ct: token),
+                Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath,
+                RunId,
+                Actor,
+                ct).ConfigureAwait(false);
+        }
+
+        await RenderAgainstNewestCacheAsync(ct).ConfigureAwait(false);
+        return outcome;
+    }
+
+    /// <summary>
+    /// Resolves the render inputs again when the partition's cache moved past the version the runtime resolved, for a flow that
+    /// renders against the current version: a source opens every interface before the first runs, so an interface renders
+    /// against what the interfaces before it, and its own before step, put into the cache. A flow that pins a version keeps it.
+    /// </summary>
+    private async Task RenderAgainstNewestCacheAsync(CancellationToken ct)
+    {
+        if (_mapping is not { Context.CacheScope: { } scope } resolved || _context.Cache is not { } store
+            || !Flow.Render.CacheVersion.Equals(FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var current = await store.CurrentVersionAsync(scope, ct).ConfigureAwait(false);
+        if (current is null || string.Equals(current, resolved.References.Version, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var resolver = new RenderResolver(Mappings, _context.Cache, _context.Templates, _context.Secrets, _search);
+        _mapping = await resolver.ResolveAsync(Flow, ct).ConfigureAwait(false);
+        _log.LogInformation(
+            "The cache of partition {Scope} moved from version {Resolved} to {Current} since the run opened; it renders against {Current}.",
+            scope, resolved.References.Version, current, current);
+    }
+
+    /// <summary>
+    /// The after step a deliver run, a flow-wide drain, a removal and a reversal end with (osdu/docs/reference/flow/delivery.md,
+    /// cache): what the pipeline changed in OSDU since <paramref name="startedUtc"/>, read back from OSDU's storage service into
+    /// the types it names. Null when it names none. Its failure is not the run's: what the run did in OSDU stands, a refresh of
+    /// the cache flows brings the records in, and the warning says so.
+    /// </summary>
+    private async Task<Snapshots.CacheStepOutcome?> PutIntoCacheAsync(DateTime startedUtc, CancellationToken ct)
+    {
+        if (Flow.Cache.After.IsEmpty || _context.Cache is null || _context.Ledger is null)
+        {
+            return null;
+        }
+
         string? scope = null;
         try
         {
-            scope = await LedgerRegistration.PartitionAsync(Flow, _context.Secrets, ct).ConfigureAwait(false);
-            return await new Snapshots.CacheKeeper(_context, _context.Loggers.CreateLogger<Snapshots.CacheKeeper>()).KeepCurrentAsync(
-                scope,
-                mapping.Mapping.Kind,
+            if (await CacheStepsAsync(ct).ConfigureAwait(false) is not { Plan.After.Count: > 0 } steps)
+            {
+                return null;
+            }
+
+            scope = steps.Scope;
+            return await new Snapshots.CacheKeeper(_context, _context.Loggers.CreateLogger<Snapshots.CacheKeeper>()).AfterAsync(
+                steps.Scope,
+                steps.Plan.After,
                 Flow.Id,
                 Flow.LedgerName,
                 startedUtc - CacheStepMargin,
@@ -873,9 +992,10 @@ public sealed class FlowRuntime : IDisposable
             var reason = HeaderRedaction.RedactMessage(ex.Message);
             var partition = scope ?? Flow.Partition ?? string.Empty;
             _log.LogWarning(
-                "The cache of partition {Scope} was not brought up to date with what the run delivered ({Message}); the records stand in OSDU, and a refresh of the cache flow brings them into the cache.",
+                "The cache of partition {Scope} was not brought up to date with what the run changed in OSDU ({Message}); the records stand in OSDU, and a refresh of the cache flows brings them into the cache.",
                 partition, reason);
-            return new Snapshots.CacheKeptOutcome(partition, [], 0, 0, 0, null, false, $"{reason}. A refresh of the cache flow brings the records in.");
+            return new Snapshots.CacheStepOutcome(
+                Snapshots.CacheStepOutcome.AfterStep, partition, [], 0, 0, 0, null, false, 0, $"{reason}. A refresh of the cache flows brings the records in.");
         }
     }
 
@@ -1410,6 +1530,7 @@ public sealed class FlowRuntime : IDisposable
         var kind = scope == RemovalChoice.Previous ? AttemptPhases.RestorePrevious : "delete";
         return TrackAsync(kind, selection.Describe(scope, purgeLedger), single, async activity =>
         {
+            var removalStarted = _context.Time.GetUtcNow().UtcDateTime;
             var ledger = RequireLedger();
             var keys = selection.Keys
                 ?? await ledger.ListKeysAsync(Flow.Id, selection.Filter!, RemovalLimits.MaxSelection, ct).ConfigureAwait(false);
@@ -1443,7 +1564,13 @@ public sealed class FlowRuntime : IDisposable
                 }, ct).ConfigureAwait(false);
             }
 
-            var summary = RemovalSummary.Of(scope, keys.Count, results, purged) with { Undone = undone };
+            // What the removal took out of OSDU, or stepped back, leaves the cache types the pipeline puts its records into. A
+            // record deleted from the ledger as well leaves no row to tell it, and a refresh of the cache flows takes it out.
+            var summary = RemovalSummary.Of(scope, keys.Count, results, purged) with
+            {
+                Undone = undone,
+                CacheAfter = await PutIntoCacheAsync(removalStarted, ct).ConfigureAwait(false),
+            };
             return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
         }, ct);
     }
@@ -1830,9 +1957,13 @@ public sealed class FlowRuntime : IDisposable
         ArgumentNullException.ThrowIfNull(source);
         return TrackAsync("reverse", new { source = source.Kind, sourceId = source.Id }, null, async activity =>
         {
+            var reversalStarted = _context.Time.GetUtcNow().UtcDateTime;
             var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
             var runner = new Reversals.ReversalRunner(Flow, RequireLedger(), protocol, _context.Time, _log, _context.Trace, Actor, RunId);
             var summary = await runner.RunAsync(source, activity, ct).ConfigureAwait(false);
+
+            // What the reversal restored or removed in OSDU goes into the cache types the pipeline puts its records into.
+            summary = summary with { CacheAfter = await PutIntoCacheAsync(reversalStarted, ct).ConfigureAwait(false) };
             return (summary, summary.Describe(source), source.IsRun ? (Guid?)null : source.Id, false);
         }, ct);
     }

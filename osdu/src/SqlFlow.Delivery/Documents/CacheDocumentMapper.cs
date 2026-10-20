@@ -148,12 +148,6 @@ internal static class CacheMapper
             }
 
             var builtFor = MapTypePartitions(type.Partitions, partitions, followsRegistry, where, source);
-            if (type.KeepCurrent == true && string.IsNullOrWhiteSpace(type.Kind))
-            {
-                throw new FlowValidationException(
-                    $"{source}: {where}.keepCurrent is for a type of OSDU records: a delivery lands OSDU records, never the rows of a dictionary, a table or a dimension.");
-            }
-
             if (!string.IsNullOrWhiteSpace(type.Dimension) || !string.IsNullOrWhiteSpace(type.DimensionFlow))
             {
                 types.Add(Validated(DimensionType(type, defaultMode, where, source) with { Partitions = builtFor }, where, source));
@@ -199,14 +193,6 @@ internal static class CacheMapper
                 }
             }
 
-            // A delivery adds every record of the kind it lands, which a query could not narrow: a landed record the query
-            // does not match would stay in the cache, since the refresh keeps what storage still holds.
-            if (type.KeepCurrent == true && query != "*")
-            {
-                throw new FlowValidationException(
-                    $"{source}: {where}.keepCurrent adds every record a delivery of the kind lands, and {where}.query keeps only the records a search matches, so a delivered record the query does not match would stay in the cache. Remove the query, or declare the narrowed type without keepCurrent.");
-            }
-
             var spec = new ReferenceTypeSpec
             {
                 Name = string.IsNullOrWhiteSpace(type.Name) ? ShortNameOf(entityType) : type.Name!.Trim(),
@@ -216,7 +202,6 @@ internal static class CacheMapper
                 OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
                 Fields = MapFields(type.Fields, $"{where}.fields", source),
                 Partitions = builtFor,
-                KeepCurrent = type.KeepCurrent ?? false,
             };
 
             types.Add(Validated(spec, where, source));

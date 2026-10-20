@@ -2561,12 +2561,13 @@ public interface ILedger
     Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default);
 
     /// <summary>
-    /// The OSDU ids of the records of <paramref name="flowId"/>'s ledger that are delivered and were last sent at or after
-    /// <paramref name="sinceUtc"/>, at most <paramref name="max"/> of them, in no particular order: what a delivery run landed,
-    /// which its cache step reads back (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current). A
-    /// record found unchanged was not sent, and is not among them.
+    /// The OSDU ids of the records of <paramref name="flowId"/>'s ledger a run changed in OSDU since <paramref name="sinceUtc"/>,
+    /// at most <paramref name="max"/> of them, in no particular order: the delivered records last sent since then, and the
+    /// records deleted or reverted since then. A pipeline's after step reads them back
+    /// (osdu/docs/reference/concepts/partition-cache.md, Pipelines bring the cache up to date). A record found unchanged was
+    /// not sent, and is not among them.
     /// </summary>
-    Task<IReadOnlyList<string>> LandedSinceAsync(Guid flowId, DateTime sinceUtc, int max, CancellationToken ct = default);
+    Task<IReadOnlyList<string>> ChangedSinceAsync(Guid flowId, DateTime sinceUtc, int max, CancellationToken ct = default);
 
     /// <summary>
     /// The id of the cache set holding exactly these values of <paramref name="scope"/>, creating it the first time it

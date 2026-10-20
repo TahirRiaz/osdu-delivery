@@ -17,18 +17,26 @@ public sealed record CacheTypeDeclaration(
     CacheChangeMode OnChange,
     CacheOrigin Origin = CacheOrigin.Osdu,
     string? Key = null,
-    int RetentionDays = CacheRetention.DefaultDays,
-    bool KeepCurrent = false)
+    int RetentionDays = CacheRetention.DefaultDays)
 {
     /// <summary>True for a table or a dictionary, whose rows are not OSDU records.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
 }
 
 /// <summary>
-/// A type of a partition's cache the partition's deliveries keep current, as every synced cache flow declares it together:
-/// its name and entity type, and every path the cache keeps for it.
+/// A type of a partition's cache a pipeline's cache step brings up to date (osdu/docs/reference/flow/delivery.md, cache), as
+/// every synced cache flow declares it together: its name and entity type, every path the cache keeps for it, and each
+/// flow's declaration of it, whose kind and query a step searches it with.
 /// </summary>
-public sealed record KeptCurrentType(string TypeName, string EntityType, IReadOnlyList<ReferenceFieldSpec> Fields);
+public sealed record CacheStepType(string TypeName, string EntityType, IReadOnlyList<ReferenceFieldSpec> Fields, IReadOnlyList<CacheTypeDeclaration> Declarations)
+{
+    /// <summary>True when the type's records are OSDU records, which a step reads from OSDU; false for a lookup table.</summary>
+    public bool IsOsdu => Declarations.All(d => !d.IsLookup);
+
+    /// <summary>True when a record of <paramref name="kind"/> is one the type holds: some declaration's kind pattern matches it.</summary>
+    public bool Holds(string kind)
+        => IsOsdu && Declarations.Any(d => d.Kind is { } pattern && Engine.Dimensions.KindPatterns.Matches(pattern, kind));
+}
 
 /// <summary>
 /// What one partition's cache holds as every synced cache flow declares it (osdu/docs/reference/concepts/partition-cache.md,
@@ -82,19 +90,18 @@ public sealed class CacheDeclaration
         return fields;
     }
 
-    /// <summary>
-    /// The types the deliveries of <paramref name="kind"/> keep current (osdu/docs/reference/concepts/partition-cache.md,
-    /// Deliveries keep a type current): every OSDU type some synced cache flow declares with <c>keepCurrent: true</c> whose
-    /// kind pattern matches the exact kind a delivery writes, each with every path the partition keeps for it, in name order.
-    /// </summary>
-    public IReadOnlyList<KeptCurrentType> KeptCurrentBy(string kind)
+    /// <summary>A type of the partition's cache as a cache step works on it, or null when no synced flow declares it.</summary>
+    public CacheStepType? Step(string typeName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
-        return [.. _byType
-            .Where(t => t.Value.Any(d => d.KeepCurrent && !d.IsLookup && d.Kind is { } pattern && Engine.Dimensions.KindPatterns.Matches(pattern, kind)))
-            .OrderBy(t => t.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(t => new KeptCurrentType(t.Value[0].TypeName, t.Value[0].EntityType, FieldsOf(t.Key)))];
+        ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
+        return _byType.TryGetValue(typeName, out var declared)
+            ? new CacheStepType(declared[0].TypeName, declared[0].EntityType, FieldsOf(typeName), declared)
+            : null;
     }
+
+    /// <summary>Every type of the partition's cache as a cache step works on it, in name order.</summary>
+    public IReadOnlyList<CacheStepType> Steps()
+        => [.. _byType.Keys.Order(StringComparer.OrdinalIgnoreCase).Select(name => Step(name)!)];
 
     /// <summary>The partition's retention: the longest its synced cache flows declare, or the default when none is synced.</summary>
     public int RetentionDays => CacheRetention.OfPartition(_byType.Values.SelectMany(declared => declared).Select(d => d.RetentionDays));
@@ -247,7 +254,8 @@ public static class CacheMerge
     /// What the platform's services said about the partition's system properties during the capture
     /// (<see cref="SystemProperties.Merge"/>); none for an import from files, which keeps the current ones.
     /// </param>
-    /// <param name="adds">Whether the capture adds what it holds and takes nothing away (<see cref="CacheCapture.Adds"/>).</param>
+    /// <param name="adds">Whether the capture adds what it holds and takes nothing away but <paramref name="removedRecords"/> (<see cref="CacheCapture.Adds"/>).</param>
+    /// <param name="removedRecords">By type name, records OSDU no longer holds, which leave the type whoever held them (<see cref="CacheCapture.Removed"/>).</param>
     public static CacheMergePlan Apply(
         ReferenceSnapshot? current,
         IReadOnlyDictionary<CacheMemberKey, IReadOnlySet<string>> members,
@@ -257,7 +265,8 @@ public static class CacheMerge
         string version,
         DateTimeOffset capturedUtc,
         IReadOnlyList<SystemPropertyReading>? readings = null,
-        bool adds = false)
+        bool adds = false,
+        IReadOnlyDictionary<string, IReadOnlySet<string>>? removedRecords = null)
     {
         ArgumentNullException.ThrowIfNull(members);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -311,6 +320,15 @@ public static class CacheMerge
             {
                 var holders = members.TryGetValue(new CacheMemberKey(capture.Name, id), out var flows) ? flows : NoFlows;
                 if (!holders.Any(flow => !string.Equals(flow, flowName, StringComparison.Ordinal)))
+                {
+                    items.Remove(id);
+                }
+            }
+
+            // What the run that changed it found OSDU no longer holds leaves the type, whoever held it.
+            if (removedRecords is not null && removedRecords.TryGetValue(capture.Name, out var gone))
+            {
+                foreach (var id in gone.Where(id => !found.Contains(id)))
                 {
                     items.Remove(id);
                 }

@@ -814,8 +814,11 @@ public sealed record DeliverOutcome(
     /// <summary>What the sweep the run ended with undid of unfinished deliveries (osdu/docs/reference/concepts/removal-and-reversal.md, Unfinished deliveries and their undo).</summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
-    /// <summary>What the run's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current); null when it had nothing to keep current.</summary>
-    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+    /// <summary>What the run's before step did (osdu/docs/reference/flow/delivery.md, cache); null when the pipeline names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheBefore { get; init; }
+
+    /// <summary>What the run's after step did (osdu/docs/reference/flow/delivery.md, cache); null when the pipeline names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
 
     /// <summary>
     /// A run's counts are its own work (<see cref="RunResult.Own"/>): a run re-sending two records of a delivered submission
@@ -836,7 +839,8 @@ public sealed record DeliverOutcome(
             requested.Passes)
         {
             Undone = run.Undone,
-            CacheKept = run.CacheKept,
+            CacheBefore = run.CacheBefore,
+            CacheAfter = run.CacheAfter,
         };
     }
 }
@@ -966,8 +970,8 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
     /// <summary>What the sweep a drain of the whole flow ends with undid of unfinished deliveries; empty for a drain of one submission.</summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
 
-    /// <summary>What the drain's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current); null when it had nothing to keep current.</summary>
-    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+    /// <summary>What the drain's after step did (osdu/docs/reference/flow/delivery.md, cache); null when the pipeline names none.</summary>
+    public Snapshots.CacheStepOutcome? CacheAfter { get; init; }
 
     public static DrainOutcome From(DrainResult drained, Guid? submissionId)
     {
@@ -977,7 +981,7 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
             DeliveryOperations.Drain, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches, summary.Waiting)
         {
             Undone = drained.Undone,
-            CacheKept = drained.CacheKept,
+            CacheAfter = drained.CacheAfter,
         };
     }
 }

@@ -1529,13 +1529,6 @@ public sealed class DeliveryCacheDefinition
     /// </summary>
     public int RetentionDays { get; set; } = 7;
 
-    /// <summary>
-    /// For an OSDU type: whether the partition's deliveries keep it current (<c>types[].keepCurrent</c>,
-    /// osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current): a delivery run that lands records
-    /// of the type's kind reads them back from OSDU's storage service and merges them into the cache as it ends.
-    /// </summary>
-    public bool KeepCurrent { get; set; }
-
     public DateTime FirstSeenUtc { get; set; }
 
     public DateTime LastSeenUtc { get; set; }
@@ -4049,7 +4042,6 @@ public static class DeliveryModel
             e.Property(c => c.FieldsJson).IsRequired();
             e.Property(c => c.OnChange).HasMaxLength(16).IsRequired();
             e.Property(c => c.RetentionDays).HasDefaultValue(7);
-            e.Property(c => c.KeepCurrent).HasDefaultValue(false);
             // A cache flow that names its partitions declares each of its types once per partition it builds a cache for.
             e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name, c.Scope }).IsUnique();
             // A refresh reads every declaration of its partition; the GUI lists a partition's types and the flows filling them.

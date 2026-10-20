@@ -6,13 +6,31 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/delivery.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 487,
+  "keyCount": 493,
   "keys": [
     {
       "path": "batch",
       "type": "string",
       "required": false,
       "description": "The platform batch the flow belongs to, which groups flows in listings and batch runs. Part of the platform envelope, which the platform reads itself."
+    },
+    {
+      "path": "cache",
+      "type": "object",
+      "required": false,
+      "description": "What the pipeline brings up to date in its partition's cache around its run: `before` the types it needs current before it renders, `after` the types the records it changes go into as it ends. Lineage orders it: the types it writes are read by the flows after it, and the kinds its before step searches are written by the flows before it. In a source with interfaces this is every interface's unless it sets its own, which replaces it whole."
+    },
+    {
+      "path": "cache.after",
+      "type": "list",
+      "required": false,
+      "description": "The types of the partition's cache the run puts what it changed in OSDU into as it ends: the records it delivered, removed or reverted are read back from OSDU's storage service by id; a record storage returns goes in as it is now, held by the delivery, and one storage no longer holds is taken out whoever held it. Records built without what changed are asked to be planned again at once, so the pipelines after it in the schedule find them due. `auto` takes every type holding the kind the pipeline delivers that some cache flow declares without a query. A type holding another kind, one every declaring flow narrows with a query, and a lookup table are refused. Its failure is not the run's: what the run did stands, and the run's result says what the step could not do. `auto`, or a list of the types of the partition's cache, each by its name (`UnitOfMeasure`) or by an OSDU entity type (`reference-data--UnitOfMeasure`), which stands for every type of the cache holding records of it, whichever cache flow declares them; at most 64 entries, each once. A run resolves the entries against what the partition's synced cache flows declare and refuses, before it reads or sends anything, an entry naming nothing the cache holds or a type the step cannot work on."
+    },
+    {
+      "path": "cache.before",
+      "type": "list",
+      "required": false,
+      "description": "The types of the partition's cache brought up to date from OSDU before the run renders: each declaring cache flow's kind and query searched through this pipeline's own connection and merged as that flow's capture, so the run renders against what OSDU holds now, whoever delivered it. `auto` takes the OSDU types the mapping reads, by name or by the entity type it checks the ids it builds against. A lookup table is refused: its cache flow captures it whole. The step is the run's to complete: when it fails, the run fails before anything is sent. `auto`, or a list of the types of the partition's cache, each by its name (`UnitOfMeasure`) or by an OSDU entity type (`reference-data--UnitOfMeasure`), which stands for every type of the cache holding records of it, whichever cache flow declares them; at most 64 entries, each once. A run resolves the entries against what the partition's synced cache flows declare and refuses, before it reads or sends anything, an entry naming nothing the cache holds or a type the step cannot work on."
     },
     {
       "path": "change",
@@ -170,6 +188,24 @@
       "type": "string",
       "required": true,
       "description": "The folder or storage prefix the files must sit under, relative to the flow file when it is a relative path. It takes `{parameter}` tokens, whose values must not contain `/`, `\\` or `..`; a record whose folder falls outside it is held. A `${...}` reference is refused: a location is not resolved from one; vary it with a `{parameter}` token."
+    },
+    {
+      "path": "interfaces.<name>.cache",
+      "type": "object",
+      "required": false,
+      "description": "The interface's own cache steps, replacing the source's whole: an interface delivers a kind of its own. What the pipeline brings up to date in its partition's cache around its run: `before` the types it needs current before it renders, `after` the types the records it changes go into as it ends. Lineage orders it: the types it writes are read by the flows after it, and the kinds its before step searches are written by the flows before it. In a source with interfaces this is every interface's unless it sets its own, which replaces it whole."
+    },
+    {
+      "path": "interfaces.<name>.cache.after",
+      "type": "list",
+      "required": false,
+      "description": "The types of the partition's cache the run puts what it changed in OSDU into as it ends: the records it delivered, removed or reverted are read back from OSDU's storage service by id; a record storage returns goes in as it is now, held by the delivery, and one storage no longer holds is taken out whoever held it. Records built without what changed are asked to be planned again at once, so the pipelines after it in the schedule find them due. `auto` takes every type holding the kind the pipeline delivers that some cache flow declares without a query. A type holding another kind, one every declaring flow narrows with a query, and a lookup table are refused. Its failure is not the run's: what the run did stands, and the run's result says what the step could not do. `auto`, or a list of the types of the partition's cache, each by its name (`UnitOfMeasure`) or by an OSDU entity type (`reference-data--UnitOfMeasure`), which stands for every type of the cache holding records of it, whichever cache flow declares them; at most 64 entries, each once. A run resolves the entries against what the partition's synced cache flows declare and refuses, before it reads or sends anything, an entry naming nothing the cache holds or a type the step cannot work on."
+    },
+    {
+      "path": "interfaces.<name>.cache.before",
+      "type": "list",
+      "required": false,
+      "description": "The types of the partition's cache brought up to date from OSDU before the run renders: each declaring cache flow's kind and query searched through this pipeline's own connection and merged as that flow's capture, so the run renders against what OSDU holds now, whoever delivered it. `auto` takes the OSDU types the mapping reads, by name or by the entity type it checks the ids it builds against. A lookup table is refused: its cache flow captures it whole. The step is the run's to complete: when it fails, the run fails before anything is sent. `auto`, or a list of the types of the partition's cache, each by its name (`UnitOfMeasure`) or by an OSDU entity type (`reference-data--UnitOfMeasure`), which stands for every type of the cache holding records of it, whichever cache flow declares them; at most 64 entries, each once. A run resolves the entries against what the partition's synced cache flows declare and refuses, before it reads or sends anything, an entry naming nothing the cache holds or a type the step cannot work on."
     },
     {
       "path": "interfaces.<name>.change",
