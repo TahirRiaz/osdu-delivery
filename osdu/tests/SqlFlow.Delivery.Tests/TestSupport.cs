@@ -741,7 +741,7 @@ public static class Samples
     {
         ArgumentNullException.ThrowIfNull(store);
         var saved = new List<TemplateSaved>();
-        foreach (var kind in new[] { WellLogKind, WellboreKind, WellboreTrajectoryKind })
+        foreach (var kind in TemplateKinds())
         {
             var schema = SampleTemplate(kind);
             saved.Add(await store.SaveAsync(schema, "sample file", "tests"));
@@ -773,6 +773,25 @@ public static class Samples
     }
 
     /// <summary>The sample schema of a kind, read from its bundled file, or from the fixture schemas for a kind the estate does not deliver.</summary>
+    /// <summary>
+    /// The kind of every bundled schema the sample estate and the fixtures keep, from its file name
+    /// (<c>osdu_wks_master-data--Wellbore_1.3.0.json</c> is <c>osdu:wks:master-data--Wellbore:1.3.0</c>), in kind order: what a
+    /// real estate saves for the mappings it pins.
+    /// </summary>
+    public static IReadOnlyList<string> TemplateKinds()
+        => [.. new[] { TemplateFiles, FixtureTemplateFiles }
+            .SelectMany(folder => Directory.GetFiles(folder, "*.json"))
+            .Select(file => Path.GetFileNameWithoutExtension(file))
+            .Select(name =>
+            {
+                var first = name.IndexOf('_', StringComparison.Ordinal);
+                var second = name.IndexOf('_', first + 1);
+                var last = name.LastIndexOf('_');
+                return $"{name[..first]}:{name[(first + 1)..second]}:{name[(second + 1)..last]}:{name[(last + 1)..]}";
+            })
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)];
+
     public static SchemaSnapshot SampleTemplate(string kind)
     {
         ArgumentNullException.ThrowIfNull(kind);

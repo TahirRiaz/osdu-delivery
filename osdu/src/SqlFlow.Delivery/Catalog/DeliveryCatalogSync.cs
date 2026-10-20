@@ -113,8 +113,32 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         await using var work = await OpenAsync(context, write: true, ct).ConfigureAwait(false);
         var result = await ReconcileAsync(work.Context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        await CheckOrderAsync(context, work.Context, repoId, warnings, ct).ConfigureAwait(false);
         await work.CommitAsync(ct).ConfigureAwait(false);
         return result;
+    }
+
+    /// <summary>
+    /// Checks the repository's waves against the OSDU order of its own deliveries, as the sync has just reconciled them
+    /// (osdu/docs/reference/concepts/osdu-order.md, Checking a repository's waves): every flow runs after the flows of the
+    /// repository delivering what its records refer to, so a schedule running both runs them in that order. Lineage takes
+    /// the order, so a breach is rare: a cycle lineage could only put in its fallback wave, or a flow it gave no wave. The
+    /// waves are the ones lineage stamped in this sync's transaction, read from the catalog context's tracked pipelines,
+    /// and the deliveries are the repository's own rows, which the sync already holds. A breach is a warning: the sync
+    /// still lands.
+    /// </summary>
+    private static async Task CheckOrderAsync(
+        CatalogDbContext catalog, OsduDbContext context, Guid repoId, ICollection<string> warnings, CancellationToken ct)
+    {
+        var waves = catalog.Pipelines.Local
+            .Where(p => p.RepoId == repoId && p.Active && p.Wave >= 0)
+            .ToDictionary(p => p.Name, p => p.Wave, StringComparer.OrdinalIgnoreCase);
+        var read = await Ordering.OrderCatalog.ReadAsync(context, repoId, ct).ConfigureAwait(false);
+        var report = Ordering.RepositoryOrder.Check(repoId, Ordering.RepositoryOrder.Plan(read, new Dictionary<Guid, string>()), waves, read.Problems);
+        foreach (var warning in report.Warnings())
+        {
+            warnings.Add(warning);
+        }
     }
 
     /// <summary>
@@ -140,7 +164,26 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         await using var work = await OpenAsync(context, write: false, ct).ConfigureAwait(false);
         return await MappingsChangedAsync(work.Context, repoId, root, ct).ConfigureAwait(false)
-            || await PinnedTemplateSavedSinceAsync(work.Context, repoId, ct).ConfigureAwait(false);
+            || await PinnedTemplateSavedSinceAsync(work.Context, repoId, ct).ConfigureAwait(false)
+            || await ReleaseBuiltSinceAsync(work.Context, repoId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether a release of OSDU's lineage holding the kind of a mapping of the repository whose pinned template is not
+    /// saved was built after the sync that last saw the mapping (osdu/docs/reference/concepts/osdu-order.md, OSDU's lineage
+    /// by release). The OSDU order reads such a kind's relationships from the newest built release holding it, so the
+    /// lineage computed before the build ordered its flow by nothing, and the first sync after the build computes it again.
+    /// Every reconciliation stamps the mappings it sees, so this holds for exactly one sync.
+    /// </summary>
+    public static Task<bool> ReleaseBuiltSinceAsync(OsduDbContext context, Guid repoId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return context.DeliveryMappings.AsNoTracking()
+            .Where(m => m.RepoId == repoId && m.Kind != string.Empty)
+            .Where(m => !context.DeliveryTemplates.Any(t => t.Kind == m.Kind && t.Version == m.TemplateVersion))
+            .Join(context.SchemaLineageKinds.AsNoTracking(), m => m.Kind, k => k.Kind, (m, k) => new { m.LastSeenUtc, k.LineageId })
+            .Join(context.SchemaLineages.AsNoTracking(), x => x.LineageId, l => l.Id, (x, l) => new { x.LastSeenUtc, l.BuiltUtc })
+            .AnyAsync(x => x.BuiltUtc > x.LastSeenUtc, ct);
     }
 
     /// <summary>

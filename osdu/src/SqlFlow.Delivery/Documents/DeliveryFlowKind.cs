@@ -27,6 +27,12 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
     /// </summary>
     internal MappingTemplateSource? Templates { get; init; }
 
+    /// <summary>
+    /// What lineage reads the catalog's other repositories and built releases of OSDU's lineage with, on a host that has the
+    /// module database; null on one that reads none (osdu/docs/reference/concepts/osdu-order.md, Across repositories).
+    /// </summary>
+    internal Func<Ordering.IOrderCatalog?>? Order { get; init; }
+
     public override string Name => Source.Name;
 
     public override string Kind => FlowDefinition.FlowTypeName;
@@ -48,7 +54,7 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
         => Source.Interfaces.SelectMany(DeliveryLineage.DeclaredObjects).Distinct().ToList();
 
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
-        => DeliveryLineage.Describe(Source, context, MappingDocuments, Templates);
+        => OrderLineage.BindEveryPartition(DeliveryLineage.Describe(Source, context, MappingDocuments, Templates, Order), context);
 
     /// <summary>The mapping each interface pins, found and read as a run of the flow finds and reads it (<see cref="CompanionFiles.Mappings"/>).</summary>
     public override IReadOnlyList<string> CheckOffline(string documentPath)
@@ -61,17 +67,21 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
 {
     private readonly DeliveryDocumentLoader _loader;
     private readonly MappingTemplateSource? _templates;
+    private readonly Func<Ordering.IOrderCatalog?>? _order;
 
     /// <summary>
     /// The kind over <paramref name="loader"/>. <paramref name="templates"/> reads the templates mappings pin, so the
-    /// lineage of a flow shows what a <c>ref</c> written without its entity type is checked against; a host without the
-    /// module database passes none, and that part of a flow's lineage is then left out with a warning saying so.
+    /// lineage of a flow shows what a <c>ref</c> written without its entity type is checked against, and what its records
+    /// refer to; a host without the module database passes none, and that part of a flow's lineage is then left out with a
+    /// warning saying so. <paramref name="order"/> reads what the catalog's other repositories deliver and the built
+    /// releases of OSDU's lineage, asked for once per scan.
     /// </summary>
-    public DeliveryFlowKind(DeliveryDocumentLoader loader, MappingTemplateSource? templates = null)
+    public DeliveryFlowKind(DeliveryDocumentLoader loader, MappingTemplateSource? templates = null, Func<Ordering.IOrderCatalog?>? order = null)
     {
         ArgumentNullException.ThrowIfNull(loader);
         _loader = loader;
         _templates = templates;
+        _order = order;
     }
 
     /// <summary>The operations of a delivery run, the default first.</summary>
@@ -114,7 +124,7 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
     public RegisteredFlowDocument Parse(string yaml, string source)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        return new DeliveryFlowDocument { Source = _loader.ParseSource(yaml, source), Templates = _templates };
+        return new DeliveryFlowDocument { Source = _loader.ParseSource(yaml, source), Templates = _templates, Order = _order };
     }
 
     public void ValidateParameters(RunParameters parameters)

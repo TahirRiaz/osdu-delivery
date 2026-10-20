@@ -36,7 +36,7 @@ public sealed record InventoryFlowDocument : RegisteredFlowDocument
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return InventoryLineage.Describe(Flow);
+        return OrderLineage.BindEveryPartition(InventoryLineage.Describe(Flow), context);
     }
 }
 

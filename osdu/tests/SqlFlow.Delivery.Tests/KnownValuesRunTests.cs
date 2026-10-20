@@ -203,7 +203,7 @@ public sealed class KnownValuesRunTests : IDisposable
             assert:
               - knownValues:
                   locateBy: { '[data.WellboreID, data.FacilityNam]': A/1-F-11 }
-                  check: { '[data.WellboreID, data.WellID, data.FacilityName]': A/1-F }
+                  check: { '[data.WellboreID, data.CurrentOperatorID, data.Name]': A/1-F }
         """;
 
     private async Task<(AssertionRunner Runner, OsduLedger Ledger)> RunnerAsync()
@@ -356,6 +356,6 @@ public sealed class KnownValuesRunTests : IDisposable
         Assert.Equal(TestOutcomes.Errored, misfit.Outcome);
         Assert.Contains(misfit.Problems, p => p.Contains("'data.FacilityNam' is not a property of osdu:wks:master-data--Wellbore:1.3.0", StringComparison.Ordinal)
             && p.Contains("did you mean 'data.FacilityName'", StringComparison.Ordinal));
-        Assert.Contains(misfit.Problems, p => p.Contains("no template of master-data--Well is saved", StringComparison.Ordinal));
+        Assert.Contains(misfit.Problems, p => p.Contains("no template of master-data--Organisation is saved", StringComparison.Ordinal));
     }
 }

@@ -81,6 +81,7 @@ public static class DeliveryInterfaceCatalog
                     FlowName = source.Name,
                     Interface = name,
                     Partition = partition,
+                    TargetPartition = Ordering.OrderDeliveries.PartitionOf(flow) ?? string.Empty,
                     Ordinal = ordinals[name],
                     LedgerFlowId = flow.Id,
                     LedgerName = flow.LedgerName,
@@ -127,6 +128,7 @@ public static class DeliveryInterfaceCatalog
                 row.Kind = wanted.Kind;
                 row.RecordObject = wanted.RecordObject;
                 row.AfterJson = wanted.AfterJson;
+                row.TargetPartition = wanted.TargetPartition;
                 row.RelativePath = wanted.RelativePath;
                 row.Active = wanted.Active;
                 row.LastSeenUtc = nowUtc;
@@ -233,7 +235,8 @@ public static class DeliveryInterfaceCatalog
            && row.LedgerFlowId == wanted.LedgerFlowId && row.LedgerName == wanted.LedgerName && row.Route == wanted.Route
            && row.RouteReason == wanted.RouteReason && row.MappingReference == wanted.MappingReference && row.CacheVersion == wanted.CacheVersion
            && row.Kind == wanted.Kind
-           && row.RecordObject == wanted.RecordObject && row.AfterJson == wanted.AfterJson && row.RelativePath == wanted.RelativePath
+           && row.RecordObject == wanted.RecordObject && row.AfterJson == wanted.AfterJson
+           && row.TargetPartition == wanted.TargetPartition && row.RelativePath == wanted.RelativePath
            && row.Active == wanted.Active;
 
     /// <summary>

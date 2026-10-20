@@ -17,7 +17,7 @@ namespace SqlFlow.Delivery.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.17")
+                .HasAnnotation("ProductVersion", "9.0.21")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -1861,6 +1861,13 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.Property<string>("RouteReason")
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("TargetPartition")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasDefaultValue("");
 
                     b.HasKey("Id");
 
@@ -3873,6 +3880,87 @@ namespace SqlFlow.Delivery.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_SchemaVersion_SingleRow", "[Id] = 1");
                         });
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.SchemaLineage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BuiltBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("BuiltUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Commit")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("FailuresJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Kinds")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("PublishedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Relationships")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Release")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Release")
+                        .IsUnique();
+
+                    b.ToTable("SchemaLineage", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.SchemaLineageKind", b =>
+                {
+                    b.Property<Guid>("LineageId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("RelationshipsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Status")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("LineageId", "Kind");
+
+                    b.HasIndex("Kind");
+
+                    b.HasIndex("LineageId", "EntityType");
+
+                    b.ToTable("SchemaLineageKind", "osdu");
                 });
 #pragma warning restore 612, 618
         }

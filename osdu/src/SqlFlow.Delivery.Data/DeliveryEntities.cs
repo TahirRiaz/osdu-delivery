@@ -1367,6 +1367,14 @@ public sealed class DeliveryInterface
     /// <summary>The partition whose ledger the row describes; empty for a flow that names no partitions.</summary>
     public string Partition { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The partition the interface's records reach, as the OSDU order groups deliveries (osdu/docs/reference/concepts/
+    /// osdu-order.md, The order of a partition): the one its <c>target.headers</c> name, as the document writes it, or <c>*</c>
+    /// for a source that leaves its partitions to the registry while none is registered. Empty when the headers name
+    /// none the order can read, which leaves the interface out of the order, as lineage leaves it out.
+    /// </summary>
+    public string TargetPartition { get; set; } = string.Empty;
+
     /// <summary>Where the interface is in its document, from 0.</summary>
     public int Ordinal { get; set; }
 
@@ -1644,6 +1652,68 @@ public sealed class DeliveryCacheItem
 
     /// <summary>The sequence of the first version that no longer holds it so; null while the newest version still does.</summary>
     public int? ToSequence { get; set; }
+}
+
+/// <summary>
+/// OSDU's lineage as one release of the OSDU data definitions declares it (osdu/docs/reference/concepts/osdu-order.md,
+/// OSDU's lineage by release): which release and commit it was read from, when and by whom it was built, and how much it
+/// holds. What each kind refers to is in <see cref="SchemaLineageKind"/>. A release is built once and kept; building it
+/// again replaces its kinds.
+/// </summary>
+public sealed class SchemaLineage
+{
+    /// <summary>The longest release name a lineage keeps.</summary>
+    public const int MaxReleaseLength = 100;
+
+    public Guid Id { get; set; }
+
+    /// <summary>The release's tag (<c>v0.29.0</c>).</summary>
+    public string Release { get; set; } = string.Empty;
+
+    /// <summary>The commit the release's tag names.</summary>
+    public string Commit { get; set; } = string.Empty;
+
+    /// <summary>When the release was published, when the repository says.</summary>
+    public DateTime? PublishedUtc { get; set; }
+
+    public DateTime BuiltUtc { get; set; }
+
+    /// <summary>Who built it: a user, or the command line's local account.</summary>
+    public string BuiltBy { get; set; } = string.Empty;
+
+    /// <summary>How many kinds it holds.</summary>
+    public int Kinds { get; set; }
+
+    /// <summary>How many properties of those kinds refer to other records.</summary>
+    public int Relationships { get; set; }
+
+    /// <summary>The kinds the release lists that could not be read, each with why: a JSON array of <c>{ "kind", "reason" }</c>.</summary>
+    public string FailuresJson { get; set; } = "[]";
+}
+
+/// <summary>
+/// One kind of a release's lineage (<see cref="SchemaLineage"/>): its entity type and version, its status in the release, and
+/// every property of its schema that refers to other records, with the entity types each names: a JSON array of
+/// <c>{ "property", "targets": [ ... ] }</c>, as the OSDU order reads a schema.
+/// </summary>
+public sealed class SchemaLineageKind
+{
+    public Guid LineageId { get; set; }
+
+    /// <summary>The kind (<c>osdu:wks:master-data--Wellbore:1.3.0</c>).</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The entity type it is of (<c>master-data--Wellbore</c>).</summary>
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The kind's version (<c>1.3.0</c>).</summary>
+    public string Version { get; set; } = string.Empty;
+
+    /// <summary>The kind's status in the release (<c>PUBLISHED</c>, <c>DEVELOPMENT</c>), when the release says.</summary>
+    public string? Status { get; set; }
+
+    /// <summary>The properties that refer to other records, each with the entity types its relationship names.</summary>
+    public string RelationshipsJson { get; set; } = "[]";
 }
 
 /// <summary>
@@ -3769,6 +3839,7 @@ public static class DeliveryModel
             e.Property(i => i.AfterJson).HasMaxLength(4000).IsRequired();
             e.Property(i => i.RelativePath).HasMaxLength(1000).IsRequired();
             e.Property(i => i.Partition).HasMaxLength(200).IsRequired();
+            e.Property(i => i.TargetPartition).HasMaxLength(200).IsRequired().HasDefaultValue(string.Empty);
             e.HasIndex(i => new { i.RepoId, i.FlowName, i.Interface, i.Partition }).IsUnique();
             // A record's page, a submission's page and the record search find the pipeline behind a ledger identity.
             e.HasIndex(i => i.LedgerFlowId);
@@ -3832,6 +3903,32 @@ public static class DeliveryModel
             // The rows each version began: what a version changed is counted from them, by the history and by a retention
             // recording a version's changes before it removes the version's records.
             e.HasIndex(i => new { i.Scope, i.FromSequence }).IncludeProperties(i => new { i.TypeName, i.RecordId });
+        });
+
+        modelBuilder.Entity<SchemaLineage>(e =>
+        {
+            e.ToTable("SchemaLineage", SchemaName);
+            e.HasKey(l => l.Id);
+            e.Property(l => l.Release).HasMaxLength(SchemaLineage.MaxReleaseLength).IsRequired();
+            e.Property(l => l.Commit).HasMaxLength(64).IsRequired();
+            e.Property(l => l.BuiltBy).HasMaxLength(200).IsRequired();
+            e.Property(l => l.FailuresJson).IsRequired();
+            // A release is built once: building it again replaces its kinds under the same row.
+            e.HasIndex(l => l.Release).IsUnique();
+        });
+
+        modelBuilder.Entity<SchemaLineageKind>(e =>
+        {
+            e.ToTable("SchemaLineageKind", SchemaName);
+            e.HasKey(k => new { k.LineageId, k.Kind });
+            e.Property(k => k.Kind).HasMaxLength(400).IsRequired();
+            e.Property(k => k.EntityType).HasMaxLength(256).IsRequired();
+            e.Property(k => k.Version).HasMaxLength(64).IsRequired();
+            e.Property(k => k.Status).HasMaxLength(32);
+            e.Property(k => k.RelationshipsJson).IsRequired();
+            // The lineage page reads a release's kinds by entity type; the OSDU order looks a kind up across releases.
+            e.HasIndex(k => new { k.LineageId, k.EntityType });
+            e.HasIndex(k => k.Kind);
         });
 
         modelBuilder.Entity<DeliveryCacheMember>(e =>

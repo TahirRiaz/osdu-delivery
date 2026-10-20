@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\..\sqlflow\src\SqlFlow.Sources\SqlFlow.Sources.csproj" />
     <ProjectReference Include="..\SqlFlow.Delivery.Data\SqlFlow.Delivery.Data.csproj" />
     <ProjectReference Include="..\SqlFlow.Delivery.Search\SqlFlow.Delivery.Search.csproj" />
+    <ProjectReference Include="..\SqlFlow.Delivery.Order\SqlFlow.Delivery.Order.csproj" />
   </ItemGroup>
 
   <ItemGroup>
