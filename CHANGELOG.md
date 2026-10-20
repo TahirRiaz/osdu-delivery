@@ -13,10 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are logged in and every OSDU reference value its records refer to, OSDU's own published values and the well
   database's own curve types, so it fills an empty partition with records whose references all resolve. Lineage
   orders it: reference data, the caches capturing it, wells, wellbores, then logs. The reference values and the order
-  are explained on [Lineage](osdu/docs/reference/concepts/lineage.md#known-limits) and in the
+  are explained on [The OSDU order](osdu/docs/reference/concepts/osdu-order.md) and in the
   [sample](osdu/samples/welldb).
+- **Lineage orders delivery flows by what their records refer to.** A delivery flow runs after the flows of its
+  repository delivering the entity types its records refer to, as OSDU's schemas declare them, however its mapping writes
+  the reference (a column, a literal, the cache or a search), and each repository sync warns where its waves cannot keep
+  that order ([The OSDU order](osdu/docs/reference/concepts/osdu-order.md)).
+- **The Order page.** Under OSDU, Build: which schedules run best before which, with how their next fires fall and the
+  schedules that refer to each other in a circle; a partition's order level by level; and OSDU's lineage of any release
+  of the OSDU data definitions, built on demand. The same is served under `/api/v1/delivery/order`
+  ([The OSDU order](osdu/docs/reference/concepts/osdu-order.md#in-the-gui-and-the-api)).
 
 ### Changed
+
+- **A repository's waves can change at its next sync.** Flows that referred to each other only by ids written from
+  columns or literals now run in the order of what they refer to, and a delivery checked against a cache whose flow also
+  captures what it delivers now runs before that cache flow rather than unordered against it. Schedules keep their
+  members; their fires run them in the new waves ([Lineage](osdu/docs/reference/concepts/lineage.md#how-the-nodes-order-flows)).
 
 - **The sample estate's lookup tables and reference records cover the sample's own curves.** The welldb curve
   dictionary lists the mnemonics the five sample logs carry and one spelling filed under another, the unit table the

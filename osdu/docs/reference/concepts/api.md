@@ -53,6 +53,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs
   - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlanePolicies.cs
   - sqlflow/src/SqlFlow.ControlPlane/Api/Contracts.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryOrderEndpoints.cs
 ---
 
 # The delivery API: every route under /api/v1/delivery
@@ -243,6 +244,19 @@ retention: ...`), which a client tells apart from `404` for a version the cache 
 out of range and `404` for a partition whose cache holds no version.
 
 See [the partition cache](partition-cache.md).
+
+## The OSDU order
+
+| Route | Policy | Parameters | Answers |
+| --- | --- | --- | --- |
+| `GET /order/releases` | read | | The built releases of OSDU's lineage, newest built first, each with its commit, who built it and when, its kinds and relationships, and the kinds it could not read. |
+| `POST /order/releases` | operate | body `release` | Builds the release (the newest when null) from the OSDU data definitions, downloading it when the control plane does not have it, and replaces an earlier build of it. `404` for a release the data definitions do not have, `502` when they cannot be reached. |
+| `GET /order/releases/{release}/entities` | read | | Every entity type of a built release with its kinds and how many types it refers to and is referred to by. `404` for a release not built. |
+| `GET /order/releases/{release}/graph` | read | `entity` (required), `depth` (1 to 4), `direction` (`both`, `out`, `in`) | The part of the release around the entity type: the types and the references between them, with the properties behind each, cut at 150 types (`truncated`). |
+| `GET /order/partitions` | read | | Each partition's order with every repository's deliveries: levels, deliveries, references kept and cut, warnings, and what the order could not read. |
+| `GET /order/schedules` | read | | Every schedule running a delivery, the schedules it runs best after with the timing (`chained`, `firesFirst`, `firesAfter`, `notFiring`, `unknown`) and the reasons, the deliveries it refers to that no schedule runs, and the schedules that refer to each other in a circle. |
+
+See [the OSDU order](osdu-order.md).
 
 ## Partitions and the central configuration
 

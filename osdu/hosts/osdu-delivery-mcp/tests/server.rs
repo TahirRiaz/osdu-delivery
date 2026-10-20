@@ -613,6 +613,9 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("find a well log by its wellbore name and check its curves", &["delivery-flow-known-values"]),
     ("proof values expire and need restating", &["delivery-flow-assertion"]),
     ("a count 10 percent off is acceptable but should only warn", &["delivery-flow-assertion"]),
+    ("in which order are wells, wellbores and well logs delivered", &["delivery-concept-osdu-order"]),
+    ("which schedule must run before another schedule", &["delivery-concept-osdu-order"]),
+    ("build osdu lineage of a data definitions release", &["delivery-concept-osdu-order"]),
 ];
 
 #[tokio::test(flavor = "multi_thread")]

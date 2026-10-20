@@ -81,6 +81,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs
   - sqlflow/src/SqlFlow.ControlPlane/Hosting/ControlPlaneHost.cs
   - sqlflow/gui/src/auth/AuthContext.tsx
+  - osdu/gui/src/features/delivery/order/OrderPage.tsx
 ---
 
 # The OSDU pages of the workbench
@@ -145,6 +146,7 @@ and a link that names a partition (`?partition=`) makes it the title bar's. See 
 | Build | Mappings | `/delivery/documents` (and the Mapping builder, `/delivery/mappings/build`) |
 | | Templates | `/delivery/templates` |
 | | Cache | `/delivery/cache` |
+| | Order | `/delivery/order` |
 | Setup | Partitions | `/delivery/partitions` |
 | | Search terms | `/delivery/search-terms` |
 
@@ -413,6 +415,21 @@ whether changes wait for approval; a banner with **Review changes** shows while 
   feature flags, and how a mapping reads the cache. Read-only: the setup lives in the cache flow files.
 
 See [the partition cache](partition-cache.md).
+
+### Order
+
+The order records reach OSDU in, from what each kind refers to. Three tabs:
+
+- **Schedules**: every schedule running a delivery, drawn left to right with an arrow to the schedules whose flows refer
+  to what it delivers; an arrow is dashed where the timing does not keep the order, and a schedule out of order or in a
+  circle carries a warning mark. A click opens the schedule in the bottom panel: when it fires, each schedule it runs best
+  after with the timing and what to do about it, and the flows, types and partitions behind it.
+- **Partition**: a partition's entity types level by level, each with the deliveries writing it and the types it waits
+  for, and the references the order cut and its warnings behind marks on the facts line.
+- **Releases**: OSDU's lineage of a built release drawn around an entity type, by **Depth** and **Direction**; a click
+  shows a type's kinds and references, a double click draws around it, and **Build** builds a release.
+
+See [the OSDU order](osdu-order.md).
 
 ## Setup
 
