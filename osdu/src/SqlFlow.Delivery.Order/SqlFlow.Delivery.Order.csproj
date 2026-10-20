@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>SqlFlow.Delivery.Order</RootNamespace>
+    <Description>The order records reach an OSDU partition in, taken from the relationships OSDU's schemas declare: the graph of entity types a partition's deliveries write, its cycles cut by fixed rules, and the check of a repository's lineage waves against it.</Description>
+  </PropertyGroup>
+
+</Project>
