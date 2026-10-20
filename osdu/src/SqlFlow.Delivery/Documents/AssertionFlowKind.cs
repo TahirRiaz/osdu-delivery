@@ -36,7 +36,7 @@ public sealed record AssertionFlowDocument : RegisteredFlowDocument
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return AssertionLineage.Describe(Flow);
+        return OrderLineage.BindEveryPartition(AssertionLineage.Describe(Flow), context);
     }
 }
 

@@ -48,7 +48,7 @@ public sealed record CacheFlowDocument : RegisteredFlowDocument
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return CacheLineage.Describe(Flow, context);
+        return OrderLineage.BindEveryPartition(CacheLineage.Describe(Flow, context), context);
     }
 
     /// <summary>The dictionary each dictionary type holds, found and read as a refresh finds and reads it (<see cref="CompanionFiles.Dictionaries(CacheDefinition, string, DeliveryDocumentLoader)"/>).</summary>

@@ -66,7 +66,8 @@ public static class DeliveryServices
         // from the module database, asked for each time: whether the host has one is known only once it is built.
         services.AddSingleton(sp => new DeliveryFlowKind(
             sp.GetRequiredService<DeliveryDocumentLoader>(),
-            new MappingTemplateSource(() => sp.GetService<DeliveryLedgerSource>()?.Templates(sp), sp.GetRequiredService<TimeProvider>())));
+            new MappingTemplateSource(() => sp.GetService<DeliveryLedgerSource>()?.Templates(sp), sp.GetRequiredService<TimeProvider>()),
+            () => sp.GetService<DeliveryLedgerSource>()?.OrderCatalog(sp)));
         services.AddSingleton<IFlowDocumentKind>(sp => sp.GetRequiredService<DeliveryFlowKind>());
         services.AddSingleton<ICompanionDocumentKind>(sp => sp.GetRequiredService<DeliveryFlowKind>());
         services.AddSingleton<ICompanionDocumentKind, DictionaryDocumentKind>();
@@ -216,6 +217,8 @@ public sealed class DeliveryLedgerSource
     private ITemplateStore? _templates;
     private OsduCacheStore? _cache;
     private DeliveryPartitionRegistry? _partitions;
+    private Ordering.SchemaLineageStore? _lineage;
+    private Ordering.OrderCatalog? _order;
 
     public DeliveryLedgerSource(Func<IServiceProvider, Func<OsduDbContext>?> contexts)
     {
@@ -255,6 +258,22 @@ public sealed class DeliveryLedgerSource
         return _partitions;
     }
 
+    /// <summary>The store of OSDU's lineage by release, or null when the host has no osdu database connection.</summary>
+    public Ordering.SchemaLineageStore? Lineage(IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        Resolve(provider);
+        return _lineage;
+    }
+
+    /// <summary>What the catalog knows for the OSDU order (the built releases of OSDU's lineage), or null without an osdu database.</summary>
+    public Ordering.IOrderCatalog? OrderCatalog(IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        Resolve(provider);
+        return _order;
+    }
+
     /// <summary>The context factory, or null when the host has no osdu database connection.</summary>
     public Func<OsduDbContext>? Contexts(IServiceProvider provider)
     {
@@ -274,6 +293,8 @@ public sealed class DeliveryLedgerSource
                 _templates = _factory is null ? null : new OsduTemplateStore(_factory, provider.GetRequiredService<TimeProvider>());
                 _cache = _factory is null ? null : new OsduCacheStore(_factory);
                 _partitions = _factory is null ? null : new DeliveryPartitionRegistry(_factory);
+                _lineage = _factory is null ? null : new Ordering.SchemaLineageStore(_factory);
+                _order = _factory is null ? null : new Ordering.OrderCatalog(_factory);
                 _resolved = true;
             }
         }

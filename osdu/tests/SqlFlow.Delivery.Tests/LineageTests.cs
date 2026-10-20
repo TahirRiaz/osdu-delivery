@@ -238,19 +238,21 @@ public sealed class LineageTests : IDisposable
         // What the mapping reads. First what it names: the unit tables, the curve dictionary and the partition's units
         // (which a unit is found among when the table does not translate it). Then what its ids are checked against: the
         // types of the partition's cache holding the entity type each ref and id builds, which the mapping never names.
-        // Last the wellbores it searches the platform for, so whatever delivers wellbores there is ordered before the flow.
+        // Then the wellbores it searches the platform for, so whatever delivers wellbores there is ordered before the flow.
+        // Last every entity type the OSDU order says its records wait for, as every kind of it, so the flows delivering
+        // those types are ordered before it however the mapping fills the reference.
         Assert.Equal(
             "osdu-cache/dev/cache/CurveDictionary, osdu-cache/dev/cache/DepthUnitAlias, "
             + "osdu-cache/dev/cache/UnitAlias, osdu-cache/dev/cache/UnitOfMeasure, "
             + "osdu-cache/dev/cache/LogCurveBusinessValue, osdu-cache/dev/cache/LogCurveFamily, "
             + "osdu-cache/dev/cache/LogCurveMainFamily, osdu-cache/dev/cache/LogCurveType, osdu-cache/dev/cache/LogType, "
             + "osdu-cache/dev/cache/VerticalMeasurementType, osdu-cache/dev/cache/WellLogSamplingDomainType, "
-            + "osdu-type/dev/master-data/osdu:wks:master-data--Wellbore:*",
+            + "osdu-type/dev/master-data/osdu:wks:master-data--Wellbore:*, " + OrderedByTheWellLogMapping,
             Sources(lineage));
         var sources = lineage.Derivations[0].From;
         Assert.All(sources, d => Assert.Equal(LineageRelation.Reads, d.Relation));
         Assert.All(sources.Where(d => d.System == "osdu-cache"), d => Assert.Null(d.Instance));
-        Assert.Equal(Platform, sources.Single(d => d.System == "osdu-type").Instance);
+        Assert.All(sources.Where(d => d.System == "osdu-type"), d => Assert.Equal(Platform, d.Instance));
     }
 
     [Fact]
@@ -669,6 +671,18 @@ public sealed class LineageTests : IDisposable
 
     private const string WellboresSearched = "osdu-type/dev/master-data/osdu:wks:master-data--Wellbore:*";
 
+    /// <summary>
+    /// The entity types the OSDU order says the well log mapping waits for in the sample estate: every type a property it
+    /// fills refers to (the literal technical assurance among them) that a flow of the estate delivers to the partition.
+    /// </summary>
+    private const string OrderedByTheWellLogMapping =
+        "osdu-type/dev/master-data/*:*:master-data--Wellbore:*, "
+        + "osdu-type/dev/reference-data/*:*:reference-data--LogCurveBusinessValue:*, osdu-type/dev/reference-data/*:*:reference-data--LogCurveFamily:*, "
+        + "osdu-type/dev/reference-data/*:*:reference-data--LogCurveMainFamily:*, osdu-type/dev/reference-data/*:*:reference-data--LogCurveType:*, "
+        + "osdu-type/dev/reference-data/*:*:reference-data--LogType:*, osdu-type/dev/reference-data/*:*:reference-data--TechnicalAssuranceType:*, "
+        + "osdu-type/dev/reference-data/*:*:reference-data--UnitOfMeasure:*, osdu-type/dev/reference-data/*:*:reference-data--VerticalMeasurementType:*, "
+        + "osdu-type/dev/reference-data/*:*:reference-data--WellLogSamplingDomainType:*";
+
     [Fact]
     public void A_mapping_reads_every_cache_type_of_its_partition_holding_what_its_ids_are_checked_against()
     {
@@ -708,7 +722,8 @@ public sealed class LineageTests : IDisposable
             NamedByTheWellLogMapping
             + ", osdu-cache/dev/cache/LogCurveBusinessValue, osdu-cache/dev/cache/LogCurveFamily, osdu-cache/dev/cache/LogCurveMainFamily"
             + ", osdu-cache/dev/cache/LogCurveType, osdu-cache/dev/cache/LogKinds, osdu-cache/dev/cache/LogType"
-            + ", osdu-cache/dev/cache/VerticalMeasurementType, osdu-cache/dev/cache/WellLogSamplingDomainType, " + WellboresSearched,
+            + ", osdu-cache/dev/cache/VerticalMeasurementType, osdu-cache/dev/cache/WellLogSamplingDomainType, " + WellboresSearched
+            + ", " + OrderedByTheWellLogMapping,
             Sources(lineage));
     }
 
@@ -777,10 +792,18 @@ public sealed class LineageTests : IDisposable
     public void A_template_that_is_not_saved_or_cannot_be_read_is_said_and_a_failed_read_is_not_repeated_at_once()
     {
         var unsaved = Describe("flows/welldb-welllog-03-header-delivery.yaml", Loader(new MappingTemplateSource(new FakeTemplates())));
+        Assert.Equal(2, unsaved.Warnings.Count);
         Assert.Contains(
             "is told by its template (osdu:wks:work-product-component--WellLog:1.4.0 version 26a3c3441882db4f), which is not saved, so",
-            Assert.Single(unsaved.Warnings),
+            unsaved.Warnings[0],
             StringComparison.Ordinal);
+
+        // Without the template the OSDU order cannot tell what the records refer to either, and says so.
+        Assert.Equal(
+            "delivery flow 'welldb-welllog-03-header-delivery' is not ordered by what its records refer to: mapping 'WellLog@1.4.0' fills "
+            + "osdu:wks:work-product-component--WellLog:1.4.0 version 26a3c3441882db4f, whose template is not saved, so the OSDU order cannot tell "
+            + "which of the partition's deliveries it waits for.",
+            unsaved.Warnings[1]);
 
         // A database that does not answer: the reason is said without what it may carry, and every flow of the scan is told
         // the same from the one failed read rather than each waiting for its own.
@@ -827,7 +850,8 @@ public sealed class LineageTests : IDisposable
         var reads = Datasets(lineage, LineageRelation.Reads);
         Assert.StartsWith(NamedByTheWellLogMapping, reads, StringComparison.Ordinal);
         Assert.Contains("osdu-cache/dev/cache/LogType", reads, StringComparison.Ordinal);
-        Assert.EndsWith(WellboresSearched, reads, StringComparison.Ordinal);
+        Assert.Contains(WellboresSearched, reads, StringComparison.Ordinal);
+        Assert.EndsWith(OrderedByTheWellLogMapping, reads, StringComparison.Ordinal);
 
         // The flow is still ordered after everything its mapping reads.
         var (_, report) = Scan();

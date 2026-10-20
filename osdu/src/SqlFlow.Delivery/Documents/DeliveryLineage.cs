@@ -3,6 +3,7 @@ using SqlFlow.Core.Lineage;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Ordering;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Yaml;
@@ -59,12 +60,16 @@ public static class DeliveryLineage
     /// one that leaves them to the registry contributes once, under <see cref="PartitionNames.Every"/>.
     /// </summary>
     public static RegisteredFlowLineage Describe(
-        SourceDefinition source, RegisteredLineageContext context, DeliveryDocumentLoader documents, MappingTemplateSource? templates = null)
+        SourceDefinition source,
+        RegisteredLineageContext context,
+        DeliveryDocumentLoader documents,
+        MappingTemplateSource? templates = null,
+        Func<IOrderCatalog?>? order = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(documents);
-        var scan = new Scan(context, documents, templates);
+        var scan = new Scan(context, documents, templates, order);
 
         // A source that leaves its partitions to the registry is described once, under the partition that stands for every
         // registered one: lineage is computed from the documents, and the registry is the catalog's.
@@ -93,7 +98,7 @@ public static class DeliveryLineage
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(documents);
-        return Describe(flow, new Scan(context, documents, templates));
+        return Describe(flow, new Scan(context, documents, templates, null));
     }
 
     private static RegisteredFlowLineage Describe(FlowDefinition flow, Scan scan)
@@ -128,6 +133,7 @@ public static class DeliveryLineage
                     LineageRelation.Writes, endpoint, partition, mapping.Kind, who, $"the kind of mapping '{mapping.Reference}'", warnings));
 
                 var reads = MappingReads(mapping, endpoint, partition, scan, who, warnings);
+                reads = [.. reads, .. OrderReads(flow, mapping, endpoint, partition, scan, who, warnings).Where(r => !reads.Contains(r))];
                 if (OsduLineage.Mapping(endpoint, partition, found.Directory, mapping.Reference, who, warnings) is { } node)
                 {
                     derivations.Add(new DeclaredDerivation { Dataset = node, From = reads });
@@ -176,6 +182,13 @@ public static class DeliveryLineage
     /// Which types hold an entity type is what the cache flows of the scanned estate declare for the partition: a type a
     /// cache flow of another repository holds is not seen here. A search reads the platform's records of its kind as the
     /// delivery renders, not a capture of them.
+    /// <para>
+    /// A cache type every cache flow holding it in the partition fills from the very entity type the mapping writes is not
+    /// read (osdu/docs/reference/concepts/lineage.md, Known limits): those flows capture what the delivery writes, so a
+    /// read of their types would make each of the two read what the other writes, and lineage orders neither of such a
+    /// pair. Left out, the cache flows run after the delivery and capture what it wrote, and the deliveries the mapping
+    /// refers to are still ordered first by the OSDU order (<see cref="OrderReads"/>).
+    /// </para>
     /// </remarks>
     private static List<DeclaredDataset> MappingReads(
         MappingDefinition mapping, string endpoint, string partition, Scan scan, string who, List<string> warnings)
@@ -184,9 +197,10 @@ public static class DeliveryLineage
         var cache = MappingCacheReads.Of(mapping, template.Schema);
         var reads = new List<DeclaredDataset>();
         var named = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var written = SqlFlow.Delivery.Order.OsduEntity.OfKind(mapping.Kind);
         foreach (var type in cache.Types)
         {
-            if (named.Add(type.Trim()))
+            if (named.Add(type.Trim()) && !scan.OnlyHeldWith(partition, type, written))
             {
                 Add(reads, OsduLineage.CacheType(LineageRelation.Reads, partition, type, who, warnings));
             }
@@ -199,7 +213,7 @@ public static class DeliveryLineage
                          .Where(h => string.Equals(h.Partition, partition, StringComparison.OrdinalIgnoreCase) && checkedAgainst.Contains(h.EntityType))
                          .OrderBy(h => h.Name, StringComparer.Ordinal))
             {
-                if (named.Add(held.Name))
+                if (named.Add(held.Name) && !scan.OnlyHeldWith(partition, held.Name, written))
                 {
                     Add(reads, OsduLineage.CacheType(LineageRelation.Reads, partition, held.Name, who, warnings));
                 }
@@ -224,6 +238,75 @@ public static class DeliveryLineage
 
         return reads.Distinct().ToList();
     }
+
+    /// <summary>
+    /// The entity types the OSDU order says the flow's records wait for in the partition (osdu/docs/reference/concepts/
+    /// osdu-order.md, Lineage takes the order), each read as every kind of it on the flow's platform, so lineage binds the
+    /// read to the kinds the estate's other flows write and runs those flows first. A reference the order cut, to a type
+    /// nothing in the partition delivers, or to the flow's own type, is not read. The warnings say where the order is short:
+    /// a template that could not be read, and a circle of references the order could not resolve.
+    /// </summary>
+    private static List<DeclaredDataset> OrderReads(
+        FlowDefinition flow, MappingDefinition mapping, string endpoint, string partition, Scan scan, string who, List<string> warnings)
+    {
+        var reads = new List<DeclaredDataset>();
+        if (scan.Order.Plan(partition) is not { } plan)
+        {
+            return reads;
+        }
+
+        // A flow that leaves its partitions to the registry delivers to every partition the estate names too, so it waits for
+        // what each of those partitions' orders says; a flow of a named partition waits for its own partition's order.
+        var me = OrderDeliveries.Identity(flow, partition, mapping.Kind);
+        var orders = string.Equals(partition, PartitionNames.Every, StringComparison.Ordinal) ? [plan, .. scan.Order.Named] : new[] { plan };
+        foreach (var order in orders)
+        {
+            var mine = me with { Partition = order.Partition };
+            foreach (var type in order.WaitsFor(mine).Order(StringComparer.Ordinal))
+            {
+                // The read is keyed where the writers' nodes are: the order's partition for the flows that name it, and the
+                // partition standing for every registered one for the flows that leave theirs to the registry.
+                var keyed = order.DeliveriesOf(type)
+                    .Select(d => scan.Order.ServesEveryPartition(d) ? PartitionNames.Every : order.Partition)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Order(StringComparer.Ordinal);
+                foreach (var where in keyed)
+                {
+                    Add(reads, OsduLineage.Type(
+                        LineageRelation.Reads, endpoint, where, OrderDeliveries.Pattern(type), who, $"the OSDU order of partition '{order.Partition}'", warnings));
+                }
+            }
+        }
+
+        if (plan.Unknown.Any(u => SameDelivery(u, me)) && scan.Template(mapping.Template).Missing is { } missing
+            && scan.Template(mapping.Template).Outcome != MappingTemplateOutcome.NoStore)
+        {
+            warnings.Add(
+                $"{who} is not ordered by what its records refer to: mapping '{mapping.Reference}' fills {mapping.Template}, whose template {missing}, "
+                + "so the OSDU order cannot tell which of the partition's deliveries it waits for.");
+        }
+
+        var entity = me.EntityType;
+        var circle = plan.Cuts
+            .Where(c => c.Reason == SqlFlow.Delivery.Order.OrderCutReason.Circular
+                && (string.Equals(c.Edge.From, entity, StringComparison.OrdinalIgnoreCase) || string.Equals(c.Edge.To, entity, StringComparison.OrdinalIgnoreCase)))
+            .Select(c => c.Why)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (circle.Count > 0)
+        {
+            warnings.Add(
+                $"{who} is not ordered against every delivery it refers to: {string.Join("; ", circle)}. Lineage runs neither first, so a record waits for one it "
+                + "refers to only once the other flow has put that record in the ledger.");
+        }
+
+        return reads;
+    }
+
+    private static bool SameDelivery(SqlFlow.Delivery.Order.OrderDelivery a, SqlFlow.Delivery.Order.OrderDelivery b)
+        => string.Equals(a.Repository, b.Repository, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(a.Flow, b.Flow, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(a.Interface ?? string.Empty, b.Interface ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The partition cache types a mapping reads by name, from its cache sources and their lookups and from the tables its
@@ -276,13 +359,56 @@ public static class DeliveryLineage
     /// What describing one document reads once however many interfaces and partitions ask: each mapping, each template,
     /// and what the cache flows of the estate hold.
     /// </summary>
-    private sealed class Scan(RegisteredLineageContext context, DeliveryDocumentLoader documents, MappingTemplateSource? templates)
+    private sealed class Scan(RegisteredLineageContext context, DeliveryDocumentLoader documents, MappingTemplateSource? templates, Func<IOrderCatalog?>? order)
     {
         private readonly Dictionary<(string Directory, string Reference), (MappingDefinition? Mapping, string? Reason)> _mappings = [];
         private readonly Dictionary<TemplateReference, MappingTemplateRead> _templates = [];
         private IReadOnlyList<CacheLineage.HeldType>? _held;
+        private OrderLineage? _order;
+        private IReadOnlyList<(string Flow, IReadOnlyList<CacheLineage.HeldType> Held)>? _heldByFlow;
 
         public RegisteredLineageContext Context => context;
+
+        /// <summary>The OSDU order of the scan the document is described in (<see cref="OrderLineage"/>).</summary>
+        public OrderLineage Order => _order ??= OrderLineage.Of(context, templates, order);
+
+        /// <summary>
+        /// Whether every cache flow of the estate holding <paramref name="type"/> in <paramref name="partition"/> also holds
+        /// records of <paramref name="writtenEntity"/>, the entity type a delivery writes: false when no flow holds the type,
+        /// or when the delivery writes no entity type.
+        /// </summary>
+        public bool OnlyHeldWith(string partition, string type, string? writtenEntity)
+        {
+            if (writtenEntity is null)
+            {
+                return false;
+            }
+
+            var holders = HeldByFlow
+                .Where(f => f.Held.Any(h => SamePartition(h.Partition, partition) && string.Equals(h.Name, type.Trim(), StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            return holders.Count > 0
+                && holders.All(f => f.Held.Any(h => SamePartition(h.Partition, partition) && string.Equals(h.EntityType, writtenEntity, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        /// <summary>Every cache flow of the scanned estate with the types it holds, as <see cref="Held"/> lists them together.</summary>
+        private IReadOnlyList<(string Flow, IReadOnlyList<CacheLineage.HeldType> Held)> HeldByFlow => _heldByFlow ??= context.Estate
+            .Select(entry => entry.Document)
+            .OfType<CacheFlowDocument>()
+            .Select(document =>
+            {
+                try
+                {
+                    return (document.Flow.Name, CacheLineage.Held(document.Flow));
+                }
+                catch (Exception ex) when (ex is SqlFlowException or InvalidOperationException)
+                {
+                    return (document.Flow.Name, (IReadOnlyList<CacheLineage.HeldType>)[]);
+                }
+            })
+            .ToList();
+
+        private static bool SamePartition(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Every type the cache flows of the scanned estate hold, by the partition it is held in. A cache document that

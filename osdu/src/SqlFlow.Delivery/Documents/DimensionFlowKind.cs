@@ -37,7 +37,7 @@ public sealed record DimensionFlowDocument : RegisteredFlowDocument
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return DimensionLineage.Describe(Flow, context);
+        return OrderLineage.BindEveryPartition(DimensionLineage.Describe(Flow, context), context);
     }
 
     /// <summary>The dictionary each map step cleans through, found and read as a build finds and reads it (<see cref="CompanionFiles.Dictionaries(DimensionFlowDefinition, string, DeliveryDocumentLoader)"/>).</summary>
