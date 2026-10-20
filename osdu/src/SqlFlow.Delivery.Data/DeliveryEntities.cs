@@ -214,6 +214,15 @@ public sealed class DeliveryRecord
     /// </summary>
     public long? CacheSetId { get; set; }
 
+    /// <summary>
+    /// While the record is held, what its held render read out of the cache, the ids it looked for and did not find among
+    /// them, as a set id like <see cref="CacheSetId"/>: a cache version that brings in one of those ids releases the record
+    /// to be planned again (osdu/docs/reference/concepts/partition-cache.md, A record held for a reference waits for it).
+    /// Kept apart from <see cref="CacheSetId"/>, which says what the document OSDU holds was built from. A record that is no
+    /// longer held is not read by it.
+    /// </summary>
+    public long? HeldCacheSetId { get; set; }
+
     public string? PendingRenderContext { get; set; }
 
     public string? PendingSourceFingerprint { get; set; }
@@ -3104,6 +3113,8 @@ public static class DeliveryModel
             // The rollout walks one set's records in key order, then flow order; a set is one partition's, and the filtered
             // index keeps untagged records out of it.
             e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey, r.FlowId }).HasFilter("[CacheSetId] IS NOT NULL");
+            // A cache version that brings in what held records missed finds them by the set their held render read.
+            e.HasIndex(r => new { r.HeldCacheSetId, r.Status }).HasFilter("[HeldCacheSetId] IS NOT NULL");
             // One OSDU record, one flow: the database refuses a second flow's claim on an id, whatever races the intakes
             // run. An id names its partition, so this stays unique across every partition.
             e.HasIndex(r => r.ClaimedTargetId).IsUnique().HasFilter("[ClaimedTargetId] IS NOT NULL");

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Rendering;
@@ -41,6 +42,80 @@ public sealed class CacheImpactAnalyzer
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentNullException.ThrowIfNull(current);
         ArgumentException.ThrowIfNullOrWhiteSpace(toVersion);
+        var result = await TagAsync(scope, previous, current, mode, fromVersion, toVersion, ct).ConfigureAwait(false);
+        if (previous is null || current.IsLookup)
+        {
+            return result;
+        }
+
+        // A record held because an id it built named nothing the type held waits on that id: once the type holds it, the
+        // record is released to be planned again, whichever flow and partition it belongs to.
+        var arrived = current.Items.Select(i => i.Id).Except(previous.Items.Select(i => i.Id), StringComparer.Ordinal).ToList();
+        return arrived.Count == 0 ? result : result with { Released = await ReleaseHeldAsync(scope, current.Name, arrived, toVersion, ct).ConfigureAwait(false) };
+    }
+
+    /// <summary>
+    /// The most held records one version releases. Past it, a warning says how many were left, and they are released by the
+    /// next version bringing in what they missed, or by an operator.
+    /// </summary>
+    public const int MaxReleased = 100_000;
+
+    /// <summary>
+    /// Releases the held records whose held render looked for one of <paramref name="arrived"/> in <paramref name="typeName"/>
+    /// and did not find it (osdu/docs/reference/concepts/partition-cache.md, A record held for a reference waits for it):
+    /// each flow's under an activity of its own, named after the cache version, so each record's history says why it was
+    /// planned again and when.
+    /// </summary>
+    private async Task<long> ReleaseHeldAsync(string scope, string typeName, IReadOnlyList<string> arrived, string toVersion, CancellationToken ct)
+    {
+        var sets = (await _ledger.FindCacheSetsAsync(scope, typeName, arrived, ct).ConfigureAwait(false))
+            .Where(use => use.Kind == CacheUsageKind.Missing)
+            .Select(use => use.SetId)
+            .Distinct()
+            .ToList();
+        if (sets.Count == 0)
+        {
+            return 0;
+        }
+
+        var waiting = await _ledger.HeldOnCacheSetsAsync(sets, MaxReleased, ct).ConfigureAwait(false);
+        long released = 0;
+        foreach (var flow in waiting.GroupBy(w => (w.FlowId, w.FlowName)))
+        {
+            var now = _time.GetUtcNow().UtcDateTime;
+            var activity = await _ledger.StartActivityAsync(new ActivityRecord
+            {
+                FlowId = flow.Key.FlowId,
+                FlowName = flow.Key.FlowName,
+                Kind = "release",
+                Actor = $"cache:{scope}@{toVersion}",
+                StartedUtc = now,
+                ParametersJson = JsonSerializer.Serialize(new { reason = "the cache holds what the records referred to", type = typeName, version = toVersion }),
+            }, ct).ConfigureAwait(false);
+            var count = await _ledger.ReleaseAsync(flow.Key.FlowId, ReleaseSelection.Named(flow.Select(w => w.Key)), activity.ActivityId, now, ct).ConfigureAwait(false);
+            await _ledger.CompleteActivityAsync(
+                activity.ActivityId,
+                "completed",
+                $"{count} held record(s) released: version {toVersion} of the cache of partition '{scope}' holds the {typeName} record(s) they referred to.",
+                null,
+                _time.GetUtcNow().UtcDateTime,
+                ct: ct).ConfigureAwait(false);
+            released += count;
+        }
+
+        if (waiting.Count >= MaxReleased)
+        {
+            _logger.LogWarning(
+                "Version {Version} of the cache of partition {Scope} brings in {Type} records more than {Max} held records wait for; {Max} were released, and the rest are released by the next version bringing in what they missed, or by an operator.",
+                toVersion, scope, typeName, MaxReleased, MaxReleased);
+        }
+
+        return released;
+    }
+
+    private async Task<CacheImpactResult> TagAsync(
+        string scope, ReferenceType? previous, ReferenceType current, CacheChangeMode mode, string? fromVersion, string toVersion, CancellationToken ct)
+    {
         if (previous is null)
         {
             // Nothing was cached under this type before, so nothing was built from it.
@@ -84,7 +159,7 @@ public sealed class CacheImpactAnalyzer
         if (found.Count > 0)
         {
             holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, found, ct).ConfigureAwait(false))
-                .Where(use => use.Kind is CacheUsageKind.Unverified or CacheUsageKind.Missing));
+                .Where(use => use.Kind == CacheUsageKind.Unverified));
         }
 
         if (keyed.Count > 0)
@@ -368,5 +443,12 @@ public sealed class CacheImpactAnalyzer
     private static string ModeText(CacheChangeMode mode) => mode == CacheChangeMode.Auto ? "auto" : "approve";
 }
 
-/// <summary>What a refresh of one cached type did to what has already been delivered.</summary>
-public sealed record CacheImpactResult(string TypeName, int ChangedItems, int Changes, long AffectedRecords, int NewTags);
+/// <summary>
+/// What a refresh of one cached type did to what has already been delivered, and how many held records it released because
+/// the type now holds what they referred to.
+/// </summary>
+public sealed record CacheImpactResult(string TypeName, int ChangedItems, int Changes, long AffectedRecords, int NewTags)
+{
+    /// <summary>The held records released because the type now holds a record their reference named.</summary>
+    public long Released { get; init; }
+}

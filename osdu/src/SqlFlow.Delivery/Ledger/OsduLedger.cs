@@ -947,13 +947,9 @@ public sealed partial class OsduLedger : ILedger
                 entity.Blocked = asked is null;
                 entity.UpdatedUtc = now;
 
-                // A record never delivered points at what its held render read, the ids it found missing among them, so a cache
-                // version that brings one in plans it again. A delivered record keeps the set its delivered document was built
-                // from, which is what OSDU holds.
-                if (entity.LastDeliveredUtc is null)
-                {
-                    entity.CacheSetId = record.CacheSetId;
-                }
+                // What the held render read, the ids it found missing among them, so a cache version that brings one in
+                // releases the record. What the document OSDU holds was built from stays the record's cache set.
+                entity.HeldCacheSetId = record.CacheSetId;
                 held.Add(record.DeliveryKey);
                 db.DeliveryAttempts.Add(new DeliveryAttempt
                 {
@@ -1315,6 +1311,40 @@ public sealed partial class OsduLedger : ILedger
                     && Narrows(query)
                     && await PrefixCandidatesTruncatedAsync(db.DeliveryRecords.AsNoTracking().Where(r => r.PartitionId == partition && r.FlowId == flowId), term, limit, ct).ConfigureAwait(false);
                 return new BoundedCount(count, Exact: !truncated);
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<HeldOnCache>> HeldOnCacheSetsAsync(IReadOnlyCollection<long> setIds, int max, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(setIds);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(max);
+        if (setIds.Count == 0)
+        {
+            return [];
+        }
+
+        var held = StatusText.Of(RecordStatus.Held);
+        return await ReadAsync(
+            async db =>
+            {
+                var found = new List<HeldOnCache>();
+                foreach (var chunk in setIds.Distinct().Chunk(LookupChunk))
+                {
+                    var ids = chunk.ToList();
+                    var rows = await db.DeliveryRecords.AsNoTracking()
+                        .Where(r => r.HeldCacheSetId != null && ids.Contains(r.HeldCacheSetId!.Value) && r.Status == held)
+                        .Join(db.DeliveryLedgers.AsNoTracking(), r => new { r.PartitionId, r.FlowId }, l => new { l.PartitionId, l.FlowId }, (r, l) => new { r.FlowId, l.FlowName, r.DeliveryKey })
+                        .Take(max - found.Count)
+                        .ToListAsync(ct).ConfigureAwait(false);
+                    found.AddRange(rows.Select(r => new HeldOnCache(r.FlowId, r.FlowName, new DeliveryKey(r.DeliveryKey))));
+                    if (found.Count >= max)
+                    {
+                        break;
+                    }
+                }
+
+                return (IReadOnlyList<HeldOnCache>)found;
             },
             ct).ConfigureAwait(false);
     }
@@ -2810,14 +2840,13 @@ public sealed partial class OsduLedger : ILedger
         var unverified = KindText(Snapshots.CacheUsageKind.Unverified);
         var listed = KindText(Snapshots.CacheUsageKind.Listed);
         var emptied = KindText(Snapshots.CacheUsageKind.Empty);
-        var absent = KindText(Snapshots.CacheUsageKind.Missing);
         // Stands for every key of a $findAll: a change to what one key finds changes what the whole node found.
         const string AnyListing = "\n";
         return await ReadAsync(
             async db =>
             {
                 var entries = db.DeliveryCacheSetEntries.Where(e => e.Scope == scope
-                    && (e.Kind == unlisted || e.Kind == unverified || e.Kind == absent || (e.Kind == listed && e.ValueText == string.Empty) || (empty && e.Kind == emptied)));
+                    && (e.Kind == unlisted || e.Kind == unverified || (e.Kind == listed && e.ValueText == string.Empty) || (empty && e.Kind == emptied)));
                 if (typeName is not null)
                 {
                     entries = entries.Where(e => e.TypeName == typeName);

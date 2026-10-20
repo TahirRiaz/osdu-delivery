@@ -2686,6 +2686,9 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<long?>("HeldCacheSetId")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("Label")
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
@@ -2865,6 +2868,9 @@ namespace SqlFlow.Delivery.Data.Migrations
                         .HasFilter("[ClaimedTargetId] IS NOT NULL");
 
                     b.HasIndex("LeaseOwner");
+
+                    b.HasIndex("HeldCacheSetId", "Status")
+                        .HasFilter("[HeldCacheSetId] IS NOT NULL");
 
                     b.HasIndex("LastSubmissionId", "WorkBatch");
 

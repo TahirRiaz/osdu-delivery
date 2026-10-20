@@ -96,6 +96,26 @@ public sealed class CacheStepsTests
         Assert.Equal(["UnitOfMeasure"], plan.Before.Select(t => t.TypeName));
     }
 
+    [Fact]
+    public void A_lookup_table_from_an_ingestion_table_may_be_brought_up_to_date_before_the_run_and_auto_takes_it_when_the_mapping_reads_it()
+    {
+        var declaration = new CacheDeclaration("dev",
+        [
+            new CacheTypeDeclaration(
+                "lookups", "UnitAlias", "lookup--UnitAlias", null, "*", [new ReferenceFieldSpec("unit", "unit")], CacheChangeMode.Auto, CacheOrigin.Table, "alias",
+                Connection: "${env:OSDU_DATA_DB}", SourceObject: "OsduData.silver.UnitAlias"),
+            new CacheTypeDeclaration("lookups", "SamplingDomain", "lookup--SamplingDomain", null, "*", [], CacheChangeMode.Auto, CacheOrigin.Dictionary, "code"),
+        ]);
+        var reads = new MappingCacheReads(["UnitAlias", "SamplingDomain"], [], []);
+
+        var named = CacheStepPlan.Resolve("welldb-logs", new FlowCacheSteps { Before = Named("UnitAlias") }, declaration, WellboreKind, reads);
+        Assert.True(Assert.Single(named.Before).IsTable);
+        Assert.Equal(["UnitAlias"], CacheStepPlan.Resolve("welldb-logs", new FlowCacheSteps { Before = Auto() }, declaration, WellboreKind, reads).Before.Select(t => t.TypeName));
+
+        var refused = Assert.Throws<DeliveryException>(() => CacheStepPlan.Resolve("welldb-logs", new FlowCacheSteps { Before = Named("SamplingDomain") }, declaration, WellboreKind, reads));
+        Assert.Contains("from a dictionary or a dimension", refused.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("after", "Unknown", UnitKind, "names 'Unknown', which is neither a type of the partition's cache nor an entity type one holds")]
     [InlineData("after", "UnitOfMeasure", WellboreKind, "and the pipeline delivers osdu:wks:master-data--Wellbore:1.3.0")]

@@ -1277,6 +1277,9 @@ public sealed record ReleaseSelection
     public static ReleaseSelection OfProblem(long problem) => new(null, problem);
 }
 
+/// <summary>A held record waiting on what a cache set found missing: its flow, as the ledger names it, and its key.</summary>
+public sealed record HeldOnCache(Guid FlowId, string FlowName, DeliveryKey Key);
+
 /// <summary>
 /// One problem keeping records of a ledger blocked (<see cref="ProblemSignature"/>): what it says, and how many records it
 /// keeps blocked, counted from the records.
@@ -2568,6 +2571,13 @@ public interface ILedger
     /// not sent, and is not among them.
     /// </summary>
     Task<IReadOnlyList<string>> ChangedSinceAsync(Guid flowId, DateTime sinceUtc, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// The held records, of every flow and partition, whose held render read one of <paramref name="setIds"/>, at most
+    /// <paramref name="max"/> of them: the records a cache version that brings in what those sets found missing releases
+    /// (osdu/docs/reference/concepts/partition-cache.md, A record held for a reference waits for it).
+    /// </summary>
+    Task<IReadOnlyList<HeldOnCache>> HeldOnCacheSetsAsync(IReadOnlyCollection<long> setIds, int max, CancellationToken ct = default);
 
     /// <summary>
     /// The id of the cache set holding exactly these values of <paramref name="scope"/>, creating it the first time it

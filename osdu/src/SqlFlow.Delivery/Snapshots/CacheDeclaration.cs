@@ -17,7 +17,9 @@ public sealed record CacheTypeDeclaration(
     CacheChangeMode OnChange,
     CacheOrigin Origin = CacheOrigin.Osdu,
     string? Key = null,
-    int RetentionDays = CacheRetention.DefaultDays)
+    int RetentionDays = CacheRetention.DefaultDays,
+    string? Connection = null,
+    string? SourceObject = null)
 {
     /// <summary>True for a table or a dictionary, whose rows are not OSDU records.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
@@ -32,6 +34,12 @@ public sealed record CacheStepType(string TypeName, string EntityType, IReadOnly
 {
     /// <summary>True when the type's records are OSDU records, which a step reads from OSDU; false for a lookup table.</summary>
     public bool IsOsdu => Declarations.All(d => !d.IsLookup);
+
+    /// <summary>
+    /// True for a lookup table its cache flow reads from an ingestion table whose connection reference and name the catalog
+    /// holds, which a before step can read the way that flow does.
+    /// </summary>
+    public bool IsTable => Declarations is [{ Origin: CacheOrigin.Table, Connection: not null, SourceObject: not null }];
 
     /// <summary>True when a record of <paramref name="kind"/> is one the type holds: some declaration's kind pattern matches it.</summary>
     public bool Holds(string kind)
