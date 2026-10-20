@@ -30,6 +30,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="SqlFlow.Delivery.Tests" />
     <InternalsVisibleTo Include="SqlFlow.Delivery.ControlPlane.Tests" />
+    <InternalsVisibleTo Include="SqlFlow.Delivery.Tools.SampleData" />
   </ItemGroup>
 
 </Project>

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The sample estate's lookup tables and reference records cover the sample's own curves.** The welldb curve
+  dictionary lists the mnemonics the five sample logs carry and one spelling filed under another, the unit table the
+  spellings those curves use, and the sample reference records the units, curve types and families they name, so the
+  example reads as one small, consistent set ([Sample cache records](osdu/samples/cache-records/README.md)).
 - **A Radix environment is complete in its configuration.** `radixconfig.yaml` names the workers' credential (the
   vault's `node-token`, generated before the first deploy in SQLFlow's token form) and the flow repository, as the
   Terraform estate does, so the control plane adopts the one and registers the other when it starts, and nothing is
