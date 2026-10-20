@@ -167,6 +167,9 @@ internal sealed class ScopedReferenceResolver(IReadOnlyDictionary<string, string
 /// </summary>
 public sealed record DrainResult(WorkerSummary Work, UndoSummary Undone)
 {
+    /// <summary>What the drain's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current); null when it had nothing to keep current.</summary>
+    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
+
     public override string ToString() => Undone.Idle ? Work.ToString() : $"{Work}; {Undone.Describe()}";
 }
 
@@ -178,6 +181,13 @@ public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, Submissi
     /// (osdu/docs/reference/concepts/artifacts-and-undo.md, When the undo runs, and what it is given).
     /// </summary>
     public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
+    /// <summary>
+    /// What the run's cache step did (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current): the
+    /// records it landed, read back into the partition's cache for the types its deliveries keep current. Null when no
+    /// type of the partition is kept current by the kind the run delivers.
+    /// </summary>
+    public Snapshots.CacheKeptOutcome? CacheKept { get; init; }
 
     /// <summary>
     /// What the run did itself: a run re-sending two records of a delivered submission counts two, and one that found the
@@ -653,6 +663,7 @@ public sealed class FlowRuntime : IDisposable
     public Task<RunResult> RunAsync(bool force, CancellationToken ct = default)
         => TrackAsync("deliver", new { force, source = Flow.Source.Record.Object, selection = Selection.Describe(), parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
         {
+            var started = _context.Time.GetUtcNow().UtcDateTime;
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
             await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             FanOutHandle? handle = null;
@@ -687,7 +698,8 @@ public sealed class FlowRuntime : IDisposable
                     var settled = sent.Processed > 0 || sent.Waiting > 0
                         ? await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false)
                         : intake.Submission;
-                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers) { Undone = swept });
+                    var sentKept = sent.Delivered + leftovers.Delivered > 0 ? await KeepCacheCurrentAsync(started, ct).ConfigureAwait(false) : null;
+                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers) { Undone = swept, CacheKept = sentKept });
                 }
 
                 var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);
@@ -700,7 +712,11 @@ public sealed class FlowRuntime : IDisposable
 
                 // Every delivery of the run has ended, its fan-out members' too: what unfinished deliveries left is undone now.
                 var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
-                return Tracked(new RunResult(intake, work.Add(unattended), submission, intakeMembers, drainMembers) { Undone = undone });
+
+                // The records the run landed, its members' too, go into the cache types its deliveries keep current, so the
+                // flows that run after it render against them.
+                var kept = await KeepCacheCurrentAsync(started, ct).ConfigureAwait(false);
+                return Tracked(new RunResult(intake, work.Add(unattended), submission, intakeMembers, drainMembers) { Undone = undone, CacheKept = kept });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -764,6 +780,7 @@ public sealed class FlowRuntime : IDisposable
     public Task<DrainResult> WorkAsync(bool once, Guid? submissionId = null, CancellationToken ct = default)
         => TrackAsync("drain", new { once, submissionId }, null, async () =>
         {
+            var started = _context.Time.GetUtcNow().UtcDateTime;
             await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
             var worker = await WorkerAsync(ct).ConfigureAwait(false);
             if (submissionId is { } s)
@@ -791,8 +808,9 @@ public sealed class FlowRuntime : IDisposable
             // A drain of the whole flow ends with the sweep a deliver run ends with. A drain of a submission does not: it is what a
             // fan-out member runs while its coordinator and other members deliver, and the coordinator sweeps once they are done.
             var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
+            var kept = summary.Delivered > 0 ? await KeepCacheCurrentAsync(started, ct).ConfigureAwait(false) : null;
             var headline = undone.Idle ? summary.Headline : $"{summary.Headline}; {undone.Describe()}";
-            return (new DrainResult(summary, undone), headline, submissionId, summary.Idle && undone.Idle);
+            return (new DrainResult(summary, undone) { CacheKept = kept }, headline, submissionId, summary.Idle && undone.Idle);
         }, ct);
 
     /// <summary>
@@ -808,6 +826,58 @@ public sealed class FlowRuntime : IDisposable
             var summary = await SweepAsync(exhausted, ct).ConfigureAwait(false);
             return (summary, summary.Describe(), (Guid?)null, summary.Idle);
         }, ct);
+
+    /// <summary>
+    /// How far before a run's start its cache step looks for what it landed: the nodes a fanned-out run delivers on keep
+    /// their own clocks. Reading a record a moment older again changes nothing.
+    /// </summary>
+    private static readonly TimeSpan CacheStepMargin = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// The cache step a deliver run and a flow-wide drain end with (osdu/docs/reference/concepts/partition-cache.md,
+    /// Deliveries keep a type current): the records the flow landed since <paramref name="startedUtc"/>, read back from OSDU's
+    /// storage service into the cache types of its partition that the kind it delivers keeps current. Null when the runtime
+    /// has no mapping, cache or ledger, or no such type is declared. Its failure is not the run's: what the run delivered
+    /// stands, a refresh of the cache flow brings the records in, and the warning says so.
+    /// </summary>
+    private async Task<Snapshots.CacheKeptOutcome?> KeepCacheCurrentAsync(DateTime startedUtc, CancellationToken ct)
+    {
+        if (_mapping is not { } mapping || _context.Cache is null || _context.Ledger is null)
+        {
+            return null;
+        }
+
+        // The cache is the one of the partition the flow delivers to, whether or not its own mapping reads it: a delivery of
+        // reference data usually reads none, and the flows after it read what it landed.
+        string? scope = null;
+        try
+        {
+            scope = await LedgerRegistration.PartitionAsync(Flow, _context.Secrets, ct).ConfigureAwait(false);
+            return await new Snapshots.CacheKeeper(_context, _context.Loggers.CreateLogger<Snapshots.CacheKeeper>()).KeepCurrentAsync(
+                scope,
+                mapping.Mapping.Kind,
+                Flow.Id,
+                Flow.LedgerName,
+                startedUtc - CacheStepMargin,
+                _target.ClientAsync,
+                Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath,
+                RunId,
+                Actor,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SqlFlowException or System.Data.Common.DbException or TimeoutException or InvalidOperationException or HttpRequestException
+            || (ex is OperationCanceledException && !ct.IsCancellationRequested))
+        {
+            // A call that timed out surfaces as a cancellation the run did not ask for; the run's own cancellation still cancels.
+            // A partition that did not resolve is named as the flow declares it.
+            var reason = HeaderRedaction.RedactMessage(ex.Message);
+            var partition = scope ?? Flow.Partition ?? string.Empty;
+            _log.LogWarning(
+                "The cache of partition {Scope} was not brought up to date with what the run delivered ({Message}); the records stand in OSDU, and a refresh of the cache flow brings them into the cache.",
+                partition, reason);
+            return new Snapshots.CacheKeptOutcome(partition, [], 0, 0, 0, null, false, $"{reason}. A refresh of the cache flow brings the records in.");
+        }
+    }
 
     /// <summary>
     /// The sweep a deliver run and a flow-wide drain end with. Its failure is not the run's: what the run delivered stands, the

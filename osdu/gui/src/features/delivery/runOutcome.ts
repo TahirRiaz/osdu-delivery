@@ -62,6 +62,37 @@ export function runRecordCounts(result: Record<string, unknown> | null): RunReco
   };
 }
 
+/** What a delivery run's cache step said for one partition: its sentence, and whether the cache was left as it was. */
+export interface RunCacheKept {
+  scope: string;
+  summary: string;
+  skipped: boolean;
+}
+
+function cacheKeptOf(value: unknown): RunCacheKept | null {
+  const kept = isRecord(value) ? value.cacheKept : null;
+  if (!isRecord(kept) || typeof kept.summary !== "string") {
+    return null;
+  }
+
+  return { scope: typeof kept.scope === "string" ? kept.scope : "", summary: kept.summary, skipped: typeof kept.skipped === "string" };
+}
+
+/**
+ * What the cache step a deliver or drain run ends with did (osdu/docs/reference/concepts/partition-cache.md, Deliveries
+ * keep a type current): the run's own, or for a run of a source of several interfaces, each interface's. Empty when no
+ * type is kept current by what the run delivered.
+ */
+export function runCacheKept(result: Record<string, unknown> | null): RunCacheKept[] {
+  const own = cacheKeptOf(result);
+  if (own !== null) {
+    return [own];
+  }
+
+  const interfaces = isRecord(result) && Array.isArray(result.interfaces) ? result.interfaces : [];
+  return interfaces.map((entry) => cacheKeptOf(isRecord(entry) ? entry.result : null)).filter((found): found is RunCacheKept => found !== null);
+}
+
 /** The submission a run worked on: the one its trigger named, else the one its result reports. */
 export function runSubmissionId(run: RunDetail, result: Record<string, unknown> | null): string | null {
   const requested = run.payload?.submissionId;

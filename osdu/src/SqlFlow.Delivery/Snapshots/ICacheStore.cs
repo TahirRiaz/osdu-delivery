@@ -4,7 +4,57 @@ namespace SqlFlow.Delivery.Snapshots;
 /// <param name="RunId">The platform run that captured the version; null for an import from files.</param>
 /// <param name="CapturedBy">Who asked: the run's requester (a person, or schedule:&lt;name&gt;), or cli:&lt;user&gt;@&lt;machine&gt; for an import from the CLI.</param>
 /// <param name="Origin">Where the content came from: the OSDU endpoint reference searched, or the directory imported.</param>
-public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin);
+public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin)
+{
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> NoneGone =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether the capture adds the records it holds and takes none away: the records a delivery run landed
+    /// (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current), not everything a cache flow's query
+    /// matched. The capture's holder keeps every record it held before beside the ones it adds.
+    /// </summary>
+    public bool Adds { get; init; }
+
+    /// <summary>
+    /// By type name, records OSDU's storage service no longer holds, which a cache flow's capture did not find and only
+    /// deliveries held: they lose the deliveries' hold, so the merge takes them out unless another cache flow still holds them.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlySet<string>> Gone { get; init; } = NoneGone;
+}
+
+/// <summary>
+/// Who holds a cached record besides the cache flows: a delivery that landed it, named after the ledger that delivered it
+/// (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type current).
+/// </summary>
+public static class CacheHolders
+{
+    /// <summary>What every delivery's holder name starts with; no cache flow's name has a colon.</summary>
+    public const string DeliveryPrefix = "delivery:";
+
+    /// <summary>The longest holder name the cache's membership keeps.</summary>
+    public const int MaxLength = 200;
+
+    /// <summary>
+    /// The holder a delivery holds its landed records under: <c>delivery:</c> and the ledger's name, cut and suffixed with a
+    /// hash of the whole name when that would be longer than the membership keeps, so two long names stay two holders.
+    /// </summary>
+    public static string Delivery(string ledgerName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ledgerName);
+        var holder = DeliveryPrefix + ledgerName;
+        if (holder.Length <= MaxLength)
+        {
+            return holder;
+        }
+
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(ledgerName)))[..12];
+        return $"{holder[..(MaxLength - 13)]}~{hash}";
+    }
+
+    /// <summary>Whether <paramref name="holder"/> is a delivery's rather than a cache flow's.</summary>
+    public static bool IsDelivery(string holder) => holder.StartsWith(DeliveryPrefix, StringComparison.Ordinal);
+}
 
 /// <summary>
 /// One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under; with the
@@ -118,6 +168,12 @@ public interface ICacheStore
         DateTimeOffset capturedUtc,
         IReadOnlyList<SystemPropertyReading>? readings = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Which of <paramref name="ids"/>, records of type <paramref name="typeName"/> of the partition's cache, a delivery holds
+    /// (<see cref="CacheHolders"/>): the ones a cache flow's capture leaves in the cache though it did not find them.
+    /// </summary>
+    Task<IReadOnlySet<string>> HeldByDeliveriesAsync(string scope, string typeName, IReadOnlyCollection<string> ids, CancellationToken ct = default);
 
     /// <summary>
     /// Applies a retention to the partition's cache (<see cref="CacheRetention"/>): the one a refresh or an import of a cache

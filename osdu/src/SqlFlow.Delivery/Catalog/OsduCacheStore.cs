@@ -32,6 +32,9 @@ public sealed class OsduCacheStore : ICacheStore
 
     private const int InsertChunk = 2_000;
 
+    /// <summary>The most record ids one statement names, well inside SQL Server's 2,100 parameters.</summary>
+    private const int IdChunk = 1_000;
+
     private const int UpdateChunk = 1_000;
 
     /// <summary>
@@ -195,7 +198,7 @@ public sealed class OsduCacheStore : ICacheStore
         var rows = await db.DeliveryCacheDefinitions.AsNoTracking()
             .Where(d => d.Scope == scope)
             .OrderBy(d => d.FlowName).ThenBy(d => d.Name).ThenBy(d => d.RepoId)
-            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField, d.RetentionDays })
+            .Select(d => new { d.FlowName, d.Name, d.EntityType, d.Kind, d.Query, d.FieldsJson, d.OnChange, d.Origin, d.KeyField, d.RetentionDays, d.KeepCurrent })
             .ToListAsync(ct).ConfigureAwait(false);
 
         // A flow is named once per catalog; the sync warns when two repositories declare the same one, and the first row wins here.
@@ -214,7 +217,8 @@ public sealed class OsduCacheStore : ICacheStore
                 row.OnChange.Equals("approve", StringComparison.OrdinalIgnoreCase) ? CacheChangeMode.Approve : CacheChangeMode.Auto,
                 CacheOrigins.Parse(row.Origin),
                 row.KeyField,
-                row.RetentionDays));
+                row.RetentionDays,
+                row.KeepCurrent));
         }
 
         return new CacheDeclaration(scope, declarations);
@@ -292,6 +296,10 @@ public sealed class OsduCacheStore : ICacheStore
                     .FirstOrDefaultAsync(ct).ConfigureAwait(false);
                 var current = currentRow is null ? null : Recent(scope, currentRow.Version) ?? await ReadAsync(db, currentRow, ct).ConfigureAwait(false);
 
+                // Records OSDU no longer holds that only deliveries held lose the deliveries' hold first, so the merge takes
+                // them out unless another cache flow still holds them.
+                await ReleaseGoneAsync(db, scope, capture.Gone, ct).ConfigureAwait(false);
+
                 var memberRows = await db.DeliveryCacheMembers.AsNoTracking()
                     .Where(m => m.Scope == scope && typeNames.Contains(m.TypeName))
                     .Select(m => new { m.TypeName, m.RecordId, m.FlowName })
@@ -308,11 +316,11 @@ public sealed class OsduCacheStore : ICacheStore
                     .Distinct()
                     .ToListAsync(ct).ConfigureAwait(false);
 
-                var plan = CacheMerge.Apply(current, members, flowName, captured, declared, label, capturedUtc, readings);
+                var plan = CacheMerge.Apply(current, members, flowName, captured, declared, label, capturedUtc, readings, capture.Adds);
                 var hash = plan.Snapshot.ContentHash();
                 if (current is not null && string.Equals(hash, current.ContentHash(), StringComparison.Ordinal))
                 {
-                    await WriteMembersAsync(db, scope, flowName, captured, plan, ct).ConfigureAwait(false);
+                    await WriteMembersAsync(db, scope, flowName, captured, plan, capture.Adds, ct).ConfigureAwait(false);
                     await transaction.CommitAsync(ct).ConfigureAwait(false);
                     return new CacheWrite(current, current, Written: false, CacheTypeChanges.None(current));
                 }
@@ -357,7 +365,7 @@ public sealed class OsduCacheStore : ICacheStore
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
                 await WriteItemsAsync(db, scope, sequence, types, changes, ct).ConfigureAwait(false);
-                await WriteMembersAsync(db, scope, flowName, captured, plan, ct).ConfigureAwait(false);
+                await WriteMembersAsync(db, scope, flowName, captured, plan, capture.Adds, ct).ConfigureAwait(false);
 
                 await db.DeliveryCacheVersions
                     .Where(v => v.Scope == scope && v.Current)
@@ -875,17 +883,74 @@ public sealed class OsduCacheStore : ICacheStore
         }
     }
 
+    public async Task<IReadOnlySet<string>> HeldByDeliveriesAsync(string scope, string typeName, IReadOnlyCollection<string> ids, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
+        ArgumentNullException.ThrowIfNull(ids);
+        var held = new HashSet<string>(StringComparer.Ordinal);
+        if (ids.Count == 0)
+        {
+            return held;
+        }
+
+        await using var db = _factory();
+        foreach (var chunk in ids.Distinct(StringComparer.Ordinal).Chunk(IdChunk))
+        {
+            var found = await db.DeliveryCacheMembers.AsNoTracking()
+                .Where(m => m.Scope == scope && m.TypeName == typeName && chunk.Contains(m.RecordId) && m.FlowName.StartsWith(CacheHolders.DeliveryPrefix))
+                .Select(m => m.RecordId)
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false);
+            held.UnionWith(found);
+        }
+
+        return held;
+    }
+
+    /// <summary>Drops the deliveries' hold of the records OSDU no longer holds (<see cref="CacheCapture.Gone"/>).</summary>
+    private static async Task ReleaseGoneAsync(OsduDbContext db, string scope, IReadOnlyDictionary<string, IReadOnlySet<string>> gone, CancellationToken ct)
+    {
+        foreach (var (typeName, ids) in gone)
+        {
+            foreach (var chunk in ids.Chunk(IdChunk))
+            {
+                await db.DeliveryCacheMembers
+                    .Where(m => m.Scope == scope && m.TypeName == typeName && chunk.Contains(m.RecordId) && m.FlowName.StartsWith(CacheHolders.DeliveryPrefix))
+                    .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+            }
+        }
+    }
+
     /// <summary>
     /// The flow's membership of the captured types becomes exactly what it captured, under the names the cache holds the
-    /// types by; a type the merge removed from the partition loses every flow's membership.
+    /// types by; a type the merge removed from the partition loses every flow's membership. A capture that adds keeps every
+    /// record its holder held before, and holds the ones it adds as well.
     /// </summary>
     private static async Task WriteMembersAsync(
-        OsduDbContext db, string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheMergePlan plan, CancellationToken ct)
+        OsduDbContext db, string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheMergePlan plan, bool adds, CancellationToken ct)
     {
         var typeNames = captured.Select(t => t.Name).ToList();
-        await db.DeliveryCacheMembers
-            .Where(m => m.Scope == scope && m.FlowName == flowName && typeNames.Contains(m.TypeName))
-            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        if (adds)
+        {
+            // Only the rows of the records it adds are written again, so a record held twice is not inserted twice.
+            foreach (var type in captured)
+            {
+                var name = plan.Snapshot.Type(type.Name)?.Name ?? type.Name;
+                foreach (var chunk in type.Items.Select(i => i.Id).Chunk(IdChunk))
+                {
+                    await db.DeliveryCacheMembers
+                        .Where(m => m.Scope == scope && m.FlowName == flowName && (m.TypeName == type.Name || m.TypeName == name) && chunk.Contains(m.RecordId))
+                        .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+                }
+            }
+        }
+        else
+        {
+            await db.DeliveryCacheMembers
+                .Where(m => m.Scope == scope && m.FlowName == flowName && typeNames.Contains(m.TypeName))
+                .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        }
         if (plan.RemovedTypes.Count > 0)
         {
             var removed = plan.RemovedTypes.ToList();

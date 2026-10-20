@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
@@ -23,6 +24,9 @@ public sealed class CacheRefresher
     /// <summary>The offset search a plan counts with (openapi search v2, POST /query with trackTotalCount).</summary>
     private const string QueryPath = "/api/search/v2/query";
 
+    /// <summary>The storage service's batch read a refresh asks about records the search index did not answer (openapi storage v2, POST /query/records).</summary>
+    private const string StoragePath = Protocols.OsduRecordProtocol.DefaultVerifyBatchPath;
+
     private readonly EngineContext _context;
     private readonly ILogger _logger;
 
@@ -32,6 +36,87 @@ public sealed class CacheRefresher
         ArgumentNullException.ThrowIfNull(logger);
         _context = context;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// <paramref name="flow"/> narrowed to the types a run names (osdu/docs/reference/flow/cache.md, Operations and the run
+    /// payload): the flow itself when it names none. A name the flow does not declare for its partition is refused, naming
+    /// the ones it does.
+    /// </summary>
+    /// <exception cref="SqlFlowException">A name is not a type of the flow.</exception>
+    public static CacheDefinition Narrow(CacheDefinition flow, IReadOnlyList<string> types)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentNullException.ThrowIfNull(types);
+        if (types.Count == 0)
+        {
+            return flow;
+        }
+
+        var unknown = types.Where(name => !flow.Types.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (unknown.Count > 0)
+        {
+            var where = flow.Partitioned && flow.Partition is { } partition ? $" for partition '{partition}'" : string.Empty;
+            throw new SqlFlowException(
+                $"payload types names {string.Join(", ", unknown.Select(n => $"'{n}'"))}, which cache flow '{flow.Name}' does not declare{where}; it declares {string.Join(", ", flow.Types.Select(t => t.Name))}.");
+        }
+
+        return flow with { Types = [.. flow.Types.Where(t => types.Contains(t.Name, StringComparer.OrdinalIgnoreCase))] };
+    }
+
+    /// <summary>
+    /// The records of each captured OSDU type that the cache holds, the capture did not find, and a delivery holds, which
+    /// OSDU's storage service no longer holds either (osdu/docs/reference/concepts/partition-cache.md, Deliveries keep a type
+    /// current). A record a delivery landed stays in the cache while the search index has not caught up with it, so the
+    /// refresh asks storage, which a write reaches at once, about those alone: a record storage still holds stays, one it
+    /// does not (deleted, or not readable with the cache flow's credentials) loses the deliveries' hold.
+    /// </summary>
+    internal static async Task<IReadOnlyDictionary<string, IReadOnlySet<string>>> GoneAsync(
+        ICacheStore store, string scope, StorageRecords storage, IReadOnlyList<ReferenceType> captured, ILogger logger, CancellationToken ct)
+    {
+        var gone = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+        if (await store.CurrentVersionAsync(scope, ct).ConfigureAwait(false) is not { } version
+            || await store.LoadAsync(scope, version, ct).ConfigureAwait(false) is not { } current)
+        {
+            return gone;
+        }
+
+        foreach (var type in captured.Where(t => !t.IsLookup))
+        {
+            if (current.Type(type.Name) is not { } held)
+            {
+                continue;
+            }
+
+            var found = type.Items.Select(i => i.Id).ToHashSet(StringComparer.Ordinal);
+            var notFound = held.Items.Select(i => i.Id).Where(id => !found.Contains(id)).ToList();
+            if (notFound.Count == 0)
+            {
+                continue;
+            }
+
+            var delivered = await store.HeldByDeliveriesAsync(scope, type.Name, notFound, ct).ConfigureAwait(false);
+            var missing = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var batch in delivered.Chunk(StorageRecords.Batch))
+            {
+                var read = await storage.ReadAsync(batch, null, ct).ConfigureAwait(false);
+                missing.UnionWith(read.Missing);
+            }
+
+            if (delivered.Count > 0)
+            {
+                logger.LogInformation(
+                    "{Type}: {Held} record(s) deliveries landed are not in the search index yet or any more; storage holds {Kept} of them, which stay, and not {Gone}, which leave the cache.",
+                    type.Name, delivered.Count, delivered.Count - missing.Count, missing.Count);
+            }
+
+            if (missing.Count > 0)
+            {
+                gone[type.Name] = missing;
+            }
+        }
+
+        return gone;
     }
 
     /// <summary>Captures the cache flow's types, merges them into the partition's cache, and tags what the changes reach.</summary>
@@ -59,6 +144,7 @@ public sealed class CacheRefresher
         var captured = new List<ReferenceType>(spec.Types.Count);
         var origins = new List<string>();
         IReadOnlyList<SystemPropertyReading> readings = [];
+        IReadOnlyDictionary<string, IReadOnlySet<string>> gone = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
         var searched = spec.Types.Where(t => t.Origin == CacheOrigin.Osdu).ToList();
         if (searched.Count > 0)
         {
@@ -67,6 +153,8 @@ public sealed class CacheRefresher
             {
                 captured.Add(await builder.CaptureTypeAsync(osdu, type, ct).ConfigureAwait(false));
             }
+
+            gone = await GoneAsync(store, scope, new StorageRecords(osdu.Client, StoragePath), captured, _logger, ct).ConfigureAwait(false);
 
             // The partition's system properties are read wherever the platform is reached, which is a capture of OSDU types; a
             // flow of lookup tables alone reads none and keeps what the cache knew.
@@ -96,7 +184,7 @@ public sealed class CacheRefresher
             origins.Add(type.Describe());
         }
 
-        var write = await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
+        var write = await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)) { Gone = gone }, readings, ct).ConfigureAwait(false);
         var snapshot = write.Snapshot;
         var previousVersion = write.Previous?.Version;
 

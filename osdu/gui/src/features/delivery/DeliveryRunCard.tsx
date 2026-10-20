@@ -1,4 +1,4 @@
-import { Info } from "lucide-react";
+import { Info, TriangleAlert } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +8,7 @@ import { CodeView } from "@/components/CodeView";
 import { deliveryApi, type ReversalSource } from "../../api/delivery";
 import { prettyJson } from "./prettyJson";
 import { ReversalCard } from "./ReversalCard";
-import { runRequest, runResult, runScope } from "./runOutcome";
+import { runCacheKept, runRequest, runResult, runScope } from "./runOutcome";
 import { undoneFirst, undoRunCounts } from "../../api/artifacts";
 import { UndoneFirst } from "./ArtifactMarks";
 import { DimensionRunViews } from "./dimensions/DimensionRunViews";
@@ -59,6 +59,8 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
   const ledgerUndone = run.operation === "delete-ledger" ? undoneFirst(result) : null;
   // A deliver, replan or drain run ends with the sweep that undoes what unfinished deliveries left.
   const sweptUndone = run.operation === null || run.operation === "deliver" || run.operation === "replan" || run.operation === "drain" ? undoneFirst(result) : null;
+  // It ends with the cache step too, which reads what it landed into the cache types its deliveries keep current.
+  const cacheKept = run.flowKind === "delivery" ? runCacheKept(result) : [];
 
   return (
     <>
@@ -136,6 +138,18 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
       {sweptUndone !== null && sweptUndone.records > 0 && (
         <Card className="gap-1 rounded-lg p-3" data-testid="run-undone-after">
           <UndoneFirst undone={sweptUndone} heading="Undone after the run" testId="run-undone-after-counts" />
+        </Card>
+      )}
+
+      {cacheKept.length > 0 && (
+        <Card className="gap-1 rounded-lg p-3" data-testid="run-cache-kept">
+          <h2 className="text-[13px] font-medium">Cache kept current</h2>
+          {cacheKept.map((kept, index) => (
+            <p key={`${kept.scope}-${index}`} className="flex items-start gap-1.5 text-[12.5px] text-muted-foreground" data-testid="run-cache-kept-line">
+              {kept.skipped && <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-label="Not brought up to date" />}
+              <span>{kept.summary}</span>
+            </p>
+          ))}
         </Card>
       )}
 

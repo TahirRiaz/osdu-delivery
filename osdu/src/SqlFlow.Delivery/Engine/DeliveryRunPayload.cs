@@ -298,6 +298,9 @@ public sealed record DeliveryRunPayload
     /// <summary>The inventories of an inventory flow a run builds or reconciles, by name.</summary>
     public const string InventoriesProperty = "inventories";
 
+    /// <summary>The types of a cache flow a run refreshes or plans, by name.</summary>
+    public const string TypesProperty = "types";
+
     /// <summary>What an inventory flow's remove run removes from OSDU (osdu/docs/reference/flow/inventory.md, Operations).</summary>
     public const string RemovalProperty = "removal";
 
@@ -306,7 +309,7 @@ public sealed record DeliveryRunPayload
 
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
-            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty, RemovalProperty];
+            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty, RemovalProperty, TypesProperty];
 
     /// <summary>
     /// For every property a run asks something by (all but the central configuration, which every kind takes), the runs that
@@ -329,6 +332,7 @@ public sealed record DeliveryRunPayload
         [DimensionsProperty] = "only a dimension flow's runs select dimensions",
         [InventoriesProperty] = "only an inventory flow's runs select inventories",
         [RemovalProperty] = "only an inventory flow's remove run names what it removes",
+        [TypesProperty] = "only a cache flow's runs select types",
     };
 
     /// <summary>The properties a delivery flow's runs take, besides the central configuration; which operation takes which is <see cref="Validate"/>'s.</summary>
@@ -440,6 +444,12 @@ public sealed record DeliveryRunPayload
     /// <summary>True when the payload selects inventories of an inventory flow, or names what one removes.</summary>
     public bool SelectsInventories => Inventories.Count > 0 || Removal is not null;
 
+    /// <summary>
+    /// The types of a cache flow the run refreshes or plans, by name (osdu/docs/reference/flow/cache.md, Operations and the
+    /// run payload); with none, every type of the flow.
+    /// </summary>
+    public IReadOnlyList<string> Types { get; init; } = [];
+
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty => CarriesOnlyConfiguration && References.Count == 0 && PartitionReferences.Count == 0;
 
@@ -472,6 +482,7 @@ public sealed record DeliveryRunPayload
         Add(Dimensions.Count > 0, DimensionsProperty);
         Add(Inventories.Count > 0, InventoriesProperty);
         Add(Removal is not null, RemovalProperty);
+        Add(Types.Count > 0, TypesProperty);
         return named;
 
         void Add(bool asks, string property)
@@ -595,6 +606,7 @@ public sealed record DeliveryRunPayload
             Dimensions = Selection(root[DimensionsProperty], DimensionsProperty, "dimension names"),
             Inventories = Selection(root[InventoriesProperty], InventoriesProperty, "inventory names"),
             Removal = root[RemovalProperty] is null ? null : RemovalRequest(root[RemovalProperty]),
+            Types = Selection(root[TypesProperty], TypesProperty, "type names"),
         };
     }
 
@@ -878,6 +890,11 @@ public sealed record DeliveryRunPayload
         if (Inventories.Count > 0)
         {
             root[InventoriesProperty] = new JsonArray(Inventories.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+        }
+
+        if (Types.Count > 0)
+        {
+            root[TypesProperty] = new JsonArray(Types.Select(t => (JsonNode?)JsonValue.Create(t)).ToArray());
         }
 
         if (Removal is { } removal)

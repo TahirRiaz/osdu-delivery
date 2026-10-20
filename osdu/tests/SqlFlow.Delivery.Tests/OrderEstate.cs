@@ -142,13 +142,19 @@ internal sealed class OrderEstate
 
     public void Cache(string name, params string[] entityTypes) => CacheIn(Partition, name, entityTypes);
 
+    /// <summary>A cache flow of <paramref name="name"/> whose types the partition's deliveries keep current (<c>keepCurrent: true</c>).</summary>
+    public void CacheKeptCurrent(string name, params string[] entityTypes) => CacheIn(Partition, name, keepCurrent: true, entityTypes);
+
     /// <summary>A cache flow of <paramref name="name"/> capturing every record of each entity type; <paramref name="partition"/> null leaves it to the registry.</summary>
-    public void CacheIn(string? partition, string name, params string[] entityTypes)
+    public void CacheIn(string? partition, string name, params string[] entityTypes) => CacheIn(partition, name, keepCurrent: false, entityTypes);
+
+    private void CacheIn(string? partition, string name, bool keepCurrent, string[] entityTypes)
     {
+        var kept = keepCurrent ? "\n    keepCurrent: true" : string.Empty;
         var types = string.Join("\n", entityTypes.Select(e => $$"""
               - kind: "osdu:wks:{{e}}:*"
                 name: {{e[(e.IndexOf("--", StringComparison.Ordinal) + 2)..]}}
-                fields: [data.Name]
+                fields: [data.Name]{{kept}}
             """));
         Write($"cache/{name}.yaml", $$"""
             flowType: cache

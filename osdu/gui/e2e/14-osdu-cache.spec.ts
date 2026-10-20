@@ -128,6 +128,12 @@ test.describe.serial("osdu cache", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByTestId("trigger-operation")).toContainText("Refresh");
     await expect(dialog.getByTestId("trigger-submission")).toHaveCount(0);
+    // A refresh has no gate to force; it may name the types it captures, and with none picked it captures every one.
+    await expect(dialog.getByTestId("trigger-force")).toHaveCount(0);
+    const types = dialog.getByTestId("trigger-cache-types");
+    await expect(types.getByTestId("trigger-cache-types-summary")).toContainText("Every type");
+    await types.getByTestId("trigger-cache-type-UnitOfMeasure").click();
+    await expect(types.getByTestId("trigger-cache-types-summary")).toContainText("1 type of");
     await adminPage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
 

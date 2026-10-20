@@ -402,6 +402,7 @@ public sealed class OsduTestDatabase : IDisposable
                 Query = type.Origin == CacheOrigin.Osdu ? type.Query : null,
                 FieldsJson = new JsonArray(type.Fields.Select(f => (JsonNode)new JsonObject { ["path"] = f.Path, ["as"] = f.Name }).ToArray()).ToJsonString(),
                 OnChange = type.OnChange == CacheChangeMode.Approve ? "approve" : "auto",
+                KeepCurrent = type.KeepCurrent,
                 FirstSeenUtc = now,
                 LastSeenUtc = now,
             });

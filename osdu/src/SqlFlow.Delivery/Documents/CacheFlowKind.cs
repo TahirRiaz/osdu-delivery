@@ -88,8 +88,8 @@ public sealed class CacheFlowKind : IFlowDocumentKind
         DeliveryOperations.RefuseBuiltInOverrides(parameters, CacheDefinition.FlowTypeName, "a refresh sweeps every declared type in full.");
 
         // The control plane supplies its central configuration to every run of the module's kinds in the payload; a cache
-        // run takes that and nothing else, since a refresh has no submission, record or slice to name. A run names its
-        // partition and the flow's parameter values under values.
-        DeliveryRunPayload.Parse(parameters).RefuseOtherThan(CacheDefinition.FlowTypeName, []);
+        // run takes that and the types it refreshes or plans, since a refresh has no submission, record or slice to name. A
+        // run names its partition and the flow's parameter values under values.
+        DeliveryRunPayload.Parse(parameters).RefuseOtherThan(CacheDefinition.FlowTypeName, CacheExecutor.PayloadTakes);
     }
 }

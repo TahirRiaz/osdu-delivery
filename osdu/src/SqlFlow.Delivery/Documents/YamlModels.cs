@@ -995,6 +995,9 @@ internal sealed class CachedTypeYaml
 
     /// <summary>The partitions of the flow this type is built for; every partition of the flow when left out.</summary>
     public List<string>? Partitions { get; set; }
+
+    /// <summary>Whether a delivery run that lands records of the type's kind merges them into the cache as it ends.</summary>
+    public bool? KeepCurrent { get; set; }
 }
 
 internal sealed class RetrievalSourceYaml

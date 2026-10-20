@@ -463,6 +463,9 @@ public sealed class CacheRetentionStoreTests : IDisposable
 
         public Task<CacheDeclaration> DeclarationAsync(string scope, CancellationToken ct = default) => inner.DeclarationAsync(scope, ct);
 
+        public Task<IReadOnlySet<string>> HeldByDeliveriesAsync(string scope, string typeName, IReadOnlyCollection<string> ids, CancellationToken ct = default)
+            => inner.HeldByDeliveriesAsync(scope, typeName, ids, ct);
+
         public Task<CacheWrite> MergeAsync(
             string scope, string flowName, IReadOnlyList<ReferenceType> captured, CacheCapture capture, DateTimeOffset capturedUtc,
             IReadOnlyList<SystemPropertyReading>? readings = null, CancellationToken ct = default)
