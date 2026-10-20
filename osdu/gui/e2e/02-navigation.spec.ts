@@ -12,7 +12,7 @@ const SECTIONS = [
     label: "In OSDU",
     entries: ["nav-delivery-explorer", "nav-delivery-assertions", "nav-delivery-inventories", "nav-delivery-dimensions"],
   },
-  { id: "build", label: "Build", entries: ["nav-delivery-documents", "nav-delivery-templates", "nav-delivery-cache"] },
+  { id: "build", label: "Build", entries: ["nav-delivery-documents", "nav-delivery-templates", "nav-delivery-cache", "nav-delivery-order"] },
   { id: "setup", label: "Setup", entries: ["nav-delivery-partitions", "nav-delivery-search-terms"] },
 ];
 
