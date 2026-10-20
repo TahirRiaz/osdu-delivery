@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using SqlFlow.Catalog.Modules;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.ControlPlane.Background;
 using SqlFlow.ControlPlane.Configuration;
@@ -199,8 +200,11 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         services.Services.AddSingleton<IWorkerLauncher>(provider => new RadixWorkerLauncher(
             () => provider.GetRequiredService<IHttpClientFactory>().CreateClient(RadixWorkerLauncher.HttpClientName), radix,
             provider.GetRequiredService<TimeProvider>(), Environment.GetEnvironmentVariable(RadixWorkerLauncher.CommitVariable)));
+        // A local worker opens the module database this control plane opens, whichever way the control plane was given it.
         services.Services.AddSingleton<IWorkerLauncher>(provider => new ProcessWorkerLauncher(
             process, managed.MaxLifetimeHours, provider.GetRequiredService<TokenIssuer>(), provider.GetRequiredService<IServer>(),
+            () => provider.GetRequiredService<IModuleDatabaseConnections>()
+                .ConnectionString(provider.GetRequiredService<ModuleDatabase<OsduDbContext>>()),
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<ILogger<ProcessWorkerLauncher>>()));
     }
 

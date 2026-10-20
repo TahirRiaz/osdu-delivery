@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using SqlFlow.ControlPlane.Configuration;
+using SqlFlow.Catalog.Modules;
 using SqlFlow.ControlPlane.Security;
 using SqlFlow.Delivery.ControlPlane.ManagedWorkers;
 using SqlFlow.Dispatch.ManagedWorkers;
@@ -20,6 +21,9 @@ public sealed class ProcessWorkerLauncherTests : IDisposable
 {
     /// <summary>A control plane setting no other test reads, set while one test checks it is kept from the worker.</summary>
     private const string ProbeVariable = "ControlPlane__ProcessLauncherTests__Probe";
+
+    /// <summary>The connection the stand-in control plane opens its module database on.</summary>
+    private const string ModuleConnection = "Server=module-db-for-tests;Database=OsduLauncherTests";
 
     private readonly string _folder = Directory.CreateTempSubdirectory("sqlflow-process-launcher-").FullName;
 
@@ -58,6 +62,48 @@ public sealed class ProcessWorkerLauncherTests : IDisposable
         {
             Environment.SetEnvironmentVariable(ProbeVariable, null);
         }
+    }
+
+    [Fact]
+    public async Task AStartedWorker_OpensTheModuleDatabaseTheControlPlaneOpens()
+    {
+        // A local setup keeps the osdu schema in the catalog's database and sets no SQLFLOW_OSDU_DB, while a node reads
+        // that variable alone: the worker is handed the connection the control plane resolved, or it refuses to start.
+        using var launcher = Launcher(Script(sleeps: true));
+
+        await launcher.LaunchAsync(new WorkerLaunch("worker-default-0123456789", ""), CancellationToken.None);
+
+        Assert.Equal(ModuleConnection, await ReadAsync("osdu.txt"));
+        Assert.DoesNotContain("module-db-for-tests", await ReadAsync("args.txt"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AModuleDatabaseThatCannotBeResolved_StartsNothing_AndSaysWhy()
+    {
+        using var launcher = Launcher(Script(sleeps: true), moduleConnection: () => throw new ModuleDatabaseException(
+            "osdu", "The database of module 'osdu' uses the catalog connection, but the catalog connection is not set."));
+
+        var ex = await Assert.ThrowsAsync<WorkerLauncherException>(
+            () => launcher.LaunchAsync(new WorkerLaunch("worker-default-0123456789", ""), CancellationToken.None));
+
+        Assert.False(ex.MayHaveStarted);
+        Assert.Contains("the module database this control plane uses could not be resolved", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("the catalog connection is not set", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(await launcher.ListAsync(CancellationToken.None));
+        Assert.False(File.Exists(Output("args.txt")));
+    }
+
+    [Fact]
+    public async Task AModuleDatabaseThatResolvesToNothing_StartsNothing()
+    {
+        using var launcher = Launcher(Script(sleeps: true), moduleConnection: () => " ");
+
+        var ex = await Assert.ThrowsAsync<WorkerLauncherException>(
+            () => launcher.LaunchAsync(new WorkerLaunch("worker-default-0123456789", ""), CancellationToken.None));
+
+        Assert.False(ex.MayHaveStarted);
+        Assert.Contains("resolved to an empty connection", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(await launcher.ListAsync(CancellationToken.None));
     }
 
     [Theory]
@@ -212,7 +258,8 @@ public sealed class ProcessWorkerLauncherTests : IDisposable
     // -------------------------------------------------------------------------------------------------- support -----
 
     private static ProcessWorkerLauncher Launcher(
-        string command, string[]? arguments = null, Uri? controlPlaneUrl = null, string? serverAddress = "http://localhost:5299")
+        string command, string[]? arguments = null, Uri? controlPlaneUrl = null, string? serverAddress = "http://localhost:5299",
+        Func<string>? moduleConnection = null)
     {
         var options = new ProcessLauncherOptions
         {
@@ -226,12 +273,12 @@ public sealed class ProcessWorkerLauncherTests : IDisposable
             Jwt = new JwtOptions { SigningKey = "process-launcher-tests-signing-key-0123456789abcdef", Issuer = "tests", Audience = "tests" },
         }));
         return new ProcessWorkerLauncher(
-            options, maxLifetimeHours: 12, tokens, new FakeServer(serverAddress), TimeProvider.System,
-            NullLogger<ProcessWorkerLauncher>.Instance);
+            options, maxLifetimeHours: 12, tokens, new FakeServer(serverAddress), moduleConnection ?? (() => ModuleConnection),
+            TimeProvider.System, NullLogger<ProcessWorkerLauncher>.Instance);
     }
 
-    /// <summary>A stand-in worker: records its arguments, its node name, its process id and whether it was given a
-    /// credential (never the credential), then waits a minute or exits with code 3.</summary>
+    /// <summary>A stand-in worker: records its arguments, its node name, its process id, the module database it was given
+    /// and whether it was given a credential (never the credential), then waits a minute or exits with code 3.</summary>
     private string Script(bool sleeps)
     {
         if (OperatingSystem.IsWindows())
@@ -243,6 +290,7 @@ public sealed class ProcessWorkerLauncherTests : IDisposable
                 "if defined SQLFLOW_TOKEN (echo set> \"%~dp0token.txt\") else (echo missing> \"%~dp0token.txt\")",
                 "if defined " + ProbeVariable + " (echo leaked> \"%~dp0probe.txt\") else (echo scrubbed> \"%~dp0probe.txt\")",
                 "powershell -NoProfile -Command \"(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId\" > \"%~dp0pid.txt\"",
+                "echo %SQLFLOW_OSDU_DB%> \"%~dp0osdu.txt\"",
                 "echo %SQLFLOW_NODE_NAME%> \"%~dp0name.txt\"",
                 sleeps ? "ping -n 60 127.0.0.1 > nul" : "exit /b 3",
                 string.Empty));
@@ -257,6 +305,7 @@ public sealed class ProcessWorkerLauncherTests : IDisposable
             "if [ -n \"$SQLFLOW_TOKEN\" ]; then echo set > \"$dir/token.txt\"; else echo missing > \"$dir/token.txt\"; fi",
             "if [ -n \"$" + ProbeVariable + "\" ]; then echo leaked > \"$dir/probe.txt\"; else echo scrubbed > \"$dir/probe.txt\"; fi",
             "echo $$ > \"$dir/pid.txt\"",
+            "echo \"$SQLFLOW_OSDU_DB\" > \"$dir/osdu.txt\"",
             "echo \"$SQLFLOW_NODE_NAME\" > \"$dir/name.txt\"",
             sleeps ? "sleep 60" : "exit 3",
             string.Empty));
