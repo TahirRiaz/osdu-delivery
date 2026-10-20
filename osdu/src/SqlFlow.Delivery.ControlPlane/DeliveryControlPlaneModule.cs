@@ -99,6 +99,16 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         // Their example records are what a check's guidance quotes as OSDU's own way of writing a value.
         services.Services.AddSingleton<IOfficialExamples>(provider => provider.GetRequiredService<OsduDataDefinitions>());
 
+        // OSDU's lineage by release, built from the same local copy and kept in the module database, which the OSDU order
+        // reads a kind from when its template is not saved and the order pages draw.
+        services.Services.AddSingleton(provider => new Ordering.SchemaLineageStore(
+            provider.GetRequiredService<IDbContextFactory<OsduDbContext>>().CreateDbContext));
+        services.Services.AddSingleton(provider => new Ordering.SchemaLineageBuilder(
+            provider.GetRequiredService<OsduDataDefinitions>(),
+            provider.GetRequiredService<Ordering.SchemaLineageStore>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger<Ordering.SchemaLineageBuilder>()));
+
         if (repository.WarmOnStart)
         {
             services.AddHostedService<DataDefinitionsWarmupService>();
@@ -221,10 +231,12 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
             .OpenToAssistantRuns()
             .MapDeliveryReadEndpoints()
             .MapDeliveryTemplateReadEndpoints()
-            .MapDeliverySearchTermReadEndpoints();
+            .MapDeliverySearchTermReadEndpoints()
+            .MapDeliveryOrderReadEndpoints();
         endpoints.Operate
             .MapDeliveryWriteEndpoints()
-            .MapDeliveryTemplateOperateEndpoints();
+            .MapDeliveryTemplateOperateEndpoints()
+            .MapDeliveryOrderOperateEndpoints();
         endpoints.Author
             .MapDeliveryTemplateAuthorEndpoints()
             .MapDeliverySearchTermAuthorEndpoints();
