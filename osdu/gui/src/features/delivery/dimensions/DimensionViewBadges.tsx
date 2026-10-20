@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { RichTooltip } from "@/components/RichTooltip";
 import { cn } from "@/lib/utils";
 import type { DeliveryDimensionView, DeliveryDimensionViewCheck, DeliveryDimensionViewJoinVerdict, DimensionViewCheckStatus } from "../../../api/delivery";
-import { ExplainTip } from "../inventories/InventoryBadges";
+import { ExplainTip } from "@/components/ExplainTip";
 import {
   VERDICT_VISUALS, VIEW_STANDING_VISUALS, checkWhen, utcText, verdictText, viewStandingOf, type ViewStanding,
 } from "./dimensionViewFormat";

@@ -10,7 +10,8 @@ import { ExplorerProblem } from "../explorer/ExplorerProblem";
 import { ExplorerRecord } from "../explorer/ExplorerRecord";
 import { ALL_KINDS, scopeKind } from "../explorer/explorerModel";
 import { TaskProgress } from "../TemplateSheet";
-import { ExplainTip, FindingGlyph } from "./InventoryBadges";
+import { ExplainTip } from "@/components/ExplainTip";
+import { FindingGlyph } from "./InventoryBadges";
 import { findingVisual, findingWhy } from "./inventoryFormat";
 
 /** The explorer's address for what it opens: a record, a place, or a search, in the partition named. */
