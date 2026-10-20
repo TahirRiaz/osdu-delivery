@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target act on the Nodes page here too. `dev.bat single` (`./dev.sh single`) is the one-process start that ran by
   default before, and `managed` still names the default
   ([Managed workers on a developer's machine](osdu/docs/reference/guides/managed-workers.md#on-a-developers-machine-devbat)).
+- **The Nodes page answers one question per tab.** A line of four facts (workers online, runs running, runs queued and
+  how many could start, how workers start) opens on Workers (the nodes), Scaling (the pools and their controls, and the
+  managed workers), Queue (what runs, what is queued and the gate holding it) and, with managed workers on, Activity
+  (what the control plane started and stopped, and why); explanations sit behind an info mark instead of paragraphs
+  ([Managed workers](osdu/docs/reference/guides/managed-workers.md#watching-it)).
 - **The Nodes page says when nothing starts workers.** With managed workers off and the control plane running runs on
   its own node (`dev.bat single`, F5), Worker pools names that node and shows a pool short of its target as below target
   rather than starting, and Spawn and Always on say they only record a target

@@ -95,8 +95,8 @@ replaces the old commit's workers (`ReplaceWorkersOnStart`), even when only the 
 starting the new ones first (one for each busy old worker) and letting the old ones finish their runs before they
 leave, so a rollout cuts nothing off; a control plane that merely restarts on the same image keeps every worker. A
 worker nearing the job's time limit drains in time to finish its runs, even when no replacement could start, and the
-control plane logs that as a warning. Radix keeps only the last ten finished jobs; the Nodes page's
-recent actions and the control plane's log are the record of what was started, drained and stopped, and why.
+control plane logs that as a warning. Radix keeps only the last ten finished jobs; the Nodes page's Activity tab
+and the control plane's log are the record of what was started, drained and stopped, and why.
 
 ## On a developer's machine: `dev.bat`
 
@@ -136,13 +136,15 @@ does not have.
 
 ## Watching it
 
-The Nodes page shows, under Worker pools, each managed pool's minimum, its workers that take work against what it
-wants, how many are starting, being replaced, leaving or silent (polled before, not in the last minute: it still counts
-for two minutes after its last poll, then a replacement starts), and a warning when its starts keep failing. When no
-worker at all has polled for longer than a long poll, the control plane takes the silence for its own or the network's:
-it restores minimums but starts nothing for queued runs and stops no silent worker. Managed workers,
-below it, lists every worker with its state and the recent actions with their reasons.
-`GET /api/v1/nodes/managed` returns the same.
+The Nodes page opens on a line of four facts (workers online, runs running against the slots online, runs queued and
+how many could start now, and how workers start, with a warning when starts keep failing), each leading to its tab. Its
+Scaling tab shows, under Worker pools, each managed pool's minimum, its workers that take work against what it wants,
+how many are starting, being replaced, leaving or silent (polled before, not in the last minute: it still counts for two
+minutes after its last poll, then a replacement starts), and a warning when its starts keep failing. When no worker at
+all has polled for longer than a long poll, the control plane takes the silence for its own or the network's: it
+restores minimums but starts nothing for queued runs and stops no silent worker. Managed workers, below it, lists every
+worker with its state; the Activity tab lists the recent actions with their reasons, and the Queue tab what is queued,
+what holds it back and what runs where. `GET /api/v1/nodes/managed` returns the same.
 
 When starts keep failing, the pool backs off (10 seconds, doubling to 5 minutes) and keeps trying; the warning's
 tooltip says why:
