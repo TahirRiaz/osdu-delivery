@@ -70,7 +70,8 @@ public sealed class CacheStepsTests
         var byName = Plan(new FlowCacheSteps { After = Named("UnitOfMeasure") }, UnitKind);
         var type = Assert.Single(byName.After);
         Assert.Equal("UnitOfMeasure", type.TypeName);
-        Assert.Equal(["Code", "Name"], type.Fields.Select(f => f.Name));
+        // Every path any declaring flow keeps, in flow name order.
+        Assert.Equal(["Name", "Code"], type.Fields.Select(f => f.Name));
         Assert.Equal(["other-cache", "reference-cache"], type.Declarations.Select(d => d.FlowName));
 
         var byEntity = Plan(new FlowCacheSteps { After = Named("reference-data--UnitOfMeasure") }, UnitKind);
