@@ -97,4 +97,4 @@ they name in `after:`.
 - A record referring to a record another schedule has not delivered yet goes out referring to nothing, unless
   `target.verifyReferences: storage` holds it or another record of the ledger holds the id and has not landed it (record
   waits). Keeping the partition's cache current from the deliveries themselves, so the flows that follow in a schedule
-  render against what was just delivered, is a separate change.
+  render against what was just delivered, is [0017](0017-deliveries-keep-cache-current.md).

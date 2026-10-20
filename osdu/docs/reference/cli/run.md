@@ -238,13 +238,13 @@ A property counts when it asks for something (`force` set to `true`, a list that
 
 | Kind | Takes | Refused with, for example |
 | --- | --- | --- |
-| `cache` | Nothing but the central configuration the control plane supplies. | `payload force does not apply to a cache flow: only delivery and retrieval runs force; a cache flow's payload carries only the central configuration the control plane supplies.` |
+| `cache` | `types`: the types to refresh or plan, at most 500 names, each once; every one when left out ([cache flow](../flow/cache.md#operations-and-the-run-payload)). | `payload force does not apply to a cache flow: only delivery and retrieval runs force; a cache flow's payload names only types.` |
 | `retrieval` | `force`: restart an incremental retrieval at its declared start. | `payload submissionId does not apply to a retrieval flow: only a delivery flow's runs name a submission; a retrieval flow's payload names only force.` |
 | `assertion` | `tests` (test names) and `tags` (every test carrying one of them), each at most 500 names, each once. With neither, every test runs. | `payload recordKeys does not apply to an assertion flow: only a delivery flow's runs are scoped to records; an assertion flow's payload names only tests and tags.` |
 | `dimension` | `dimensions`: the dimensions to build; every one when left out. | `payload tests does not apply to a dimension flow: only an assertion flow's runs select tests; a dimension flow's payload names only dimensions.` |
 | `inventory` | `inventories`: the inventories to build or reconcile. A `remove` run names exactly one inventory, `removal` (`finding`, `scope` `record` or `everything`, `expected`, and optionally `ids`) and `confirm`, the partition. | `payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal and confirm.` |
 
-A name that is not a test, tag, dimension or inventory of the flow fails the run naming what the flow has, for example
+A name that is not a test, tag, dimension, inventory or type of the flow fails the run naming what the flow has, for example
 `Assertion flow '<name>' has no test named '<x>'; its tests are <names>.`
 
 ## The result

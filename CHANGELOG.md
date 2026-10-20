@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schedules that refer to each other in a circle; a partition's order level by level; and OSDU's lineage of any release
   of the OSDU data definitions, built on demand. The same is served under `/api/v1/delivery/order`
   ([The OSDU order](osdu/docs/reference/concepts/osdu-order.md#in-the-gui-and-the-api)).
+- **Deliveries keep cache types current.** A cache type of OSDU records declared `keepCurrent: true` is brought up to
+  date by every delivery run of its kind as the run ends, so the flows after it in the same schedule render against what
+  it just delivered without waiting for a refresh; the run's page says what the step did
+  ([Deliveries keep a type current](osdu/docs/reference/concepts/partition-cache.md#deliveries-keep-a-type-current)).
+- **A cache run can refresh some of its types.** Pick them in the run dialog, or name them in the payload's `types`; the
+  rest of the partition's cache stays as it is ([Cache flow](osdu/docs/reference/flow/cache.md#operations-and-the-run-payload)).
 
 ### Changed
 
@@ -91,6 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cache flow's run dialog no longer offers Force,** which a cache run refuses: a refresh captures every type it is
+  given in full ([Cache flow](osdu/docs/reference/flow/cache.md#operations-and-the-run-payload)).
 - **A Radix environment delivers every flow.** The Radix application set only the LogType flow's access groups, so
   every other delivery flow, which reads `OSDU_ACL_OWNER` and `OSDU_ACL_VIEWER` unless it sets its own, could not
   resolve its groups; each partition now sets both, and the setup guide's SQL creates the `osdu` schema before it grants
