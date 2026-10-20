@@ -515,16 +515,19 @@ environment (identities, Azure SQL, Key Vault, sign-in, AI Foundry, network) is 
   path split of the other layouts does not exist here.
 - **`mcp`** is the MCP server, public because the chat assistant's model calls it from AI Foundry; it calls the
   control plane inside the application (`http://controlplane:8080`) with each request's own token.
-- **`worker`** is the job component. Its variables and Key Vault secrets (the node token, the `osdu` schema
+- **`worker`** is the job component. Its variables and Key Vault references (the node token, the `osdu` schema
   connection, `SQLFLOW_CATALOG_DB` and `OSDU_DATA_DB`) are every worker's, and it holds no OSDU value of its own:
   those come with each run, from its partition. The control plane adds only each job's name, pool, drain window, time
-  limit and resources when it starts it. `safeToRestart: false` keeps the cluster autoscaler from moving
-  a worker, and `backoffLimit: 0` leaves replacing a worker that ends to the control plane.
+  limit and resources when it starts it. The component's `safeToRestart: false` keeps the cluster autoscaler from
+  moving a worker, and `backoffLimit: 0` leaves replacing a worker that ends to the control plane.
 
-The node token can only be minted once the control plane runs, as in the other layouts: deploy, sign in, mint a
-token with the `node` scope, store it as `node-token` in the environment's Key Vault, and the first worker starts on
-the next check. A redeploy leaves running jobs alone; the new control plane replaces every worker from before it
-once their replacements poll, so no run is cut off by the rollout.
+The node token is a secret of the environment's Key Vault, `node-token`, generated before the first deploy in SQLFlow's
+token form, as the Terraform estate's setup step generates it: the control plane makes it the admin's node credential
+when it starts (`ControlPlane__Bootstrap__NodeTokenReference`), and every worker presents it, so the first worker
+starts with the first deploy. The flow repository is configured the same way
+(`ControlPlane__Bootstrap__Repositories__<name>__...`, with its token as a vault reference). A redeploy leaves running
+jobs alone; the new control plane replaces every worker from before it once their replacements poll, so no run is cut
+off by the rollout.
 
 ## Scale-in must not sever a delivery
 

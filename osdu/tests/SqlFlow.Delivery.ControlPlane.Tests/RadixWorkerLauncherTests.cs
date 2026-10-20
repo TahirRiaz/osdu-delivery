@@ -10,7 +10,8 @@ namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The <c>radix</c> launcher against a fake Radix job scheduler: what a start sends (the job id, the node's variables,
-/// the time limit, no restarts, no eviction, the pool's resources), how the scheduler's job statuses read, that a stop
+/// the time limit, no restarts, the pool's resources, and nothing the scheduler's job description does not take), how
+/// the scheduler's job statuses read, that a stop
 /// goes to Radix's own job name, and that every failure becomes a bounded, redacted message saying whether the job may
 /// have been created anyway.
 /// </summary>
@@ -34,7 +35,9 @@ public sealed class RadixWorkerLauncherTests
         Assert.Equal("worker-heavy-0123456789", root.GetProperty("jobId").GetString());
         Assert.Equal(30 * 3600, root.GetProperty("timeLimitSeconds").GetInt64());
         Assert.Equal(0, root.GetProperty("backoffLimit").GetInt32());
-        Assert.False(root.GetProperty("safeToRestart").GetBoolean());
+        // Whether the autoscaler may move a job is the job component's setting in radixconfig.yaml; the scheduler's job
+        // description has no such field, so a request never carries one.
+        Assert.False(root.TryGetProperty("safeToRestart", out _));
         var variables = root.GetProperty("variables");
         Assert.Equal("worker-heavy-0123456789", variables.GetProperty("SQLFLOW_NODE_NAME").GetString());
         Assert.Equal("heavy", variables.GetProperty("SQLFLOW_WORKER_POOL").GetString());
