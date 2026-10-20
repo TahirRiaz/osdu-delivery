@@ -14,8 +14,8 @@ using SqlFlow.Node;
 namespace SqlFlow.Delivery.ControlPlane.ManagedWorkers;
 
 /// <summary>
-/// Starts managed workers as processes on the control plane's own machine: the development launcher behind
-/// <c>dev.bat managed</c>, so managed workers can be watched starting, taking work and leaving without a platform. Each
+/// Starts managed workers as processes on the control plane's own machine: the development launcher <c>dev.bat</c> and
+/// <c>./dev.sh</c> start with, so managed workers can be watched starting, taking work and leaving without a platform. Each
 /// worker is the configured worker host started with the node's options and, in its environment only, a node
 /// credential this control plane issues for it (valid a little longer than the worker may live, and accepted by the
 /// node protocol alone). The worker inherits the control plane's environment, so it reaches the same databases and
@@ -373,7 +373,7 @@ public sealed class ProcessLauncherOptions
     /// <summary>The configuration section.</summary>
     public const string SectionName = ManagedWorkersOptions.Section + ":Process";
 
-    /// <summary>The worker executable (the OSDU Delivery worker host). Required; <c>dev.bat managed</c> sets it.</summary>
+    /// <summary>The worker executable (the OSDU Delivery worker host). Required; <c>dev.bat</c> and <c>./dev.sh</c> set it.</summary>
     public string? Command { get; set; }
 
     /// <summary>Arguments placed before the node's own options (for the CLI host, <c>worker</c>).</summary>
@@ -395,7 +395,7 @@ public sealed class ProcessLauncherOptions
         if (string.IsNullOrWhiteSpace(Command))
         {
             throw new InvalidOperationException(
-                $"{SectionName}:Command is required: the worker host to start (dev.bat managed sets it to the built SqlFlow.Delivery.Worker.Host).");
+                $"{SectionName}:Command is required: the worker host to start (dev.bat and ./dev.sh set it to the built SqlFlow.Delivery.Worker.Host).");
         }
 
         if (Path.IsPathRooted(Command) && !File.Exists(Command))

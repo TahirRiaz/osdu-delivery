@@ -207,11 +207,11 @@ sign in as `admin` with the password the setup put in `.sqlflow/env` as `SQLFLOW
 
 | Command | What it does |
 | --- | --- |
-| `dev.bat`, `./dev.sh` | The setup on a first start, then the check, then the control plane and the GUI. |
+| `dev.bat`, `./dev.sh` | The setup on a first start, then the check, then the control plane, its workers and the GUI. The control plane starts and stops worker processes of its own, as a deployment's workers run, so the Nodes page's scaling acts locally too. |
 | `dev.bat check`, `./dev.sh check` | The check alone, with a test sign-in to OSDU; nothing is started or stopped. |
 | `dev.bat setup`, `./dev.sh setup` | The setup questions again, offering the current values; the file it replaces is kept beside it. |
-| `dev.bat api`, `./dev.sh api` | The control plane without the GUI. |
-| `dev.bat managed`, `./dev.sh managed` | The control plane starting worker processes of its own, as a deployment's workers run. |
+| `dev.bat api`, `./dev.sh api` | The control plane and its workers without the GUI. |
+| `dev.bat single`, `./dev.sh single` | One process: the control plane runs runs on its own node and starts no workers, as F5 does. |
 
 On a machine without .NET, the launcher offers to install it first (winget on Windows, Homebrew on a Mac, Microsoft's
 `dotnet-install.sh` into `~/.dotnet` on Linux), then builds the setup from the checkout, as every start does.

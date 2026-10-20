@@ -95,10 +95,12 @@ sqlflow dev setup | check | env ...     # the same, from the command line
 ```
 
 ```bash
-dev.bat              # Windows: the setup on a first start, then the check, then the GUI and the control plane
+dev.bat              # Windows: the setup on a first start, then the check, then the GUI, the control plane and its workers
 dev.bat setup        # the setup questions again, offering the current values
 dev.bat check        # the check alone, with a test sign-in to OSDU; nothing is stopped or started
-./dev.sh             # the same on macOS and Linux (./dev.sh setup, ./dev.sh check, ./dev.sh api, ./dev.sh managed)
+dev.bat api          # the control plane and its workers without the GUI
+dev.bat single       # one process: the control plane runs runs on its own node and starts no workers (as F5 does)
+./dev.sh             # the same on macOS and Linux (./dev.sh setup, ./dev.sh check, ./dev.sh api, ./dev.sh single)
 ```
 
 ## Description

@@ -4453,6 +4453,7 @@
         "launcher",
         "process launcher",
         "dev.bat managed",
+        "dev.bat single",
         "worker pools",
         "scale to demand",
         "minimum workers",
@@ -4474,7 +4475,8 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs",
         "osdu/deploy/radix/radixconfig.yaml",
         "osdu/deploy/README.md",
-        "dev.bat"
+        "dev.bat",
+        "dev.sh"
       ]
     },
     {

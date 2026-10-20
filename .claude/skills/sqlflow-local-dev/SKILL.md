@@ -13,18 +13,26 @@ change is a Vite hot-reload (instant).
 | | |
 |---|---|
 | GUI | http://localhost:5173 (Vite, hot-reloads on save) |
-| Control plane | http://localhost:5000 (API + scheduler + dispatcher + in-process node in ONE process) |
+| Control plane | http://localhost:5000 (API + scheduler + dispatcher; its own node only with `single` or F5) |
+| Workers | `SqlFlow.Delivery.Worker.Host` processes the control plane starts and stops (managed workers, the `process` launcher), named `worker-<pool>-<id>`, 1 to 4 (`ControlPlane__ManagedWorkers__MaxWorkers`), ended with it; their output is in the control plane's log under their names |
 | Settings | `.sqlflow/env` (git-ignored), written from `dev.env.example` at the checkout's root |
 | Setup and check | `osdu-delivery-setup` (`osdu/docs/reference/cli/dev.md`): host `osdu/hosts/SqlFlow.Delivery.Setup.Host`, code in `osdu/src/SqlFlow.Delivery.Setup/`; the command line's `sqlflow dev` runs the same code |
 
 ## Start it
 
 ```
-dev.bat / ./dev.sh                 setup on a first start, then the check, then GUI + control plane
+dev.bat / ./dev.sh                 setup on a first start, then the check, then GUI + control plane + managed workers
 dev.bat check / ./dev.sh check     the check alone, with an OSDU sign-in test; starts and stops nothing
 dev.bat setup / ./dev.sh setup     the setup questions again (current values offered, old file kept as env.<time>.bak)
-dev.bat api, dev.bat managed       control plane only; managed worker processes
+dev.bat api                        control plane and workers only, no GUI
+dev.bat single                     one process: the control plane runs runs on its own node, no workers (combine: single api)
 ```
+
+Managed workers are the default because every deployment runs its work in worker processes, never in the control
+plane: a run here crosses the same node protocol, credential and environment as it does deployed, and Spawn, Always on
+and queued runs start and stop workers on the Nodes page. Each worker loads its own copy of the current cache version
+when it starts. To step through a run's code, use `single` (or F5) so the run executes in the process you debug, or
+attach to the `SqlFlow.Delivery.Worker.Host` process holding it.
 
 The launchers find .NET (offering to install it when it is missing: winget, Homebrew, or `dotnet-install.sh` into
 `~/.dotnet` on Linux), build the setup's host from the checkout (seconds), and run it: `setup` when `.sqlflow/env` is missing, otherwise
@@ -35,7 +43,8 @@ apply migrations with the command line's `db migrate`, and start. The check's ex
 2 stop (something a start needs is missing), 1 stopped.
 
 Or **F5 in VS Code** for breakpoints (`.vscode/` is git-ignored, so `launch.json` is local). F5 does not migrate: run
-the launcher once after pulling or authoring a migration.
+the launcher once after pulling or authoring a migration. F5 starts the control plane as `.sqlflow/env` configures it,
+which is the `single` shape: its own node runs the runs, and the Nodes page says that nothing there starts a worker.
 
 ## Before saying what a local run touches
 

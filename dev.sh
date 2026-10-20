@@ -2,10 +2,13 @@
 # =====================================================================================================================
 #  OSDU Delivery local dev, on macOS and Linux (dev.bat on Windows). Run this instead of deploying to try something.
 #
-#      ./dev.sh          start the GUI and the control plane
-#      ./dev.sh api      control plane only (no GUI, so no Node.js needed)
-#      ./dev.sh managed  managed workers: the control plane starts and stops its own worker processes instead of
-#                        running an in-process node. Combine with api: ./dev.sh managed api
+#      ./dev.sh          start the GUI, the control plane and its managed workers: worker processes the control plane
+#                        starts and stops itself (the 'process' launcher), as a deployment's workers run, so the Nodes
+#                        page's scaling acts here too
+#      ./dev.sh api      control plane and workers only (no GUI, so no Node.js needed)
+#      ./dev.sh single   one process: the control plane runs runs on its own node and starts no worker processes (what
+#                        F5 runs). Combine with api: ./dev.sh single api
+#      ./dev.sh managed  the default, accepted as before
 #      ./dev.sh setup    ask the setup questions again (the SQL Server, OSDU, a repository), then start
 #      ./dev.sh check    say what this machine has and what it is missing, test the OSDU sign-in, and start nothing
 #
@@ -16,8 +19,10 @@
 #  (osdu/docs/reference/cli/dev.md), built here from this checkout in seconds; on a machine without .NET, which every
 #  start needs, this script offers to install it first. It only finds them, and starts what the check cleared.
 #
-#  What comes up: the GUI on http://localhost:5173 (Vite, hot-reloads on save) and the control plane on
-#  http://localhost:5000 (API + scheduler + dispatcher + in-process node), both in this terminal: Ctrl+C stops both.
+#  What comes up: the GUI on http://localhost:5173 (Vite, hot-reloads on save), the control plane on
+#  http://localhost:5000 (API + scheduler + dispatcher; with 'single', its own node too), and the worker processes it
+#  starts, named worker-<pool>-<id>, at least one and at most 4 unless .sqlflow/env sets
+#  ControlPlane__ManagedWorkers__MaxWorkers, all in this terminal: Ctrl+C stops them.
 #  Everything runs here, against the databases and the OSDU partition .sqlflow/env names; flows read and WRITE them
 #  exactly as a deployed estate does. Pending migrations from THIS checkout are applied before startup.
 #
@@ -28,22 +33,31 @@ set -euo pipefail
 cd "$(dirname "$0")"
 root="$PWD"
 
+# Managed workers are the default; 'single' is the one-process mode, and 'managed' names the default.
 api=""
-managed=""
+managed=1
+single=""
+named_managed=""
 asksetup=""
 check=""
 for argument in "$@"; do
     case "$(printf '%s' "$argument" | tr '[:upper:]' '[:lower:]')" in
         api) api=1 ;;
-        managed) managed=1 ;;
+        single) single=1 ;;
+        managed) named_managed=1 ;;
         setup) asksetup=1 ;;
         check) check=1 ;;
         *)
-            echo "[X] '$argument' is none of api, managed, setup and check." >&2
+            echo "[X] '$argument' is none of api, single, managed, setup and check." >&2
             exit 1
             ;;
     esac
 done
+if [ -n "$single" ] && [ -n "$named_managed" ]; then
+    echo "[X] 'single' runs no worker processes and 'managed' starts them: name one of the two." >&2
+    exit 1
+fi
+if [ -n "$single" ]; then managed=""; fi
 api_flag=""
 if [ -n "$api" ]; then api_flag="--api"; fi
 
@@ -223,7 +237,12 @@ if ! "$cli" db migrate; then
     echo "    until:  $cli db migrate" >&2
 fi
 
-# --- Managed workers: the control plane starts its own worker processes ---
+# --- Managed workers (the default): the control plane starts its own worker processes ---
+# The worker host is built here because the control plane starts it, it does not build it. The control plane then runs
+# API-only and keeps at least one worker running per managed pool, starting more for queued runs and asking idle ones to
+# leave, at most 4 unless .sqlflow/env sets ControlPlane__ManagedWorkers__MaxWorkers (any other
+# ControlPlane__ManagedWorkers__* setting there applies too). 'single' skips all of this: the control plane runs runs on
+# its own node, as .sqlflow/env configures it.
 if [ -n "$managed" ]; then
     echo "Building the worker host for managed workers ..."
     if ! dotnet build osdu/hosts/SqlFlow.Delivery.Worker.Host -v q -nologo; then
@@ -264,6 +283,7 @@ echo "  GUI:      http://localhost:5173"
 echo "  API:      http://localhost:5000"
 echo "  Catalog:  the one .sqlflow/env names (./dev.sh check says which, and what it holds)"
 if [ -n "$managed" ]; then echo "  Workers:  managed: the control plane starts worker processes itself (see the Nodes page)."; fi
+if [ -n "$single" ]; then echo "  Workers:  none: the control plane runs runs on its own node ('single')."; fi
 echo "  Ctrl+C    stops the control plane and the GUI."
 echo
 # 'dotnet run' takes the project directory as its content root, where there is no appsettings.json, so every request
