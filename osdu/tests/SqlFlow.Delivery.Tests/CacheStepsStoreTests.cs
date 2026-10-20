@@ -189,6 +189,11 @@ public sealed class CacheStepsStoreTests : IDisposable
         using var platform = new FakeOsduPlatform();
         platform.Put(FakeOsduPlatform.Record("dev:reference-data--UnitOfMeasure:m", UnitKind, new JsonObject { ["Code"] = "m" }));
         platform.Put(FakeOsduPlatform.Record("dev:reference-data--UnitOfMeasure:ft", UnitKind, new JsonObject { ["Code"] = "ft" }));
+
+        // The fake search answers the units' kind with their ids, as the search index holds them.
+        platform.Search = (kind, _) => kind.Contains("reference-data--UnitOfMeasure", StringComparison.Ordinal)
+            ? ["dev:reference-data--UnitOfMeasure:m", "dev:reference-data--UnitOfMeasure:ft"]
+            : [];
         var declaration = await caches.DeclarationAsync(Scope);
         var keeper = new CacheKeeper(Samples.Engine(_db.Ledger(_clock), _clock, cache: caches), NullLogger.Instance);
 
