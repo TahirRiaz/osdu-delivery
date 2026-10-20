@@ -13,7 +13,7 @@
 # A unit is taken from the first of three alternatives that gives one ($coalesce): the well database's spelling
 # translated through the unit table, as a reference the partition's cache holds; else the partition's own unit records,
 # found by ID, Code or Name; else the table's translation all the same, as an unverified reference. The table comes first
-# because it is what the well database's spellings mean (MPA is MPa, never mPa, which the partition also holds). The curve
+# because it is what the well database's spellings mean (US/F is us/ft, a spelling no record's ID, Code or Name has). The curve
 # dictionary's codes go out unverified too ($unverified), so a curve type the partition does not hold yet still reaches
 # OSDU, recorded as unverified until a refresh of the reference cache finds it. Everything else is checked against the
 # partition's reference data, and a value it holds no record for holds the log.

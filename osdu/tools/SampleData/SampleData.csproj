@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <AssemblyName>SqlFlow.Delivery.Tools.SampleData</AssemblyName>
     <RootNamespace>SqlFlow.Delivery.Tools.SampleData</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <IsPackable>false</IsPackable>

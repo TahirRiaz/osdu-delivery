@@ -113,66 +113,27 @@ public static class SyntheticEstate
         return logs.OrderBy(l => l.WellboreUwi, StringComparer.Ordinal).ToList();
     }
 
-    /// <summary>The curve unit spellings the well database writes, each with the code of the UnitOfMeasure record it means.</summary>
+    /// <summary>
+    /// The curve unit spellings the well database writes, each with the code of the UnitOfMeasure record it means: the
+    /// spellings the sample logs' curves carry, the other spellings the well database has for the same units, and the
+    /// degrees its survey stations are written in.
+    /// </summary>
     public static IReadOnlyList<IReadOnlyDictionary<string, string?>> UnitAliasRows() => Rows(UnitAliasColumns,
     [
-        ["%", "%"],
-        ["1/S", "1/s"],
-        ["B/CC", "b/cm3"],
         ["B/E", "b/e"],
         ["B/ELEC", "b/e"],
-        ["BAR", "bar"],
-        ["CPS", "1/s"],
-        ["CU", "cu"],
-        ["DAPI", "dAPI"],
         ["DEG", "dega"],
-        ["DEGC", "degC"],
-        ["DEGF", "degF"],
-        ["F/HR", "ft/h"],
         ["FRAC", "v/v"],
         ["G/CC", "g/cm3"],
         ["G/CM3", "g/cm3"],
         ["GAPI", "gAPI"],
-        ["GPA", "GPa"],
-        ["HR", "h"],
         ["IN", "in"],
         ["INCH", "in"],
-        ["K/M3", "kg/m3"],
-        ["KG/M3", "kg/m3"],
-        ["KLBF", "klbf"],
-        ["KNM", "kN.m"],
-        ["KPA", "kPa"],
-        ["KPA.S/M", "kPa.s/m"],
         ["M", "m"],
-        ["M/HR", "m/h"],
-        ["M/MIN", "m/min"],
-        ["M/S", "m/s"],
-        ["M3", "m3"],
-        ["M3/D", "m3/d"],
-        ["M3/M3", "m3/m3"],
-        ["MD", "mD"],
-        ["MD/CP", "mD/cP"],
-        ["MD/MD", "mD/mD"],
-        ["MIN", "min"],
-        ["MM", "mm"],
-        // A pressure written in upper case is megapascals: the partition also holds mPa, which it never means.
-        ["MPA", "MPa"],
-        ["MPA.S/M", "MPa.s/m"],
-        ["MS", "ms"],
-        ["MV", "mV"],
-        ["NAPI", "nAPI"],
         ["OHM.M", "ohm.m"],
         ["OHMM", "ohm.m"],
-        ["PPM", "ppm"],
-        ["PSI", "psi"],
-        ["PSIA", "psia"],
-        ["RPM", "rpm"],
-        ["T", "t"],
-        ["UNITLESS", "unitless"],
-        ["US", "us"],
         ["US/F", "us/ft"],
         ["US/FT", "us/ft"],
-        ["US/M", "us/m"],
         ["V/V", "v/v"],
     ]);
 
@@ -189,7 +150,8 @@ public static class SyntheticEstate
     /// The curve dictionary: what each mnemonic is, as the codes of the partition's LogCurveType, LogCurveMainFamily and
     /// LogCurveFamily records its id ends with (percent-escaped, as an id writes them), the unit quantity, and the unit
     /// of a curve of that type. A type the partition defines itself carries the <c>Local-</c> prefix. The comment is the
-    /// word null where an entry has none, as the export writes it.
+    /// word null where an entry has none, as the export writes it. The dictionary lists the mnemonics the sample logs carry,
+    /// and one mnemonic the well database files under another (GRC under GR).
     /// </summary>
     public static IReadOnlyList<IReadOnlyDictionary<string, string?>> CurveDictionaryRows() => Rows(CurveDictionaryColumns,
     [
@@ -198,43 +160,13 @@ public static class SyntheticEstate
         ["CALI", "Local-CALI", "BoreholeProperties", "Caliper", "length", "in", "null"],
         ["GR", "Local-GR", "GammaRay", "Gamma%20Ray", "API%20gamma%20ray", "gAPI", "null"],
         ["GRC", "Local-GR", "GammaRay", "Gamma%20Ray", "API%20gamma%20ray", "gAPI", "Environmentally corrected gamma ray; filed as GR"],
-        ["GRN", "Local-GRN", "GammaRay", "Gamma%20Ray%20Normalized", "API%20gamma%20ray", "gAPI", "null"],
-        ["K", "Local-K", "WeightFraction-Element", "Local-Potassium%20Weight%20Fraction", "mass%20per%20mass", "%", "null"],
-        ["TH", "Local-TH", "WeightFraction-Element", "Local-Thorium%20Weight%20Fraction", "mass%20per%20mass", "ppm", "null"],
-        ["U", "Local-U", "WeightFraction-Element", "Local-Uranium%20Weight%20Fraction", "mass%20per%20mass", "ppm", "null"],
-        ["SP", "Local-SP", "SpontaneousPotential", "Spontaneous%20Potential", "electric%20potential%20difference", "mV", "null"],
         ["RD", "Local-RD", "Resistivity", "Resistivity%20-%20Deep", "electrical%20resistivity", "ohm.m", "null"],
-        ["RDEP", "Local-RD", "Resistivity", "Resistivity%20-%20Deep", "electrical%20resistivity", "ohm.m", "Deep resistivity under another mnemonic; filed as RD"],
-        ["RM", "Local-RM", "Resistivity", "Resistivity%20-%20Medium", "electrical%20resistivity", "ohm.m", "null"],
-        ["RS", "Local-RS", "Resistivity", "Resistivity%20-%20Shallow", "electrical%20resistivity", "ohm.m", "null"],
-        ["RT", "Local-RT", "Resistivity", "Resistivity%20-%20True%20Formation", "electrical%20resistivity", "ohm.m", "null"],
-        ["RXO", "Local-RXO", "Resistivity", "Resistivity%20-%20Micro", "electrical%20resistivity", "ohm.m", "null"],
-        ["RW", "Local-RW", "FluidProperties", "Water%20Resistivity", "electrical%20resistivity", "ohm.m", "null"],
         ["RHOB", "Local-RHOB", "Density", "Bulk%20Density", "mass%20per%20volume", "g/cm3", "null"],
         ["DRHO", "Local-DRHO", "Density", "Bulk%20Density%20Correction", "mass%20per%20volume", "g/cm3", "null"],
         ["NPHI", "Local-NPHI", "Porosity", "Local-Neutron%20Porosity", "volume%20per%20volume", "v/v", "null"],
-        ["PHID", "Local-PHID", "Porosity", "Local-Density%20Porosity", "volume%20per%20volume", "v/v", "null"],
-        ["PHIE", "Local-PHIE", "Porosity", "Local-Effective%20Porosity", "volume%20per%20volume", "v/v", "null"],
-        ["PHIT", "Local-PHIT", "Porosity", "Local-Total%20Porosity", "volume%20per%20volume", "v/v", "null"],
         ["DT", "Local-DT", "Slowness", "Compressional%20Slowness", "time%20per%20length", "us/ft", "null"],
         ["DTS", "Local-DTS", "Slowness", "Shear%20Slowness", "time%20per%20length", "us/ft", "null"],
-        ["DTST", "Local-DTST", "Slowness", "Stoneley%20Slowness", "time%20per%20length", "us/ft", "null"],
         ["PEF", "Local-PEF", "PhotoelectricFactor", "Photoelectric%20Factor", "dimensionless", "b/e", "null"],
-        ["SWE", "Local-SWE", "Saturation", "Local-Effective%20Water%20Saturation", "volume%20per%20volume", "v/v", "null"],
-        ["SWT", "Local-SWT", "Saturation", "Local-Water%20Saturation", "volume%20per%20volume", "v/v", "null"],
-        ["SXOT", "Local-SXOT", "Saturation", "Local-Water%20Saturation", "volume%20per%20volume", "v/v", "null"],
-        ["VSH", "Local-VSH", "VolumeFraction-Matrix", "Local-Shale%20Volume%20Fraction", "volume%20per%20volume", "v/v", "null"],
-        ["VCALC", "Local-VCALC", "VolumeFraction-Matrix", "Local-Calcite%20Volume%20Fraction", "volume%20per%20volume", "v/v", "null"],
-        ["VDOLO", "Local-VDOLO", "VolumeFraction-Matrix", "Local-Dolomite%20Volume%20Fraction", "volume%20per%20volume", "v/v", "null"],
-        ["KLOGH", "Local-KLOGH", "Permeability", "Horizontal%20Permeability", "permeability%20rock", "mD", "null"],
-        ["KLOGV", "Local-KLOGV", "Permeability", "Vertical%20Permeability", "permeability%20rock", "mD", "null"],
-        ["KSDR", "Local-KSDR", "Permeability", "NMR%20Permeability", "permeability%20rock", "mD", "null"],
-        ["KTIM", "Local-KTIM", "Permeability", "NMR%20Permeability", "permeability%20rock", "mD", "null"],
-        ["FTEMP", "Local-FTEMP", "Temperature", "Local-Formation%20Temperature", "thermodynamic%20temperature", "degC", "null"],
-        ["ROP", "Local-ROP", "DrillingParameters", "Local-Rate%20Of%20Penetration", "length%20per%20time", "m/h", "null"],
-        ["WOB", "Local-WOB", "DrillingParameters", "Local-Weight%20On%20Bit", "mass", "t", "null"],
-        ["BVW", "Local-BVW", "VolumeFraction", "Local-Water%20Volume%20Fraction", "volume%20per%20volume", "v/v", "null"],
-        ["FFV", "Local-FFV", "VolumeFraction", "NMR%20Free%20Fluid%20Volume%20Fraction", "volume%20per%20volume", "v/v", "null"],
     ]);
 
     /// <summary>
