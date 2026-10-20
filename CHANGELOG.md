@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the pipelines after it in a schedule render against what it delivered; the run page shows what each step did
   ([cache](osdu/docs/reference/flow/delivery.md#cache)).
 - **A record held for a missing reference comes back by itself.** Once the cache holds the record its reference names, by
-  a refresh or a pipeline's cache step, the held record is planned again
+  a refresh or a pipeline's cache step, the held record is released and planned again, a record delivered before
+  included, under an activity naming the cache version
   ([The partition cache](osdu/docs/reference/concepts/partition-cache.md#a-record-held-for-a-reference-waits-for-it)).
 - **A cache run can refresh some of its types.** Pick them in the run dialog, or name them in the payload's `types`; the
   rest of the partition's cache stays as it is ([Cache flow](osdu/docs/reference/flow/cache.md#operations-and-the-run-payload)).

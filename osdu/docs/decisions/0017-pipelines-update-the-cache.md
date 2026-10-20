@@ -43,11 +43,12 @@ schedule, or by hand.
   holding it whichever repository's cache flow declares it: the steps work on the OSDU dataset's own terms. The cache flow
   says what the cache holds; the pipeline says when it must be current.
 - **Entries are resolved before anything is read,** against what the partition's synced cache flows declare. An entry
-  naming nothing the cache holds, a lookup table, in `after` a type holding another kind or narrowed by a query in every
-  declaration, stops the run with nothing sent.
-- **The before step is mandatory.** It searches each type as each declaring cache flow would, through the pipeline's own
-  connection to its partition, and merges the capture as that flow's own. A type it cannot read whole fails the run before
-  anything is sent: the pipeline said it must not render without it.
+  naming nothing the cache holds, in `before` a dictionary or a dimension, in `after` a lookup table or a type holding
+  another kind or narrowed by a query in every declaration, stops the run with nothing sent.
+- **The before step is mandatory.** It searches each OSDU type as each declaring cache flow would, through the pipeline's
+  own connection to its partition, and merges the capture as that flow's own; a lookup table from an ingestion table is
+  read over its cache flow's connection. A type it cannot read whole fails the run before anything is sent: the pipeline
+  said it must not render without it.
 - **The after step is not the run's failure.** It takes what the run delivered, removed or reverted from the ledger and
   reads those records back from OSDU's storage service by id, which holds a record once its write returns. A record
   storage returns goes in, held by the delivery; one storage no longer holds is taken out whoever held it. What the run did
@@ -56,8 +57,9 @@ schedule, or by hand.
 - **The run renders against the newest cache when it starts,** after its before step, so the interfaces of one source see
   what the interfaces before them put in.
 - **A held record waits for what it misses.** A render held because a reference names an id the cache lacks records that
-  id; a version that brings it in tags the held record, which is planned again. Each step carries the approved changes it
-  wrote out at once, up to 100,000 records, so the pipelines after it in the schedule find them due.
+  id, apart from what a delivered document was built from (`[osdu].[Record].[HeldCacheSetId]`); a version that brings it
+  in releases the held record under an activity naming the version. Each step carries the approved changes it wrote out
+  at once, up to 100,000 records, so the pipelines after it in the schedule find them due.
 - **Lineage orders the steps:** a pipeline writes the types its steps name, and reads the kinds its before step searches.
   Nothing waits across schedules ([0016](0016-osdu-order.md)).
 - A cache run may name the types it refreshes (payload `types`), so one type is refreshed without sweeping the others.
@@ -71,5 +73,5 @@ schedule, or by hand.
 - A delivery run's result carries `cacheBefore` and `cacheAfter`, and its page shows them under **Cache**.
 - Each step that changes the cache writes a version. It is a capture like any other: a version that changes nothing is
   not written, and retention prunes the rest.
-- A record deleted from the ledger along with its removal leaves no row for the after step, and waits for the next
-  refresh to leave the cache.
+- A removal that deletes records from the ledger hands the after step their ids, and a deletion of the ledger takes the
+  step before the ledger is gone, so neither leaves records in the cache that OSDU no longer holds.

@@ -250,9 +250,11 @@ it, whichever repository's cache flow declares it; `auto` works the entries out 
 against what the partition's synced cache flows declare before it reads anything, and stops there, with nothing sent, when
 one names nothing the cache holds or a type the step cannot work on.
 
-**The before step** runs first. For each type it names, every declaring cache flow's kind and query are searched through
-the pipeline's own connection to its partition, with every path the partition keeps for the type, and the capture is
-merged as that flow's own, exactly as a refresh of the flow narrowed to these types would merge it. A record a delivery
+**The before step** runs first. For each OSDU type it names, every declaring cache flow's kind and query are searched
+through the pipeline's own connection to its partition, with every path the partition keeps for the type, and the capture
+is merged as that flow's own, exactly as a refresh of the flow narrowed to these types would merge it. A lookup table from
+an ingestion table is read over its cache flow's connection reference, as that flow reads it, and replaces the type whole.
+A dictionary or a dimension type is refused: only its cache flow reads it. A record a delivery
 holds that the search did not find stays while OSDU's storage service still holds it. A type whose every declaration
 searches with a query that takes the cache flow's parameters is refused: only that flow's run fills them. The step is the
 run's to complete: when a type cannot be read whole, the run fails before anything is sent.
@@ -273,8 +275,9 @@ unfinished deliveries; a drain of the whole flow, a removal and a reversal end w
    `delivery:<ledger name>`; **one storage no longer holds is taken out,** whichever cache flow or delivery held it.
 
 The after step's failure is not the run's: what the run did in OSDU stands, its log warns that the cache was not brought
-up to date, and the next refresh of the cache flows brings the records in. A record deleted from the ledger as well
-(a removal that purges it, or a deletion of the ledger) leaves no row to tell the step, and the next refresh takes it out.
+up to date, and the next refresh of the cache flows brings the records in. A removal that deletes its records from the
+ledger as it goes hands the step the ids it took out of OSDU, and a deletion of the ledger takes the step before the
+ledger is deleted, while it still names every record.
 
 Each step that writes a version tags what its changes reach, as a refresh does ([below](#from-a-cache-change-to-osdu)),
 and carries the approved changes out at once, up to 100,000 records, asking for them to be planned again before the
@@ -299,9 +302,12 @@ schedules are not waited for.
 
 A record is held when an id its mapping builds names a record of an entity type the cache holds records of, and not this
 one. The held render records the id it looked for, in every type that would hold it. When a later version holds the
-record, by a refresh, a before step or an after step, the change is tagged `found` for the held record, which is asked to be
-planned again, and built against it. A record that was delivered before keeps what its delivered document was built from,
-which is what OSDU holds, so it comes back on its next change or a release instead.
+record, by a refresh, a before step or an after step, the held record is released to be planned again, and built against
+it, whichever flow, partition or repository it belongs to. Each flow's records are released under an activity of their
+own, `release` by `cache:<partition>@<version>`, so a record's history says why it went out again and when. What a held
+render read is kept apart from what a delivered document was built from, so a record that was delivered before still
+says what the document OSDU holds was built from. One version releases at most 100,000 held records; the rest wait for
+the next version bringing in what they missed, or an operator's release.
 
 ## From a cache change to OSDU
 
