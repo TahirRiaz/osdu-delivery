@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarClock, CheckCircle2, CircleDashed, Link2, PauseCircle } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
-import { ExplainMark } from "@/components/ExplainTip";
+import { ExplainMark, ExplainTip } from "@/components/ExplainTip";
 import { RelativeTime } from "@/components/RelativeTime";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cn } from "@/lib/utils";
 import {
   orderApi,
@@ -17,12 +16,11 @@ import {
 } from "../../../api/order";
 import { ProblemView } from "../TemplateSheet";
 import { useWindowFit } from "../useWindowFit";
-import { OrderGraph, type OrderGraphLink, type OrderGraphNode } from "./OrderGraph";
+import { OrderGraph, OrderPanelSection as Section, type OrderGraphDetail, type OrderGraphLink, type OrderGraphNode } from "./OrderGraph";
 
 /** What stays under the graph: the page's padding and the workbench's status bar. */
 const BELOW = 24;
 const MIN_GRAPH_HEIGHT = 320;
-const PANEL = "order-schedule:";
 
 /** When a schedule fires, in a few words. */
 function cadence(schedule: OrderSchedule): string {
@@ -72,13 +70,16 @@ function timingText(later: OrderSchedule, first: OrderScheduleFirst): string {
   }
 }
 
-function TimingMark({ timing, testId }: { timing: OrderTiming; testId: string }) {
+/** A timing as a neutral chip led by its glyph, with why it is what it is behind it. */
+function TimingMark({ timing, text, testId }: { timing: OrderTiming; text: string; testId: string }) {
   const { label, icon: Icon, tone } = TIMING[timing];
   return (
-    <span className="inline-flex items-center gap-1 rounded border px-1.5 py-px text-[11.5px]" data-testid={testId}>
-      <Icon className={cn("size-3", tone === "warning" ? "text-warning" : tone === "fine" ? "text-muted-foreground" : "text-muted-foreground/60")} aria-hidden />
-      {label}
-    </span>
+    <ExplainTip title={label} text={text} testId={testId} side="right">
+      <span className="inline-flex shrink-0 cursor-default items-center gap-1 rounded border px-1.5 py-px text-[11.5px]" data-testid={testId}>
+        <Icon className={cn("size-3", tone === "warning" ? "text-warning" : tone === "fine" ? "text-muted-foreground" : "text-muted-foreground/60")} aria-hidden />
+        {label}
+      </span>
+    </ExplainTip>
   );
 }
 
@@ -86,82 +87,170 @@ function flowLabel(flow: string, face: string | null): string {
   return face === null ? flow : `${flow}/${face}`;
 }
 
-function ReasonTable({ reasons, testId }: { reasons: OrderScheduleReason[]; testId: string }) {
+function partitionsLabel(partitions: string[]): string {
+  return partitions.map((p) => (p === "*" ? "every" : p)).join(", ");
+}
+
+/** A schedule's name that selects it in the graph. */
+function ScheduleLink({ schedule, onPick }: { schedule: OrderSchedule; onPick: (id: string) => void }) {
   return (
-    <table className="w-full table-fixed text-[12px]" data-testid={testId}>
-      <thead className="text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-        <tr>
-          <th className="w-[26%] py-1 pr-2 font-medium">Flow</th>
-          <th className="w-[26%] py-1 pr-2 font-medium">Refers to</th>
-          <th className="py-1 pr-2 font-medium">Delivered by</th>
-          <th className="w-[16%] py-1 font-medium">Partitions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {reasons.map((reason) => (
-          <tr key={`${reason.flow}|${reason.interface ?? ""}|${reason.refersTo}|${reason.providerRepository}|${reason.providerFlow}|${reason.providerInterface ?? ""}`} className="border-t align-top">
-            <td className="truncate py-1 pr-2 font-mono" title={`${flowLabel(reason.flow, reason.interface)} delivers ${reason.entityType}`}>
-              {flowLabel(reason.flow, reason.interface)}
-            </td>
-            <td className="truncate py-1 pr-2" title={reason.refersTo}>{reason.refersTo}</td>
-            <td className="truncate py-1 pr-2 font-mono" title={`${reason.providerRepository}: ${flowLabel(reason.providerFlow, reason.providerInterface)}`}>
-              <span className="text-muted-foreground">{reason.providerRepository}: </span>
-              {flowLabel(reason.providerFlow, reason.providerInterface)}
-            </td>
-            <td className="truncate py-1" title={reason.partitions.join(", ")}>
-              {reason.partitions.map((p) => (p === "*" ? "every" : p)).join(", ")}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <button
+      type="button"
+      className="min-w-0 truncate text-left text-[12.5px] font-medium hover:underline focus-visible:outline-1 focus-visible:outline-ring"
+      onClick={() => onPick(schedule.id)}
+      title={`Show ${schedule.name}`}
+    >
+      {schedule.name}
+    </button>
   );
 }
 
-/** One schedule in the bottom panel: when it fires, the schedules that run best before it and why, and what no schedule delivers. */
-function ScheduleDetail({ order, circle }: { order: OrderScheduleOrder; circle: OrderSchedule[] | null }) {
-  const schedule = order.schedule;
+/** A label and its value on a line of a reason; a long name wraps under itself rather than being cut. */
+function ReasonLine({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-4 p-3" data-testid="order-schedule-detail">
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12.5px]">
-        <span className="font-medium">{schedule.name}</span>
-        <span className="text-muted-foreground">{schedule.repository}</span>
-        <span><span className="text-muted-foreground">Fires </span>{cadence(schedule)}</span>
-        <span><span className="text-muted-foreground">Next </span><RelativeTime value={schedule.nextFireUtc} /></span>
-        <span><span className="text-muted-foreground">Last </span><RelativeTime value={schedule.lastFireUtc} /></span>
-      </div>
+    <div className="flex min-w-0 items-baseline gap-2 text-[11.5px]">
+      <span className="w-[5.5rem] shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
+    </div>
+  );
+}
 
-      {circle !== null && (
-        <p className="flex items-start gap-1.5 text-[12.5px]" data-testid="order-schedule-circle">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
-          {`${circle.map((s) => s.name).join(", ")} each deliver records another of them refers to, so whichever fires first runs some flows before what they refer to is delivered. Moving a flow to another schedule breaks the circle.`}
-        </p>
-      )}
+/**
+ * The references behind an order, flow by flow: what each refers to and which delivery writes it, with the partitions it
+ * holds in when the panel's references do not all hold in the same ones.
+ */
+function ReasonList({ reasons, partitions, testId }: { reasons: OrderScheduleReason[]; partitions: boolean; testId: string }) {
+  const byFlow = new Map<string, OrderScheduleReason[]>();
+  for (const reason of reasons) {
+    const flow = flowLabel(reason.flow, reason.interface);
+    byFlow.set(flow, [...(byFlow.get(flow) ?? []), reason]);
+  }
 
-      <section className="flex flex-col gap-2">
-        <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Runs best after</h3>
+  return (
+    <ul className="flex flex-col gap-2 border-l-2 pl-2.5" data-testid={testId}>
+      {[...byFlow].map(([flow, flowReasons]) => (
+        <li key={flow} className="flex min-w-0 flex-col gap-1">
+          <span className="font-mono text-[12px] [overflow-wrap:anywhere]" title={`${flow} delivers ${flowReasons[0].entityType}`}>{flow}</span>
+          {flowReasons.map((reason) => {
+            const provider = flowLabel(reason.providerFlow, reason.providerInterface);
+            return (
+              <div key={`${reason.refersTo}|${reason.providerRepository}|${provider}`} className="flex flex-col">
+                <ReasonLine label="refers to">{reason.refersTo}</ReasonLine>
+                <ReasonLine label="delivered by">
+                  <span className="text-muted-foreground">{reason.providerRepository}: </span>
+                  <span className="font-mono">{provider}</span>
+                </ReasonLine>
+                {partitions && <ReasonLine label="partitions">{partitionsLabel(reason.partitions)}</ReasonLine>}
+              </div>
+            );
+          })}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * One schedule in the graph's panel: when it fires, the schedules it runs best after and why, the schedules that run best
+ * after it, and the references no schedule delivers. A schedule named here selects it in the graph.
+ */
+function ScheduleDetail({ order, later, circle, onPick }: {
+  order: OrderScheduleOrder;
+  /** Each schedule that runs best after this one, with what it says about this one. */
+  later: { order: OrderScheduleOrder; first: OrderScheduleFirst }[];
+  circle: OrderSchedule[] | null;
+  onPick: (id: string) => void;
+}) {
+  const schedule = order.schedule;
+  const others = circle?.filter((s) => s.id !== schedule.id) ?? [];
+  // Partitions said once when every reference here holds in the same ones, as in an estate of one partition.
+  const held = new Set([...order.runFirst.flatMap((f) => f.because), ...order.unscheduled].map((r) => partitionsLabel(r.partitions)));
+  const oneSet = held.size === 1 ? [...held][0] : null;
+  return (
+    <div className="flex flex-col" data-testid="order-schedule-detail">
+      <Section title="Fires">
+        <dl className="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-1 text-[12.5px]">
+          <dt className="text-muted-foreground">When</dt>
+          <dd className="min-w-0 [overflow-wrap:anywhere]">{cadence(schedule)}</dd>
+          <dt className="text-muted-foreground">Next</dt>
+          <dd><RelativeTime value={schedule.nextFireUtc} /></dd>
+          <dt className="text-muted-foreground">Last</dt>
+          <dd><RelativeTime value={schedule.lastFireUtc} /></dd>
+          {oneSet !== null && (
+            <>
+              <dt className="text-muted-foreground">Partitions</dt>
+              <dd className="min-w-0 [overflow-wrap:anywhere]">{oneSet}</dd>
+            </>
+          )}
+        </dl>
+        {circle !== null && (
+          <div className="flex items-start gap-1.5 text-[12.5px]" data-testid="order-schedule-circle">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+            <span className="min-w-0">
+              In a circle with{" "}
+              {others.map((s, index) => (
+                <span key={s.id}>
+                  {index > 0 && ", "}
+                  <ScheduleLink schedule={s} onPick={onPick} />
+                </span>
+              ))}
+            </span>
+            <ExplainMark
+              title="A circle"
+              testId="order-schedule-circle-about"
+              text={`${circle.map((s) => s.name).join(", ")} each deliver records another of them refers to, so whichever fires first runs some flows before what they refer to is delivered. Moving a flow to another schedule breaks the circle.`}
+            />
+          </div>
+        )}
+      </Section>
+
+      <Section title="Runs best after" note={order.runFirst.length}>
         {order.runFirst.length === 0 && (
           <p className="text-[12.5px] text-muted-foreground">No other schedule delivers what its flows refer to.</p>
         )}
-        {order.runFirst.map((first) => (
-          <div key={first.schedule.id} className="flex flex-col gap-1.5 rounded-md border p-2" data-testid={`order-first-${first.schedule.name}`}>
-            <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
-              <span className="font-medium">{first.schedule.name}</span>
-              {!first.sameRepository && <span className="text-muted-foreground">{first.schedule.repository}</span>}
-              <TimingMark timing={first.timing} testId={`order-first-${first.schedule.name}-timing`} />
-              <span className="text-muted-foreground">next <RelativeTime value={first.schedule.nextFireUtc} /></span>
-            </div>
-            <p className="text-[12px] text-muted-foreground">{timingText(schedule, first)}</p>
-            <ReasonTable reasons={first.because} testId={`order-first-${first.schedule.name}-reasons`} />
-          </div>
-        ))}
-      </section>
+        <ul className="flex flex-col gap-3">
+          {order.runFirst.map((first) => (
+            <li key={first.schedule.id} className="flex min-w-0 flex-col gap-1.5" data-testid={`order-first-${first.schedule.name}`}>
+              <div className="flex min-w-0 items-center gap-2">
+                <ScheduleLink schedule={first.schedule} onPick={onPick} />
+                <TimingMark timing={first.timing} text={timingText(schedule, first)} testId={`order-first-${first.schedule.name}-timing`} />
+              </div>
+              <div className="flex min-w-0 gap-x-3 text-[11.5px] text-muted-foreground" title={cadence(first.schedule)}>
+                {!first.sameRepository && <span className="truncate">{first.schedule.repository}</span>}
+                <span className="shrink-0">next <RelativeTime value={first.schedule.nextFireUtc} /></span>
+              </div>
+              <ReasonList reasons={first.because} partitions={oneSet === null} testId={`order-first-${first.schedule.name}-reasons`} />
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      <Section title="Runs best before" note={later.length}>
+        {later.length === 0 && (
+          <p className="text-[12.5px] text-muted-foreground">No other schedule's flows refer to what it delivers.</p>
+        )}
+        <ul className="flex flex-col gap-2">
+          {later.map(({ order: after, first }) => {
+            const types = [...new Set(first.because.map((r) => r.refersTo))];
+            return (
+              <li key={after.schedule.id} className="flex min-w-0 flex-col gap-0.5" data-testid={`order-later-${after.schedule.name}`}>
+                <div className="flex min-w-0 items-center gap-2">
+                  <ScheduleLink schedule={after.schedule} onPick={onPick} />
+                  <TimingMark timing={first.timing} text={timingText(after.schedule, first)} testId={`order-later-${after.schedule.name}-timing`} />
+                </div>
+                <span className="text-[11.5px] text-muted-foreground [overflow-wrap:anywhere]">
+                  {first.sameRepository ? "" : `${after.schedule.repository} · `}refers to {types.join(", ")}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </Section>
 
       {order.unscheduled.length > 0 && (
-        <section className="flex flex-col gap-2">
-          <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Refers to deliveries no schedule runs</h3>
-          <ReasonTable reasons={order.unscheduled} testId="order-unscheduled-reasons" />
-        </section>
+        <Section title="Refers to deliveries no schedule runs">
+          <ReasonList reasons={order.unscheduled} partitions={oneSet === null} testId="order-unscheduled-reasons" />
+        </Section>
       )}
     </div>
   );
@@ -170,11 +259,12 @@ function ScheduleDetail({ order, circle }: { order: OrderScheduleOrder; circle: 
 /**
  * The schedules that run deliveries, with an arrow from each schedule to the ones whose flows refer to what it delivers.
  * Nothing here orders a run: inside a schedule lineage's waves run every flow after the flows it refers to, and across
- * schedules this shows whether their fires fall that way. A dashed arrow is an order the timing does not keep.
+ * schedules this shows whether their fires fall that way. A dashed arrow is an order the timing does not keep. A click on
+ * a schedule slides its detail in from the left.
  */
 export function ScheduleOrderTab() {
   const overview = useQuery({ queryKey: ["delivery", "order", "schedules"], queryFn: orderApi.schedules });
-  const { ownedId, show, close } = useOwnedPanel(PANEL);
+  const [selected, setSelected] = useState<string | null>(null);
   const frame = useRef<HTMLDivElement>(null);
   useWindowFit(frame, BELOW, MIN_GRAPH_HEIGHT, undefined, "height");
 
@@ -209,32 +299,20 @@ export function ScheduleOrderTab() {
     return { nodes: graphNodes, links: graphLinks };
   }, [data, circleOf]);
 
-  // The panel shows the schedule picked in the graph, read again whenever the overview is.
-  const selected = ownedId;
-  useEffect(() => {
-    if (selected === null || data === undefined) {
-      return;
-    }
-
-    const order = data.schedules.find((o) => o.schedule.id === selected);
-    if (order === undefined) {
-      close();
-      return;
-    }
-
-    show(selected, `Schedule · ${order.schedule.name}`, <ScheduleDetail order={order} circle={circleOf.get(selected) ?? null} />);
-  }, [data, selected, circleOf, show, close]);
-
-  const pick = (id: string | null) => {
-    if (id === null || data === undefined) {
-      close();
-      return;
-    }
-
-    const order = data.schedules.find((o) => o.schedule.id === id);
-    if (order !== undefined) {
-      show(id, `Schedule · ${order.schedule.name}`, <ScheduleDetail order={order} circle={circleOf.get(id) ?? null} />);
-    }
+  // The panel shows the schedule picked in the graph as the overview reads it now; one no longer there closes it.
+  const order = selected === null ? undefined : data?.schedules.find((o) => o.schedule.id === selected);
+  const detail: OrderGraphDetail | null = order === undefined || data === undefined ? null : {
+    title: order.schedule.name,
+    subtitle: order.schedule.repository,
+    testId: "order-schedule-panel",
+    body: (
+      <ScheduleDetail
+        order={order}
+        later={data.schedules.flatMap((o) => o.runFirst.filter((f) => f.schedule.id === order.schedule.id).map((first) => ({ order: o, first })))}
+        circle={circleOf.get(order.schedule.id) ?? null}
+        onPick={setSelected}
+      />
+    ),
   };
 
   if (overview.isError) {
@@ -261,7 +339,7 @@ export function ScheduleOrderTab() {
                 + "Inside a schedule, lineage's waves already run every flow after the flows it refers to; across schedules nothing waits, "
                 + "so this shows whether their fires fall that way. A dashed arrow is an order the timing does not keep: the later schedule "
                 + "fires next, or the earlier one does not fire. A schedule of the same repository can be chained with after:; "
-                + "another repository's can only be timed."}
+                + "another repository's can only be timed. A click on a schedule shows why it runs where it does."}
             />
           </>
         )}
@@ -275,7 +353,7 @@ export function ScheduleOrderTab() {
             data-testid="order-schedules-empty"
           />
         ) : (
-          <OrderGraph nodes={nodes} links={links} selected={selected} onSelect={pick} testId="order-schedules-graph" />
+          <OrderGraph nodes={nodes} links={links} selected={detail === null ? null : selected} detail={detail} onSelect={setSelected} testId="order-schedules-graph" />
         )}
       </div>
     </div>
