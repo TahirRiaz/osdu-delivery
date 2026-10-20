@@ -167,12 +167,13 @@ The Order page (OSDU, Build) has three tabs ([the GUI](gui.md)):
 
 - **Schedules** draws every schedule running a delivery, with an arrow from a schedule to the ones that run best after it,
   dashed where the timing does not keep the order, and a warning mark on schedules out of order or in a circle. A click
-  opens the schedule's reasons in the bottom panel: each schedule it runs best after, the timing and what to do about it,
-  and the flows, types and partitions behind it.
+  slides the schedule's reasons in from the left, over part of the graph: when it fires, each schedule it runs best
+  after, the timing and what to do about it, the flows, types and partitions behind it, and the schedules that run best
+  after it.
 - **Partition** lists a partition's entity types level by level, the deliveries writing each and what it waits for, with
   the cut references and the warnings behind marks.
 - **Releases** builds a release of OSDU's lineage and draws it around an entity type, as far as four steps, what it refers
-  to, what refers to it, or both.
+  to, what refers to it, or both. A click slides a type's kinds and references in from the left the same way.
 
 | Route | Policy | Answer |
 | --- | --- | --- |

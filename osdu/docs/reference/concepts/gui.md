@@ -422,12 +422,15 @@ The order records reach OSDU in, from what each kind refers to. Three tabs:
 
 - **Schedules**: every schedule running a delivery, drawn left to right with an arrow to the schedules whose flows refer
   to what it delivers; an arrow is dashed where the timing does not keep the order, and a schedule out of order or in a
-  circle carries a warning mark. A click opens the schedule in the bottom panel: when it fires, each schedule it runs best
-  after with the timing and what to do about it, and the flows, types and partitions behind it.
+  circle carries a warning mark. A click slides the schedule in from the left, over part of the graph: when it fires,
+  each schedule it runs best after with the timing and what to do about it, the flows, types and partitions behind it,
+  and the schedules that run best after it. A schedule named there selects it in the graph; the close button, Escape or
+  a click on the empty graph closes it.
 - **Partition**: a partition's entity types level by level, each with the deliveries writing it and the types it waits
   for, and the references the order cut and its warnings behind marks on the facts line.
 - **Releases**: OSDU's lineage of a built release drawn around an entity type, by **Depth** and **Direction**; a click
-  shows a type's kinds and references, a double click draws around it, and **Build** builds a release.
+  slides a type's kinds and references in from the left the same way, a double click or **Draw around it** draws around
+  it, and **Build** builds a release.
 
 See [the OSDU order](osdu-order.md).
 
