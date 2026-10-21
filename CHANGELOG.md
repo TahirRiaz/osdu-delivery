@@ -114,6 +114,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Runs that finish together no longer deadlock in the catalog.** When a schedule's members ended at once, as a set
+  of failing assertion flows does, each completion waited on the others and the control plane's log filled with failed
+  commands and deadlock victims. Every read on a connection a catalog or ledger write had used also ran serializable,
+  so the dispatcher's checks and the GUI's reads became victims too. Each connection now goes back to the pool at read
+  committed, and a completion writes what follows from it once it has committed
+  ([The control plane](sqlflow/docs/reference/concepts/control-plane.md#the-dispatcher)).
+- **A page left while it loads is not logged as a failure.** A request the browser abandoned while its database read
+  ran was logged as three errors, the first "A severe error occurred on the current command"; it now ends as the
+  client's cancellation, logged at debug ([The control plane](sqlflow/docs/reference/concepts/control-plane.md)).
 - **An inventory's grid keeps its footer in view when ids are picked.** The bar that says what is picked made the grid
   taller than the window, so its last rows and its footer went below the page's edge; the grid now shrinks to make room.
 - **A cache flow's run dialog no longer offers Force,** which a cache run refuses: a refresh captures every type it is
