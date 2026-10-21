@@ -268,7 +268,7 @@ order they are written:
 | Field | What it holds |
 | --- | --- |
 | `outcome` | `valid`, `invalid`, `unverified` or `notValidated`, as the table above says. |
-| `schema` | What the record was checked against: `kind`, `version` (the schema's content version, as [templates](templates.md) name it) and `source`, which is `template` for a template OSDU Delivery holds and `schema-service` for the partition's Schema service. The gate before sending always checks against the template version the document was rendered for, read from the template folders on the mapping's path, or from the saved templates once no folder holds that version any longer; the explorer checks against a saved template or the Schema service's. Absent when no schema could be had. |
+| `schema` | What the record was checked against: `kind`, `version` (the schema's content version, as [templates](templates.md) name it) and `source`, which is `template` for a template OSDU Delivery holds and `schema-service` for the partition's Schema service. The gate before sending always checks against the template version the document was rendered for, read from the template folders on the mapping's path, or from the saved templates once no folder holds that version any longer and someone saved it there; the explorer checks against a saved template or the Schema service's. Absent when no schema could be had. |
 | `rules` | How many rules were applied. |
 | `problemCount`, `problems` | Every problem found is counted; the first 50 the check finds are listed, and each reference nothing holds is added as a problem of the rule `reference`, at most 20 of those listed. |
 | `unverifiedCount`, `unverified` | Every part not checked is counted; the first 20 are listed. |

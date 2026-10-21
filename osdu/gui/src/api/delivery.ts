@@ -1874,16 +1874,9 @@ export type DeliveryTemplateShape = "Value" | "ValueList" | "Group" | "GroupList
 /** Who writes a template variable: a mapping, OSDU Delivery itself (the id and the kind), or OSDU when it stores the record. */
 export type DeliveryTemplateRole = "Mapping" | "Engine" | "Osdu";
 
-/** A file of a synced repository's template folder that holds a saved version: where that repository's documents read it. */
-export interface DeliveryTemplateHolder {
-  repoId: string;
-  repository: string;
-  path: string;
-}
-
 /**
- * A saved template version: the OSDU kind, its content version, when, by whom and from where it was saved, how many synced
- * mappings fill it, and which files of synced repositories' template folders hold it.
+ * A saved template version of the library: the OSDU kind, its content version, and when, by whom and from where it was
+ * saved. The library is not linked to the repositories, whose documents read their templates from their template folders.
  */
 export interface DeliveryTemplate {
   kind: string;
@@ -1891,8 +1884,6 @@ export interface DeliveryTemplate {
   capturedUtc: string;
   capturedBy: string;
   origin: string;
-  pinnedBy: number;
-  heldBy: DeliveryTemplateHolder[];
 }
 
 /**

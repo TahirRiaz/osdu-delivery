@@ -58,7 +58,7 @@ public sealed class SearchTermCatalogTests : IDisposable
     private async Task<T> WithDirectoryAsync<T>(Func<SearchTermDirectory, Task<T>> read)
     {
         await using var db = _module.CreateDbContext();
-        return await read(new SearchTermDirectory(db, _module.Templates(_clock), new DeliveryDocumentLoader(), _clock));
+        return await read(new SearchTermDirectory(db, new DeliveryDocumentLoader(), _clock));
     }
 
     private Task<IReadOnlyList<SearchTermView>> TermsAsync(bool orphans = false) => WithDirectoryAsync(d => d.ListAsync(WellLog, null, orphans, CancellationToken.None));
@@ -121,17 +121,18 @@ public sealed class SearchTermCatalogTests : IDisposable
         await SyncAsync();
 
         // A term's template is the one the template folders the last sync recorded give its mapping, read from the copy the
-        // sync saved of it. While that copy cannot be read, nothing of the record's content can be compared, and each term
-        // says why; the next sync saves it again.
+        // sync kept of the file. While that copy cannot be read (a row recorded before copies were kept), nothing of the
+        // record's content can be compared, and each term says why; the next sync keeps it again.
         await using (var db = _module.CreateDbContext())
         {
-            await db.DeliveryTemplates.Where(t => t.Kind == WellLogVersions.CurrentKind).ExecuteDeleteAsync();
+            await db.DeliveryRepositoryTemplates.Where(t => t.RepoId == _repo && t.Kind == WellLogVersions.CurrentKind)
+                .ExecuteUpdateAsync(set => set.SetProperty(t => t.SchemaJson, (string?)null));
         }
 
         var unread = Assert.Single(await TermsAsync(), t => t.Column == "log_run");
         Assert.Null(unread.Route);
         Assert.Contains("the template of WellLog@1.4.0 cannot be read", unread.Problem, StringComparison.Ordinal);
-        Assert.Contains("the copy the sync saves of it is missing; sync the repository again", unread.Problem, StringComparison.Ordinal);
+        Assert.Contains("the copy the sync keeps of it is missing; sync the repository again", unread.Problem, StringComparison.Ordinal);
 
         await SyncAsync();
         var terms = await TermsAsync();

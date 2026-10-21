@@ -5,7 +5,7 @@ using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Engine.Dimensions;
 
-/// <summary>What the saved templates say of one join of a view: the entity types the joined column names, and whether the dimension joined reads one of them.</summary>
+/// <summary>What the templates the flow reads say of one join of a view: the entity types the joined column names, and whether the dimension joined reads one of them.</summary>
 /// <param name="Alias">The join's alias.</param>
 /// <param name="On">The column joined on, as the document writes it.</param>
 /// <param name="To">The dimension joined.</param>
@@ -19,7 +19,7 @@ public sealed record DimensionViewJoinVerdict(string Alias, string On, string To
 public sealed record DimensionViewJoinSuggestion(string On, string To, string As, string Note);
 
 /// <summary>
-/// The saved templates as a view's joins are checked and suggested by (osdu/docs/reference/flow/dimension-views.md,
+/// The templates the flow reads as a view's joins are checked and suggested by (osdu/docs/reference/flow/dimension-views.md,
 /// What the templates say of a view's joins): a join is declared, never inferred, and the template of the records a
 /// joined column is read from says which records the column names, so a join to a dimension of another entity type is
 /// marked, and the joins a view could make are offered. Nothing here decides what a build writes: the document alone

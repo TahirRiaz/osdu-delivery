@@ -858,8 +858,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     /// <summary>
     /// The repository's template folders, as this sync finds them on disk (<see cref="TemplateFolders.Scan"/>): each file a
-    /// row of <c>[osdu].[RepositoryTemplate]</c>, with the template it holds or why it holds none, and every template they
-    /// hold saved in the library. A file that holds no template, a folder named almost like a template folder, the same
+    /// row of <c>[osdu].[RepositoryTemplate]</c>, with the template it holds and a copy of its schema, which the control
+    /// plane's pages read it from, or why it holds none. The library of saved templates is left as it is: it holds only
+    /// what people save there. A file that holds no template, a folder named almost like a template folder, the same
     /// template twice in one folder and two versions of a kind in one folder are reported as warnings; the sync goes on.
     /// Returns the folders, which settle the repository's mappings.
     /// </summary>
@@ -912,10 +913,32 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 context.DeliveryRepositoryTemplates.Add(row);
             }
 
+            // The copy of a template is written when the file holds another version than the row last did, or the row has
+            // none yet (a row recorded before copies were kept); a file that changed since the scan holds no template now.
+            var problem = file.Problem;
+            var schemaJson = problem is null
+                && string.Equals(row.Kind, file.Kind, StringComparison.Ordinal)
+                && string.Equals(row.Version, file.Version, StringComparison.Ordinal)
+                    ? row.SchemaJson
+                    : null;
+            if (problem is null && schemaJson is null)
+            {
+                try
+                {
+                    schemaJson = Json.DocumentJson.Compact(TemplateFolders.Load(file.Source).Root);
+                }
+                catch (DeliveryException ex)
+                {
+                    problem = Bounded(ex.Message, DeliveryRepositoryTemplate.MaxProblemLength);
+                    warnings.Add($"{file.Path}: {problem}");
+                }
+            }
+
             row.Folder = file.Folder;
-            row.Kind = file.Kind;
-            row.Version = file.Version;
-            row.Problem = file.Problem;
+            row.Kind = problem is null ? file.Kind : string.Empty;
+            row.Version = problem is null ? file.Version : string.Empty;
+            row.Problem = problem;
+            row.SchemaJson = problem is null ? schemaJson : null;
             row.LastSeenUtc = nowUtc;
         }
 
@@ -928,7 +951,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         }
 
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
-        await SaveHeldTemplatesAsync(context, repoId, scan, nowUtc, ct).ConfigureAwait(false);
         return SyncedTemplates.Of(scan);
     }
 
@@ -966,63 +988,6 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         files.Sort((a, b) => string.CompareOrdinal(a.Path, b.Path));
         return files;
-    }
-
-    /// <summary>
-    /// Saves every template the repository's folders hold in the library, once per version, in the sync's transaction. Two
-    /// syncs saving the same version at once take turns on it (an update lock held to the end of the transaction), and each
-    /// saves its versions in one order, so neither waits on the other in a circle; a version already saved is left as it is.
-    /// </summary>
-    private static async Task SaveHeldTemplatesAsync(OsduDbContext context, Guid repoId, TemplateFolderScan scan, DateTime nowUtc, CancellationToken ct)
-    {
-        var held = scan.Files.Where(f => f.IsTemplate)
-            .GroupBy(f => f.Reference)
-            .Select(g => g.First())
-            .OrderBy(f => f.Kind, StringComparer.Ordinal).ThenBy(f => f.Version, StringComparer.Ordinal)
-            .ToList();
-        if (held.Count == 0)
-        {
-            return;
-        }
-
-        var references = held.Select(f => f.Reference).ToList();
-        var kinds = references.Select(r => r.Kind).Distinct(StringComparer.Ordinal).ToList();
-        var saved = (await context.DeliveryTemplates.AsNoTracking()
-                .Where(t => kinds.Contains(t.Kind))
-                .Select(t => new { t.Kind, t.Version })
-                .ToListAsync(ct).ConfigureAwait(false))
-            .Select(t => new TemplateReference(t.Kind, t.Version))
-            .ToHashSet();
-        var table = $"[{DeliveryModel.SchemaName}].[Template]";
-        foreach (var file in held.Where(f => !saved.Contains(f.Reference)))
-        {
-            Snapshots.SchemaSnapshot schema;
-            try
-            {
-                schema = TemplateFolders.Load(file);
-            }
-            catch (DeliveryException)
-            {
-                // The file changed since the scan; the next sync records and saves what it holds then.
-                continue;
-            }
-
-            var reference = file.Reference;
-            await context.Database.ExecuteSqlRawAsync(
-                $"IF NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE [Kind] = @kind AND [Version] = @version) "
-                + $"INSERT INTO {table} ([Id], [Kind], [Version], [SchemaJson], [Origin], [CapturedBy], [CapturedUtc]) "
-                + "VALUES (@id, @kind, @version, @schema, @origin, @by, @at);",
-                [
-                    new Microsoft.Data.SqlClient.SqlParameter("@id", OsduTemplateStore.IdOf(reference)),
-                    new Microsoft.Data.SqlClient.SqlParameter("@kind", reference.Kind),
-                    new Microsoft.Data.SqlClient.SqlParameter("@version", reference.Version),
-                    new Microsoft.Data.SqlClient.SqlParameter("@schema", Json.DocumentJson.Compact(schema.Root)),
-                    new Microsoft.Data.SqlClient.SqlParameter("@origin", Bounded($"template folder file {file.Shown} of repository {repoId:D}", 1000)),
-                    new Microsoft.Data.SqlClient.SqlParameter("@by", "repository sync"),
-                    new Microsoft.Data.SqlClient.SqlParameter("@at", System.Data.SqlDbType.DateTime2) { Value = nowUtc },
-                ],
-                ct).ConfigureAwait(false);
-        }
     }
 
     /// <summary>A cheap textual pre-check, so only candidate documents are parsed: every mapping declares its type.</summary>

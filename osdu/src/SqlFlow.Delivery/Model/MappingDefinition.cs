@@ -6,7 +6,7 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// A mapping (osdu/docs/reference/flow/mapping.md) as it is loaded: which saved template version it fills, what
+/// A mapping (osdu/docs/reference/flow/mapping.md) as it is loaded: which template version it fills, what
 /// identifies a record of the incoming dataset, and one entry per template variable its record tree fills, each saying
 /// where the value comes from.
 /// </summary>
@@ -776,7 +776,7 @@ public sealed partial record MappingEntry
 /// The OSDU kind searched: one entity type, at one version or at every version (<c>osdu:wks:master-data--Wellbore:*</c>).
 /// </param>
 /// <param name="Schema">
-/// The saved template whose schema says how the searched kind's properties are indexed, pinned the way a mapping pins its
+/// The template whose schema says how the searched kind's properties are indexed, settled the way a mapping settles its
 /// own template, so the query a render sends is fixed by the mapping's version and not by whatever the platform says on
 /// the day. It is a version of the same entity type as <paramref name="Kind"/>.
 /// </param>

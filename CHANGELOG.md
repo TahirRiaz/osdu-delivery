@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A repository's template folders hold the templates its documents fill.** A folder named `templates`, anywhere in a
   repository and as many as it needs, holds the templates of the mappings, searches, assertion tests and dimensions
   beside and below it, read nearest first, so two projects of one repository can fill different versions of one kind.
-  Each sync saves what the folders hold, so the Templates page, the explorer and the mapping builder see it
+  The control plane's pages about a synced repository read the copy its last sync kept of each file
   ([Template folders](osdu/docs/reference/concepts/templates.md#template-folders)).
 - **A mapping can name its template's kind alone.** Leave `template.version`, or a search's `schema.version`, out and the
   mapping fills the one version of the kind the nearest template folder holding it holds; a folder holding two versions of
@@ -34,11 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`sqlflow template folders`** lists a working copy's template folders, and with `--for <document>` the templates a
   document reads and what a kind named alone settles to, with no database
   ([sqlflow template](osdu/docs/reference/cli/template.md#folders)).
-- **The Templates page says which repositories hold a template.** A saved version lists the template folder files of
-  synced repositories holding it, and cannot be deleted while one does; `GET /api/v1/delivery/templates/resolve` answers
-  the template a document of a synced repository reads, and the mapping builder's proposal adds the template's file to
-  the pull request when no folder on the mapping's path holds it yet
-  ([The GUI](osdu/docs/reference/concepts/gui.md#templates), [API](osdu/docs/reference/concepts/api.md#mappings-templates-and-the-mapping-builder)).
+- **The template a repository's document reads, from the API and the builder.** `GET /api/v1/delivery/templates/resolve`
+  answers the template a document of a synced repository reads, or why none, and the mapping builder's proposal adds the
+  template's file to the pull request when no folder on the mapping's path holds it yet
+  ([API](osdu/docs/reference/concepts/api.md#mappings-templates-and-the-mapping-builder),
+  [The GUI](osdu/docs/reference/concepts/gui.md#mapping-builder)).
 
 - **The sample is a complete package.** Beside its well logs, the welldb sample delivers the wells and wellbores they
   are logged in, each wellbore's directional survey (its stations to the Wellbore DDMS) and formation tops, and every
@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database, write each version its mappings pin into a folder with
   `sqlflow template show --kind <kind> --version <version> --out <folder>/<file>.json`; every pin keeps its version
   ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-whose-templates-were-saved-only-in-the-library)).
+- **The saved templates are a library of their own, not linked to the repositories.** The Templates page no longer says
+  how many mappings pin a version, `GET /api/v1/delivery/templates` no longer answers `pinnedBy`, and a saved version is
+  deleted whatever a mapping names, since no repository document reads the library; `DELETE` no longer answers 409
+  ([The library](osdu/docs/reference/concepts/templates.md#the-library-saved-templates)).
 - **The decision records and the pattern catalog are pages of the wiki.** They moved to
   [osdu/docs/wiki](osdu/docs/wiki/index.md), in SQLFlow's wiki format, and the MCP server knows them by new ids:
   `delivery-wiki-0014-inventory-removals` for what was `delivery-decision-0014`, and `delivery-wiki-pattern-catalog` for

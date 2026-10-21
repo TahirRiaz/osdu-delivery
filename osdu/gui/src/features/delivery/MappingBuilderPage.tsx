@@ -376,7 +376,7 @@ export default function MappingBuilderPage() {
 
   const savedTemplates = templates.data ?? [];
   const templateItems = draft !== null && !savedTemplates.some((t) => t.kind === draft.templateKind && t.version === draft.templateVersion)
-    ? [...savedTemplates, { kind: draft.templateKind, version: draft.templateVersion, capturedUtc: "", capturedBy: "", origin: "", pinnedBy: 0, heldBy: [] }]
+    ? [...savedTemplates, { kind: draft.templateKind, version: draft.templateVersion, capturedUtc: "", capturedBy: "", origin: "" }]
     : savedTemplates;
   const canStart = chosenTemplate !== null && name.trim() !== "" && mappingVersion.trim() !== ""
     && system.trim() !== "" && !start.isPending;

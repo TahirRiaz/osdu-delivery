@@ -91,9 +91,9 @@ saved template osdu:wks:work-product-component--WellLog:1.4.0 version 26a3c34418
 ```
 
 The 16 hexadecimal characters are the template version. The mapping may name it (`template.version`), which pins that
-version exactly, or name the kind alone and fill the one version the nearest folder holding the kind holds. The command
-also saves the version in the library, so the builder, the explorer and the MCP tools can read it before the repository
-is synced; on a host without the module database, `--out` writes the file alone. `sqlflow template folders --for
+version exactly, or name the kind alone and fill the one version the nearest folder holding the kind holds. Given the
+module database, the command also saves the version in the library, which the builder, the explorer and the MCP tools
+read (the repository's documents read only the file); on a host without it, `--out` writes the file alone. `sqlflow template folders --for
 welldb/mappings/WellLog@1.4.0.yaml` lists the templates the mapping will read. To see what can be filled:
 
 ```bash
@@ -114,8 +114,8 @@ partition's cache to prefill and check. Then, under Setup:
 1. Pick the **Repository** the mapping will live in. Its delivery flow supplies the parameter values the check renders
    with (shown under Check values, and never written into the mapping).
 2. Pick the saved **Template**, and give the **Name**, **Mapping version** and **Source system**. The file will be
-   `mappings/<Name>@<version>.yaml`. Press **Start mapping**. Every version a synced repository's template folders hold
-   is saved, and one only saved here is written into the repository with the mapping when it is proposed.
+   `mappings/<Name>@<version>.yaml`. Press **Start mapping**. The builder offers the saved versions of the library; when
+   the repository's folders do not hold the one picked, proposing the mapping writes its file there too.
 3. Under **Dataset**, add the key columns, choose how the OSDU id is made, and write the label.
 4. Every template variable is listed. Open one to choose its input (Dataset column, Repeat child rows, Cache, Lookup,
    Platform search, Static value, Expression, First value of, List of values or List of objects), with its modifiers,

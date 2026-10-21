@@ -630,16 +630,30 @@ public sealed class TemplateFoldersTests : IDisposable
     {
         var near = Schema(Thing, "Near");
         var far = Schema(Thing, "Far");
-        var store = new MemoryTemplateStore();
-        store.Add(SchemaSnapshot.Parse(Thing, near, DateTimeOffset.UnixEpoch));
+        var stale = Schema(Thing, "Stale");
+        // The copies the sync kept, by file: one of them missing, one damaged, one of another version than its row says.
+        var copies = new Dictionary<string, RecordedTemplateCopy>(StringComparer.Ordinal)
+        {
+            ["p/templates/thing.json"] = new(near, DateTime.UnixEpoch),
+            ["q/templates/thing.json"] = new("{ not json", DateTime.UnixEpoch),
+            ["r/templates/thing.json"] = new(stale, DateTime.UnixEpoch),
+        };
+        var asked = new List<string>();
+        Task<RecordedTemplateCopy?> CopyAsync(string path, CancellationToken ct)
+        {
+            asked.Add(path);
+            return Task.FromResult(copies.GetValueOrDefault(path));
+        }
+
         SyncedTemplateFile Row(string path, string json)
             => new(path, path[..path.LastIndexOf('/')], Thing, VersionOf(Thing, json), null);
         var folders = SyncedTemplates.Of(
             [
                 Row("templates/thing.json", far), Row("p/templates/thing.json", near),
+                Row("q/templates/thing.json", near), Row("r/templates/thing.json", near),
                 new SyncedTemplateFile("p/templates/broken.json", "p/templates", string.Empty, string.Empty, "the schema is not valid JSON"),
             ],
-            store);
+            CopyAsync);
 
         var chain = folders.ChainFor(".\\p\\m\\doc.yaml");
         Assert.Equal("p/m/doc.yaml", chain.Document);
@@ -650,21 +664,32 @@ public sealed class TemplateFoldersTests : IDisposable
         Assert.True(read.Found);
         Assert.Equal("p/templates/thing.json", read.Template!.Origin);
 
-        // The library has no copy of the version a folder further up holds: the page says to sync again.
-        var unsaved = await folders.ResolveAsync("p/m/doc.yaml", Thing, VersionOf(Thing, far));
-        Assert.Equal(
-            $"templates/thing.json holds template {Thing} version {VersionOf(Thing, far)}, and the copy the sync saves of it is missing; sync the repository again.",
-            unsaved.Problem);
+        // A file's copy is read once, however often a page settles on it.
+        await folders.ResolveAsync("p/m/doc.yaml", Thing, null);
+        Assert.Equal(["p/templates/thing.json"], asked);
 
-        // Settling needs no schema; with no saved templates at hand, reading one says so.
-        var pinsOnly = SyncedTemplates.Of([Row("templates/thing.json", far)], saved: null);
+        // A copy that is missing, does not read as a schema, or reads as another version: the page says to sync again.
+        string Problem(string folder) => $"{folder}/templates/thing.json holds template {Thing} version ";
+        var missing = await folders.ResolveAsync("p/m/doc.yaml", Thing, VersionOf(Thing, far));
+        Assert.Equal(
+            $"templates/thing.json holds template {Thing} version {VersionOf(Thing, far)}, and the copy the sync keeps of it is missing; sync the repository again.",
+            missing.Problem);
+        Assert.Equal(
+            $"{Problem("q")}{VersionOf(Thing, near)}, and the copy the sync keeps of it does not read as a schema; sync the repository again.",
+            (await folders.ResolveAsync("q/doc.yaml", Thing, null)).Problem);
+        Assert.Equal(
+            $"{Problem("r")}{VersionOf(Thing, near)}, and the copy the sync keeps of it reads as version {VersionOf(Thing, stale)}; sync the repository again.",
+            (await folders.ResolveAsync("r/doc.yaml", Thing, null)).Problem);
+
+        // Settling needs no schema; with no copies to read, reading one says so.
+        var pinsOnly = SyncedTemplates.Of([Row("templates/thing.json", far)], copies: null);
         Assert.Equal(VersionOf(Thing, far), pinsOnly.For("doc.yaml").Pin(Thing, null, "where").Version);
         Assert.Equal(
-            $"templates/thing.json holds template {Thing} version {VersionOf(Thing, far)}, and no saved templates can be read here to read it from.",
+            $"templates/thing.json holds template {Thing} version {VersionOf(Thing, far)}, and the copy the sync keeps of it is not read here.",
             (await pinsOnly.ResolveAsync("doc.yaml", Thing, null)).Problem);
 
         Assert.Equal([VersionOf(Thing, near), VersionOf(Thing, far)], (await folders.ListForAsync("p/m/doc.yaml")).Select(t => t.Version));
-        Assert.Equal(3, folders.Files.Count);
+        Assert.Equal(5, folders.Files.Count);
     }
 
     [Fact]

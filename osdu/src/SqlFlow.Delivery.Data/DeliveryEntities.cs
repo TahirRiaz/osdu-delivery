@@ -1548,9 +1548,10 @@ public sealed class DeliveryInterface
 
 /// <summary>
 /// A saved template, the library (osdu/docs/reference/concepts/templates.md): the OSDU schema of one kind, captured from the
-/// OSDU data definitions, imported from a file, or held by a template folder of a synced repository, which the sync saves
-/// here. A version is identified by the kind and the hash of its schema, and never changes. The pages, the explorer and the
-/// mapping builder read the library; a repository's documents read their templates from their template folders.
+/// OSDU data definitions or imported from a file, by a person, on the Templates page or the command line. A version is
+/// identified by the kind and the hash of its schema, and never changes. The explorer, the mapping builder and the
+/// assistant read the library; a repository's documents read their templates from their template folders, and the
+/// repositories never write here.
 /// </summary>
 public sealed class DeliveryTemplate
 {
@@ -1577,9 +1578,11 @@ public sealed class DeliveryTemplate
 
 /// <summary>
 /// A file of a template folder of a repository, as the last sync found it (osdu/docs/reference/concepts/templates.md,
-/// Template folders): which template it holds, or why it holds none. A template folder is a directory named
-/// <c>templates</c>, and a document reads those on its path; the pages settle a document's template from these rows by the
-/// same rule a run settles it by from the files. A file the repository no longer holds loses its row.
+/// Template folders): which template it holds with a copy of its schema, or why it holds none. A template folder is a
+/// directory named <c>templates</c>, and a document reads those on its path; the control plane's pages settle a document's
+/// template from these rows by the same rule a run settles it by from the files, and read its schema from the copy here,
+/// since they have no working copy. The copy is the repository's own: the library of saved templates
+/// (<see cref="DeliveryTemplate"/>) never holds it. A file the repository no longer holds loses its row.
 /// </summary>
 public sealed class DeliveryRepositoryTemplate
 {
@@ -1608,6 +1611,12 @@ public sealed class DeliveryRepositoryTemplate
 
     /// <summary>Why the file holds no template; null when it holds one.</summary>
     public string? Problem { get; set; }
+
+    /// <summary>
+    /// The schema the file holds as the sync read it, compact JSON whose canonical form hashes to <see cref="Version"/>; null
+    /// when the file holds no template.
+    /// </summary>
+    public string? SchemaJson { get; set; }
 
     public DateTime FirstSeenUtc { get; set; }
 
@@ -4073,10 +4082,10 @@ public static class DeliveryModel
             e.Property(t => t.Kind).HasMaxLength(200).IsRequired();
             e.Property(t => t.Version).HasMaxLength(64).IsRequired();
             e.Property(t => t.Problem).HasMaxLength(DeliveryRepositoryTemplate.MaxProblemLength);
-            // A sync reconciles one repository's files, and a page reads them to settle that repository's documents.
+            e.Property(t => t.SchemaJson);
+            // A sync reconciles one repository's files, and a page reads them, and the copy of the one it settles on, to
+            // settle that repository's documents.
             e.HasIndex(t => new { t.RepoId, t.Path }).IsUnique();
-            // The Templates page lists which repositories hold a version, and a delete is refused while one does.
-            e.HasIndex(t => new { t.Kind, t.Version });
         });
 
         modelBuilder.Entity<DeliveryCacheVersion>(e =>

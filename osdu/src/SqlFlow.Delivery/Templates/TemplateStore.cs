@@ -33,10 +33,11 @@ public sealed record TemplateSaved(TemplateInfo Template, TemplateSaveOutcome Ou
 
 /// <summary>
 /// The saved templates, the library (osdu/docs/reference/concepts/templates.md): OSDU schemas saved in the module's
-/// database, each version immutable and identified by its kind and content version. Every version a repository's template
-/// folder holds is saved here by the sync, beside those saved from the Templates page or the command line, so the pages,
-/// the explorer and the mapping builder can read them; a repository's documents read their templates from their template
-/// folders, never from here. As a source, the library settles a version exactly and a kind alone by the newest saved.
+/// database from the Templates page or the command line, each version immutable and identified by its kind and content
+/// version, for what reads templates where no repository is at hand (the explorer, the mapping builder, the assistant).
+/// It is not linked to the repositories: a repository's documents read their templates from their template folders,
+/// never from here, the sync saves nothing here, and nothing a repository holds keeps a version from being deleted. As a
+/// source, the library settles a version exactly and a kind alone by the newest saved.
 /// </summary>
 public interface ITemplateStore : ITemplateSource
 {
@@ -55,7 +56,7 @@ public interface ITemplateStore : ITemplateSource
     /// <summary>Every saved template version, by kind and then newest first.</summary>
     Task<IReadOnlyList<TemplateInfo>> ListAsync(CancellationToken ct = default);
 
-    /// <summary>Deletes a template version. Refused while a synced mapping pins it.</summary>
+    /// <summary>Deletes a saved template version. No repository document reads it, so nothing refuses it.</summary>
     Task DeleteAsync(TemplateReference reference, CancellationToken ct = default);
 }
 
@@ -63,9 +64,6 @@ public interface ITemplateStore : ITemplateSource
 public sealed class OsduTemplateStore : ITemplateStore
 {
     private static readonly Guid TemplateNamespace = DeterministicGuid.Namespace("delivery-template");
-
-    /// <summary>How many mapping references a refused delete names.</summary>
-    private const int MaxNamedMappings = 20;
 
     private readonly Func<OsduDbContext> _factory;
     private readonly TimeProvider _time;
@@ -187,34 +185,6 @@ public sealed class OsduTemplateStore : ITemplateStore
         db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.TrackAll;
         var row = await FindAsync(db, reference, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"There is no template {reference}.");
-        // A version a repository's template folder holds is saved again by that repository's next sync: what decides it is
-        // the file, so the file is what to remove.
-        var held = await db.DeliveryRepositoryTemplates.AsNoTracking()
-            .Where(t => t.Kind == reference.Kind && t.Version == reference.Version)
-            .Select(t => t.Path)
-            .Distinct()
-            .OrderBy(p => p)
-            .Take(MaxNamedMappings)
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (held.Count > 0)
-        {
-            throw new DeliveryException(
-                $"The template {reference} is held by the template folder file(s) {string.Join(", ", held)} of a synced repository, so it cannot be deleted. Remove the file from the repository and sync it first.");
-        }
-
-        var users = await db.DeliveryMappings.AsNoTracking()
-            .Where(m => m.Kind == reference.Kind && m.TemplateVersion == reference.Version)
-            .Select(m => m.Reference)
-            .Distinct()
-            .OrderBy(r => r)
-            .Take(MaxNamedMappings)
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (users.Count > 0)
-        {
-            throw new DeliveryException(
-                $"The template {reference} is pinned by mapping(s) {string.Join(", ", users)}, so it cannot be deleted. Move those mappings to another template version first.");
-        }
-
         db.DeliveryTemplates.Remove(row);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         _loaded.TryRemove(reference, out _);

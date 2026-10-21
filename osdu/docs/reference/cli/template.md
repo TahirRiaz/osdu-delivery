@@ -76,7 +76,7 @@ database for them.
 template, or a mapping that names its template's kind alone. `capture` and `import` with `--out` write a template file
 into a folder; given the module's database, they also save the template in the library. `list`, `show` and `delete` work
 on the library, the saved templates of the module's database, which the Templates page, the explorer and the mapping
-builder read, and need the catalog connection (`--db`, else `${env:SQLFLOW_CATALOG_DB}`), or `SQLFLOW_OSDU_DB` when the
+builder read and no repository document does, and need the catalog connection (`--db`, else `${env:SQLFLOW_CATALOG_DB}`), or `SQLFLOW_OSDU_DB` when the
 `osdu` schema has a database of its own (see [sqlflow db](db.md)). The GUI's Templates page saves templates through the
 control plane instead, into the same table.
 
@@ -219,9 +219,8 @@ is written as saved, with a note that no template folder reads it, and how to wr
 
 ### delete
 
-Deletes one version from the library and prints `deleted template <kind> version <version>`. A version a repository's
-template folder holds, or a synced mapping fills, is refused, naming up to 20 of the files or mappings: remove the files
-from the repository, or move the mappings to another version, and sync first.
+Deletes one version from the library and prints `deleted template <kind> version <version>`. Nothing a repository holds
+refuses it: a repository's documents read their templates from its template folders, never from the library.
 
 ### Errors
 
@@ -240,8 +239,6 @@ from the repository, or move the mappings to another version, and sync first.
 | `The data definitions folder '<dir>' does not exist.` / `No schema file '<path>' under '<dir>'.` | `--from-dir` names the wrong folder. |
 | `There is no saved template for '<kind>'.` / `There is no template <kind> version <version>.` | `show` or `delete` of something not saved. |
 | `The bundled schema of template <kind> version <version> could not be written to '<path>': <reason>` | `--out` names a file that cannot be written: a folder on the way is a file, the disk is full, or the account may not write there. |
-| `The template <kind> version <version> is held by the template folder file(s) <files> of a synced repository, so it cannot be deleted. Remove the file from the repository and sync it first.` | `delete` of a version a repository's folder holds. |
-| `The template <kind> version <version> is pinned by mapping(s) <list>, so it cannot be deleted. Move those mappings to another template version first.` | `delete` of a version a synced mapping fills. |
 
 Each is printed as `ERROR  <message>` on stderr; a missing `--kind`, file or `--version` is a usage error followed by the
 verb's usage lines.

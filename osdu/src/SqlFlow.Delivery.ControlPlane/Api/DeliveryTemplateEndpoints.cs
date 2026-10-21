@@ -23,15 +23,11 @@ using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>A saved template version, and how many synced mappings pin it.</summary>
-public sealed record DeliveryTemplateDto(
-    string Kind, string Version, DateTime CapturedUtc, string CapturedBy, string Origin, int PinnedBy, IReadOnlyList<DeliveryTemplateHolderDto> HeldBy);
-
 /// <summary>
-/// A file of a synced repository's template folder that holds a saved version (osdu/docs/reference/concepts/templates.md,
-/// Template folders): the repository's documents read the version from there, and its sync saves it here.
+/// A saved template version of the library: what it is, who saved it and from where. The library is not linked to the
+/// repositories (osdu/docs/reference/concepts/templates.md, The library), so nothing here says which repository holds it.
 /// </summary>
-public sealed record DeliveryTemplateHolderDto(Guid RepoId, string Repository, string Path);
+public sealed record DeliveryTemplateDto(string Kind, string Version, DateTime CapturedUtc, string CapturedBy, string Origin);
 
 /// <summary>
 /// What a template a document of a synced repository names settles to, from the template folders the repository's last
@@ -257,16 +253,14 @@ public static class DeliveryTemplateEndpoints
         return group;
     }
 
-    private static async Task<Ok<IReadOnlyList<DeliveryTemplateDto>>> ListTemplatesAsync(
-        ITemplateStore templates, OsduDbContext osdu, CatalogDbContext db, CancellationToken ct)
+    private static async Task<Ok<IReadOnlyList<DeliveryTemplateDto>>> ListTemplatesAsync(ITemplateStore templates, CancellationToken ct)
     {
         var saved = await templates.ListAsync(ct).ConfigureAwait(false);
-        var usage = await UsageAsync(osdu, db, ct).ConfigureAwait(false);
-        return TypedResults.Ok<IReadOnlyList<DeliveryTemplateDto>>(saved.Select(t => ToDto(t, usage)).ToList());
+        return TypedResults.Ok<IReadOnlyList<DeliveryTemplateDto>>(saved.Select(ToDto).ToList());
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> GetTemplateAsync(
-        string? kind, string? version, string? scope, ITemplateStore templates, OsduDbContext osdu, CatalogDbContext db, CancellationToken ct)
+        string? kind, string? version, string? scope, ITemplateStore templates, OsduDbContext osdu, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(version))
         {
@@ -281,15 +275,14 @@ public static class DeliveryTemplateEndpoints
         }
 
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Reference == reference);
-        var usage = await UsageAsync(osdu, db, ct).ConfigureAwait(false);
         var types = string.IsNullOrWhiteSpace(scope) ? [] : await CatalogCacheReader.TypesAsync(osdu, scope.Trim(), ct).ConfigureAwait(false);
-        return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, usage), types));
+        return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info), types));
     }
 
     /// <summary>
     /// A saved version's bundled schema as a file to save (<see cref="TemplateSources.FileText"/>), named after its kind
     /// (<see cref="TemplateSources.FileName"/>): what the Templates page shows as Schema JSON and downloads, for a
-    /// repository to keep beside the mappings that pin it.
+    /// repository to keep in a template folder beside the mappings that fill it.
     /// </summary>
     private static async Task<Results<FileContentHttpResult, ProblemHttpResult>> GetTemplateSchemaAsync(
         string? kind, string? version, ITemplateStore templates, CancellationToken ct)
@@ -312,7 +305,7 @@ public static class DeliveryTemplateEndpoints
     /// repository's last sync recorded on the document's path, as a run settles it from the files.
     /// </summary>
     private static async Task<Results<Ok<DeliveryTemplateResolutionDto>, ProblemHttpResult>> ResolveTemplateAsync(
-        Guid? repoId, string? path, string? kind, string? version, ITemplateStore templates, OsduDbContext osdu, CancellationToken ct)
+        Guid? repoId, string? path, string? kind, string? version, OsduDbContext osdu, CancellationToken ct)
     {
         if (repoId is not { } repo || string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(kind))
         {
@@ -331,13 +324,13 @@ public static class DeliveryTemplateEndpoints
             return Problem(ex.Message, StatusCodes.Status400BadRequest);
         }
 
-        var folders = await SyncedTemplates.ReadAsync(osdu, repo, templates, ct).ConfigureAwait(false);
+        var folders = await SyncedTemplates.ReadAsync(osdu, repo, ct).ConfigureAwait(false);
         var pick = folders.ChainFor(path.Trim()).Pick(wanted, string.IsNullOrWhiteSpace(version) ? null : version.Trim());
         return TypedResults.Ok(new DeliveryTemplateResolutionDto(pick.Found, wanted, pick.File?.Version, pick.File?.Shown, pick.Problem, suggested));
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> PreviewTemplateAsync(
-        DeliveryTemplatePreviewRequest request, ITemplateStore templates, OsduDataDefinitions definitions, OsduDbContext osdu, CatalogDbContext db, CancellationToken ct)
+        DeliveryTemplatePreviewRequest request, ITemplateStore templates, OsduDataDefinitions definitions, OsduDbContext osdu, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.Kind) || request.Schema.ValueKind == JsonValueKind.Undefined)
         {
@@ -352,9 +345,8 @@ public static class DeliveryTemplateEndpoints
 
         var schema = imported.Schema;
         var info = (await templates.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.Kind == schema.Kind && t.Version == schema.Version);
-        var usage = await UsageAsync(osdu, db, ct).ConfigureAwait(false);
         var types = string.IsNullOrWhiteSpace(request.Scope) ? [] : await CatalogCacheReader.TypesAsync(osdu, request.Scope.Trim(), ct).ConfigureAwait(false);
-        return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, usage), types));
+        return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info), types));
     }
 
     private static async Task<Results<Ok<DeliveryOsduReleasesDto>, ProblemHttpResult>> ListOsduReleasesAsync(
@@ -513,7 +505,7 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTemplateSavedDto>, ProblemHttpResult>> SaveTemplateAsync(
-        DeliveryTemplateSaveRequest request, ITemplateStore templates, OsduDataDefinitions definitions, OsduDbContext osdu, CatalogDbContext db, ClaimsPrincipal user, CancellationToken ct)
+        DeliveryTemplateSaveRequest request, ITemplateStore templates, OsduDataDefinitions definitions, ClaimsPrincipal user, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.Kind) || string.IsNullOrWhiteSpace(request.Origin)
             || request.Schema.ValueKind == JsonValueKind.Undefined)
@@ -528,9 +520,8 @@ public static class DeliveryTemplateEndpoints
         }
 
         var saved = await templates.SaveAsync(imported.Schema, imported.Origin(request.Origin.Trim()), RequestActor.Label(user), ct).ConfigureAwait(false);
-        var usage = await UsageAsync(osdu, db, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryTemplateSavedDto(
-            ToDto(saved.Template, usage), saved.Outcome == TemplateSaveOutcome.Created ? "created" : "unchanged"));
+            ToDto(saved.Template), saved.Outcome == TemplateSaveOutcome.Created ? "created" : "unchanged"));
     }
 
     private static async Task<Results<NoContent, ProblemHttpResult>> DeleteTemplateAsync(
@@ -547,13 +538,15 @@ public static class DeliveryTemplateEndpoints
             return Problem($"There is no saved template {reference}.", StatusCodes.Status404NotFound, "Not found");
         }
 
+        // Nothing a repository holds keeps a saved version: its documents read their template folders, not the library.
         try
         {
             await templates.DeleteAsync(reference, ct).ConfigureAwait(false);
         }
         catch (DeliveryException ex)
         {
-            return Problem(ex.Message, StatusCodes.Status409Conflict, "Template in use");
+            // Deleted by someone else since it was read.
+            return Problem(ex.Message, StatusCodes.Status404NotFound, "Not found");
         }
 
         return TypedResults.NoContent();
@@ -963,7 +956,7 @@ public static class DeliveryTemplateEndpoints
             return (templates, null);
         }
 
-        var folders = await SyncedTemplates.ReadAsync(osdu, repo, templates, ct).ConfigureAwait(false);
+        var folders = await SyncedTemplates.ReadAsync(osdu, repo, ct).ConfigureAwait(false);
         return (folders, folders.For(path));
     }
 
@@ -975,43 +968,8 @@ public static class DeliveryTemplateEndpoints
 
     private static bool IsError(MappingDraftIssue issue) => issue.Severity == MappingDraftIssue.ErrorSeverity;
 
-    private static async Task<Dictionary<(string Kind, string Version), int>> PinsAsync(OsduDbContext osdu, CancellationToken ct)
-    {
-        var rows = await osdu.DeliveryMappings.AsNoTracking()
-            .Where(m => m.TemplateVersion != string.Empty)
-            .GroupBy(m => new { m.Kind, m.TemplateVersion })
-            .Select(g => new { g.Key.Kind, g.Key.TemplateVersion, Count = g.Count() })
-            .ToListAsync(ct).ConfigureAwait(false);
-        return rows.ToDictionary(r => (r.Kind, r.TemplateVersion), r => r.Count);
-    }
-
-    /// <summary>How many synced mappings fill each saved version, and which files of synced repositories' template folders hold it.</summary>
-    private sealed record TemplateUsage(
-        Dictionary<(string Kind, string Version), int> Pins, ILookup<(string Kind, string Version), DeliveryTemplateHolderDto> Holders);
-
-    /// <summary>The most holders listed for one version: a file per repository and folder holding it, which a page lists.</summary>
-    private const int MaxHolders = 50;
-
-    private static async Task<TemplateUsage> UsageAsync(OsduDbContext osdu, CatalogDbContext db, CancellationToken ct)
-    {
-        var pins = await PinsAsync(osdu, ct).ConfigureAwait(false);
-        var files = await osdu.DeliveryRepositoryTemplates.AsNoTracking()
-            .Where(t => t.Version != string.Empty)
-            .Select(t => new { t.RepoId, t.Kind, t.Version, t.Path })
-            .ToListAsync(ct).ConfigureAwait(false);
-        var names = await db.Repos.AsNoTracking().Select(r => new { r.Id, r.Name }).ToDictionaryAsync(r => r.Id, r => r.Name, ct).ConfigureAwait(false);
-        var holders = files
-            .Select(f => (f.Kind, f.Version, Holder: new DeliveryTemplateHolderDto(f.RepoId, names.GetValueOrDefault(f.RepoId) ?? f.RepoId.ToString("D"), f.Path)))
-            .OrderBy(f => f.Holder.Repository, StringComparer.Ordinal).ThenBy(f => f.Holder.Path, StringComparer.Ordinal)
-            .ToLookup(f => (f.Kind, f.Version), f => f.Holder);
-        return new TemplateUsage(pins, holders);
-    }
-
-    private static DeliveryTemplateDto ToDto(TemplateInfo info, TemplateUsage usage)
-        => new(
-            info.Kind, info.Version, info.CapturedUtc, info.CapturedBy, info.Origin,
-            usage.Pins.GetValueOrDefault((info.Kind, info.Version)),
-            [.. usage.Holders[(info.Kind, info.Version)].Take(MaxHolders)]);
+    private static DeliveryTemplateDto ToDto(TemplateInfo info)
+        => new(info.Kind, info.Version, info.CapturedUtc, info.CapturedBy, info.Origin);
 
     private static DeliveryTemplateDetailDto Detail(OsduTemplate template, DeliveryTemplateDto? saved, IReadOnlyList<CachedTypeInfo> cache)
         => new(

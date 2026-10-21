@@ -1,5 +1,8 @@
+using System.Collections.Concurrent;
+using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Catalog;
@@ -9,8 +12,9 @@ namespace SqlFlow.Delivery.Catalog;
 /// plane's pages settle a repository document's templates from, by the rule a run settles them by from the files
 /// (<see cref="TemplateChain"/>, osdu/docs/reference/concepts/templates.md, Template folders), so a page and a run agree on
 /// which version a document reads. Documents are named by their path in the repository. A template's schema is read from
-/// the saved templates, where the sync saves every version a folder holds; the sync itself settles the documents it reads
-/// from the scan it has just made, and reads a schema from the file.
+/// the copy the sync keeps of the file on its row, never from the library of saved templates, which the repositories do
+/// not touch; the sync itself settles the documents it reads from the scan it has just made, and reads a schema from the
+/// file.
 /// </summary>
 public sealed class SyncedTemplates : ITemplateSource
 {
@@ -21,15 +25,19 @@ public sealed class SyncedTemplates : ITemplateSource
     private readonly IReadOnlyList<TemplateFolderFile> _all;
     private readonly Func<TemplateFolderFile, CancellationToken, Task<SchemaSnapshotRead>> _load;
 
-    /// <summary>A template's schema as read for a file, or why it could not be.</summary>
-    private sealed record SchemaSnapshotRead(Snapshots.SchemaSnapshot? Schema, string? Problem);
+    /// <summary>The copies already read, by file, for folders the catalog recorded; null for a scan, which reads each file afresh.</summary>
+    private readonly ConcurrentDictionary<string, SchemaSnapshotRead>? _read;
 
-    private SyncedTemplates(IEnumerable<TemplateFolder> folders, Func<TemplateFolderFile, CancellationToken, Task<SchemaSnapshotRead>> load)
+    /// <summary>A template's schema as read for a file, or why it could not be.</summary>
+    private sealed record SchemaSnapshotRead(SchemaSnapshot? Schema, string? Problem);
+
+    private SyncedTemplates(IEnumerable<TemplateFolder> folders, Func<TemplateFolderFile, CancellationToken, Task<SchemaSnapshotRead>> load, bool remember)
     {
         // Folders are keyed by their path in the repository, which is what a document's path is walked by.
         _folders = folders.ToDictionary(f => f.Shown, StringComparer.Ordinal);
         _all = [.. _folders.Values.OrderBy(f => f.Shown, StringComparer.Ordinal).SelectMany(f => f.Files)];
         _load = load;
+        _read = remember ? new ConcurrentDictionary<string, SchemaSnapshotRead>(StringComparer.Ordinal) : null;
     }
 
     /// <summary>
@@ -40,6 +48,7 @@ public sealed class SyncedTemplates : ITemplateSource
     public static SyncedTemplates Of(TemplateFolderScan scan)
     {
         ArgumentNullException.ThrowIfNull(scan);
+        // A file is read again each time, so one that changed since the scan is not taken for what it held then.
         return new SyncedTemplates(scan.Folders, (file, ct) =>
         {
             ct.ThrowIfCancellationRequested();
@@ -51,26 +60,42 @@ public sealed class SyncedTemplates : ITemplateSource
             {
                 return Task.FromResult(new SchemaSnapshotRead(null, ex.Message));
             }
-        });
+        }, remember: false);
     }
 
     /// <summary>
-    /// The folders the catalog recorded for a repository, their templates read from <paramref name="saved"/>; with no
-    /// saved templates to read, the folders settle a document's pins and read no schema.
+    /// The folders the catalog recorded for a repository, a template's schema read through <paramref name="copies"/>, the
+    /// copy the sync keeps of each file (by its path in the repository); with none to read, the folders settle a document's
+    /// pins and read no schema.
     /// </summary>
-    public static SyncedTemplates Of(IEnumerable<SyncedTemplateFile> files, ITemplateStore? saved)
+    public static SyncedTemplates Of(IEnumerable<SyncedTemplateFile> files, Func<string, CancellationToken, Task<RecordedTemplateCopy?>>? copies)
     {
         ArgumentNullException.ThrowIfNull(files);
         async Task<SchemaSnapshotRead> LoadAsync(TemplateFolderFile file, CancellationToken ct)
         {
-            if (saved is null)
+            if (copies is null)
             {
-                return new SchemaSnapshotRead(null, $"{file.Shown} holds template {file.Reference}, and no saved templates can be read here to read it from.");
+                return new SchemaSnapshotRead(null, $"{file.Shown} holds template {file.Reference}, and the copy the sync keeps of it is not read here.");
             }
 
-            return await saved.LoadAsync(file.Reference, ct).ConfigureAwait(false) is { } schema
+            if (await copies(file.Path, ct).ConfigureAwait(false) is not { } copy)
+            {
+                return new SchemaSnapshotRead(null, $"{file.Shown} holds template {file.Reference}, and the copy the sync keeps of it is missing; sync the repository again.");
+            }
+
+            SchemaSnapshot schema;
+            try
+            {
+                schema = SchemaSnapshot.Parse(file.Kind!, copy.SchemaJson, new DateTimeOffset(DateTime.SpecifyKind(copy.SeenUtc, DateTimeKind.Utc)));
+            }
+            catch (Exception ex) when (ex is DeliveryException or System.Text.Json.JsonException)
+            {
+                return new SchemaSnapshotRead(null, $"{file.Shown} holds template {file.Reference}, and the copy the sync keeps of it does not read as a schema; sync the repository again.");
+            }
+
+            return string.Equals(schema.Version, file.Version, StringComparison.OrdinalIgnoreCase)
                 ? new SchemaSnapshotRead(schema, null)
-                : new SchemaSnapshotRead(null, $"{file.Shown} holds template {file.Reference}, and the copy the sync saves of it is missing; sync the repository again.");
+                : new SchemaSnapshotRead(null, $"{file.Shown} holds template {file.Reference}, and the copy the sync keeps of it reads as version {schema.Version}; sync the repository again.");
         }
 
         return new SyncedTemplates(
@@ -82,28 +107,44 @@ public sealed class SyncedTemplates : ITemplateSource
                         string.IsNullOrEmpty(f.Kind) ? null : f.Kind,
                         string.IsNullOrEmpty(f.Version) ? null : f.Version,
                         f.Problem ?? (string.IsNullOrEmpty(f.Kind) || string.IsNullOrEmpty(f.Version) ? "the sync recorded no template for it" : null)))])),
-            LoadAsync);
+            LoadAsync,
+            remember: true);
     }
 
-    /// <summary>The folders the catalog recorded for repository <paramref name="repoId"/>, read from <paramref name="db"/>.</summary>
-    public static async Task<SyncedTemplates> ReadAsync(Data.OsduDbContext db, Guid repoId, ITemplateStore? saved, CancellationToken ct)
+    /// <summary>
+    /// The folders the catalog recorded for repository <paramref name="repoId"/>, read from <paramref name="db"/>, which
+    /// reads the copy of a template only once a document settles on it: <paramref name="db"/> has to outlive the reads.
+    /// </summary>
+    public static async Task<SyncedTemplates> ReadAsync(Data.OsduDbContext db, Guid repoId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(db);
-        var files = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ToListAsync(
-            db.DeliveryRepositoryTemplates
-                .Where(t => t.RepoId == repoId)
-                .OrderBy(t => t.Path)
-                .Take(Ledger.OsduLedger.MaxRepositoryTemplates)
-                .Select(t => new SyncedTemplateFile(t.Path, t.Folder, t.Kind, t.Version, t.Problem)),
-            ct).ConfigureAwait(false);
-        return Of(files, saved);
+        var files = await db.DeliveryRepositoryTemplates.AsNoTracking()
+            .Where(t => t.RepoId == repoId)
+            .OrderBy(t => t.Path)
+            .Take(OsduLedger.MaxRepositoryTemplates)
+            .Select(t => new SyncedTemplateFile(t.Path, t.Folder, t.Kind, t.Version, t.Problem))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return Of(files, (path, read) => CopyAsync(db, repoId, path, read));
     }
 
     /// <summary>The folders the catalog recorded for repository <paramref name="repoId"/>, read through <paramref name="ledger"/>.</summary>
-    public static async Task<SyncedTemplates> ReadAsync(ILedger ledger, Guid repoId, ITemplateStore? saved, CancellationToken ct)
+    public static async Task<SyncedTemplates> ReadAsync(ILedger ledger, Guid repoId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(ledger);
-        return Of(await ledger.RepositoryTemplatesAsync(repoId, ct).ConfigureAwait(false), saved);
+        return Of(
+            await ledger.RepositoryTemplatesAsync(repoId, ct).ConfigureAwait(false),
+            (path, read) => ledger.RepositoryTemplateCopyAsync(repoId, path, read));
+    }
+
+    /// <summary>The copy the last sync of repository <paramref name="repoId"/> kept of the template its file at <paramref name="path"/> holds.</summary>
+    internal static async Task<RecordedTemplateCopy?> CopyAsync(Data.OsduDbContext db, Guid repoId, string path, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        var row = await db.DeliveryRepositoryTemplates.AsNoTracking()
+            .Where(t => t.RepoId == repoId && t.Path == path && t.SchemaJson != null)
+            .Select(t => new { t.SchemaJson, t.LastSeenUtc })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        return row is null ? null : new RecordedTemplateCopy(row.SchemaJson!, row.LastSeenUtc);
     }
 
     /// <summary>Every file of every folder, in folder order and then path order.</summary>
@@ -162,7 +203,18 @@ public sealed class SyncedTemplates : ITemplateSource
             return TemplateResolution.Missing(pick.Problem!);
         }
 
-        var read = await _load(pick.File!, ct).ConfigureAwait(false);
+        // A recorded file's copy is read once per instance, which lives as long as one page's work.
+        SchemaSnapshotRead read;
+        if (_read is null)
+        {
+            read = await _load(pick.File!, ct).ConfigureAwait(false);
+        }
+        else if (!_read.TryGetValue(pick.File!.Path, out read!))
+        {
+            read = await _load(pick.File!, ct).ConfigureAwait(false);
+            _read[pick.File!.Path] = read;
+        }
+
         if (read.Schema is not { } schema)
         {
             return TemplateResolution.Missing(read.Problem!);

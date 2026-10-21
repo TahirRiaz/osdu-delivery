@@ -3289,14 +3289,15 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.Property<Guid>("RepoId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("SchemaJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("Version")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("Kind", "Version");
 
                     b.HasIndex("RepoId", "Path")
                         .IsUnique();

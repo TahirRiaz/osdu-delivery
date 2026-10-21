@@ -216,8 +216,8 @@ fill and, when a partition is named, a cache lookup for each single-valued refer
 with the issues still to resolve. This is how a new mapping starts; do not write one from scratch. A fresh scaffold \
 is not valid yet: add the properties the template requires from the source's columns (delivery_templates lists \
 them), fill the ACL and legal lists, and finish the lookups. Run delivery_check_mapping until valid, then propose it \
-with propose_pipelines beside the flow that pins it, adding the template's file to the repository's templates folder \
-when no folder holds it (see heldBy in delivery_templates). Writes nothing."
+with propose_pipelines beside the flow that pins it, with the template's file in a templates folder on its path \
+when none holds it (delivery_check_mapping with repoId tells). Writes nothing."
     )]
     async fn delivery_scaffold_mapping(&self, Parameters(i): Parameters<ScaffoldMappingInput>) -> String {
         let required = [
@@ -276,8 +276,8 @@ when no folder holds it (see heldBy in delivery_templates). Writes nothing."
 
     #[tool(
         description = "Saved templates: the OSDU record schemas mappings fill, as the library holds them (a repository's \
-documents read theirs from its template folders). Without arguments, lists them: kind, version, origin, how many \
-mappings fill each, and heldBy, the folder files holding it. With kind and version, lays one out \
+documents read theirs from its template folders, and the library is not linked to them). Without arguments, lists \
+them: kind, version, origin and who saved each. With kind and version, lays one out \
 variable by variable: path (osdu.data.FacilityName), type, format, whether it is required, the entity types an id in \
 it refers to, pattern and description. Use it for 'which properties does a Wellbore require', 'what type is this \
 field', and whenever you write or review a mapping: a variable that is not in the template cannot be filled. A \

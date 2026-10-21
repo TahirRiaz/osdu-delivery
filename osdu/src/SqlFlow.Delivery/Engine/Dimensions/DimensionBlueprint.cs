@@ -5,7 +5,7 @@ using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Engine.Dimensions;
 
-/// <summary>A saved template a blueprint describes a part of the dimension by: its kind and content version.</summary>
+/// <summary>A template a blueprint describes a part of the dimension by: its kind and content version.</summary>
 public sealed record BlueprintTemplate(string Kind, string Version);
 
 /// <summary>
@@ -36,12 +36,12 @@ public sealed record BlueprintRead(
 public sealed record BlueprintRecords(
     string Id, int Depth, IReadOnlyList<string> EntityTypes, string From, BlueprintTemplate? Template, string? Missing, IReadOnlyList<BlueprintRead> Reads);
 
-/// <summary>A kind of the dimension's own records: the kind, its records where a build counted them, and the version of its saved template.</summary>
+/// <summary>A kind of the dimension's own records: the kind, its records where a build counted them, and the version of its template.</summary>
 public sealed record BlueprintKind(string Kind, long? Records, string? Template);
 
 /// <summary>
 /// The dimension's own records: the kind pattern and query that choose them, whether the kinds are those its last build read
-/// or the saved templates the pattern matches, the template the reads are described by, why there is none, and the reads:
+/// or the templates the pattern matches, the template the reads are described by, why there is none, and the reads:
 /// the key, then each collected attribute.
 /// </summary>
 public sealed record BlueprintSource(
@@ -51,7 +51,7 @@ public sealed record BlueprintSource(
 public sealed record BlueprintColumn(string Name, string Role, string? Attribute, IReadOnlyList<string> From);
 
 /// <summary>
-/// How a dimension is built, as its declaration and the saved templates of the records it reads say
+/// How a dimension is built, as its declaration and the templates of the records it reads say
 /// (osdu/docs/reference/concepts/dimension-blueprint.md): the dimension's own records and the paths read from them, the
 /// records read through each key by id, step by step, grouped as a build's searches group them (one entity type at one
 /// depth), and the table's columns with the reads each is written from.

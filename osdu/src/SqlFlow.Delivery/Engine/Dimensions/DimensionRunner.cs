@@ -188,8 +188,8 @@ public sealed record DimensionPlanOutcome(string Operation, string Flow, string 
 
 /// <summary>
 /// Builds a dimension flow's dimensions in one partition (osdu/docs/reference/flow/dimension.md, What a build does):
-/// for each dimension, settles how the index stores its field (from the saved template of every kind its pattern
-/// matches, or the indexer's mapping of the record's own properties), reads every distinct value through the search's
+/// for each dimension, settles how the index stores its field (from the template the flow reads of every kind its
+/// pattern matches, or the indexer's mapping of the record's own properties), reads every distinct value through the search's
 /// aggregation paged by value ranges, cleans the values into members, gives each member its search filter and, where
 /// asked, its exact record count, and writes the build in one transaction. Dimensions build as many at once as the
 /// flow's concurrency allows, and one that fails leaves the others building. The plan settles the fields and counts the
@@ -912,7 +912,7 @@ public sealed partial class DimensionRunner
 
     /// <summary>
     /// How the index stores the dimension's field: for a property of the record itself, as the indexer maps it for every kind;
-    /// for a property of data, as the saved template of every kind the pattern matches in the partition says, which must all
+    /// for a property of data, as the template the flow reads of every kind the pattern matches in the partition says, which must all
     /// say the same. A partition holding no record of the kind settles nothing, and says so.
     /// </summary>
     private Task<ResolvedField> ResolveFieldAsync(OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, CancellationToken ct)
