@@ -68,16 +68,21 @@ export async function seedSession(page: Page, session: SessionSeed): Promise<voi
 }
 
 /**
- * Starts the workbench's side bar open, as a person finds it once they have opened it: the module starts it closed on a
- * first visit (osdu/gui/src/module.tsx), and the tests reach most pages through its entries. It is seeded only while the
- * browser holds no choice, so a test that closes the side bar finds it closed after a reload.
+ * Starts the workbench's side bar open and its menu expanded, as a person finds them once they have opened both: the
+ * module starts the side bar closed and its menu folded on a first visit (osdu/gui/src/module.tsx), and the tests reach
+ * most pages through its entries. Each is seeded only while the browser holds no choice, so a test that closes the side
+ * bar or folds a section finds it so after a reload.
  */
 async function seedSideBarOpen(page: Page): Promise<void> {
-  await page.addInitScript((key) => {
-    if (window.localStorage.getItem(key) === null) {
-      window.localStorage.setItem(key, "open");
+  await page.addInitScript(({ sideBar, sections }) => {
+    if (window.localStorage.getItem(sideBar) === null) {
+      window.localStorage.setItem(sideBar, "open");
     }
-  }, "sqlflow.workbench.sidebar");
+
+    if (window.localStorage.getItem(sections) === null) {
+      window.localStorage.setItem(sections, "[]");
+    }
+  }, { sideBar: "sqlflow.workbench.sidebar", sections: "sqlflow.workbench.sections" });
 }
 
 /**

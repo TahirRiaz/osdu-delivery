@@ -404,8 +404,8 @@ export const osduDeliveryModule: GuiModule = {
   titleBar: [{ id: "osdu-partition", component: PartitionSwitcher }],
   requestHeaders: [{ name: "X-Osdu-Partition", value: activePartition }],
   // The workbench opens on the page, with the activity bar beside it: the side bar starts closed until the person opens
-  // it, and from then on starts as they last left it.
-  sideBar: { closedOnFirstVisit: true },
+  // it, its menu folded to the headers of its groups and sections, and from then on both start as they last left them.
+  sideBar: { closedOnFirstVisit: true, menuCollapsedOnFirstVisit: true },
   branding: {
     productName: "OSDU Delivery",
     attribution: "powered by SQLFlow",
