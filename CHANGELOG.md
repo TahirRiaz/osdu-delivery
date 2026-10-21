@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **The sample is a complete package.** Beside its well logs, the welldb sample delivers the wells and wellbores they
-  are logged in and every OSDU reference value its records refer to, OSDU's own published values and the well
-  database's own curve types, so it fills an empty partition with records whose references all resolve. Lineage
-  orders it: the reference data, which puts what it delivers into the partition's cache as it runs, then wells,
-  wellbores and logs, which bring the cache types they read up to date before they render. The reference values and the
+  are logged in, each wellbore's directional survey (its stations to the Wellbore DDMS) and formation tops, and every
+  OSDU reference value its records refer to, OSDU's own published values and the well database's own curve types, so it
+  fills an empty partition with records whose references all resolve. Lineage orders it: the reference data, which puts
+  what it delivers into the partition's cache as it runs, then wells, wellbores, logs and surveys, which bring the cache
+  types they read up to date before they render. The reference values and the
   order are explained on [The OSDU order](osdu/docs/reference/concepts/osdu-order.md) and in the
   [sample](osdu/samples/welldb). The sample also reads OSDU back with every other kind of flow: assertions of the wells
   (their mapping's own `$assert` rule and known values), dimensions and a view over the logs, a weekly inventory, and a
