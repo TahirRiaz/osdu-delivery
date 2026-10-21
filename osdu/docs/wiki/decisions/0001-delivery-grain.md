@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0001
+id: delivery-wiki-0001-delivery-grain
 title: "Decision 0001: the delivery grain, one record per source log"
 type: decision
 summary: "Why a well log record is keyed by its source's own identity (project and log id) and not collapsed per wellbore."
@@ -10,13 +10,14 @@ keywords:
   - "well log"
   - "dataset key"
   - "idfrom"
-related:
+referenceRefs:
   - delivery-concept-ledger
   - delivery-flow-mapping
+updated: 2026-10-16
 ---
 # 0001: Delivery grain is (source project, log id)
 
-Status: proposed. Owner: the well-log domain team. Documented in [mapping](../reference/flow/mapping.md) (dataset: the record table's key, label and identity).
+Status: proposed. Owner: the well-log domain team. Documented in [mapping](../../reference/flow/mapping.md) (dataset: the record table's key, label and identity).
 
 ## Context
 
@@ -41,4 +42,4 @@ sample mapping also writes both values into the document (`LogSource` and `LogRu
   confirmed before production delivery.
 
 In the template format the grain is the mapping's `dataset.key`: the dataset columns the delivery key, and so the OSDU
-id, is derived from, declared apart from the entries that fill the record ([flow/mapping.md](../reference/flow/mapping.md#the-osdu-id)).
+id, is derived from, declared apart from the entries that fill the record ([flow/mapping.md](../../reference/flow/mapping.md#the-osdu-id)).

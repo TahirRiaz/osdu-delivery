@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0014
+id: delivery-wiki-0014-inventory-removals
 title: "Decision 0014: an inventory flow may remove the orphan, stale and forgotten ids it found"
 type: decision
 summary: "Why an inventory flow may remove what it found when its document allows it, and how that stays traceable."
@@ -9,14 +9,16 @@ keywords:
   - "orphans"
   - "cleanup"
   - "soft delete"
-related:
+referenceRefs:
   - delivery-flow-inventory
-  - delivery-decision-0013
   - delivery-concept-removal-and-reversal
+related:
+  - delivery-wiki-0013-inventory-flows
+updated: 2026-10-16
 ---
 # 0014: An inventory flow may remove the orphan, stale and forgotten ids it found, when its document allows it
 
-Status: proposed. Documented in [inventory flow](../reference/flow/inventory.md) (What a removal does). Amends
+Status: proposed. Documented in [inventory flow](../../reference/flow/inventory.md) (What a removal does). Amends
 [0013](0013-inventory-flows.md), whose inventories only read OSDU.
 
 ## Context

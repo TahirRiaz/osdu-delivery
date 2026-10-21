@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0009
+id: delivery-wiki-0009-searched-references
 title: "Decision 0009: references to business data are searched for, not cached"
 type: decision
 summary: "Why wellbores and other business data are found by a search per record while closed vocabularies stay in the cache."
@@ -10,14 +10,16 @@ keywords:
   - "wellbore reference"
   - "cache size"
   - "reference data"
-related:
+referenceRefs:
   - delivery-flow-mapping-lookups
   - delivery-flow-cache
-  - delivery-decision-0003
+related:
+  - delivery-wiki-0003-rendering-location
+updated: 2026-10-16
 ---
 # 0009: References to business data are searched for, not cached
 
-Status: proposed. Documented in [mapping lookups](../reference/flow/mapping-lookups.md). Amends [0003](0003-rendering-location.md).
+Status: proposed. Documented in [mapping lookups](../../reference/flow/mapping-lookups.md). Amends [0003](0003-rendering-location.md).
 
 ## Context
 

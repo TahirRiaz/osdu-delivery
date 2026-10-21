@@ -1804,7 +1804,7 @@
       ],
       "related": [
         "delivery-concept-lineage",
-        "delivery-decision-0016",
+        "delivery-wiki-0016-osdu-order",
         "delivery-flow-interfaces",
         "delivery-flow-mapping",
         "delivery-concept-templates",
@@ -2570,372 +2570,6 @@
         "osdu/samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json",
         "osdu/samples/templates/osdu_wks_master-data--Wellbore_1.3.0.json"
       ]
-    },
-    {
-      "id": "delivery-decision-0001",
-      "corpus": "wiki",
-      "path": "0001-delivery-grain.md",
-      "title": "Decision 0001: the delivery grain, one record per source log",
-      "type": "decision",
-      "summary": "Why a well log record is keyed by its source's own identity (project and log id) and not collapsed per wellbore.",
-      "keywords": [
-        "delivery grain",
-        "delivery key",
-        "record identity",
-        "well log",
-        "dataset key",
-        "idfrom"
-      ],
-      "related": [
-        "delivery-concept-ledger",
-        "delivery-flow-mapping"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0002",
-      "corpus": "wiki",
-      "path": "0002-client-supplied-ids.md",
-      "title": "Decision 0002: deterministic, client-supplied OSDU ids",
-      "type": "decision",
-      "summary": "Why OSDU ids are computed from the data by the delivery instead of assigned by OSDU, and what that guarantees.",
-      "keywords": [
-        "osdu id",
-        "client-supplied id",
-        "deterministic id",
-        "duplicate records",
-        "idfrom",
-        "delivery key"
-      ],
-      "related": [
-        "delivery-flow-mapping",
-        "delivery-concept-ledger"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0003",
-      "corpus": "wiki",
-      "path": "0003-rendering-location.md",
-      "title": "Decision 0003: rendering runs in the delivery service",
-      "type": "decision",
-      "summary": "Why the mapping is interpreted by the delivery against a pinned template and cache version, not by a facade service.",
-      "keywords": [
-        "rendering",
-        "mapping renderer",
-        "offline plan",
-        "content hash",
-        "facade",
-        "recordpath"
-      ],
-      "related": [
-        "delivery-concept-templates",
-        "delivery-concept-change-detection",
-        "delivery-decision-0009"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0004",
-      "corpus": "wiki",
-      "path": "0004-preserved-keys.md",
-      "title": "Decision 0004: Datasets, DDMSDatasets and ExtensionProperties belong to OSDU",
-      "type": "decision",
-      "summary": "Why an update keeps the properties a DDMS or External Data Services writes into a record, and leaves them out of the hash.",
-      "keywords": [
-        "preserved keys",
-        "datasets",
-        "ddmsdatasets",
-        "extensionproperties",
-        "record update",
-        "eds"
-      ],
-      "related": [
-        "delivery-flow-ddms",
-        "delivery-concept-change-detection"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0005",
-      "corpus": "wiki",
-      "path": "0005-ledger-retention.md",
-      "title": "Decision 0005: attempts are pruned by age, keeping the latest per record",
-      "type": "decision",
-      "summary": "Why the ledger's attempt history is pruned by age while every record keeps its latest attempt.",
-      "keywords": [
-        "retention",
-        "attempts",
-        "pruning",
-        "ledger size",
-        "history"
-      ],
-      "related": [
-        "delivery-concept-availability-and-retention",
-        "delivery-concept-ledger"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0006",
-      "corpus": "wiki",
-      "path": "0006-work-batches.md",
-      "title": "Decision 0006: rendered documents live in work batch files, not in the ledger",
-      "type": "decision",
-      "summary": "Why rendered documents are written to work batch files the ledger points at, and how large submissions fan out.",
-      "keywords": [
-        "work batch",
-        "rendered documents",
-        "key slice",
-        "fan out",
-        "submission"
-      ],
-      "related": [
-        "delivery-concept-submissions"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0007",
-      "corpus": "wiki",
-      "path": "0007-manifest-dataset-ids.md",
-      "title": "Decision 0007: manifest datasets take ids derived from their record's id",
-      "type": "decision",
-      "summary": "Why the datasets a manifest delivery registers get ids derived from the record, so a redelivery can replace them.",
-      "keywords": [
-        "manifest",
-        "dataset id",
-        "ingestion workflow",
-        "redelivery",
-        "file generic"
-      ],
-      "related": [
-        "delivery-flow-routes",
-        "delivery-concept-protocols"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0008",
-      "corpus": "wiki",
-      "path": "0008-retrieval-lands-raw-records.md",
-      "title": "Decision 0008: retrieval lands records as OSDU holds them",
-      "type": "decision",
-      "summary": "Why a retrieval flow brings OSDU records back unchanged instead of reversing a mapping.",
-      "keywords": [
-        "retrieval",
-        "raw records",
-        "reverse mapping",
-        "osdu to lake",
-        "landing"
-      ],
-      "related": [
-        "delivery-flow-retrieval",
-        "delivery-guide-retrieving-records"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0009",
-      "corpus": "wiki",
-      "path": "0009-searched-references.md",
-      "title": "Decision 0009: references to business data are searched for, not cached",
-      "type": "decision",
-      "summary": "Why wellbores and other business data are found by a search per record while closed vocabularies stay in the cache.",
-      "keywords": [
-        "search",
-        "findby",
-        "business data",
-        "wellbore reference",
-        "cache size",
-        "reference data"
-      ],
-      "related": [
-        "delivery-flow-mapping-lookups",
-        "delivery-flow-cache",
-        "delivery-decision-0003"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0010",
-      "corpus": "wiki",
-      "path": "0010-assertion-flows-read-only.md",
-      "title": "Decision 0010: assertion flows read OSDU, check against templates, and keep whole reports",
-      "type": "decision",
-      "summary": "Why data quality tests read what OSDU serves, never write, and keep every report whole.",
-      "keywords": [
-        "assertion",
-        "data quality",
-        "read only",
-        "test report",
-        "template check"
-      ],
-      "related": [
-        "delivery-flow-assertion",
-        "delivery-guide-data-quality-tests"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0011",
-      "corpus": "wiki",
-      "path": "0011-dimension-flows.md",
-      "title": "Decision 0011: dimension flows read every distinct value by ranges and keep each key",
-      "type": "decision",
-      "summary": "Why dimensions page through every distinct value of a field by ranges instead of the search aggregation.",
-      "keywords": [
-        "dimension",
-        "distinct values",
-        "aggregation limit",
-        "ranges",
-        "keys"
-      ],
-      "related": [
-        "delivery-flow-dimension",
-        "delivery-guide-dimensions"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0012",
-      "corpus": "wiki",
-      "path": "0012-atomic-delivery.md",
-      "title": "Decision 0012: every delivery completes or is undone, and the ledger names every id it minted",
-      "type": "decision",
-      "summary": "Why a delivery of many OSDU calls is a unit of work whose minted ids the ledger keeps, so an unfinished one can be undone.",
-      "keywords": [
-        "atomic delivery",
-        "unit of work",
-        "undo",
-        "minted ids",
-        "artifacts",
-        "partial failure"
-      ],
-      "related": [
-        "delivery-concept-removal-and-reversal",
-        "delivery-concept-protocols",
-        "delivery-concept-ledger"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0013",
-      "corpus": "wiki",
-      "path": "0013-inventory-flows.md",
-      "title": "Decision 0013: inventory flows compare what OSDU serves with every ledger of the partition",
-      "type": "decision",
-      "summary": "Why finding orphans needs a read of what OSDU serves set against every ledger, and what an inventory compares.",
-      "keywords": [
-        "inventory",
-        "orphans",
-        "stale ids",
-        "forgotten ids",
-        "ledger drift"
-      ],
-      "related": [
-        "delivery-flow-inventory",
-        "delivery-guide-finding-orphans"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0014",
-      "corpus": "wiki",
-      "path": "0014-inventory-removals.md",
-      "title": "Decision 0014: an inventory flow may remove the orphan, stale and forgotten ids it found",
-      "type": "decision",
-      "summary": "Why an inventory flow may remove what it found when its document allows it, and how that stays traceable.",
-      "keywords": [
-        "inventory",
-        "removal",
-        "orphans",
-        "cleanup",
-        "soft delete"
-      ],
-      "related": [
-        "delivery-flow-inventory",
-        "delivery-decision-0013",
-        "delivery-concept-removal-and-reversal"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0015",
-      "corpus": "wiki",
-      "path": "0015-lost-records.md",
-      "title": "Decision 0015: a record OSDU lost is delivered again under its own id, and under a new one only when an operator asks",
-      "type": "decision",
-      "summary": "Why a record OSDU lost is delivered again under the id it claimed, restored first when soft-deleted, and given a new id only on request.",
-      "keywords": [
-        "missing records",
-        "lost records",
-        "accidental delete",
-        "restore soft delete",
-        "undelete",
-        "redeliver",
-        "new osdu id",
-        "reassign id",
-        "repair"
-      ],
-      "related": [
-        "delivery-decision-0002",
-        "delivery-decision-0004",
-        "delivery-decision-0013",
-        "delivery-flow-inventory",
-        "delivery-concept-removal-and-reversal"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0016",
-      "corpus": "wiki",
-      "path": "0016-osdu-order.md",
-      "title": "Decision 0016: OSDU's relationships order a repository's waves, and dependencies between schedules are shown, not enforced",
-      "type": "decision",
-      "summary": "Why lineage orders delivery flows by the relationships OSDU's schemas declare, and why schedules that depend on each other are shown rather than chained.",
-      "keywords": [
-        "osdu order",
-        "referential order",
-        "relationship",
-        "x-osdu-relationship",
-        "waves",
-        "schedule dependencies",
-        "cross schedule",
-        "osdu lineage by release"
-      ],
-      "related": [
-        "delivery-concept-osdu-order",
-        "delivery-concept-lineage",
-        "delivery-flow-interfaces",
-        "delivery-decision-0009",
-        "concept-lineage-graph-and-plan"
-      ],
-      "sourceRefs": []
-    },
-    {
-      "id": "delivery-decision-0017",
-      "corpus": "wiki",
-      "path": "0017-pipelines-update-the-cache.md",
-      "title": "Decision 0017: A pipeline names the cache it needs current before it runs and the cache it updates after",
-      "type": "decision",
-      "summary": "Why the cache steps belong to the pipeline, why before is mandatory and after is not, why after reads storage, and how held records wait for what they miss.",
-      "keywords": [
-        "cache.before",
-        "cache.after",
-        "update the cache before a pipeline",
-        "update the cache after a pipeline",
-        "cache update during a schedule",
-        "held record waits for a reference"
-      ],
-      "related": [
-        "delivery-concept-partition-cache",
-        "delivery-flow-delivery",
-        "delivery-flow-cache",
-        "delivery-concept-lineage",
-        "delivery-decision-0016"
-      ],
-      "sourceRefs": []
     },
     {
       "id": "delivery-flow-assertion",
@@ -3894,7 +3528,7 @@
         "delivery-concept-partition-cache",
         "delivery-concept-change-detection",
         "delivery-concept-preflight",
-        "delivery-guide-pattern-catalog"
+        "delivery-wiki-pattern-catalog"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
@@ -4165,7 +3799,7 @@
         "delivery-concept-removal-and-reversal",
         "delivery-concept-artifacts-and-undo",
         "delivery-guide-bulk-data",
-        "delivery-guide-pattern-catalog"
+        "delivery-wiki-pattern-catalog"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Protocols/DeliveryProtocol.cs",
@@ -4412,7 +4046,7 @@
         "delivery-flow-cache",
         "delivery-flow-dictionary",
         "delivery-concept-templates",
-        "delivery-guide-pattern-catalog",
+        "delivery-wiki-pattern-catalog",
         "cli-run"
       ],
       "sourceRefs": [
@@ -4839,62 +4473,6 @@
       ]
     },
     {
-      "id": "delivery-guide-pattern-catalog",
-      "corpus": "reference",
-      "path": "guides/pattern-catalog.md",
-      "title": "Pattern catalog: which delivery problem maps to which OSDU Delivery shape",
-      "type": "guide",
-      "summary": "Problem-first index: where a lookup belongs, one kind or interfaces, which route, retrieval or explorer, tests, orphans, and the page for each.",
-      "keywords": [
-        "patterns",
-        "which shape",
-        "how do i",
-        "where does a lookup belong",
-        "cache or dictionary or dimension",
-        "search per record",
-        "interfaces",
-        "which route",
-        "retrieval vs explorer",
-        "assertion tests",
-        "orphans",
-        "redeliver",
-        "partitions"
-      ],
-      "related": [
-        "wiki-pattern-catalog",
-        "delivery-flow-overview",
-        "delivery-flow-mapping-lookups",
-        "delivery-flow-cache",
-        "delivery-flow-interfaces",
-        "delivery-flow-routes",
-        "delivery-guide-getting-started",
-        "delivery-concept-overview"
-      ],
-      "sourceRefs": [
-        "osdu/src/SqlFlow.Delivery/Documents/CacheDocumentMapper.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/DimensionFlowKind.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/RetrievalFlowKind.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/AssertionFlowKind.cs",
-        "osdu/src/SqlFlow.Delivery/Protocols/DeliveryProtocol.cs",
-        "osdu/src/SqlFlow.Delivery/Rendering/ReplaceTables.cs",
-        "osdu/src/SqlFlow.Delivery/Model/DeliveryDestination.cs",
-        "osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs",
-        "osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs",
-        "osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Background/ConfiguredRunDispatcher.cs",
-        "osdu/docs/census/keys.delivery.json",
-        "osdu/docs/census/keys.cache.json",
-        "osdu/docs/census/keys.mapping.json",
-        "osdu/docs/census/keys.assertion.json",
-        "osdu/docs/census/keys.inventory.json",
-        "osdu/gui/src/module.tsx"
-      ]
-    },
-    {
       "id": "delivery-guide-radix",
       "corpus": "reference",
       "path": "guides/radix.md",
@@ -5114,6 +4692,380 @@
         "osdu/gui/src/features/delivery/MappingBuilderPage.tsx",
         "osdu/gui/src/features/delivery/MappingEntryEditor.tsx",
         "osdu/hosts/osdu-delivery-mcp/src/tools/documents.rs"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0001-delivery-grain",
+      "corpus": "wiki",
+      "path": "decisions/0001-delivery-grain.md",
+      "title": "Decision 0001: the delivery grain, one record per source log",
+      "type": "decision",
+      "summary": "Why a well log record is keyed by its source's own identity (project and log id) and not collapsed per wellbore.",
+      "keywords": [
+        "delivery grain",
+        "delivery key",
+        "record identity",
+        "well log",
+        "dataset key",
+        "idfrom"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0002-client-supplied-ids",
+      "corpus": "wiki",
+      "path": "decisions/0002-client-supplied-ids.md",
+      "title": "Decision 0002: deterministic, client-supplied OSDU ids",
+      "type": "decision",
+      "summary": "Why OSDU ids are computed from the data by the delivery instead of assigned by OSDU, and what that guarantees.",
+      "keywords": [
+        "osdu id",
+        "client-supplied id",
+        "deterministic id",
+        "duplicate records",
+        "idfrom",
+        "delivery key"
+      ],
+      "related": [
+        "delivery-wiki-0015-lost-records"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0003-rendering-location",
+      "corpus": "wiki",
+      "path": "decisions/0003-rendering-location.md",
+      "title": "Decision 0003: rendering runs in the delivery service",
+      "type": "decision",
+      "summary": "Why the mapping is interpreted by the delivery against a pinned template and cache version, not by a facade service.",
+      "keywords": [
+        "rendering",
+        "mapping renderer",
+        "offline plan",
+        "content hash",
+        "facade",
+        "recordpath"
+      ],
+      "related": [
+        "delivery-wiki-0009-searched-references"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0004-preserved-keys",
+      "corpus": "wiki",
+      "path": "decisions/0004-preserved-keys.md",
+      "title": "Decision 0004: Datasets, DDMSDatasets and ExtensionProperties belong to OSDU",
+      "type": "decision",
+      "summary": "Why an update keeps the properties a DDMS or External Data Services writes into a record, and leaves them out of the hash.",
+      "keywords": [
+        "preserved keys",
+        "datasets",
+        "ddmsdatasets",
+        "extensionproperties",
+        "record update",
+        "eds"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0005-ledger-retention",
+      "corpus": "wiki",
+      "path": "decisions/0005-ledger-retention.md",
+      "title": "Decision 0005: attempts are pruned by age, keeping the latest per record",
+      "type": "decision",
+      "summary": "Why the ledger's attempt history is pruned by age while every record keeps its latest attempt.",
+      "keywords": [
+        "retention",
+        "attempts",
+        "pruning",
+        "ledger size",
+        "history"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0006-work-batches",
+      "corpus": "wiki",
+      "path": "decisions/0006-work-batches.md",
+      "title": "Decision 0006: rendered documents live in work batch files, not in the ledger",
+      "type": "decision",
+      "summary": "Why rendered documents are written to work batch files the ledger points at, and how large submissions fan out.",
+      "keywords": [
+        "work batch",
+        "rendered documents",
+        "key slice",
+        "fan out",
+        "submission"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0007-manifest-dataset-ids",
+      "corpus": "wiki",
+      "path": "decisions/0007-manifest-dataset-ids.md",
+      "title": "Decision 0007: manifest datasets take ids derived from their record's id",
+      "type": "decision",
+      "summary": "Why the datasets a manifest delivery registers get ids derived from the record, so a redelivery can replace them.",
+      "keywords": [
+        "manifest",
+        "dataset id",
+        "ingestion workflow",
+        "redelivery",
+        "file generic"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0008-retrieval-lands-raw-records",
+      "corpus": "wiki",
+      "path": "decisions/0008-retrieval-lands-raw-records.md",
+      "title": "Decision 0008: retrieval lands records as OSDU holds them",
+      "type": "decision",
+      "summary": "Why a retrieval flow brings OSDU records back unchanged instead of reversing a mapping.",
+      "keywords": [
+        "retrieval",
+        "raw records",
+        "reverse mapping",
+        "osdu to lake",
+        "landing"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0009-searched-references",
+      "corpus": "wiki",
+      "path": "decisions/0009-searched-references.md",
+      "title": "Decision 0009: references to business data are searched for, not cached",
+      "type": "decision",
+      "summary": "Why wellbores and other business data are found by a search per record while closed vocabularies stay in the cache.",
+      "keywords": [
+        "search",
+        "findby",
+        "business data",
+        "wellbore reference",
+        "cache size",
+        "reference data"
+      ],
+      "related": [
+        "delivery-wiki-0003-rendering-location"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0010-assertion-flows-read-only",
+      "corpus": "wiki",
+      "path": "decisions/0010-assertion-flows-read-only.md",
+      "title": "Decision 0010: assertion flows read OSDU, check against templates, and keep whole reports",
+      "type": "decision",
+      "summary": "Why data quality tests read what OSDU serves, never write, and keep every report whole.",
+      "keywords": [
+        "assertion",
+        "data quality",
+        "read only",
+        "test report",
+        "template check"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0011-dimension-flows",
+      "corpus": "wiki",
+      "path": "decisions/0011-dimension-flows.md",
+      "title": "Decision 0011: dimension flows read every distinct value by ranges and keep each key",
+      "type": "decision",
+      "summary": "Why dimensions page through every distinct value of a field by ranges instead of the search aggregation.",
+      "keywords": [
+        "dimension",
+        "distinct values",
+        "aggregation limit",
+        "ranges",
+        "keys"
+      ],
+      "related": [],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0012-atomic-delivery",
+      "corpus": "wiki",
+      "path": "decisions/0012-atomic-delivery.md",
+      "title": "Decision 0012: every delivery completes or is undone, and the ledger names every id it minted",
+      "type": "decision",
+      "summary": "Why a delivery of many OSDU calls is a unit of work whose minted ids the ledger keeps, so an unfinished one can be undone.",
+      "keywords": [
+        "atomic delivery",
+        "unit of work",
+        "undo",
+        "minted ids",
+        "artifacts",
+        "partial failure"
+      ],
+      "related": [
+        "delivery-wiki-0013-inventory-flows"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0013-inventory-flows",
+      "corpus": "wiki",
+      "path": "decisions/0013-inventory-flows.md",
+      "title": "Decision 0013: inventory flows compare what OSDU serves with every ledger of the partition",
+      "type": "decision",
+      "summary": "Why finding orphans needs a read of what OSDU serves set against every ledger, and what an inventory compares.",
+      "keywords": [
+        "inventory",
+        "orphans",
+        "stale ids",
+        "forgotten ids",
+        "ledger drift"
+      ],
+      "related": [
+        "delivery-wiki-0012-atomic-delivery",
+        "delivery-wiki-0014-inventory-removals"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0014-inventory-removals",
+      "corpus": "wiki",
+      "path": "decisions/0014-inventory-removals.md",
+      "title": "Decision 0014: an inventory flow may remove the orphan, stale and forgotten ids it found",
+      "type": "decision",
+      "summary": "Why an inventory flow may remove what it found when its document allows it, and how that stays traceable.",
+      "keywords": [
+        "inventory",
+        "removal",
+        "orphans",
+        "cleanup",
+        "soft delete"
+      ],
+      "related": [
+        "delivery-wiki-0013-inventory-flows"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0015-lost-records",
+      "corpus": "wiki",
+      "path": "decisions/0015-lost-records.md",
+      "title": "Decision 0015: a record OSDU lost is delivered again under its own id, and under a new one only when an operator asks",
+      "type": "decision",
+      "summary": "Why a record OSDU lost is delivered again under the id it claimed, restored first when soft-deleted, and given a new id only on request.",
+      "keywords": [
+        "missing records",
+        "lost records",
+        "accidental delete",
+        "restore soft delete",
+        "undelete",
+        "redeliver",
+        "new osdu id",
+        "reassign id",
+        "repair"
+      ],
+      "related": [
+        "delivery-wiki-0002-client-supplied-ids",
+        "delivery-wiki-0004-preserved-keys",
+        "delivery-wiki-0013-inventory-flows"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0016-osdu-order",
+      "corpus": "wiki",
+      "path": "decisions/0016-osdu-order.md",
+      "title": "Decision 0016: OSDU's relationships order a repository's waves, and dependencies between schedules are shown, not enforced",
+      "type": "decision",
+      "summary": "Why lineage orders delivery flows by the relationships OSDU's schemas declare, and why schedules that depend on each other are shown rather than chained.",
+      "keywords": [
+        "osdu order",
+        "referential order",
+        "relationship",
+        "x-osdu-relationship",
+        "waves",
+        "schedule dependencies",
+        "cross schedule",
+        "osdu lineage by release"
+      ],
+      "related": [
+        "delivery-wiki-0009-searched-references",
+        "delivery-wiki-0017-pipelines-update-the-cache"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-0017-pipelines-update-the-cache",
+      "corpus": "wiki",
+      "path": "decisions/0017-pipelines-update-the-cache.md",
+      "title": "Decision 0017: A pipeline names the cache it needs current before it runs and the cache it updates after",
+      "type": "decision",
+      "summary": "Why the cache steps belong to the pipeline, why before is mandatory and after is not, why after reads storage, and how held records wait for what they miss.",
+      "keywords": [
+        "cache.before",
+        "cache.after",
+        "update the cache before a pipeline",
+        "update the cache after a pipeline",
+        "cache update during a schedule",
+        "held record waits for a reference"
+      ],
+      "related": [
+        "delivery-wiki-0016-osdu-order"
+      ],
+      "sourceRefs": []
+    },
+    {
+      "id": "delivery-wiki-pattern-catalog",
+      "corpus": "wiki",
+      "path": "maps/pattern-catalog.md",
+      "title": "Pattern catalog: which delivery problem maps to which OSDU Delivery shape",
+      "type": "map",
+      "summary": "Problem-first index: where a lookup belongs, one kind or interfaces, which route, retrieval or explorer, tests, orphans, and the page for each.",
+      "keywords": [
+        "patterns",
+        "which shape",
+        "how do i",
+        "where does a lookup belong",
+        "cache or dictionary or dimension",
+        "search per record",
+        "interfaces",
+        "which route",
+        "retrieval vs explorer",
+        "assertion tests",
+        "orphans",
+        "redeliver",
+        "partitions"
+      ],
+      "related": [
+        "wiki-pattern-catalog"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Documents/CacheDocumentMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DimensionFlowKind.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/RetrievalFlowKind.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/AssertionFlowKind.cs",
+        "osdu/src/SqlFlow.Delivery/Protocols/DeliveryProtocol.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/ReplaceTables.cs",
+        "osdu/src/SqlFlow.Delivery/Model/DeliveryDestination.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs",
+        "osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs",
+        "osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Background/ConfiguredRunDispatcher.cs",
+        "osdu/docs/census/keys.delivery.json",
+        "osdu/docs/census/keys.cache.json",
+        "osdu/docs/census/keys.mapping.json",
+        "osdu/docs/census/keys.assertion.json",
+        "osdu/docs/census/keys.inventory.json",
+        "osdu/gui/src/module.tsx"
       ]
     }
   ]

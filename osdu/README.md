@@ -25,7 +25,7 @@ data; the well logs in `samples/` are the worked example, not a special case. Th
 | `specs/` | The OSDU service contracts every route is built from, pinned with their provenance (`specs/sources.json`), and an integration brief per service |
 | `samples/` | The `welldb` sample estate (well logs with their curves, delivered to the Wellbore DDMS), the bundled OSDU schemas, and sample cache records |
 | `deploy/` | Dockerfiles, Docker Compose, Kubernetes, Bicep, Terraform and Radix |
-| `docs/` | The reference corpus, the decision records and the key census |
+| `docs/` | The reference corpus, the wiki (decisions, patterns, narratives, incidents and maps) and the key census |
 | `tools/` | `SampleData`, which generates the sample's synthetic well logs and lookup tables |
 
 `sqlflow/` next to this folder is the engine underneath, vendored as a subtree and changed only through the extension

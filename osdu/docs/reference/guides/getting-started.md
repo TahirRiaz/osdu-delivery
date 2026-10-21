@@ -591,4 +591,4 @@ no catalog connection ([the node](../cli/worker.md)).
 - [One source, several kinds](multi-kind-source.md): wellbores and their well logs from one document.
 - [Well logs with curves](bulk-data.md): the header record and its bulk data.
 - [The operations runbook](operations-runbook.md): held and failed records, releasing, redelivering.
-- [Which delivery problem maps to which shape](pattern-catalog.md).
+- [Which delivery problem maps to which shape](../../wiki/maps/pattern-catalog.md).

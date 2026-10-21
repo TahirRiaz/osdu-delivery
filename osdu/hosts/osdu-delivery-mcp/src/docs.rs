@@ -3,10 +3,10 @@
 //! OSDU Delivery extends SQLFlow, and so does its documentation: SQLFlow's corpus documents the platform, and this
 //! one documents only what the extension adds. It is written in SQLFlow's reference format (`osdu/docs/reference`,
 //! one topic per page, each with frontmatter naming its id, title, type, summary, keywords, related pages and the
-//! code it was verified against), with the decision records (`osdu/docs/decisions`) beside it. SQLFlow's
-//! `build_manifest.py` writes `osdu/docs/reference/manifest.json` from the frontmatter, and `build.rs` compiles every
-//! page it lists into the binary, so the search ranks these pages on what their authors wrote for it, exactly as it
-//! ranks SQLFlow's.
+//! code it was verified against), with its wiki (`osdu/docs/wiki`: decisions, patterns, narratives, incidents and
+//! maps) beside it in SQLFlow's wiki format. SQLFlow's `build_manifest.py` writes `osdu/docs/reference/manifest.json`
+//! from the frontmatter of both trees, and `build.rs` compiles every page it lists into the binary, so the search ranks
+//! these pages on what their authors wrote for it, exactly as it ranks SQLFlow's.
 
 use serde::Deserialize;
 use sqlflow_mcp::{DocMeta, DocPage};
@@ -39,7 +39,7 @@ struct Manifest {
 /// The folder, relative to the repository root, a manifest entry's path is relative to.
 fn root_of(corpus: Option<&str>) -> &'static str {
     match corpus {
-        Some("wiki") => "osdu/docs/decisions/",
+        Some("wiki") => "osdu/docs/wiki/",
         _ => "osdu/docs/reference/",
     }
 }
@@ -86,6 +86,19 @@ mod tests {
 
     const REFERENCE_TYPES: &[&str] = &["cli-command", "flow-reference", "concept", "guide"];
 
+    /// A wiki page's type, and the folder of `osdu/docs/wiki` a page of that type lives in, as SQLFlow's wiki has them.
+    const WIKI_TYPES: &[(&str, &str)] = &[
+        ("decision", "decisions"),
+        ("incident", "incidents"),
+        ("map", "maps"),
+        ("narrative", "narratives"),
+        ("pattern", "patterns"),
+    ];
+
+    /// The files of an indexed tree that are not pages, as `build_manifest.py` skips them: the navigational and log
+    /// surfaces, which carry no frontmatter.
+    const NOT_PAGES: &[&str] = &["README.md", "index.md", "log.md"];
+
     /// Words no page may hold: the em dash the repository forbids, and the names of the one estate the patterns
     /// were learned from, which the documentation describes generically.
     const FORBIDDEN: &[&str] = &["\u{2014}", "recall", "equinor", "petrodb", "stat_comp", "norway_welldb", "statoil"];
@@ -100,7 +113,7 @@ mod tests {
             if path.is_dir() {
                 markdown_under(&path, found);
             } else if path.extension().is_some_and(|ext| ext == "md")
-                && path.file_name().is_some_and(|name| name != "README.md")
+                && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| !NOT_PAGES.contains(&name))
             {
                 found.push(path);
             }
@@ -129,7 +142,7 @@ mod tests {
 
         let mut files = Vec::new();
         markdown_under(&root.join("osdu/docs/reference"), &mut files);
-        markdown_under(&root.join("osdu/docs/decisions"), &mut files);
+        markdown_under(&root.join("osdu/docs/wiki"), &mut files);
 
         let mut seen = HashSet::new();
         for file in &files {
@@ -164,8 +177,14 @@ mod tests {
             let id = &page.meta.id;
             assert!(ids.insert(id.clone()), "the id {id} is used twice");
             assert!(id.starts_with("delivery-"), "{id} could collide with one of SQLFlow's ids");
-            if page.meta.path.starts_with("osdu/docs/decisions/") {
-                assert_eq!(page.meta.doc_type, "decision", "{id}");
+            if let Some(rest) = page.meta.path.strip_prefix("osdu/docs/wiki/") {
+                let folder = rest.split('/').next().unwrap_or_default();
+                assert!(
+                    WIKI_TYPES.contains(&(page.meta.doc_type.as_str(), folder)),
+                    "{id} is a {} page in osdu/docs/wiki/{folder}",
+                    page.meta.doc_type
+                );
+                assert!(id.starts_with("delivery-wiki-"), "{id} is a wiki page, so its id starts delivery-wiki-");
             } else {
                 assert!(REFERENCE_TYPES.contains(&page.meta.doc_type.as_str()), "{id} has the type {}", page.meta.doc_type);
             }

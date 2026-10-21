@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0017
+id: delivery-wiki-0017-pipelines-update-the-cache
 title: "Decision 0017: A pipeline names the cache it needs current before it runs and the cache it updates after"
 type: decision
 summary: "Why the cache steps belong to the pipeline, why before is mandatory and after is not, why after reads storage, and how held records wait for what they miss."
@@ -10,17 +10,19 @@ keywords:
   - update the cache after a pipeline
   - cache update during a schedule
   - held record waits for a reference
-related:
+referenceRefs:
   - delivery-concept-partition-cache
   - delivery-flow-delivery
   - delivery-flow-cache
   - delivery-concept-lineage
-  - delivery-decision-0016
+related:
+  - delivery-wiki-0016-osdu-order
+updated: 2026-10-20
 ---
 # 0017: A pipeline names the cache it needs current before it runs and the cache it updates after
 
-Status: proposed. Documented in [the partition cache](../reference/concepts/partition-cache.md#pipelines-bring-the-cache-up-to-date)
-and [the delivery flow](../reference/flow/delivery.md#cache). Answers what [0016](0016-osdu-order.md) left open.
+Status: proposed. Documented in [the partition cache](../../reference/concepts/partition-cache.md#pipelines-bring-the-cache-up-to-date)
+and [the delivery flow](../../reference/flow/delivery.md#cache). Answers what [0016](0016-osdu-order.md) left open.
 
 ## Context
 

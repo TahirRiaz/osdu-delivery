@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0008
+id: delivery-wiki-0008-retrieval-lands-raw-records
 title: "Decision 0008: retrieval lands records as OSDU holds them"
 type: decision
 summary: "Why a retrieval flow brings OSDU records back unchanged instead of reversing a mapping."
@@ -9,13 +9,14 @@ keywords:
   - "reverse mapping"
   - "osdu to lake"
   - "landing"
-related:
+referenceRefs:
   - delivery-flow-retrieval
   - delivery-guide-retrieving-records
+updated: 2026-10-16
 ---
 # 0008: The retrieval kind lands records as OSDU holds them
 
-Status: proposed. Documented in [retrieval](../reference/flow/retrieval.md).
+Status: proposed. Documented in [retrieval](../../reference/flow/retrieval.md).
 
 ## Context
 

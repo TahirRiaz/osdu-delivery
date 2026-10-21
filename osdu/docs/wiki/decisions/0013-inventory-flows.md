@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0013
+id: delivery-wiki-0013-inventory-flows
 title: "Decision 0013: inventory flows compare what OSDU serves with every ledger of the partition"
 type: decision
 summary: "Why finding orphans needs a read of what OSDU serves set against every ledger, and what an inventory compares."
@@ -9,13 +9,17 @@ keywords:
   - "stale ids"
   - "forgotten ids"
   - "ledger drift"
-related:
+referenceRefs:
   - delivery-flow-inventory
   - delivery-guide-finding-orphans
+related:
+  - delivery-wiki-0012-atomic-delivery
+  - delivery-wiki-0014-inventory-removals
+updated: 2026-10-16
 ---
 # 0013: Inventory flows read what OSDU serves and compare it with every ledger of the partition
 
-Status: proposed. Documented in [inventory flow](../reference/flow/inventory.md).
+Status: proposed. Documented in [inventory flow](../../reference/flow/inventory.md).
 
 ## Context
 

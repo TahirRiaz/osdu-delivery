@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0016
+id: delivery-wiki-0016-osdu-order
 title: "Decision 0016: OSDU's relationships order a repository's waves, and dependencies between schedules are shown, not enforced"
 type: decision
 summary: "Why lineage orders delivery flows by the relationships OSDU's schemas declare, and why schedules that depend on each other are shown rather than chained."
@@ -12,16 +12,19 @@ keywords:
   - "schedule dependencies"
   - "cross schedule"
   - "osdu lineage by release"
-related:
+referenceRefs:
   - delivery-concept-osdu-order
   - delivery-concept-lineage
   - delivery-flow-interfaces
-  - delivery-decision-0009
   - concept-lineage-graph-and-plan
+related:
+  - delivery-wiki-0009-searched-references
+  - delivery-wiki-0017-pipelines-update-the-cache
+updated: 2026-10-20
 ---
 # 0016: OSDU's relationships order a repository's waves, and dependencies between schedules are shown, not enforced
 
-Status: proposed. Documented in [the OSDU order](../reference/concepts/osdu-order.md) and [lineage](../reference/concepts/lineage.md).
+Status: proposed. Documented in [the OSDU order](../../reference/concepts/osdu-order.md) and [lineage](../../reference/concepts/lineage.md).
 Answers the ordering question [0009](0009-searched-references.md) left to lineage.
 
 ## Context

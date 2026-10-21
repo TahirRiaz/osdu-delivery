@@ -273,10 +273,11 @@ for the project's working rules.
 ## Learn more
 
 - [What OSDU Delivery is](osdu/docs/reference/concepts/overview.md): the product on one page
-- [Pattern catalog](osdu/docs/reference/guides/pattern-catalog.md): which configuration solves which delivery problem
+- [Pattern catalog](osdu/docs/wiki/maps/pattern-catalog.md): which configuration solves which delivery problem
 - [Reference documentation](osdu/docs/reference/README.md): every flow, mapping key, command and concept
 - [Architecture](osdu/docs/reference/concepts/architecture.md): components, databases and how it sits on SQLFlow
-- [Decision records](osdu/docs/decisions/README.md): the design choices and why they were made
+- [Wiki](osdu/docs/wiki/index.md): why it is this way and how the pieces fit: the decisions, patterns, narratives,
+  incidents and maps
 - [osdu/README.md](osdu/README.md): a map of the module's code
 
 ## License and contact
