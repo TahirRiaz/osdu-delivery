@@ -6557,7 +6557,8 @@
         "recordpath"
       ],
       "related": [
-        "delivery-wiki-0009-searched-references"
+        "delivery-wiki-0009-searched-references",
+        "delivery-wiki-0018-template-folders"
       ],
       "sourceRefs": []
     },
@@ -6663,7 +6664,8 @@
         "reference data"
       ],
       "related": [
-        "delivery-wiki-0003-rendering-location"
+        "delivery-wiki-0003-rendering-location",
+        "delivery-wiki-0018-template-folders"
       ],
       "sourceRefs": []
     },
@@ -6681,7 +6683,9 @@
         "test report",
         "template check"
       ],
-      "related": [],
+      "related": [
+        "delivery-wiki-0018-template-folders"
+      ],
       "sourceRefs": []
     },
     {
@@ -6698,7 +6702,9 @@
         "ranges",
         "keys"
       ],
-      "related": [],
+      "related": [
+        "delivery-wiki-0018-template-folders"
+      ],
       "sourceRefs": []
     },
     {
@@ -6804,7 +6810,8 @@
       ],
       "related": [
         "delivery-wiki-0009-searched-references",
-        "delivery-wiki-0017-pipelines-update-the-cache"
+        "delivery-wiki-0017-pipelines-update-the-cache",
+        "delivery-wiki-0018-template-folders"
       ],
       "sourceRefs": []
     },
@@ -6829,6 +6836,41 @@
       "sourceRefs": []
     },
     {
+      "id": "delivery-wiki-0018-template-folders",
+      "corpus": "wiki",
+      "path": "decisions/0018-template-folders.md",
+      "title": "Decision 0018: A repository's template folders settle the template each document fills, and the library only assists",
+      "type": "decision",
+      "summary": "Why templates live as files in a repository's template folders, how a document's template is settled, and why the saved templates stay as a library.",
+      "keywords": [
+        "template folder",
+        "templates folder",
+        "template version",
+        "kind alone",
+        "nearest folder",
+        "custom template",
+        "template library",
+        "repository templates"
+      ],
+      "related": [
+        "delivery-wiki-0003-rendering-location",
+        "delivery-wiki-0009-searched-references",
+        "delivery-wiki-0010-assertion-flows-read-only",
+        "delivery-wiki-0011-dimension-flows",
+        "delivery-wiki-0016-osdu-order"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateChain.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateSource.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateStore.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/SyncedTemplates.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs"
+      ]
+    },
+    {
       "id": "delivery-wiki-pattern-catalog",
       "corpus": "wiki",
       "path": "maps/pattern-catalog.md",
@@ -6851,11 +6893,13 @@
         "partitions"
       ],
       "related": [
-        "wiki-pattern-catalog"
+        "wiki-pattern-catalog",
+        "delivery-wiki-0018-template-folders"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Documents/CacheDocumentMapper.cs",
         "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs",
         "osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs",

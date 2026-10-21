@@ -12,11 +12,16 @@ keywords:
 referenceRefs:
   - delivery-flow-assertion
   - delivery-guide-data-quality-tests
-updated: 2026-10-16
+related:
+  - delivery-wiki-0018-template-folders
+updated: 2026-10-21
 ---
 # 0010: Assertion flows read OSDU, check themselves against templates, and keep whole reports
 
 Status: proposed. Documented in [assertion flow](../../reference/flow/assertion.md).
+
+> **Amended by [0018](0018-template-folders.md).** A test is checked against the template the template folders on the
+> flow's path hold, not the saved template of its kind.
 
 ## Context
 

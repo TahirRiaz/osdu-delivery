@@ -33,3 +33,22 @@ keeping their numbered filenames, and folded their README's framing and open que
 names the records each one links to, and `updated` is the date of each record's last change. Moved the pattern
 catalog from the reference guides into [maps/pattern-catalog.md](maps/pattern-catalog.md), where SQLFlow keeps its
 own; its rows still point at reference pages until the patterns are ingested.
+
+## [2026-10-21] ingest | Template folders, decision 0018
+
+Source: the change that moves templates into repository template folders: the code under
+`osdu/src/SqlFlow.Delivery/Templates/` (`TemplateFolders.cs`, `TemplateChain.cs`, `TemplateSource.cs`), the catalog side
+(`osdu/src/SqlFlow.Delivery/Catalog/SyncedTemplates.cs`, `DeliveryCatalogSync.cs`), and the reference pages it rewrote
+([templates](../reference/concepts/templates.md), [sqlflow template](../reference/cli/template.md),
+[osdu.RepositoryTemplate](../reference/tables/repository-template.md)).
+
+Wrote [0018](decisions/0018-template-folders.md): why a repository's template folders settle the template each document
+fills (a working copy can be read and checked in VS Code, a template of one's own is used as committed, and each project
+of a repository keeps its own versions), why the saved templates stay as a library that only assists, and why a template
+path in each document was not taken. Amended [0003](decisions/0003-rendering-location.md),
+[0009](decisions/0009-searched-references.md), [0010](decisions/0010-assertion-flows-read-only.md),
+[0011](decisions/0011-dimension-flows.md) and [0016](decisions/0016-osdu-order.md) with a note each saying what 0018
+changes in them, since each named the saved template as what a document is read against. In the
+[pattern catalog](maps/pattern-catalog.md), the rows on starting a mapping, on `template.version` and on lineage's
+missing cache reads now name template folders, and two rows were added: two projects of one repository filling different
+versions of one kind, and a kind of one's own. Indexed 0018.

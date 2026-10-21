@@ -20,6 +20,7 @@ keywords:
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/CacheDocumentMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs
+  - osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs
@@ -47,9 +48,11 @@ referenceRefs:
   - delivery-flow-routes
   - delivery-guide-getting-started
   - delivery-concept-overview
+  - delivery-concept-templates
 related:
   - wiki-pattern-catalog
-updated: 2026-10-16
+  - delivery-wiki-0018-template-folders
+updated: 2026-10-21
 ---
 
 # Pattern catalog: which delivery problem maps to which OSDU Delivery shape
@@ -103,7 +106,9 @@ it is.
 
 | Problem | Shape | Page |
 | --- | --- | --- |
-| Start a mapping from an OSDU schema | Save the template (`sqlflow template capture` or the Templates page), then the mapping builder | [templates](../../reference/concepts/templates.md), [writing a mapping](../../reference/guides/writing-a-mapping.md) |
+| Start a mapping from an OSDU schema | Put the template in a `templates` folder on the mapping's path (`sqlflow template capture --out`, or **Download** on the Templates page), then the mapping builder | [templates](../../reference/concepts/templates.md#template-folders), [writing a mapping](../../reference/guides/writing-a-mapping.md) |
+| Two projects of one repository fill different versions of one kind | A `templates` folder in each project: a document reads the nearest folder holding the kind, and may name its kind alone | [templates](../../reference/concepts/templates.md#template-folders) |
+| A kind of one's own, or one extended for a project | `sqlflow template import <file> --kind <kind> --out <folder>/<file>.json`, committed with the mappings; the next sync uses it | [templates](../../reference/concepts/templates.md#templates-of-ones-own), [sqlflow template](../../reference/cli/template.md) |
 | A property only applies to some rows | `$when: <condition>` on the node | [mapping values](../../reference/flow/mapping-values.md), [expressions](../../reference/flow/mapping-expressions.md) |
 | An empty value should leave the property out rather than hold the record | `$required: false` | [mapping values](../../reference/flow/mapping-values.md) |
 | A value needs computing (concatenation, arithmetic, a choice) | `$expr` | [expressions](../../reference/flow/mapping-expressions.md) |
@@ -195,9 +200,9 @@ The route is `target.protocol` (or, in a source with interfaces, follows from wh
 | --- | --- |
 | OSDU documents refuse unknown keys (SQLFlow's ignore them): a typo fails validation, which is the point | [OSDU documents](../../reference/flow/overview.md) |
 | `sqlflow validate` on a flow reads the mapping it pins and the dictionaries it names, but not the template or the cache; `sqlflow check` holds the mapping against the template and the partition's cache | [check](../../reference/cli/check.md) |
-| A mapping's `template.version` is the saved template's hash, and another release of the same kind can give another one | [templates](../../reference/concepts/templates.md) |
+| A mapping's `template.version` is the template's hash, and another release of the same kind can give another one; left out, the nearest template folder holding the kind settles it, and a folder holding two versions of the kind refuses to guess | [templates](../../reference/concepts/templates.md#template-folders) |
 | The flow's `source.record.key` and the mapping's `dataset.key` must name the same columns in the same order | [delivery flow](../../reference/flow/delivery.md) |
 | Changing `dataset.system` or `dataset.key` derives new delivery keys: with the default `idFrom`, every row becomes a new record with a new OSDU id, beside the ones already delivered. A change that gives an existing record another id is held instead of sent | [mapping](../../reference/flow/mapping.md) |
 | A mapping that reads the cache needs a cache version of the partition before the first run | [preflight](../../reference/concepts/preflight.md), [partition cache](../../reference/concepts/partition-cache.md) |
-| Lineage shows fewer cache reads than a mapping makes until its template is saved | [lineage](../../reference/concepts/lineage.md) |
+| Lineage shows fewer cache reads than a mapping makes until a template folder on its path holds its template | [lineage](../../reference/concepts/lineage.md) |
 | The ingestion database must allow snapshot isolation, or set `source.incremental.isolation: readCommitted` | [delivery flow](../../reference/flow/delivery.md) |

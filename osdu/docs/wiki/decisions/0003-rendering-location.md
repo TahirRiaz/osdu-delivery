@@ -15,11 +15,16 @@ referenceRefs:
   - delivery-concept-change-detection
 related:
   - delivery-wiki-0009-searched-references
-updated: 2026-10-16
+  - delivery-wiki-0018-template-folders
+updated: 2026-10-21
 ---
 # 0003: Rendering runs in the delivery service
 
 Status: proposed. Documented in [templates](../../reference/concepts/templates.md) and [architecture](../../reference/concepts/architecture.md).
+
+> **Amended by [0018](0018-template-folders.md).** The decision stands: the delivery renders the mapping against a
+> template and a cache version. The template is no longer read from the catalog: it is the version the template folders
+> on the mapping's path hold, and the catalog's saved templates only assist.
 
 ## Context
 
