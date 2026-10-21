@@ -344,13 +344,15 @@ See [the explorer](explorer.md) and [search terms](search-terms.md).
 | `GET /inventories/lookup` | read | `id`, `partition` | What every inventory of the partition holds of one OSDU id; 400 when no partition is named or sent. |
 | `GET /flows/{pipelineId}/inventories` | read | `partition` | An inventory flow's inventories; 409 for another kind. |
 | `GET /inventories/{partition}/{inventoryId}` | read | | One inventory with its counts by finding, owners and last runs. |
-| `GET /inventories/{partition}/{inventoryId}/records` | read | `finding`, `after`, `limit` (100, at most 1,000) | A page of its ids. |
+| `GET /inventories/{partition}/{inventoryId}/records` | read | `finding`, `selection`, `after`, `limit` (100, at most 1,000) | A page of its ids; with `selection`, only those the selection holds, each with the version and values its match read. |
 | `GET /inventories/{partition}/{inventoryId}/runs` | read | `limit` (30, at most 200) | Its builds and reconciles. |
-| `GET /inventories/{partition}/{inventoryId}/export` | read | `finding` | Its ids as CSV. |
+| `GET /inventories/{partition}/{inventoryId}/export` | read | `finding`, `selection` | Its ids as CSV; with `selection`, only those the selection holds, with a column for each property its conditions ask. |
+| `GET /inventories/{partition}/{inventoryId}/selections/{selectionId}` | read | | One selection: where its match stands, whether it is stale, what it read and found, and its ids counted by finding. 404 for one of another inventory. |
 | `GET /inventories/{partition}/{inventoryId}/removals` | read | `limit` | Its removals, newest first. |
 | `GET /inventories/{partition}/removals/{removalId}` | read | | One removal. |
 | `GET /inventories/{partition}/removals/{removalId}/items` | read | `outcome`, `after`, `limit` | What the removal did to each id. |
-| `POST /inventories/{partition}/{inventoryId}/removals` | operate | body `finding`, `scope`, `expected`, `ids`, `confirm`, `pool` | 202 with the run that removes the ids of one finding from OSDU, or (`gone`, scope `inventory`) from the inventory. |
+| `POST /inventories/{partition}/{inventoryId}/removals` | operate | body `finding`, `scope`, `expected`, `ids` or `selection`, `confirm`, `pool` | 202 with the run that removes the ids of one finding from OSDU (every one, those named, or those a selection holds), or (`gone`, scope `inventory`) from the inventory. |
+| `POST /inventories/{partition}/{inventoryId}/selections` | operate | body `filters`, `refresh`, `pool` | Selects the ids that hold what the conditions ask in OSDU: 200 with the match already made of the same conditions against the inventory's last build, else 202 with a new one queued as a `match` run of the flow. 400 for conditions that cannot be asked; 409 for an inventory never built or no longer declared. |
 | `POST /inventories/{partition}/{inventoryId}/repairs` | operate | body `expected`, `ids`, `newIds`, `confirm`, `pool` | Delivers again the records behind missing ids through their flows, under their own ids or new ones: 202 with each flow's marked records and queued run, and the ids left with why (200 when it queued none). |
 
 See [assertion flows](../flow/assertion.md), [dimension flows](../flow/dimension.md) and

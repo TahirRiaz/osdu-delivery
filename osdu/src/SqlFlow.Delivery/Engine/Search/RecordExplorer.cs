@@ -597,6 +597,19 @@ public sealed partial class RecordExplorer
     }
 
     /// <summary>
+    /// The explorer reading through a search of its caller's own: an inventory's match reads the conditions an operator wrote
+    /// in the explorer's terms through its flow's source, with that flow's search paths and paging.
+    /// </summary>
+    internal RecordExplorer(OsduSearch search, string? partition, ILogger log)
+    {
+        ArgumentNullException.ThrowIfNull(search);
+        ArgumentNullException.ThrowIfNull(log);
+        _search = search;
+        _partition = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
+        _log = log;
+    }
+
+    /// <summary>
     /// What a reader's search asks (see the remarks on <see cref="RecordExplorer"/>), in the data partition
     /// <paramref name="partition"/> an id written without one is read in. Pure: the same search reads the same way.
     /// </summary>

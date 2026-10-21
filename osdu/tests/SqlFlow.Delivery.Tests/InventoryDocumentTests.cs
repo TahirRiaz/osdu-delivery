@@ -295,6 +295,45 @@ public class InventoryDocumentTests
     }
 
     [Fact]
+    public void A_match_run_names_one_inventory_and_the_selection_it_fills_and_a_removal_may_take_the_ids_of_a_selection()
+    {
+        var match = DeliveryRunPayload.Parse("""{ "inventories": ["WellLogs"], "selection": 12 }""");
+        Assert.Equal((12L, true), (match.SelectionId!.Value, match.SelectsInventories));
+        Assert.Equal("""{"inventories":["WellLogs"],"selection":12}""", match.ToJson());
+        Assert.Contains("payload selection must be the number", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "selection": 0 }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("payload selection must be the number", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "selection": "12" }""")).Message, StringComparison.Ordinal);
+
+        var kind = new InventoryFlowKind(new DeliveryDocumentLoader());
+        Assert.Contains(kind.Operations, o => o.Name == DeliveryOperations.Match && !o.WritesTarget);
+        kind.ValidateParameters(new RunParameters { Operation = DeliveryOperations.Match, Payload = match.ToJson() });
+        Assert.Contains("names the one inventory it matches", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters
+        {
+            Operation = DeliveryOperations.Match, Payload = """{ "inventories": ["WellLogs", "Wells"], "selection": 12 }""",
+        })).Message, StringComparison.Ordinal);
+        Assert.Contains("names the one inventory it matches", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters
+        {
+            Operation = DeliveryOperations.Match, Payload = """{ "inventories": ["WellLogs"] }""",
+        })).Message, StringComparison.Ordinal);
+        Assert.Contains("payload selection does not apply to the build operation", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Payload = match.ToJson() })).Message, StringComparison.Ordinal);
+        Assert.Contains("does not apply to the match operation", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters
+        {
+            Operation = DeliveryOperations.Match, Payload = """{ "inventories": ["WellLogs"], "selection": 12, "confirm": "dev" }""",
+        })).Message, StringComparison.Ordinal);
+        Assert.Equal(DeliveryOperations.Match, InventoryFlowKind.Operation(new RunParameters { Operation = DeliveryOperations.Match }));
+
+        // A removal takes the ids of one finding a selection holds, and names no ids of its own beside them.
+        var selected = DeliveryRunPayload.Parse("""{ "inventories": ["WellLogs"], "confirm": "dev", "removal": { "finding": "orphan", "scope": "record", "expected": 212, "selection": 12 } }""").Removal!;
+        Assert.Equal(("orphan", 212L, 12L, false), (selected.Finding, selected.Expected, selected.Selection!.Value, selected.NamesIds));
+        Assert.Equal(12L, DeliveryRunPayload.Parse(new DeliveryRunPayload { Removal = selected }.ToJson()).Removal!.Selection);
+        Assert.Contains("names both ids and a selection", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse(
+            """{ "removal": { "finding": "orphan", "scope": "record", "expected": 1, "ids": ["a:b:c"], "selection": 12 } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("a selection holds ids OSDU serves", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse(
+            """{ "removal": { "finding": "gone", "scope": "inventory", "expected": 1, "selection": 12 } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("removal.selection must be the number", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse(
+            """{ "removal": { "finding": "orphan", "scope": "record", "expected": 1, "selection": -1 } }""")).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_remove_run_names_one_inventory_what_it_removes_and_the_partition_it_confirms_and_no_other_run_takes_a_removal()
     {
         var payload = DeliveryRunPayload.Parse("""{ "inventories": ["WellLogs"], "confirm": "dev", "removal": { "finding": "orphan", "scope": "record", "expected": 2, "ids": ["dev:wpc--WellLog:a", "dev:wpc--WellLog:b"] } }""");
@@ -352,12 +391,12 @@ public class InventoryDocumentTests
     }
 
     [Fact]
-    public void The_kind_offers_build_reconcile_plan_and_remove_and_only_a_plan_keeps_nothing()
+    public void The_kind_offers_build_reconcile_plan_remove_and_match_and_neither_a_plan_nor_a_match_writes_the_inventories()
     {
         var kind = new InventoryFlowKind(new DeliveryDocumentLoader());
 
         Assert.Equal("inventory", kind.FlowType);
-        Assert.Equal([("build", true), ("reconcile", true), ("plan", false), ("remove", true)], kind.Operations.Select(o => (o.Name, o.WritesTarget)));
+        Assert.Equal([("build", true), ("reconcile", true), ("plan", false), ("remove", true), ("match", false)], kind.Operations.Select(o => (o.Name, o.WritesTarget)));
         var document = Assert.IsType<InventoryFlowDocument>(kind.Parse(Head + WellLogs, "flows/inventory.yaml"));
         Assert.Equal(("welllog-inventory", "inventory", "reconciliation"), (document.Name, document.Kind, document.Batch));
         Assert.Equal(("${env:OSDU_URL}", InventoryFlowDocument.InventoriesTarget), (document.SourceReference, document.TargetReference));

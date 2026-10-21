@@ -23,17 +23,22 @@ import { isApiError } from "@/api/client";
 import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
 import { formatDurationSeconds, parseUtc } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { REMOVABLE_FINDINGS, inventoryApi, type Inventory, type InventoryDetail, type InventoryRun } from "../../../api/inventories";
+import type { ExplorerFilter } from "../../../api/explorer";
+import { REMOVABLE_FINDINGS, inventoryApi, type Inventory, type InventoryDetail, type InventoryRun, type InventorySelection } from "../../../api/inventories";
 import { KindText } from "../KindText";
 import { useActivePartition } from "../activePartition";
 import { RunRef } from "../DeliveryRefs";
 import { ProblemView } from "../TemplateSheet";
 import { ExplainTip } from "@/components/ExplainTip";
+import { ExplorerAddFilter } from "../explorer/ExplorerFilters";
+import { sameFilter } from "../explorer/explorerModel";
 import { RunStatusPill, StandingGlyph } from "./InventoryBadges";
 import { InventoryFindingStrip } from "./InventoryFindingStrip";
 import { InventoryLookupBox } from "./InventoryLookup";
 import { InventoryRecordsGrid } from "./InventoryRecordsGrid";
 import { InventoryRemovals } from "./InventoryRemovals";
+import { InventoryConditionsBar } from "./InventorySelectionParts";
+import { matchedCounts, useConditionSentence, useInventorySelection } from "./inventorySelection";
 import {
   EVERY_ID, allCounts, counted, downloadInventory, findingVisual, inventoriesPayload, openingFinding, ownersSourceText, runOutcome, standingOf,
   type FindingPick, type InventoryRef, type InventoryView,
@@ -208,14 +213,17 @@ function AboutTip({ detail }: { detail: InventoryDetail }) {
   );
 }
 
-/** The whole of an inventory's ids, or those of the finding in view, downloaded as CSV. */
-function ExportMenu({ inventory, finding }: { inventory: Inventory; finding: string | null }) {
+/**
+ * The whole of an inventory's ids, or those of the finding in view, downloaded as CSV; while conditions select ids, those that
+ * match come first, each with what it held at the properties the conditions ask.
+ */
+function ExportMenu({ inventory, finding, selection }: { inventory: Inventory; finding: string | null; selection: InventorySelection | undefined }) {
   const [busy, setBusy] = useState(false);
-  const download = async (what: string | null) => {
+  const download = async (what: string | null, matching: boolean) => {
     setBusy(true);
     try {
-      await downloadInventory(inventory, what);
-      toast.success(`Downloaded the ${what === null ? "" : `${findingVisual(what).label.toLowerCase()} `}ids of ${inventory.name}`);
+      await downloadInventory(inventory, what, matching ? selection?.selectionId : undefined);
+      toast.success(`Downloaded the ${matching ? "matching " : ""}${what === null ? "" : `${findingVisual(what).label.toLowerCase()} `}ids of ${inventory.name}`);
     } catch (error) {
       toast.error(`The ids of ${inventory.name} could not be downloaded: ${isApiError(error) ? error.detail ?? error.title : String(error)}`);
     } finally {
@@ -235,14 +243,26 @@ function ExportMenu({ inventory, finding }: { inventory: Inventory; finding: str
         </TooltipTrigger>
         <TooltipContent>Export the ids as CSV</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" className="w-72">
-        {finding !== null && (
-          <DropdownMenuItem onSelect={() => void download(finding)} data-testid="inventory-export-finding">
+      <DropdownMenuContent align="end" className="w-80">
+        {selection !== undefined && finding !== null && (
+          <DropdownMenuItem onSelect={() => void download(finding, true)} data-testid="inventory-export-matching-finding">
             <Download />
-            The {findingVisual(finding).label.toLowerCase()} ids as CSV
+            The matching {findingVisual(finding).label.toLowerCase()} ids as CSV, with their values
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onSelect={() => void download(null)} data-testid="inventory-export-all">
+        {selection !== undefined && (
+          <DropdownMenuItem onSelect={() => void download(null, true)} data-testid="inventory-export-matching">
+            <Download />
+            Every matching id as CSV, with its finding and values
+          </DropdownMenuItem>
+        )}
+        {finding !== null && (
+          <DropdownMenuItem onSelect={() => void download(finding, false)} data-testid="inventory-export-finding">
+            <Download />
+            {`${selection === undefined ? "The" : "Every"} ${findingVisual(finding).label.toLowerCase()} id as CSV`}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem onSelect={() => void download(null, false)} data-testid="inventory-export-all">
           <Download />
           Every id as CSV, with its finding
         </DropdownMenuItem>
@@ -341,8 +361,13 @@ function InventoryRuns({ inventory }: { inventory: Inventory }) {
  * line of tabs with the export and the columns at its end, paged in place in a grid that fills the window; and its runs. An
  * id opens in a panel under the grid, as OSDU holds it. The finding, the tab and the id open live in the address, so a
  * link lands on the same view.
+ *
+ * Its ids can be selected by what OSDU holds (osdu/docs/reference/flow/inventory.md, Selecting ids by what OSDU holds): a
+ * condition on a property of the records or a column of a source system, made in the explorer's editor from the grid's
+ * Filter, opens a match the flow runs; while it holds, every tab counts its matching ids before its own and the grid lists
+ * them. The conditions live in the address too.
  */
-export function InventoryReport({ reference, siblings, finding, onFinding, view, onView, onOpen, openId, onOpenId }: {
+export function InventoryReport({ reference, siblings, finding, onFinding, view, onView, onOpen, openId, onOpenId, conditions, onConditions }: {
   reference: InventoryRef;
   /** The inventories the switcher lists. */
   siblings: readonly Inventory[];
@@ -356,8 +381,13 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
   openId: string | null;
   /** Opens an id in the panel, or closes it with null. */
   onOpenId: (id: string | null) => void;
+  /** The conditions the ids are selected by; none lists every id of the finding. */
+  conditions: ExplorerFilter[];
+  /** Sets the conditions; none drops the selection. */
+  onConditions: (conditions: ExplorerFilter[]) => void;
 }) {
   const [launching, setLaunching] = useState(false);
+  const selection = useInventorySelection(reference, conditions);
   const [active] = useActivePartition();
   const queryClient = useQueryClient();
   const { hasScope } = useAuth();
@@ -374,6 +404,7 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
     queryFn: () => inventoryApi.removals(reference.partition, reference.inventoryId, RUNS_SHOWN),
     refetchInterval: (query) => ((query.state.data ?? []).some((r) => r.status === "running") ? REMOVAL_REFRESH_MS : IDLE_REFRESH_MS),
   });
+  const sentence = useConditionSentence(detail.data?.inventory.kind, conditions);
 
   // A removal that finishes changed the inventory's rows: its counts and its grid are read again, rather than a minute later.
   const running = (removals.data ?? []).filter((r) => r.status === "running").map((r) => r.inventoryRemovalId).join(",");
@@ -384,6 +415,7 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
     if (finished.length > 0) {
       void queryClient.invalidateQueries({ queryKey: ["delivery", "inventories", "detail", reference.partition, reference.inventoryId] });
       void queryClient.invalidateQueries({ queryKey: ["delivery", "inventories", "records", reference.partition, reference.inventoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "inventories", "selection", reference.partition, reference.inventoryId] });
     }
   }, [running, queryClient, reference.partition, reference.inventoryId]);
 
@@ -410,7 +442,11 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
   const standing = standingOf(inventory, data.declared !== false);
   const counts = allCounts(data.counts);
   const chosen = finding === EVERY_ID ? null : finding ?? openingFinding(counts);
-  const total = chosen === null ? data.ids : counts.find((count) => count.finding === chosen)?.count ?? null;
+  // While a match holds ids, the tabs count its ids of each finding and the grid lists only those.
+  const matched = selection.phase === "completed" || selection.phase === "stale" ? matchedCounts(selection.selection) : null;
+  const total = matched !== null
+    ? chosen === null ? [...matched.values()].reduce((sum, count) => sum + count, 0) : matched.get(chosen) ?? 0
+    : chosen === null ? data.ids : counts.find((count) => count.finding === chosen)?.count ?? null;
   const dot = <span className="text-muted-foreground/50" aria-hidden>·</span>;
   const latest = inventory.latest;
   const failedAfter = latest !== undefined && latest.status === "failed" && latest.inventoryRunId !== inventory.lastReconcileRunId ? latest : undefined;
@@ -528,7 +564,7 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
                 inventory={inventory}
                 finding={chosen}
                 total={total}
-                leading={<InventoryFindingStrip total={data.ids} counts={counts} selected={chosen} onSelect={(picked) => onFinding(picked ?? EVERY_ID)} />}
+                leading={<InventoryFindingStrip total={data.ids} counts={counts} selected={chosen} onSelect={(picked) => onFinding(picked ?? EVERY_ID)} matched={matched} />}
                 trailing={(
                   <>
                     {canReadOsdu && removalOff(data, chosen) !== null && (
@@ -539,9 +575,21 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
                         </span>
                       </RichTooltip>
                     )}
-                    <ExportMenu inventory={inventory} finding={chosen} />
+                    {canReadOsdu && (
+                      <ExplorerAddFilter
+                        compact
+                        partition={inventory.partition}
+                        request={{ kind: inventory.kind, filters: conditions }}
+                        onAdd={(filter) => onConditions([...conditions.filter((kept) => !sameFilter(kept, filter)), filter])}
+                        title="Select the ids by what OSDU holds: a property of the records, or a column of a source system the flows read"
+                        testId="inventory-add-condition"
+                      />
+                    )}
+                    <ExportMenu inventory={inventory} finding={chosen} selection={matched === null ? undefined : selection.selection} />
                   </>
                 )}
+                below={<InventoryConditionsBar inventory={inventory} conditions={conditions} onConditions={onConditions} state={selection} sentence={sentence} />}
+                selection={conditions.length === 0 ? undefined : { state: selection, sentence, onClear: () => onConditions([]) }}
                 openId={openId}
                 onOpen={canReadOsdu ? onOpenId : undefined}
                 removal={canReadOsdu ? data.removal : undefined}

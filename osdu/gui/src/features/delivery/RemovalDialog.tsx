@@ -51,11 +51,16 @@ export type RemovalSelection =
 export interface InventoryRemovalTarget {
   inventory: Inventory;
   finding: string;
-  /** The ids picked; null removes every id of the finding. */
+  /** The ids picked; null removes every id of the finding (of the selection, when one is named). */
   ids: readonly string[] | null;
   count: number;
   /** What the flow lets an operator remove from OSDU; absent for gone ids, which go from the inventory alone. */
   policy?: InventoryRemovalPolicy;
+  /**
+   * The selection whose ids of the finding are removed, every one of them: those that held what the operator's conditions
+   * asked in OSDU, with the conditions as a sentence.
+   */
+  selection?: { id: number; sentence: string };
 }
 
 /** The records of a flow's ledger the dialog removes. */
@@ -364,6 +369,7 @@ export function RemovalDialog(props: RemovalDialogProps) {
         expected: asked.count,
         confirm: typed.trim(),
         ...(asked.ids === null ? {} : { ids: [...asked.ids] }),
+        ...(asked.ids === null && asked.selection !== undefined ? { selection: asked.selection.id } : {}),
       }));
     },
     onSuccess: () => onClose(),
@@ -411,9 +417,12 @@ export function RemovalDialog(props: RemovalDialogProps) {
   const known = of !== null || target !== undefined;
 
   const label = of === null ? "" : findingVisual(of.finding).label.toLowerCase();
+  const bySelection = of !== null && of.ids === null && of.selection !== undefined ? of.selection : null;
   const subject = of !== null
     ? of.ids === null
-      ? `${counted(of.count, `${label} id`)} of ${of.inventory.name}, every one`
+      ? bySelection !== null
+        ? `${counted(of.count, `${label} id`)} of ${of.inventory.name} matching the conditions`
+        : `${counted(of.count, `${label} id`)} of ${of.inventory.name}, every one`
       : `${counted(of.count, `picked ${label} id`)} of ${of.inventory.name}`
     : capped
       ? `More than one removal takes: ${records.toLocaleString()}${selection!.kind === "filter" ? "+" : ""} records. Narrow the selection and remove them in parts.`
@@ -437,7 +446,7 @@ export function RemovalDialog(props: RemovalDialogProps) {
     <p className="flex items-start gap-2 text-[12px] leading-snug text-muted-foreground" data-testid="removal-rechecks">
       <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />
       <span className="flex-1">
-        {`Each id is checked again just before it goes; one that moved since the inventory found it is left ${fromInventory ? "in the inventory" : "in OSDU"} and kept with why.${of.ids === null ? ` The run starts only while the inventory holds exactly ${of.count.toLocaleString("en-US")} ${label} id${of.count === 1 ? "" : "s"}.` : ""}`}
+        {`Each id is checked again just before it goes; one that moved since the inventory found it is left ${fromInventory ? "in the inventory" : "in OSDU"} and kept with why.${of.ids === null ? ` The run starts only while the ${of.selection === undefined ? "inventory" : "match"} holds exactly ${of.count.toLocaleString("en-US")} ${label} id${of.count === 1 ? "" : "s"}.` : ""}`}
       </span>
       <InfoTip label="What is checked again" testId="removal-rechecks-info">
         <ul className="flex list-disc flex-col gap-0.5 pl-4">
@@ -502,6 +511,12 @@ export function RemovalDialog(props: RemovalDialogProps) {
             {subject}
             {removedNote !== null && !capped && <span className="text-muted-foreground/80">{` · ${removedNote}`}</span>}
           </AlertDialogDescription>
+          {bySelection !== null && (
+            <p className="flex items-start gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[12.5px]" data-testid="removal-selected-by">
+              <span className="shrink-0 text-muted-foreground">Selected by</span>
+              <span className="min-w-0 break-words font-medium">{bySelection.sentence}</span>
+            </p>
+          )}
         </AlertDialogHeader>
 
         {preview.isError && (isApiError(preview.error)

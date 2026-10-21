@@ -451,6 +451,247 @@ public sealed class DeliveryInventoryApiTests
     }
 
     [Fact]
+    public async Task A_selection_is_matched_by_a_run_of_the_flow_read_back_with_its_counts_and_ids_and_a_removal_takes_its_ids_while_it_holds()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var flowName = "api-selection-" + suffix;
+        var partition = "sl" + suffix;
+        var repoId = FlowIdentity.FromName("repo/cp-selections-" + suffix);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var yaml = $$"""
+            flowType: inventory
+            name: {{flowName}}
+            partitions: [{{partition}}]
+            owners: [{{Estate}}]
+            source:
+              endpoint: http://localhost
+            removal: { findings: [orphan] }
+            inventories:
+              - name: WellLogs
+                kind: "{{WellLog}}"
+            """;
+        var flow = new DeliveryDocumentLoader().ParseInventory(yaml, "flows/" + flowName + ".yaml").ForRun(partition, RegisteredPartitions.None);
+        var deliveryFlow = FlowId.Of("api-selection-delivery-" + suffix);
+        var now = new DateTime(DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+        string Id(string key) => $"{partition}:work-product-component--WellLog:{key}";
+
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            db.Repos.Add(new CatalogRepo
+            {
+                Id = repoId, Name = "cp-selections-" + suffix, RemoteUrl = "https://example/cp-selections.git",
+                RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now,
+            });
+            db.Pipelines.Add(Pipeline(pipelineId, repoId, flowName, InventoryFlowDefinition.FlowTypeName, yaml, now));
+            await db.SaveChangesAsync();
+        }
+
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        try
+        {
+            await ledger.RegisterLedgerAsync(new LedgerEntry
+            {
+                FlowId = flow.LedgerId, Partition = partition, Kind = LedgerKinds.Inventory, FlowName = flow.Name, LedgerName = flow.LedgerName,
+            });
+            await ledger.RegisterAsync(deliveryFlow, partition, "api-selection-delivery-" + suffix);
+
+            // Three ids no ledger knows that the estate created (orphans), and one another identity created (foreign).
+            var wellLogs = await ledger.RegisterInventoryAsync(flow.LedgerId, flow.Name, "WellLogs", WellLog, null, "search", "latest");
+            async Task<long> BuildAsync(DateTime at)
+            {
+                var run = await ledger.StartInventoryRunAsync(flow.LedgerId, wellLogs.InventoryId, InventoryRunStatus.Build, Guid.NewGuid(), "inventory api tests", "search", at);
+                await ledger.AppendInventoryScanAsync(flow.LedgerId, run, [Row(Id("ours-1"), 1, Estate), Row(Id("ours-2"), 1, Estate), Row(Id("ours-3"), 1, Estate), Row(Id("theirs"), 1, Stranger)]);
+                var merged = await ledger.MergeInventoryAsync(flow.LedgerId, wellLogs.InventoryId, run, at);
+                await ledger.ReconcileInventoryAsync(flow.LedgerId, wellLogs.InventoryId, [Estate], at);
+                var found = await ledger.InventoryCountsAsync(flow.LedgerId, wellLogs.InventoryId);
+                await ledger.CompleteInventoryRunAsync(
+                    flow.LedgerId, run,
+                    new InventoryRunState
+                    {
+                        InventoryRunId = run, InventoryId = wellLogs.InventoryId, Operation = InventoryRunStatus.Build, Actor = "inventory api tests",
+                        Status = InventoryRunStatus.Completed, StartedUtc = at, ReadMode = "search", Listed = merged.Listed, Added = merged.Added,
+                        FindingsJson = JsonSerializer.Serialize(found.ByFinding),
+                        OwnersJson = JsonSerializer.Serialize(new { source = "declared", owners = new[] { new { identity = Estate, records = 0 } } }),
+                    },
+                    "declared", at.AddMinutes(1));
+                return run;
+            }
+
+            var firstBuild = await BuildAsync(now.AddHours(-1));
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var reader = await TokenAsync(client);
+            var operate = await TokenAsync(client, ["read", "operate"]);
+            var inventoryPath = $"/api/v1/delivery/inventories/{partition}/{wellLogs.InventoryId.ToString(CultureInfo.InvariantCulture)}";
+            var selections = inventoryPath + "/selections";
+            var facility = new { path = "data.FacilityName", index = "text", value = "Wellbore A-1" };
+
+            await RefusedAsync(client, operate, selections, new { filters = Array.Empty<object>() }, HttpStatusCode.BadRequest, "Conditions required");
+            await RefusedAsync(client, operate, selections, new { filters = new[] { new { path = "data.FacilityName", index = "text", value = "x", condition = "near" } } }, HttpStatusCode.BadRequest, "'near' is not a condition");
+            await RefusedAsync(client, operate, selections, new { filters = new[] { new { path = "data.FacilityName", index = "text", condition = "is" } } }, HttpStatusCode.BadRequest, "Invalid condition");
+
+            // A match is a run of the flow, queued as the caller, its selection opened with the conditions as written.
+            long selectionId;
+            Guid matchRun;
+            using (var accepted = await PostAsync(client, operate, selections, new { filters = new[] { facility } }))
+            {
+                var body = await accepted.Content.ReadAsStringAsync();
+                Assert.True(accepted.StatusCode == HttpStatusCode.Accepted, body);
+                var answer = JsonDocument.Parse(body).RootElement;
+                selectionId = answer.GetProperty("selectionId").GetInt64();
+                matchRun = answer.GetProperty("runId").GetGuid();
+                Assert.Equal((InventorySelections.Queued, false), (answer.GetProperty("status").GetString(), answer.GetProperty("stale").GetBoolean()));
+                var condition = Assert.Single(answer.GetProperty("conditions").EnumerateArray());
+                Assert.Equal(("data.FacilityName", "text", "is", "Wellbore A-1"), (condition.GetProperty("path").GetString(), condition.GetProperty("index").GetString(), condition.GetProperty("condition").GetString(), condition.GetProperty("value").GetString()));
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var run = await db.Runs.SingleAsync(r => r.RunId == matchRun);
+                Assert.Equal((pipelineId, global::SqlFlow.Delivery.Engine.DeliveryOperations.Match, "queued"), (run.PipelineId, run.Operation, run.Status));
+                var payload = global::SqlFlow.Delivery.Engine.DeliveryRunPayload.Parse(run.Payload);
+                Assert.Equal(["WellLogs"], payload.Inventories);
+                Assert.Equal(selectionId, payload.SelectionId);
+                Assert.Contains(partition, run.ValuesJson, StringComparison.Ordinal);
+            }
+
+            // The same conditions, however they are spelled, find the match made of them; refresh reads OSDU again.
+            using (var again = await PostAsync(client, operate, selections, new { filters = new[] { new { path = " data.FacilityName ", index = "TEXT", value = "Wellbore A-1", condition = "IS" } } }))
+            {
+                var body = await again.Content.ReadAsStringAsync();
+                Assert.True(again.StatusCode == HttpStatusCode.OK, body);
+                Assert.Equal(selectionId, JsonDocument.Parse(body).RootElement.GetProperty("selectionId").GetInt64());
+            }
+
+            long refreshed;
+            Guid refreshRun;
+            using (var fresh = await PostAsync(client, operate, selections, new { filters = new[] { facility }, refresh = true }))
+            {
+                var body = await fresh.Content.ReadAsStringAsync();
+                Assert.True(fresh.StatusCode == HttpStatusCode.Accepted, body);
+                var answer = JsonDocument.Parse(body).RootElement;
+                refreshed = answer.GetProperty("selectionId").GetInt64();
+                refreshRun = answer.GetProperty("runId").GetGuid();
+                Assert.NotEqual(selectionId, refreshed);
+            }
+
+            // The match run fills the selection: two ids of the inventory hold the condition, and one record of the kind it holds no row of.
+            Assert.NotNull(await ledger.StartInventorySelectionAsync(flow.LedgerId, wellLogs.InventoryId, selectionId, matchRun, firstBuild, now));
+            await ledger.PlanInventorySelectionAsync(flow.LedgerId, selectionId, 4, 3, InventorySelections.ByConditions, "data.FacilityName.keyword:\"Wellbore A-1\"", 1);
+            var write = await ledger.AddInventorySelectionItemsAsync(flow.LedgerId, wellLogs.InventoryId, selectionId,
+            [
+                new InventorySelectionHit(Id("ours-1"), 2, """{"data.FacilityName":["Wellbore A-1"]}"""),
+                new InventorySelectionHit(Id("theirs"), 1, """{"data.FacilityName":["Wellbore A-1"]}"""),
+                new InventorySelectionHit(Id("since"), 1, """{"data.FacilityName":["Wellbore A-1"]}"""),
+            ], 3, 2);
+            Assert.Equal(new InventorySelectionWrite(2, 1, 1), write);
+            await ledger.CompleteInventorySelectionAsync(
+                flow.LedgerId, selectionId, new InventorySelectionEnd(InventorySelections.Completed, null, null, [], ["data.FacilityName"], null), now);
+
+            var selection = await JsonAsync(client, reader, $"{selections}/{selectionId}");
+            Assert.Equal((InventorySelections.Completed, InventorySelections.ByConditions, 2L, 1L, 1L, 3L), (
+                selection.GetProperty("status").GetString(), selection.GetProperty("direction").GetString(), selection.GetProperty("matched").GetInt64(),
+                selection.GetProperty("outside").GetInt64(), selection.GetProperty("changed").GetInt64(), selection.GetProperty("requests").GetInt64()));
+            Assert.Equal(["data.FacilityName"], selection.GetProperty("columns").EnumerateArray().Select(c => c.GetString()!));
+            var counted = selection.GetProperty("counts").EnumerateArray().ToDictionary(c => c.GetProperty("finding").GetString()!, c => c.GetProperty("count").GetInt64());
+            Assert.Equal((1L, 1L, 0L), (counted["orphan"], counted["foreign"], counted["tracked"]));
+
+            // The selection's ids of one finding, each with what the match read of it; and the CSV of every one of them.
+            var page = await JsonAsync(client, reader, $"{inventoryPath}/records?selection={selectionId}&finding=orphan");
+            var item = Assert.Single(page.GetProperty("items").EnumerateArray());
+            Assert.Equal((Id("ours-1"), 2L, 1L), (item.GetProperty("targetId").GetString(), item.GetProperty("matchedVersion").GetInt64(), item.GetProperty("version").GetInt64()));
+            Assert.Equal(["Wellbore A-1"], item.GetProperty("values").GetProperty("data.FacilityName").EnumerateArray().Select(v => v.GetString()!));
+            using (var csv = await SendAsync(client, reader, $"{inventoryPath}/export?selection={selectionId}"))
+            {
+                var text = await csv.Content.ReadAsStringAsync();
+                Assert.True(csv.StatusCode == HttpStatusCode.OK, text);
+                var lines = text.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+                Assert.EndsWith(",matched_version,data.FacilityName", lines[0], StringComparison.Ordinal);
+                Assert.Equal(3, lines.Length);
+                Assert.Contains($"selection-{selectionId.ToString(CultureInfo.InvariantCulture)}-all.csv", csv.Content.Headers.ContentDisposition?.ToString(), StringComparison.Ordinal);
+            }
+
+            await ProblemAsync(client, reader, $"{selections}/2147480000", HttpStatusCode.NotFound, "No selection 2147480000");
+            await ProblemAsync(client, reader, $"{inventoryPath}/records?selection=2147480000", HttpStatusCode.NotFound, "No selection 2147480000");
+
+            // A removal takes the selection's ids of the finding, as many as the operator was shown, once the flow is idle.
+            var removals = inventoryPath + "/removals";
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.Runs.Where(r => r.RunId == matchRun).ExecuteDeleteAsync();
+            }
+
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 1, selection = selectionId, confirm = partition }, HttpStatusCode.Conflict, "is queued or running");
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.Runs.Where(r => r.RunId == refreshRun).ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, RunStatuses.Cancelled));
+            }
+
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 3, selection = selectionId, confirm = partition }, HttpStatusCode.Conflict, $"Selection {selectionId} of inventory 'WellLogs' holds 1 orphan id(s) now");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 1, ids = new[] { Id("ours-1") }, selection = selectionId, confirm = partition }, HttpStatusCode.BadRequest, "not both");
+            await RefusedAsync(client, operate, removals, new { finding = "gone", scope = "inventory", expected = 1, selection = selectionId, confirm = partition }, HttpStatusCode.BadRequest, "Not from a selection");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 1, selection = 2147480000L, confirm = partition }, HttpStatusCode.NotFound, "No selection 2147480000");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 1, selection = refreshed, confirm = partition }, HttpStatusCode.Conflict, "only a match that read OSDU whole");
+
+            Guid removalRun;
+            using (var accepted = await PostAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 1, selection = selectionId, confirm = partition }))
+            {
+                var body = await accepted.Content.ReadAsStringAsync();
+                Assert.True(accepted.StatusCode == HttpStatusCode.Accepted, body);
+                var answer = JsonDocument.Parse(body).RootElement;
+                removalRun = answer.GetProperty("runId").GetGuid();
+                Assert.Equal(selectionId, answer.GetProperty("selection").GetInt64());
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var payload = global::SqlFlow.Delivery.Engine.DeliveryRunPayload.Parse((await db.Runs.SingleAsync(r => r.RunId == removalRun)).Payload);
+                Assert.Equal(("orphan", 1L, selectionId, false), (payload.Removal!.Finding, payload.Removal.Expected, payload.Removal.Selection!.Value, payload.Removal.NamesIds));
+                await db.Runs.Where(r => r.RunId == removalRun).ExecuteDeleteAsync();
+            }
+
+            // A removal that took the selection's ids names it, with the conditions that made it.
+            await ledger.StartInventoryRemovalAsync(
+                flow.LedgerId, new InventoryRemovalStart(wellLogs.InventoryId, removalRun, "inventory api tests", "orphan", "record", false, 1, null, now, selectionId));
+            var listed = Assert.Single((await JsonAsync(client, reader, removals)).EnumerateArray());
+            var named = listed.GetProperty("selection");
+            Assert.Equal((selectionId, "data.FacilityName", 2L), (named.GetProperty("selectionId").GetInt64(), named.GetProperty("conditions")[0].GetProperty("path").GetString(), named.GetProperty("matched").GetInt64()));
+
+            // The cancelled run's selection is closed as failed when it is read, saying how its run ended.
+            var cancelled = await JsonAsync(client, reader, $"{selections}/{refreshed}");
+            Assert.Equal(InventorySelections.Failed, cancelled.GetProperty("status").GetString());
+            Assert.Contains("ended cancelled before the match did", cancelled.GetProperty("error").GetString(), StringComparison.Ordinal);
+
+            // A build since the match leaves the selection stale: it says so, and a removal of what it holds waits for a new match.
+            await BuildAsync(now.AddMinutes(-10));
+            Assert.True((await JsonAsync(client, reader, $"{selections}/{selectionId}")).GetProperty("stale").GetBoolean());
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 1, selection = selectionId, confirm = partition }, HttpStatusCode.Conflict, "was built again since selection");
+
+            // The same conditions asked of the new build are a new match.
+            using (var rebuilt = await PostAsync(client, operate, selections, new { filters = new[] { facility } }))
+            {
+                var body = await rebuilt.Content.ReadAsStringAsync();
+                Assert.True(rebuilt.StatusCode == HttpStatusCode.Accepted, body);
+                Assert.NotEqual(selectionId, JsonDocument.Parse(body).RootElement.GetProperty("selectionId").GetInt64());
+            }
+        }
+        finally
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.Runs.Where(r => r.PipelineId == pipelineId).ExecuteDeleteAsync();
+            }
+
+            await CleanUpAsync(cs, repoId, partition, flow.LedgerId, deliveryFlow);
+        }
+    }
+
+    [Fact]
     public async Task Missing_ids_are_delivered_again_through_their_flows_under_their_own_ids_or_under_new_ones_and_what_cannot_be_is_said()
     {
         var cs = OsduTestServer.Require();
@@ -703,6 +944,9 @@ public sealed class DeliveryInventoryApiTests
             var runs = await osdu.DeliveryInventoryRuns.Where(r => inventories.Contains(r.InventoryId)).Select(r => r.InventoryRunId).ToListAsync();
             var records = osdu.DeliveryInventoryRecords.Where(r => inventories.Contains(r.InventoryId)).Select(r => r.InventoryRecordId);
             var removals = osdu.DeliveryInventoryRemovals.Where(r => inventories.Contains(r.InventoryId)).Select(r => r.InventoryRemovalId);
+            var selections = osdu.DeliveryInventorySelections.Where(s => inventories.Contains(s.InventoryId)).Select(s => s.InventorySelectionId);
+            await osdu.DeliveryInventorySelectionItems.Where(i => selections.Contains(i.InventorySelectionId)).ExecuteDeleteAsync();
+            await osdu.DeliveryInventorySelections.Where(s => inventories.Contains(s.InventoryId)).ExecuteDeleteAsync();
             await osdu.DeliveryInventoryRemovalItems.Where(i => removals.Contains(i.InventoryRemovalId)).ExecuteDeleteAsync();
             await osdu.DeliveryInventoryRemovals.Where(r => inventories.Contains(r.InventoryId)).ExecuteDeleteAsync();
             await osdu.DeliveryInventoryScans.Where(s => runs.Contains(s.InventoryRunId)).ExecuteDeleteAsync();

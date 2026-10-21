@@ -4,6 +4,7 @@
 // none is optional here, and a page tests it with `=== undefined` or `??`, never `=== null`.
 
 import { get, getText, post } from "@/api/client";
+import type { ExplorerFilter } from "./explorer";
 
 /**
  * What an inventory finds of an id: what OSDU serves of it set against what the ledgers hold of it. The first eight are the
@@ -98,12 +99,17 @@ export interface InventoryRemovalPolicy {
   purgePath: string;
 }
 
-/** A removal an operator asks for: the finding, how much of each record, the count shown, the ids picked, and the partition typed back. */
+/**
+ * A removal an operator asks for: the finding, how much of each record, the count shown, the ids picked or the selection they
+ * were taken from, and the partition typed back.
+ */
 export interface InventoryRemovalRequest {
   finding: string;
   scope: InventoryRemovalScope;
   expected: number;
   ids?: string[];
+  /** The selection whose ids of the finding are removed: those that held what its conditions asked in OSDU. */
+  selection?: number;
   confirm: string;
 }
 
@@ -116,6 +122,7 @@ export interface InventoryRemovalAccepted {
   finding: string;
   scope: InventoryRemovalScope;
   expected: number;
+  selection?: number;
 }
 
 /** One removal of an inventory's ids: its run, who asked, what and how much, where it stands, and what it came to. */
@@ -137,6 +144,8 @@ export interface InventoryRemoval {
   failed: number;
   error?: string;
   activityId?: number;
+  /** The selection the removal took its ids from, with the conditions that made it; left out for one that took none. */
+  selection?: InventorySelectionSummary;
 }
 
 /** What one removal did to one id, and why. */
@@ -287,6 +296,10 @@ export interface InventoryRecord {
   artifactState?: string;
   /** Why the id has its finding. */
   detail?: string;
+  /** For an id of a selection: the version the search index held when the match read it. */
+  matchedVersion?: number;
+  /** For an id of a selection: what it held at each property the selection's conditions ask, property to values. */
+  values?: Record<string, string[]>;
 }
 
 /** A page of ids, with the id the next page starts after; left out on the last page. */
@@ -340,6 +353,63 @@ export interface InventoryFlow {
   inventories: InventoryEntry[];
 }
 
+/**
+ * Where a selection's match stands: queued as a run of the flow, reading OSDU, completed, failed (it holds no id), or expired
+ * (older than a week, kept for the removal that took its ids).
+ */
+export type InventorySelectionStatus = "queued" | "running" | "completed" | "failed" | "expired";
+
+/** How a match read OSDU: every record the conditions find, joined with the inventory's ids; or the inventory's ids a chunk at a time. */
+export type InventorySelectionDirection = "conditions" | "ids";
+
+/**
+ * The ids of an inventory that hold what an operator's conditions ask in OSDU (osdu/docs/reference/flow/inventory.md,
+ * Selecting ids by what OSDU holds): the conditions as written, where the match stands and whether the inventory was built again
+ * since (stale), the query and how it read OSDU, how far it got and what it found, and its ids counted by finding once it completed.
+ */
+export interface InventorySelection {
+  selectionId: number;
+  inventoryId: number;
+  partition: string;
+  status: InventorySelectionStatus | string;
+  stale: boolean;
+  conditions: ExplorerFilter[];
+  query?: string;
+  direction?: InventorySelectionDirection | string;
+  notes: string[];
+  /** The properties each id's row carries the values of: those the conditions ask. */
+  columns: string[];
+  /** The ids the inventory served that the match judged. */
+  candidates: number;
+  /** How much the match has to read, and has read: the records the conditions find, or the inventory's ids. */
+  toCheck: number;
+  checked: number;
+  matched: number;
+  /** Records the conditions found that the inventory holds no row of: written since its build, or outside its query. */
+  outside: number;
+  /** Ids matched at another version than the inventory listed, which a removal leaves for the next build. */
+  changed: number;
+  requests: number;
+  /** Its ids by the finding the inventory gives each now, every finding with its zeros; once the match completed. */
+  counts?: InventoryCount[];
+  runId?: string;
+  actor: string;
+  createdUtc: string;
+  startedUtc?: string;
+  completedUtc?: string;
+  error?: string;
+}
+
+/** The selection a removal took its ids from, as the removal names it. */
+export interface InventorySelectionSummary {
+  selectionId: number;
+  status: string;
+  conditions: ExplorerFilter[];
+  query?: string;
+  matched: number;
+  matchedUtc?: string;
+}
+
 const inventoryPath = (partition: string, inventoryId: number) =>
   `/api/v1/delivery/inventories/${encodeURIComponent(partition)}/${inventoryId}`;
 
@@ -350,17 +420,37 @@ export const inventoryApi = {
   flow: (pipelineId: string) => get<InventoryFlow>(`/api/v1/delivery/flows/${pipelineId}/inventories`),
   /** One inventory with its counts by finding, owners and last runs. */
   inventory: (partition: string, inventoryId: number) => get<InventoryDetail>(inventoryPath(partition, inventoryId)),
-  /** A page of an inventory's ids, of one finding or every one, after the id `after` names. */
-  records: (partition: string, inventoryId: number, query: { finding?: string; after?: number; limit?: number } = {}) =>
+  /** A page of an inventory's ids, of one finding or every one (only those a selection holds, when one is named), after the id `after` names. */
+  records: (partition: string, inventoryId: number, query: { finding?: string; after?: number; limit?: number; selection?: number } = {}) =>
     get<InventoryRecordPage>(`${inventoryPath(partition, inventoryId)}/records`, query),
   /** An inventory's builds and reconciles, newest first. */
   runs: (partition: string, inventoryId: number, limit?: number) =>
     get<InventoryRun[]>(`${inventoryPath(partition, inventoryId)}/runs`, limit === undefined ? {} : { limit }),
   /** What every inventory of the workbench's partition holds of one OSDU id. */
   lookup: (id: string) => get<InventoryLookup>("/api/v1/delivery/inventories/lookup", { id }),
-  /** An inventory's ids of one finding (every id with none) as CSV text. */
-  exportCsv: (partition: string, inventoryId: number, finding?: string) =>
-    getText(`${inventoryPath(partition, inventoryId)}/export${finding === undefined ? "" : `?finding=${encodeURIComponent(finding)}`}`),
+  /** An inventory's ids of one finding (every id with none) as CSV text; only those a selection holds, when one is named. */
+  exportCsv: (partition: string, inventoryId: number, finding?: string, selection?: number) => {
+    const query = new URLSearchParams();
+    if (finding !== undefined) {
+      query.set("finding", finding);
+    }
+
+    if (selection !== undefined) {
+      query.set("selection", String(selection));
+    }
+
+    const text = query.toString();
+    return getText(`${inventoryPath(partition, inventoryId)}/export${text === "" ? "" : `?${text}`}`);
+  },
+  /**
+   * The ids of the inventory that hold what the conditions ask in OSDU: the match made of the same conditions against the same
+   * build when there is one, else a new match queued as a run of the flow (`refresh` always queues one).
+   */
+  select: (partition: string, inventoryId: number, request: { filters: ExplorerFilter[]; refresh?: boolean }) =>
+    post<InventorySelection>(`${inventoryPath(partition, inventoryId)}/selections`, request),
+  /** One selection of the inventory: where its match stands, and its ids counted by finding once it completed. */
+  selection: (partition: string, inventoryId: number, selectionId: number) =>
+    get<InventorySelection>(`${inventoryPath(partition, inventoryId)}/selections/${selectionId}`),
   /** Queues the run that removes from OSDU the ids of one finding of the inventory, as the caller. */
   remove: (partition: string, inventoryId: number, request: InventoryRemovalRequest) =>
     post<InventoryRemovalAccepted>(`${inventoryPath(partition, inventoryId)}/removals`, request),

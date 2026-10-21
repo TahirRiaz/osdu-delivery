@@ -90,6 +90,13 @@ public static class DeliveryOperations
     /// </summary>
     public const string Remove = "remove";
 
+    /// <summary>
+    /// Find which ids of an inventory hold what an operator's conditions ask in OSDU (osdu/docs/reference/flow/inventory.md,
+    /// Selecting ids by what OSDU holds), and keep them as the selection the payload names: an inventory flow's operation,
+    /// which reads OSDU's search and changes nothing there.
+    /// </summary>
+    public const string Match = "match";
+
     /// <summary>The operation a run of a delivery flow performs: the one it names, or <see cref="Deliver"/>.</summary>
     public static string Of(RunParameters parameters)
     {
@@ -304,12 +311,18 @@ public sealed record DeliveryRunPayload
     /// <summary>What an inventory flow's remove run removes from OSDU (osdu/docs/reference/flow/inventory.md, Operations).</summary>
     public const string RemovalProperty = "removal";
 
+    /// <summary>
+    /// The selection an inventory flow's match run fills (osdu/docs/reference/flow/inventory.md, Selecting ids by what OSDU
+    /// holds), by its number: the control plane opens it with the operator's conditions and queues the run.
+    /// </summary>
+    public const string SelectionProperty = "selection";
+
     /// <summary>The most test names, and the most tags, one run selects.</summary>
     public const int MaxSelected = AssertionFlowDefinition.MaxTests;
 
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
-            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty, RemovalProperty, TypesProperty];
+            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty, RemovalProperty, SelectionProperty, TypesProperty];
 
     /// <summary>
     /// For every property a run asks something by (all but the central configuration, which every kind takes), the runs that
@@ -332,6 +345,7 @@ public sealed record DeliveryRunPayload
         [DimensionsProperty] = "only a dimension flow's runs select dimensions",
         [InventoriesProperty] = "only an inventory flow's runs select inventories",
         [RemovalProperty] = "only an inventory flow's remove run names what it removes",
+        [SelectionProperty] = "only an inventory flow's match run names the selection it fills",
         [TypesProperty] = "only a cache flow's runs select types",
     };
 
@@ -339,7 +353,7 @@ public sealed record DeliveryRunPayload
     private static readonly string[] DeliveryProperties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ConfirmProperty];
 
-    private static readonly string[] RemovalProperties = ["finding", "scope", "expected", "ids"];
+    private static readonly string[] RemovalProperties = ["finding", "scope", "expected", "ids", "selection"];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -441,8 +455,14 @@ public sealed record DeliveryRunPayload
     /// </summary>
     public InventoryRemovalRequest? Removal { get; init; }
 
-    /// <summary>True when the payload selects inventories of an inventory flow, or names what one removes.</summary>
-    public bool SelectsInventories => Inventories.Count > 0 || Removal is not null;
+    /// <summary>
+    /// The selection an inventory flow's match run fills, by its number, for the inventory <see cref="Inventories"/> names.
+    /// Only that run carries it.
+    /// </summary>
+    public long? SelectionId { get; init; }
+
+    /// <summary>True when the payload selects inventories of an inventory flow, names what one removes, or the selection one fills.</summary>
+    public bool SelectsInventories => Inventories.Count > 0 || Removal is not null || SelectionId is not null;
 
     /// <summary>
     /// The types of a cache flow the run refreshes or plans, by name (osdu/docs/reference/flow/cache.md, Operations and the
@@ -482,6 +502,7 @@ public sealed record DeliveryRunPayload
         Add(Dimensions.Count > 0, DimensionsProperty);
         Add(Inventories.Count > 0, InventoriesProperty);
         Add(Removal is not null, RemovalProperty);
+        Add(SelectionId is not null, SelectionProperty);
         Add(Types.Count > 0, TypesProperty);
         return named;
 
@@ -606,6 +627,7 @@ public sealed record DeliveryRunPayload
             Dimensions = Selection(root[DimensionsProperty], DimensionsProperty, "dimension names"),
             Inventories = Selection(root[InventoriesProperty], InventoriesProperty, "inventory names"),
             Removal = root[RemovalProperty] is null ? null : RemovalRequest(root[RemovalProperty]),
+            SelectionId = root[SelectionProperty] is null ? null : Number(root[SelectionProperty], SelectionProperty),
             Types = Selection(root[TypesProperty], TypesProperty, "type names"),
         };
     }
@@ -910,7 +932,17 @@ public sealed record DeliveryRunPayload
                 written["ids"] = new JsonArray(removal.Ids.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
             }
 
+            if (removal.Selection is { } taken)
+            {
+                written["selection"] = taken;
+            }
+
             root[RemovalProperty] = written;
+        }
+
+        if (SelectionId is { } selection)
+        {
+            root[SelectionProperty] = selection;
         }
 
         return root.ToJsonString();
@@ -946,6 +978,12 @@ public sealed record DeliveryRunPayload
         => Guid.TryParse(Text(node, property), out var id)
             ? id
             : throw new SqlFlowException($"payload {property} must be a UUID.");
+
+    /// <summary>A number a payload names something by, such as a selection: a whole number, at least 1.</summary>
+    private static long Number(JsonNode? node, string property)
+        => node is JsonValue value && value.TryGetValue<long>(out var number) && number >= 1
+            ? number
+            : throw new SqlFlowException($"payload {property} must be the number of what it names, a whole number of at least 1.");
 
     private static IReadOnlyList<Guid> Keys(JsonNode? node)
     {
@@ -1053,7 +1091,7 @@ public sealed record DeliveryRunPayload
     {
         if (node is not JsonObject removal)
         {
-            throw new SqlFlowException($"payload {RemovalProperty} must be an object naming finding, scope, expected and optionally ids.");
+            throw new SqlFlowException($"payload {RemovalProperty} must be an object naming finding, scope, expected and optionally ids or a selection.");
         }
 
         foreach (var (name, _) in removal)
@@ -1124,7 +1162,23 @@ public sealed record DeliveryRunPayload
             ids = named;
         }
 
-        return new InventoryRemovalRequest { Finding = finding, Scope = scope, Expected = expected, Ids = ids };
+        long? selection = null;
+        if (removal["selection"] is { } taken)
+        {
+            selection = Number(taken, $"{RemovalProperty}.selection");
+            if (ids.Count > 0)
+            {
+                throw new SqlFlowException($"payload {RemovalProperty} names both ids and a selection; a removal takes the ids it names or those of a selection, not both.");
+            }
+
+            if (!InventoryRemovals.IsRemovable(finding))
+            {
+                throw new SqlFlowException(
+                    $"payload {RemovalProperty} takes {finding} ids from a selection; a selection holds ids OSDU serves, so it is taken only for {string.Join(", ", InventoryRemovals.Removable)} ids, which go from OSDU.");
+            }
+        }
+
+        return new InventoryRemovalRequest { Finding = finding, Scope = scope, Expected = expected, Ids = ids, Selection = selection };
     }
 
     /// <summary>

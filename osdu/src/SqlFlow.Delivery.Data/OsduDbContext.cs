@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.50.0";
+    public const string ModuleVersion = "1.51.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that records the values the control plane
@@ -85,6 +85,11 @@ public sealed class OsduDbContext : DbContext
 
     /// <summary>What each removal did to each id it reached: removed, already gone, skipped or failed, and why.</summary>
     public DbSet<DeliveryInventoryRemovalItem> DeliveryInventoryRemovalItems => Set<DeliveryInventoryRemovalItem>();
+
+    /// <summary>The ids of inventories that hold what an operator's conditions ask in OSDU, and the matches that found them.</summary>
+    public DbSet<DeliveryInventorySelection> DeliveryInventorySelections => Set<DeliveryInventorySelection>();
+
+    public DbSet<DeliveryInventorySelectionItem> DeliveryInventorySelectionItems => Set<DeliveryInventorySelectionItem>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 

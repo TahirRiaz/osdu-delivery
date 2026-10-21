@@ -41,6 +41,28 @@ public static partial class DeliveryExplorerEndpoints
             return (null, TypedResults.Problem(detail: found.Reason ?? "No partition is named, so no search term can be read.", statusCode: StatusCodes.Status409Conflict, title: "No connection to the partition"));
         }
 
+        var (resolved, problem) = await ResolveTermsAsync(filters, read, body.Kind, directory, ct).ConfigureAwait(false);
+        return problem is null ? (resolved, null) : (null, DeliveryEndpoints.Invalid(problem));
+    }
+
+    /// <summary>
+    /// The conditions of <paramref name="filters"/> that name a search term, each resolved by place in <paramref name="partition"/>
+    /// for <paramref name="kind"/>: the route of the term for the kind searched, the version of the mapping that renders it where
+    /// versions differ. None for conditions naming no term; the problem, in words a reader acts on, for a term that cannot be
+    /// searched as asked. The explorer resolves them in the partition its connection reads, an inventory's match in the
+    /// inventory's own.
+    /// </summary>
+    internal static async Task<(IReadOnlyDictionary<int, ExplorerFilter>? Terms, string? Problem)> ResolveTermsAsync(
+        IReadOnlyList<DeliveryExplorerFilterDto?> filters, string partition, string? kind, SearchTermDirectory directory, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(filters);
+        ArgumentException.ThrowIfNullOrWhiteSpace(partition);
+        ArgumentNullException.ThrowIfNull(directory);
+        if (!filters.Any(f => f?.Term is not null))
+        {
+            return (null, null);
+        }
+
         var resolved = new Dictionary<int, ExplorerFilter>();
         for (var place = 0; place < filters.Count; place++)
         {
@@ -51,17 +73,16 @@ public static partial class DeliveryExplorerEndpoints
 
             if (!TryParse<ExplorerCondition>(filter.Condition, ExplorerCondition.Is, out var condition))
             {
-                return (null, DeliveryEndpoints.Invalid($"'{filter.Condition}' is not a condition: {ConditionNames}."));
+                return (null, $"'{filter.Condition}' is not a condition: {ConditionNames}.");
             }
 
             try
             {
-                // The route of the term for the kind searched: the version of the mapping that renders it, where versions differ.
-                resolved[place] = await directory.ResolveAsync(term, new SearchTermCondition(condition, filter.Value, filter.Values, filter.To), read, body.Kind, ct).ConfigureAwait(false);
+                resolved[place] = await directory.ResolveAsync(term, new SearchTermCondition(condition, filter.Value, filter.Values, filter.To), partition, kind, ct).ConfigureAwait(false);
             }
             catch (DeliveryException ex)
             {
-                return (null, DeliveryEndpoints.Invalid(ex.Message));
+                return (null, ex.Message);
             }
         }
 

@@ -377,7 +377,7 @@ internal static class DeliveryInventoryVerbs
         foreach (var removal in removals)
         {
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {removal.InventoryRemovalId,8}  {removal.Status,-9}  {Stamp(removal.StartedUtc)}  {removal.Requested} {removal.Finding} {(removal.NamesIds ? "picked" : "(every one)")}, {InventoryRemovals.Describe(removal.Scope)}: {new InventoryRemovalTally(removal.Removed, removal.Gone, removal.Skipped, removal.Failed).Describe()}  by {removal.Actor}"));
+                $"  {removal.InventoryRemovalId,8}  {removal.Status,-9}  {Stamp(removal.StartedUtc)}  {removal.Requested} {removal.Finding} {Which(removal)}, {InventoryRemovals.Describe(removal.Scope)}: {new InventoryRemovalTally(removal.Removed, removal.Gone, removal.Skipped, removal.Failed).Describe()}  by {removal.Actor}"));
             if (removal.Error is { Length: > 0 } error)
             {
                 context.Out.WriteLine("            " + error);
@@ -663,6 +663,12 @@ internal static class DeliveryInventoryVerbs
         .Select(c => (JsonNode)new JsonObject { ["finding"] = c.Finding, ["count"] = c.Count, ["raised"] = c.Raised })
         .ToArray());
 
+    /// <summary>Which ids of the finding a removal took, as its line says it: those picked, those of a selection, or every one.</summary>
+    private static string Which(InventoryRemovalState removal)
+        => removal.SelectionId is { } selection
+            ? string.Create(CultureInfo.InvariantCulture, $"of selection {selection}")
+            : removal.NamesIds ? "picked" : "(every one)";
+
     private static JsonObject Described(InventoryRemovalState removal) => new()
     {
         ["removal"] = removal.InventoryRemovalId,
@@ -672,6 +678,7 @@ internal static class DeliveryInventoryVerbs
         ["finding"] = removal.Finding,
         ["scope"] = removal.Scope,
         ["namesIds"] = removal.NamesIds,
+        ["selection"] = removal.SelectionId,
         ["requested"] = removal.Requested,
         ["status"] = removal.Status,
         ["startedUtc"] = removal.StartedUtc,

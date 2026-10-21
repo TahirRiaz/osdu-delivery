@@ -228,13 +228,19 @@ function safe(part: string): string {
   return cleaned === "" ? "inventory" : cleaned;
 }
 
-/** Downloads an inventory's ids of one finding (every id with none) as CSV, named as the control plane names the file. */
-export async function downloadInventory(inventory: Inventory, finding: string | null): Promise<void> {
-  const text = await inventoryApi.exportCsv(inventory.partition, inventory.inventoryId, finding ?? undefined);
+/**
+ * Downloads an inventory's ids of one finding (every id with none) as CSV, only those a selection holds when one is named, the
+ * file named as the control plane names it.
+ */
+export async function downloadInventory(inventory: Inventory, finding: string | null, selection?: number): Promise<void> {
+  const text = await inventoryApi.exportCsv(inventory.partition, inventory.inventoryId, finding ?? undefined, selection);
   const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${[inventory.flowName, inventory.partition, inventory.name, finding ?? "all"].map(safe).join("-")}.csv`;
+  const parts = selection === undefined
+    ? [inventory.flowName, inventory.partition, inventory.name, finding ?? "all"]
+    : [inventory.flowName, inventory.partition, inventory.name, "selection", String(selection), finding ?? "all"];
+  anchor.download = `${parts.map(safe).join("-")}.csv`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

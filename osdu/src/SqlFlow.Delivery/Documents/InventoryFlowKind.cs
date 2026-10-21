@@ -53,7 +53,7 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
 
     public string FlowType => InventoryFlowDefinition.FlowTypeName;
 
-    public string Description => "keep every id and version OSDU kinds hold in a partition, and report where the ledgers disagree with it: orphans, missing records, undos left to do, and ids a ledger forgot; a flow that allows it removes the orphan, stale and forgotten ids an operator picks";
+    public string Description => "keep every id and version OSDU kinds hold in a partition, and report where the ledgers disagree with it: orphans, missing records, undos left to do, and ids a ledger forgot; an operator selects its ids by what OSDU holds, and a flow that allows it removes the orphan, stale and forgotten ids an operator picks or selects";
 
     public IReadOnlyList<FlowKindOperation> Operations { get; } =
     [
@@ -61,6 +61,7 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
         new(DeliveryOperations.Reconcile, "Reconcile", "Compare each inventory, as its last build left it, with the ledgers as they stand now, reading from storage only the ids a ledger expects.", WritesTarget: true),
         new(DeliveryOperations.Plan, "Plan", "Count the records each inventory would read, and say what would stop it, reading no id and keeping nothing.", WritesTarget: false),
         new(DeliveryOperations.Remove, "Remove", "Remove from OSDU the ids of one finding an inventory found (orphan, stale or forgotten), each checked again first, for a flow whose document allows it; the inventory's page asks for it.", WritesTarget: true),
+        new(DeliveryOperations.Match, "Match", "Find which ids of an inventory hold what an operator's conditions ask in OSDU, through the search, and keep them as the selection the inventory's page opened; nothing in OSDU changes.", WritesTarget: false),
     ];
 
     public RegisteredFlowDocument Parse(string yaml, string source)
@@ -73,12 +74,12 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
     {
         ArgumentNullException.ThrowIfNull(parameters);
         DeliveryOperations.RefuseBuiltInOverrides(parameters, InventoryFlowDefinition.FlowTypeName, "a build reads every id the kind holds; name the inventories to build in the payload.");
-        // A run names the inventories it works on, and a remove run what it removes and the partition it acts in, beside the
-        // central configuration; which operation takes which is settled below.
+        // A run names the inventories it works on, a remove run what it removes and the partition it acts in, and a match run
+        // the selection it fills, beside the central configuration; which operation takes which is settled below.
         var payload = DeliveryRunPayload.Parse(parameters);
         payload.RefuseOtherThan(
             InventoryFlowDefinition.FlowTypeName,
-            [DeliveryRunPayload.InventoriesProperty, DeliveryRunPayload.RemovalProperty, DeliveryRunPayload.ConfirmProperty]);
+            [DeliveryRunPayload.InventoriesProperty, DeliveryRunPayload.RemovalProperty, DeliveryRunPayload.ConfirmProperty, DeliveryRunPayload.SelectionProperty]);
 
         var operation = Operation(parameters);
         if (operation == DeliveryOperations.Remove)
@@ -86,7 +87,7 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
             if (payload.Removal is null || payload.Inventories.Count != 1 || string.IsNullOrWhiteSpace(payload.Confirm))
             {
                 throw new SqlFlowException(
-                    "A remove run names the one inventory it removes from (inventories), what it removes (removal: finding, scope, expected, and ids when it names them), and the partition it acts in (confirm); nothing is removed without all three.");
+                    "A remove run names the one inventory it removes from (inventories), what it removes (removal: finding, scope, expected, and ids or a selection when it takes those), and the partition it acts in (confirm); nothing is removed without all three.");
             }
         }
         else if (payload.Removal is not null || payload.Confirm is not null)
@@ -94,9 +95,23 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
             throw new SqlFlowException(
                 $"payload {(payload.Removal is not null ? DeliveryRunPayload.RemovalProperty : DeliveryRunPayload.ConfirmProperty)} does not apply to the {operation} operation: only a remove run names what it removes and the partition it acts in.");
         }
+
+        if (operation == DeliveryOperations.Match)
+        {
+            if (payload.SelectionId is null || payload.Inventories.Count != 1)
+            {
+                throw new SqlFlowException(
+                    "A match run names the one inventory it matches (inventories) and the selection it fills (selection), which the inventory's page opens with the conditions to match; ask for a match from there.");
+            }
+        }
+        else if (payload.SelectionId is not null)
+        {
+            throw new SqlFlowException(
+                $"payload {DeliveryRunPayload.SelectionProperty} does not apply to the {operation} operation: only a match run names the selection it fills.");
+        }
     }
 
-    /// <summary>The operation an inventory flow runs: build (its default), reconcile, plan or remove.</summary>
+    /// <summary>The operation an inventory flow runs: build (its default), reconcile, plan, remove or match.</summary>
     public static string Operation(RunParameters parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
@@ -106,8 +121,9 @@ public sealed class InventoryFlowKind : IFlowDocumentKind
             DeliveryOperations.Reconcile => DeliveryOperations.Reconcile,
             DeliveryOperations.Plan => DeliveryOperations.Plan,
             DeliveryOperations.Remove => DeliveryOperations.Remove,
+            DeliveryOperations.Match => DeliveryOperations.Match,
             var other => throw new SqlFlowException(
-                $"An inventory flow runs the {DeliveryOperations.Build}, {DeliveryOperations.Reconcile}, {DeliveryOperations.Plan} and {DeliveryOperations.Remove} operations; '{other}' is not one of them."),
+                $"An inventory flow runs the {DeliveryOperations.Build}, {DeliveryOperations.Reconcile}, {DeliveryOperations.Plan}, {DeliveryOperations.Remove} and {DeliveryOperations.Match} operations; '{other}' is not one of them."),
         };
     }
 }

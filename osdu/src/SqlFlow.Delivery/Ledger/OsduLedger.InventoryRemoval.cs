@@ -48,6 +48,7 @@ public sealed partial class OsduLedger
             Status = InventoryRunStatus.Running,
             StartedUtc = start.StartedUtc,
             ActivityId = start.ActivityId,
+            InventorySelectionId = start.SelectionId,
         };
         db.DeliveryInventoryRemovals.Add(removal);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -55,14 +56,20 @@ public sealed partial class OsduLedger
     }
 
     public async Task<IReadOnlyList<InventoryRemovalCandidate>> InventoryRemovalCandidatesAsync(
-        Guid flowId, int inventoryId, string finding, IReadOnlyList<string>? ids, IReadOnlyList<string> owners, long after, int limit, CancellationToken ct = default)
+        Guid flowId, int inventoryId, string finding, IReadOnlyList<string>? ids, IReadOnlyList<string> owners, long after, int limit, long? selectionId = null,
+        CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(finding);
         ArgumentNullException.ThrowIfNull(owners);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        if (ids is not null && selectionId is not null)
+        {
+            throw new DeliveryException("A removal names its ids or takes them from a selection, not both.");
+        }
+
         var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         await using var db = Open();
-        return await SqlServerLedgerBulk.InventoryRemovalCandidatesAsync(db, partition, inventoryId, finding, ids, owners, after, limit, ct).ConfigureAwait(false);
+        return await SqlServerLedgerBulk.InventoryRemovalCandidatesAsync(db, partition, inventoryId, finding, ids, selectionId, owners, after, limit, ct).ConfigureAwait(false);
     }
 
     public async Task RecordInventoryRemovalAsync(
@@ -250,6 +257,7 @@ public sealed partial class OsduLedger
         Failed = r.Failed,
         Error = r.Error,
         ActivityId = r.ActivityId,
+        SelectionId = r.InventorySelectionId,
     };
 
     private static InventoryRemovalItemState ToInventoryRemovalItemState(DeliveryInventoryRemovalItem i) => new()

@@ -587,6 +587,7 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("distinct values of a field", &["delivery-flow-dimension", "delivery-guide-dimensions"]),
     ("join dimension tables into one view with typed columns", &["delivery-flow-dimension"]),
     ("find orphan records in osdu", &["delivery-guide-finding-orphans", "delivery-flow-inventory"]),
+    ("select inventory ids by facility name and remove only those", &["delivery-flow-inventory"]),
     ("check a flow before running it", &["delivery-cli-check", "delivery-concept-preflight"]),
     ("getting started first delivery", &["delivery-guide-getting-started"]),
     ("one source delivers several kinds", &["delivery-flow-interfaces", "delivery-guide-multi-kind-source"]),

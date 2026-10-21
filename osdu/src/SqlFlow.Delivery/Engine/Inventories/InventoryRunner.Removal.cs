@@ -50,8 +50,10 @@ public sealed partial class InventoryRunner
 
     /// <summary>
     /// Removes from OSDU the ids of one finding of one inventory, as an operator asked (osdu/docs/reference/flow/inventory.md,
-    /// What a removal does): only for a flow whose document allows the finding (and a purge, for a purge), only in the partition
-    /// the request confirms, and only while the inventory holds as many ids of the finding as the operator was shown. Every id is
+    /// What a removal does): every id of the finding, those the operator picked, or those a selection holds (the ids that held
+    /// what the operator's conditions asked in OSDU); only for a flow whose document allows the finding (and a purge, for a
+    /// purge), only in the partition the request confirms, and only while the inventory (or the selection, still matched against
+    /// the inventory's last build) holds as many ids of the finding as the operator was shown. Every id is
     /// checked again just before it goes, a chunk at a time: the inventory still finds it so, the ledgers of the partition give
     /// it that finding now, storage still holds it at the version the inventory listed, and an orphan's creator is still an owner.
     /// What passes is removed through the flow's own source, a soft delete 500 ids a request or a purge one at a time; what does
@@ -74,6 +76,12 @@ public sealed partial class InventoryRunner
         if (InventoryRemovals.Mismatch(request.Finding, request.Scope) is { } mismatch)
         {
             throw new DeliveryException($"A removal of {request.Finding} ids cannot take {request.Scope}: {mismatch} Nothing was removed.");
+        }
+
+        if (request.Selection is not null && (request.NamesIds || !InventoryRemovals.IsRemovable(request.Finding)))
+        {
+            throw new DeliveryException(
+                $"A removal takes the {request.Finding} ids of a selection only when it names no ids and they go from OSDU (orphan, stale or forgotten ids). Nothing was removed.");
         }
 
         var partition = await PartitionAsync(ct).ConfigureAwait(false);
@@ -109,6 +117,7 @@ public sealed partial class InventoryRunner
                 scope = request.Scope,
                 expected = request.Expected,
                 ids = request.NamesIds ? request.Ids.Count : (int?)null,
+                selection = request.Selection,
             },
             Json);
         var activity = await ledger.StartActivityAsync(
@@ -125,7 +134,7 @@ public sealed partial class InventoryRunner
             ct).ConfigureAwait(false);
         var removalId = await ledger.StartInventoryRemovalAsync(
             flowId,
-            new InventoryRemovalStart(state.InventoryId, runId, actor, request.Finding, request.Scope, request.NamesIds, request.Expected, activity.ActivityId, started),
+            new InventoryRemovalStart(state.InventoryId, runId, actor, request.Finding, request.Scope, request.NamesIds, request.Expected, activity.ActivityId, started, request.Selection),
             ct).ConfigureAwait(false);
         if (policy is null)
         {
@@ -136,8 +145,10 @@ public sealed partial class InventoryRunner
         else
         {
             _log.LogInformation(
-                "inventory '{Inventory}' in '{Partition}', removal {Removal}: {Expected} {Finding} id(s), {Scope}, through {Endpoint}, as {Actor}; the flow allows removing {Allowed}",
-                spec.Name, partition, removalId, request.Expected, request.Finding, InventoryRemovals.Describe(request.Scope), _flow.Source.Endpoint, actor, string.Join(", ", policy.Findings));
+                "inventory '{Inventory}' in '{Partition}', removal {Removal}: {Expected} {Finding} id(s){Selected}, {Scope}, through {Endpoint}, as {Actor}; the flow allows removing {Allowed}",
+                spec.Name, partition, removalId, request.Expected, request.Finding,
+                request.Selection is { } selected ? string.Create(CultureInfo.InvariantCulture, $" of selection {selected}") : string.Empty,
+                InventoryRemovals.Describe(request.Scope), _flow.Source.Endpoint, actor, string.Join(", ", policy.Findings));
         }
 
         var tally = InventoryRemovalTally.None;
@@ -210,11 +221,43 @@ public sealed partial class InventoryRunner
     }
 
     /// <summary>
-    /// Holds the inventory to what the operator was shown: every id of the finding, as many as they were told; or the ids they
-    /// picked, every one of them an id the inventory holds.
+    /// Holds the inventory to what the operator was shown: every id of the finding, as many as they were told; the ids they
+    /// picked, every one of them an id the inventory holds; or the ids of the finding a selection holds, as many as they were
+    /// told, the selection's match complete and made against the inventory's last build.
     /// </summary>
     private async Task HoldsWhatWasShownAsync(ILedger ledger, InventoryState state, InventoryRemovalRequest request, string partition, CancellationToken ct)
     {
+        if (request.Selection is { } selectionId)
+        {
+            var selection = await ledger.GetInventorySelectionAsync(partition, selectionId, ct).ConfigureAwait(false);
+            if (selection is null || selection.InventoryId != state.InventoryId)
+            {
+                throw new DeliveryException($"Inventory '{state.Name}' holds no selection {selectionId}: it was retired, or made of another inventory. Nothing was removed.");
+            }
+
+            if (selection.Status != InventorySelections.Completed)
+            {
+                throw new DeliveryException(
+                    $"Selection {selectionId} of inventory '{state.Name}' is {selection.Status}, not completed: only a match that read OSDU whole says which ids hold what its conditions ask. Nothing was removed.");
+            }
+
+            if (selection.BuildRunId != state.LastBuildRunId)
+            {
+                throw new DeliveryException(
+                    $"Selection {selectionId} was matched against an earlier build of inventory '{state.Name}', and the inventory was built again since: match its conditions again before removing what it holds. Nothing was removed.");
+            }
+
+            var selected = (await ledger.InventorySelectionCountsAsync(partition, selectionId, ct).ConfigureAwait(false)).Of(request.Finding);
+            if (selected != request.Expected)
+            {
+                throw new DeliveryException(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Selection {selectionId} of inventory '{state.Name}' holds {selected} {request.Finding} id(s) now, and the removal was asked for {request.Expected}: what it holds changed since it was shown. Nothing was removed; look at it again and ask again."));
+            }
+
+            return;
+        }
+
         if (request.NamesIds)
         {
             var held = await ledger.InventoryRecordsOfAsync(partition, state.InventoryId, request.Ids, ct).ConfigureAwait(false);
@@ -291,7 +334,7 @@ public sealed partial class InventoryRunner
         {
             ct.ThrowIfCancellationRequested();
             var chunk = await ledger.InventoryRemovalCandidatesAsync(
-                _flow.LedgerId, state.InventoryId, request.Finding, request.NamesIds ? request.Ids : null, owners, after, InventoryRemovals.Chunk, ct).ConfigureAwait(false);
+                _flow.LedgerId, state.InventoryId, request.Finding, request.NamesIds ? request.Ids : null, owners, after, InventoryRemovals.Chunk, request.Selection, ct).ConfigureAwait(false);
             if (chunk.Count == 0)
             {
                 return tally;

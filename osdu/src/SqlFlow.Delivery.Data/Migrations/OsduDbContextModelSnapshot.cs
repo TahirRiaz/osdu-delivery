@@ -2099,6 +2099,9 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.Property<int>("InventoryId")
                         .HasColumnType("int");
 
+                    b.Property<long?>("InventorySelectionId")
+                        .HasColumnType("bigint");
+
                     b.Property<bool>("NamesIds")
                         .HasColumnType("bit");
 
@@ -2326,6 +2329,130 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.HasIndex("PartitionId", "InventoryRunId", "TargetId");
 
                     b.ToTable("InventoryScan", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventorySelection", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("InventorySelectionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("InventorySelectionId"));
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<long?>("BuildRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Candidates")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Changed")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Checked")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ColumnsJson")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ConditionsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ConditionsKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Direction")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("FiltersJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("InventoryId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("Matched")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("NotesJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("Outside")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Query")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("Requests")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<long>("ToCheck")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("PartitionId", "InventorySelectionId");
+
+                    b.HasIndex("PartitionId", "CreatedUtc");
+
+                    b.HasIndex("PartitionId", "InventoryId", "ConditionsKey", "InventorySelectionId");
+
+                    b.ToTable("InventorySelection", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventorySelectionItem", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("InventorySelectionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("InventoryRecordId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("MatchedVersion")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ValuesJson")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.HasKey("PartitionId", "InventorySelectionId", "InventoryRecordId");
+
+                    b.ToTable("InventorySelectionItem", "osdu");
                 });
 
             modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventoryVersion", b =>

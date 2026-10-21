@@ -109,6 +109,78 @@ public static class InventoryExport
         }
     }
 
+    /// <summary>The file an export of a selection is saved as: the inventory's name with the selection's number and the finding or <c>all</c>.</summary>
+    public static string FileName(InventoryState inventory, long selectionId, string? finding)
+    {
+        ArgumentNullException.ThrowIfNull(inventory);
+        var parts = new[] { inventory.FlowName, inventory.Partition, inventory.Name, "selection", selectionId.ToString(CultureInfo.InvariantCulture), finding ?? "all" };
+        return string.Join('-', parts.Select(Safe)) + ".csv";
+    }
+
+    /// <summary>
+    /// Writes the ids of a selection (osdu/docs/reference/flow/inventory.md, Selecting ids by what OSDU holds) with
+    /// <paramref name="finding"/> (every id of it when null) to <paramref name="output"/> as UTF-8: the columns an inventory's
+    /// export writes, then the version the search index held when the match read it, and one column for each property the
+    /// selection's conditions ask (<paramref name="columns"/>), its values joined by a semicolon and a space. Returns how many
+    /// it wrote; the stream is left open.
+    /// </summary>
+    public static async Task<long> WriteSelectionAsync(
+        ILedger ledger, InventoryState inventory, long selectionId, IReadOnlyList<string> columns, string? finding, Stream output, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        ArgumentNullException.ThrowIfNull(inventory);
+        ArgumentNullException.ThrowIfNull(columns);
+        ArgumentNullException.ThrowIfNull(output);
+        if (finding is not null && !InventoryFindings.IsKnown(finding))
+        {
+            throw new DeliveryException($"'{finding}' is not a finding; an inventory finds {string.Join(", ", InventoryFindings.All)}.");
+        }
+
+        var writer = new StreamWriter(output, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), bufferSize: 64 * 1024, leaveOpen: true);
+        await using (writer.ConfigureAwait(false))
+        {
+            await writer.WriteAsync(DimensionExport.Csv([.. Columns, "matched_version", .. columns]) + LineEnd).ConfigureAwait(false);
+            var ledgers = new Dictionary<Guid, string?>();
+            long rows = 0;
+            long? after = null;
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var page = await ledger.ListInventorySelectionRecordsAsync(inventory.Partition, selectionId, finding, after, Page, ct).ConfigureAwait(false);
+                foreach (var selected in page)
+                {
+                    var record = selected.Record;
+                    string? ledgerName = null;
+                    if (record.LedgerFlowId is { } flowId && !ledgers.TryGetValue(flowId, out ledgerName))
+                    {
+                        ledgerName = (await ledger.GetLedgerAsync(flowId, ct).ConfigureAwait(false))?.LedgerName;
+                        ledgers[flowId] = ledgerName;
+                    }
+
+                    var held = InventorySelectionValues.Parse(selected.ValuesJson);
+                    var line = DimensionExport.Csv(
+                    [
+                        Number(record.InventoryRecordId), record.TargetId, record.Kind, Number(record.Version), record.Finding, Instant(record.FindingUtc), record.Detail,
+                        record.CreateUser, Instant(record.CreateTime), record.ModifyUser, Instant(record.ModifyTime), Instant(record.FirstSeenUtc), Instant(record.ChangedUtc),
+                        Instant(record.GoneUtc), ledgerName, record.LedgerFlowId?.ToString("D"), record.DeliveryKey?.ToString("D"), record.LedgerStatus,
+                        Number(record.LedgerVersion), Number(record.ArtifactId), record.ArtifactState, Number(selected.MatchedVersion),
+                        .. columns.Select(c => held.TryGetValue(c, out var values) ? string.Join("; ", values) : null),
+                    ]);
+                    await writer.WriteAsync(line + LineEnd).ConfigureAwait(false);
+                    rows++;
+                }
+
+                if (page.Count < Page)
+                {
+                    await writer.FlushAsync(ct).ConfigureAwait(false);
+                    return rows;
+                }
+
+                after = page[^1].Record.InventoryRecordId;
+            }
+        }
+    }
+
     private static string? Number(long? value) => value?.ToString(CultureInfo.InvariantCulture);
 
     private static string? Instant(DateTime? value) => value is { } at

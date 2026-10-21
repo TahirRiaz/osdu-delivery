@@ -1048,6 +1048,114 @@ public sealed class DeliveryInventoryRemoval
 
     /// <summary>The audit trail's activity of the removal.</summary>
     public long? ActivityId { get; set; }
+
+    /// <summary>
+    /// The selection the removal took its ids from (<see cref="DeliveryInventorySelection"/>): the ids of the finding that held
+    /// what an operator's conditions asked in OSDU. Null for a removal that named its ids or took every id of the finding.
+    /// </summary>
+    public long? InventorySelectionId { get; set; }
+}
+
+/// <summary>
+/// The ids of an inventory that hold what an operator's conditions ask in OSDU (osdu/docs/reference/flow/inventory.md,
+/// Selecting ids by what OSDU holds): the conditions as the operator wrote them and as the search was asked them, how the
+/// match read OSDU and what it found, and the build of the inventory it was matched against. Every id it found is a
+/// <see cref="DeliveryInventorySelectionItem"/>. A match runs as a run of the inventory flow; a removal may take its ids.
+/// </summary>
+public sealed class DeliveryInventorySelection
+{
+    public short PartitionId { get; set; }
+
+    public long InventorySelectionId { get; set; }
+
+    public int InventoryId { get; set; }
+
+    /// <summary>The platform run the match ran as; null until it is queued.</summary>
+    public Guid? RunId { get; set; }
+
+    /// <summary>Who asked for the match.</summary>
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>The conditions as the operator wrote them, a search term by its id (JSON), as the page shows them again.</summary>
+    public string ConditionsJson { get; set; } = string.Empty;
+
+    /// <summary>
+    /// A hash of <see cref="ConditionsJson"/>, by which the same conditions asked again of the same build find the match
+    /// already made rather than reading OSDU again.
+    /// </summary>
+    public string ConditionsKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The conditions as the search is asked them: an explorer search of the inventory's kind (JSON), each search term carried
+    /// through its mapping to the property its route fills.
+    /// </summary>
+    public string FiltersJson { get; set; } = string.Empty;
+
+    /// <summary>queued, running, completed, failed or expired.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>The Lucene query the conditions came to, as the match sent it; null until the match runs.</summary>
+    public string? Query { get; set; }
+
+    /// <summary>
+    /// How the match read OSDU: <c>conditions</c> (every record the conditions find in the inventory's kind, joined with the
+    /// inventory's ids) or <c>ids</c> (the inventory's ids in chunks, each asked with the conditions); null until it decides.
+    /// </summary>
+    public string? Direction { get; set; }
+
+    /// <summary>What the reader should know of how the conditions were read (JSON list): a source column read through other records, a value that found nothing.</summary>
+    public string? NotesJson { get; set; }
+
+    /// <summary>The properties whose values each id's row carries, those the conditions ask (JSON list).</summary>
+    public string? ColumnsJson { get; set; }
+
+    /// <summary>The inventory's last build when the match read OSDU; a later build makes the match stale.</summary>
+    public long? BuildRunId { get; set; }
+
+    /// <summary>The ids the inventory serves that the match judged.</summary>
+    public long Candidates { get; set; }
+
+    /// <summary>How much the match has to read, and has read: the records the conditions find, or the inventory's ids.</summary>
+    public long ToCheck { get; set; }
+
+    public long Checked { get; set; }
+
+    /// <summary>The ids of the inventory that hold what the conditions ask.</summary>
+    public long Matched { get; set; }
+
+    /// <summary>Records the conditions find in the inventory's kind that the inventory serves no row of: created since its last build, or outside its query.</summary>
+    public long Outside { get; set; }
+
+    /// <summary>Ids matched at another version than the inventory listed: changed since its last build, which a removal leaves for the next build.</summary>
+    public long Changed { get; set; }
+
+    /// <summary>The search requests the match sent.</summary>
+    public long Requests { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime? StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    /// <summary>Why the match failed, redacted; null for one that did not.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>One id of an inventory a match found holding what its conditions ask: the version the index holds and the values it holds there.</summary>
+public sealed class DeliveryInventorySelectionItem
+{
+    public short PartitionId { get; set; }
+
+    public long InventorySelectionId { get; set; }
+
+    public long InventoryRecordId { get; set; }
+
+    /// <summary>The version the search index held of it when the match read it.</summary>
+    public long? MatchedVersion { get; set; }
+
+    /// <summary>What it held at each property the conditions ask, property to values (JSON), cut to the column.</summary>
+    public string? ValuesJson { get; set; }
 }
 
 /// <summary>What one removal did to one id: removed, already gone, skipped or failed, at the version it found, and why.</summary>
@@ -2994,6 +3102,12 @@ public static class DeliveryModel
     /// <summary>The longest line an inventory record keeps of what its finding rests on.</summary>
     public const int MaxInventoryDetailLength = 1000;
 
+    /// <summary>The longest text a selection keeps of the values an id holds at the properties its conditions ask.</summary>
+    public const int MaxSelectionValuesLength = 4000;
+
+    /// <summary>The length of a selection's conditions key: a SHA-256 in hex.</summary>
+    public const int SelectionKeyLength = 64;
+
     /// <summary>
     /// The longest identity token, and the longest display value beside it: 200 characters keep the
     /// (token, flow, key) primary key well under SQL Server's 1700-byte limit for a nonclustered index key, and a
@@ -3465,6 +3579,33 @@ public static class DeliveryModel
             e.HasIndex(i => new { i.PartitionId, i.InventoryRemovalId, i.Outcome, i.InventoryRemovalItemId });
             // An OSDU id across every removal of the partition: a lookup by id answers what was removed of it, by whom and when.
             e.HasIndex(i => new { i.PartitionId, i.TargetId }).IncludeProperties(i => new { i.InventoryRemovalId, i.Outcome });
+        });
+
+        modelBuilder.Entity<DeliveryInventorySelection>(e =>
+        {
+            e.ToTable("InventorySelection", SchemaName);
+            e.HasKey(s => new { s.PartitionId, s.InventorySelectionId });
+            e.Property(s => s.InventorySelectionId).ValueGeneratedOnAdd();
+            e.Property(s => s.Actor).HasMaxLength(200).IsRequired();
+            e.Property(s => s.ConditionsJson).IsRequired();
+            e.Property(s => s.ConditionsKey).HasMaxLength(SelectionKeyLength).IsUnicode(false).IsRequired();
+            e.Property(s => s.FiltersJson).IsRequired();
+            e.Property(s => s.Status).HasMaxLength(16).IsRequired();
+            e.Property(s => s.Direction).HasMaxLength(16);
+            e.Property(s => s.ColumnsJson).HasMaxLength(4000);
+            e.Property(s => s.Error).HasMaxLength(4000);
+            // The same conditions asked again of an inventory find the newest match made of them.
+            e.HasIndex(s => new { s.PartitionId, s.InventoryId, s.ConditionsKey, s.InventorySelectionId });
+            // The matches a sweep retires, oldest first.
+            e.HasIndex(s => new { s.PartitionId, s.CreatedUtc });
+        });
+
+        modelBuilder.Entity<DeliveryInventorySelectionItem>(e =>
+        {
+            e.ToTable("InventorySelectionItem", SchemaName);
+            // A selection's ids in the inventory's own order: the grid pages through them, and a removal joins them by row.
+            e.HasKey(i => new { i.PartitionId, i.InventorySelectionId, i.InventoryRecordId });
+            e.Property(i => i.ValuesJson).HasMaxLength(MaxSelectionValuesLength);
         });
 
         modelBuilder.Entity<DeliveryInventoryScan>(e =>

@@ -15,10 +15,11 @@ const GAP = 2;
 /** What the strip's last tab says when it holds the most it can, measured so its room is kept before the tabs are fitted. */
 const WIDEST_MORE = "99 more";
 
-/** One tab of the strip: every id (no finding), or a finding with how many ids have it. */
+/** One tab of the strip: every id (no finding), or a finding with how many ids have it, and how many of them a match selected. */
 interface StripTab {
   finding: string | null;
   count: number;
+  matched?: number;
 }
 
 /** How wide the strip is and how wide each of its tabs would be, as last measured; null before the first measure. */
@@ -34,11 +35,21 @@ const tabClass = (selected: boolean) => cn(
   selected ? "text-foreground after:bg-primary" : "text-muted-foreground after:bg-transparent hover:text-foreground",
 );
 
-/** A tab's count, as a quiet pill after its name. */
-function CountPill({ count, selected }: { count: number; selected: boolean }) {
+/**
+ * A tab's count, as a quiet pill after its name; while a match selects ids, how many of them match before how many there are,
+ * a match of none as quiet as the rest.
+ */
+function CountPill({ count, matched, selected }: { count: number; matched?: number; selected: boolean }) {
   return (
     <span className={cn("rounded-full px-1.5 font-mono text-[11px] tabular-nums leading-4", selected ? "bg-primary/10 text-foreground" : "bg-muted text-muted-foreground")}>
-      {count.toLocaleString("en-US")}
+      {matched === undefined
+        ? count.toLocaleString("en-US")
+        : (
+          <>
+            <span className={cn(matched > 0 && "font-medium text-foreground")}>{matched.toLocaleString("en-US")}</span>
+            <span className="opacity-60">{` / ${count.toLocaleString("en-US")}`}</span>
+          </>
+        )}
     </span>
   );
 }
@@ -49,9 +60,18 @@ function TabFace({ tab, selected }: { tab: StripTab; selected: boolean }) {
     <>
       {tab.finding !== null && <FindingGlyph finding={tab.finding} />}
       <span>{tab.finding === null ? "Every id" : findingVisual(tab.finding).label}</span>
-      <CountPill count={tab.count} selected={selected} />
+      <CountPill count={tab.count} matched={tab.matched} selected={selected} />
     </>
   );
+}
+
+/** How many of `count` ids a match selected, as a tab or the menu says it. */
+function matchedOf(matched: ReadonlyMap<string, number> | null | undefined, finding: string | null): number | undefined {
+  if (matched === null || matched === undefined) {
+    return undefined;
+  }
+
+  return finding === null ? [...matched.values()].reduce((sum, count) => sum + count, 0) : matched.get(finding) ?? 0;
 }
 
 /**
@@ -97,9 +117,10 @@ function fitted(room: StripRoom | null, count: number, picked: number, menuAlway
  * The findings of an inventory as one line of tabs over its grid: every id first, then each finding that ids have, the
  * raised ones in report order before the rest, each with its count and what it means on hover. The line never wraps: what
  * it has no room for, and the findings no id has, are in the menu at its end, which lists every finding with its count, so
- * a narrow page keeps one quiet line rather than rows of buttons. The finding picked always stays in view.
+ * a narrow page keeps one quiet line rather than rows of buttons. The finding picked always stays in view. While a match of
+ * conditions selects ids, each tab says how many of its ids match before how many there are.
  */
-export function InventoryFindingStrip({ total, counts, selected, onSelect }: {
+export function InventoryFindingStrip({ total, counts, selected, onSelect, matched }: {
   /** How many ids the inventory holds. */
   total: number;
   /** Every finding with its count, in report order. */
@@ -108,12 +129,14 @@ export function InventoryFindingStrip({ total, counts, selected, onSelect }: {
   selected: string | null;
   /** Picks a finding; null picks every id. */
   onSelect: (finding: string | null) => void;
+  /** How many ids of each finding a match selected; null or absent while no match holds. */
+  matched?: ReadonlyMap<string, number> | null;
 }) {
   const held = counts.filter((count) => count.count > 0);
   const tabs: StripTab[] = [
-    { finding: null, count: total },
-    ...held.filter((count) => count.raised),
-    ...held.filter((count) => !count.raised),
+    { finding: null, count: total, matched: matchedOf(matched, null) },
+    ...held.filter((count) => count.raised).map((count) => ({ ...count, matched: matchedOf(matched, count.finding) })),
+    ...held.filter((count) => !count.raised).map((count) => ({ ...count, matched: matchedOf(matched, count.finding) })),
   ];
   // The menu is where the findings no id has are, so it stays whenever one has none.
   const menuAlways = counts.some((count) => count.count === 0);
@@ -157,7 +180,9 @@ export function InventoryFindingStrip({ total, counts, selected, onSelect }: {
       <FindingGlyph finding={count.finding} quiet={count.count === 0} />
       <span className={cn("flex-1", count.count === 0 && "text-muted-foreground")}>{findingVisual(count.finding).label}</span>
       <span className={cn("font-mono text-[11.5px] tabular-nums", count.count === 0 ? "text-muted-foreground/70" : "text-muted-foreground")}>
-        {count.count.toLocaleString("en-US")}
+        {matchedOf(matched, count.finding) === undefined
+          ? count.count.toLocaleString("en-US")
+          : `${(matchedOf(matched, count.finding) ?? 0).toLocaleString("en-US")} / ${count.count.toLocaleString("en-US")}`}
       </span>
       <Check className={cn("size-3.5", count.finding === selected ? "opacity-100" : "opacity-0")} aria-hidden />
     </DropdownMenuItem>
@@ -180,6 +205,7 @@ export function InventoryFindingStrip({ total, counts, selected, onSelect }: {
             data-testid={tab.finding === null ? "inventory-finding-all" : `inventory-finding-${tab.finding}`}
             data-finding={tab.finding ?? undefined}
             data-count={tab.count}
+            data-matched={tab.matched}
           >
             <TabFace tab={tab} selected={isSelected} />
           </button>
@@ -203,7 +229,9 @@ export function InventoryFindingStrip({ total, counts, selected, onSelect }: {
           <DropdownMenuContent align="start" className="w-64" data-testid="inventory-findings-menu">
             <DropdownMenuItem onSelect={() => onSelect(null)} className="gap-2" data-testid="inventory-findings-menu-all">
               <span className="flex-1">Every id</span>
-              <span className="font-mono text-[11.5px] tabular-nums text-muted-foreground">{total.toLocaleString("en-US")}</span>
+              <span className="font-mono text-[11.5px] tabular-nums text-muted-foreground">
+                {matchedOf(matched, null) === undefined ? total.toLocaleString("en-US") : `${(matchedOf(matched, null) ?? 0).toLocaleString("en-US")} / ${total.toLocaleString("en-US")}`}
+              </span>
               <Check className={cn("size-3.5", selected === null ? "opacity-100" : "opacity-0")} aria-hidden />
             </DropdownMenuItem>
             <DropdownMenuSeparator />

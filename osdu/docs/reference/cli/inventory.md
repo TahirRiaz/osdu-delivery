@@ -185,8 +185,10 @@ sqlflow inventory export dev 5 --finding orphan --out welllog-orphans.csv
 ## removals
 
 The removals asked of the inventory, newest first (20 unless `--limit` says otherwise, at most 200): what each removed
-(the finding, ids picked or every one), soft deleted or purged, where it stands, its tallies, who asked and why one
-stopped.
+(the finding, ids picked, those of a selection or every one), soft deleted or purged, where it stands, its tallies, who
+asked and why one stopped. A removal that took the ids of a selection reads `of selection <n>`
+([Selecting ids by what OSDU holds](../flow/inventory.md#selecting-ids-by-what-osdu-holds)); `GET
+/api/v1/delivery/inventories/{partition}/{inventoryId}/selections/{n}` says which conditions made it.
 
 ```text
 WellLogs in dev: 1 removal(s)
@@ -197,8 +199,8 @@ A removal of gone ids reads `removed from the inventory alone (nothing asked of 
 purged.
 
 With `--json`: `partition`, `inventoryId`, `inventory` and `removals`, each with `removal`, `inventoryId`, `runId`,
-`actor`, `finding`, `scope`, `namesIds`, `requested`, `status`, `startedUtc`, `completedUtc`, `removed`, `gone`,
-`skipped`, `failed`, `error` and `activityId`.
+`actor`, `finding`, `scope`, `namesIds`, `selection`, `requested`, `status`, `startedUtc`, `completedUtc`, `removed`,
+`gone`, `skipped`, `failed`, `error` and `activityId`.
 
 ## removal
 

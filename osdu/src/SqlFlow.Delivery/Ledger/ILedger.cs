@@ -2027,11 +2027,14 @@ public interface ILedger
 
     /// <summary>
     /// The next ids a removal may act on, at most <paramref name="limit"/>, after <paramref name="after"/>: those of
-    /// <paramref name="finding"/> the inventory holds as served, or with <paramref name="ids"/> those ids whatever they are now;
-    /// each with the finding the reconcile's rule gives it against the ledgers as they stand now and <paramref name="owners"/>.
+    /// <paramref name="finding"/> the inventory holds as served (only those the selection <paramref name="selectionId"/> holds,
+    /// when one is named), or with <paramref name="ids"/> those ids whatever they are now; each with the finding the reconcile's
+    /// rule gives it against the ledgers as they stand now and <paramref name="owners"/>. A removal names its ids or a
+    /// selection, not both.
     /// </summary>
     Task<IReadOnlyList<InventoryRemovalCandidate>> InventoryRemovalCandidatesAsync(
-        Guid flowId, int inventoryId, string finding, IReadOnlyList<string>? ids, IReadOnlyList<string> owners, long after, int limit, CancellationToken ct = default);
+        Guid flowId, int inventoryId, string finding, IReadOnlyList<string>? ids, IReadOnlyList<string> owners, long after, int limit, long? selectionId = null,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Keeps what one chunk of a removal came to, in one transaction: every id's outcome and reason, the ids removed from OSDU
@@ -2067,6 +2070,72 @@ public interface ILedger
 
     /// <summary>The rows an inventory holds of <paramref name="targetIds"/>, at most as many as it names; an id it holds no row of is left out.</summary>
     Task<IReadOnlyList<InventoryRecordState>> InventoryRecordsOfAsync(string partition, int inventoryId, IReadOnlyList<string> targetIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// Opens a selection of an inventory's ids (osdu/docs/reference/flow/inventory.md, Selecting ids by what OSDU holds),
+    /// queued for the match a run of the inventory flow makes. Returns the selection's number.
+    /// </summary>
+    Task<long> CreateInventorySelectionAsync(string partition, InventorySelectionStart start, CancellationToken ct = default);
+
+    /// <summary>
+    /// The newest selection of an inventory made of the same conditions (<paramref name="conditionsKey"/>) that still says what
+    /// they match: one whose match is under way, or one that completed against the inventory's build
+    /// <paramref name="buildRunId"/>; null when there is none.
+    /// </summary>
+    Task<InventorySelectionState?> FindInventorySelectionAsync(string partition, int inventoryId, string conditionsKey, long? buildRunId, CancellationToken ct = default);
+
+    /// <summary>One selection by its partition and number, or null.</summary>
+    Task<InventorySelectionState?> GetInventorySelectionAsync(string partition, long selectionId, CancellationToken ct = default);
+
+    /// <summary>Names the run a selection's match was queued as.</summary>
+    Task SetInventorySelectionRunAsync(string partition, long selectionId, Guid runId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ends a selection whose match never ran as failed, with why (redacted): its run could not be queued, or ended before the
+    /// match did. A selection that ended already keeps how it ended.
+    /// </summary>
+    Task FailInventorySelectionAsync(string partition, long selectionId, string why, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Starts a selection's match as the run <paramref name="runId"/>, against the inventory's build <paramref name="buildRunId"/>:
+    /// running, with every count and id an earlier attempt of the match left cleared, so a run tried again matches afresh.
+    /// Returns the selection as it starts; null when the partition holds no such selection of the inventory.
+    /// </summary>
+    Task<InventorySelectionState?> StartInventorySelectionAsync(Guid flowId, int inventoryId, long selectionId, Guid runId, long? buildRunId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>How many ids the inventory serves now, which a match judges.</summary>
+    Task<long> CountInventoryServedAsync(Guid flowId, int inventoryId, CancellationToken ct = default);
+
+    /// <summary>The next ids the inventory serves, at most <paramref name="limit"/>, in its own order after <paramref name="after"/>.</summary>
+    Task<IReadOnlyList<InventoryServedId>> InventoryServedAsync(Guid flowId, int inventoryId, long after, int limit, CancellationToken ct = default);
+
+    /// <summary>Notes what a match has to read and how it reads it, so a page following it can say how far it got.</summary>
+    Task PlanInventorySelectionAsync(Guid flowId, long selectionId, long candidates, long toCheck, string direction, string? query, long requests, CancellationToken ct = default);
+
+    /// <summary>
+    /// Keeps what one page or chunk of a match found, in one transaction: each record the search found that the inventory serves
+    /// a row of, once, with the version the index holds and its values; how many records it holds no row of, and how many are at
+    /// another version than the inventory listed; and the match's progress (<paramref name="checkedCount"/> more read,
+    /// <paramref name="requests"/> more sent).
+    /// </summary>
+    Task<InventorySelectionWrite> AddInventorySelectionItemsAsync(
+        Guid flowId, int inventoryId, long selectionId, IReadOnlyList<InventorySelectionHit> hits, long checkedCount, long requests, CancellationToken ct = default);
+
+    /// <summary>Ends a selection's match: completed with its query, direction, notes and columns, or failed with why, its ids deleted.</summary>
+    Task CompleteInventorySelectionAsync(Guid flowId, long selectionId, InventorySelectionEnd outcome, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>How many of a selection's ids have each finding now, as the inventory holds them.</summary>
+    Task<InventoryCounts> InventorySelectionCountsAsync(string partition, long selectionId, CancellationToken ct = default);
+
+    /// <summary>A page of a selection's ids, of one finding or every one, in the inventory's order after <paramref name="after"/>, each with what the match read of it.</summary>
+    Task<IReadOnlyList<InventorySelectionRecord>> ListInventorySelectionRecordsAsync(
+        string partition, long selectionId, string? finding, long? after, int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retires a partition's selections made before <paramref name="olderThanUtc"/>: deleted whole, or, when a removal took
+    /// their ids, kept as expired with their ids deleted, so a removal still says what it removed by.
+    /// </summary>
+    Task<InventorySelectionSweep> SweepInventorySelectionsAsync(string partition, DateTime olderThanUtc, CancellationToken ct = default);
 
     /// <summary>
     /// Applies what the lease's worker has appended so far to its records, a slice at a time, and deletes each event with
