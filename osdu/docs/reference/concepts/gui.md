@@ -398,14 +398,12 @@ says why.
 
 ### Templates
 
-OSDU record schemas saved as templates: those the repositories' template folders hold, which every sync saves, and
-those saved here. Three tabs:
+OSDU record schemas saved as templates, the library, for the explorer, the mapping builder and the assistant. It is not
+linked to the repositories, whose documents read their templates from their template folders. Three tabs:
 
-- **Saved**: the saved versions, filtered by kind, version, origin or who saved it, each with where it came from, the
-  template folder files of synced repositories that hold it (**Held in**) and how many mappings fill it. A version opens
-  laid out as a template, with **Held by** and **Filled by**; **Download** saves its bundled schema as a file for a
-  template folder, and **Delete** is offered only while no template folder file holds it and no synced mapping pins it,
-  its tooltip saying which do.
+- **Saved**: the saved versions, filtered by kind, version, origin or who saved it, each with when, by whom and from
+  where it was saved. A version opens laid out as a template; **Download** saves its bundled schema as a file for a
+  template folder, and **Delete** removes it from the library, which no repository document reads.
 - **Browse OSDU**: the OSDU data definitions, the Open Group's public repository of OSDU schemas, by **Release**,
   searched by kind, with **Every version**, **Compare versions**, **Save template**, and **Sync with the repository**,
   which reads the release list again and downloads the release in view.

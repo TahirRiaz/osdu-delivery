@@ -35,7 +35,7 @@ public sealed class ResolvedSearches
 
     /// <summary>
     /// Resolves <paramref name="mapping"/>'s searches against the schemas in <paramref name="schemas"/>, which holds the
-    /// saved template each search pins, or lacks it when it is not saved.
+    /// template each search settled on, or lacks it, with why in <c>missing</c>, when it could not be read.
     /// </summary>
     public static ResolvedSearches Resolve(
         MappingDefinition mapping,

@@ -1,8 +1,8 @@
 ---
 id: delivery-wiki-0018-template-folders
-title: "Decision 0018: A repository's template folders settle the template each document fills, and the library only assists"
+title: "Decision 0018: A repository's template folders settle the template each document fills, and the library stands apart"
 type: decision
-summary: "Why templates live as files in a repository's template folders, how a document's template is settled, and why the saved templates stay as a library."
+summary: "Why templates live as files in a repository's template folders, how a document's template is settled, and why the saved templates stay a separate library."
 keywords:
   - template folder
   - templates folder
@@ -34,9 +34,10 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs
+  - osdu/src/SqlFlow.Delivery/Ordering/OrderCatalog.cs
 updated: 2026-10-21
 ---
-# 0018: A repository's template folders settle the template each document fills, and the library only assists
+# 0018: A repository's template folders settle the template each document fills, and the library stands apart
 
 Status: proposed. Documented in [templates](../../reference/concepts/templates.md#template-folders) and
 [sqlflow template](../../reference/cli/template.md). Amends [0003](0003-rendering-location.md),
@@ -73,11 +74,14 @@ suggestions read the library without a working copy.
 - **The folders are the only thing that settles a document's template.** A version the library holds and no folder on
   the path holds is never a document's template. A mapping whose template no folder on its path holds does not load,
   and the sync says where it looked. The one exception is the validation gate: a record already rendered for an exact
-  version is still checked against that version from the library once its file has changed, since every copy of a
-  version is the same schema.
-- **The library assists.** Every sync saves each version a repository's folders hold into `[osdu].[Template]`, and
-  records each file in `[osdu].[RepositoryTemplate]`, so the catalog-side pages settle a synced repository's documents
-  without its working copy. A version a folder holds cannot be deleted from the library while the file is there.
+  version is still checked against that version from the library once its file has changed, when someone saved it
+  there, since every copy of a version is the same schema.
+- **The library stands apart.** `[osdu].[Template]` holds only what a person saves, from the Templates page or the
+  command line, for what reads templates where no repository is at hand: the explorer, the mapping builder and the
+  assistant. A sync saves nothing in it. It records each file in `[osdu].[RepositoryTemplate]` with a copy of the
+  file's schema, which the control plane's pages read to settle a synced repository's documents without its working
+  copy. Nothing a repository holds keeps a saved version from being deleted, and the Templates page says nothing of
+  repositories or of the mappings that fill a version.
 - **Any kind is a template**, OSDU's or one's own: importing a schema writes it as a file of a folder (`--out`),
   declaring its kind when the schema did not, and the next sync uses it with no GUI step.
 
@@ -86,7 +90,12 @@ suggestions read the library without a working copy.
 - **Keep templates in the database alone.** Rejected for the reasons in the context: the working copy could not be
   read or checked on its own, and a template of one's own needed a step outside the repository.
 - **Remove the library.** Rejected: the explorer, the builder and the assistant read templates where no repository is
-  at hand, and a saved version is what the gate checks a record rendered before its file changed against.
+  at hand, and the gate can check a record rendered before its file changed against a version someone saved.
+- **Mirror the repositories' templates into the library.** Built first and taken back before it was released: every
+  sync saved what the folders held, and the Templates page listed the files holding each version and refused to delete
+  one a folder held. It tied the library to the repositories, so its list grew with every repository's files and a
+  delete depended on files elsewhere, when the library only serves reading templates where no repository is at hand. A
+  copy kept with each file's row serves the control plane's pages without it.
 - **A template path in each document.** Rejected in favour of folders: the path would be repeated in every mapping,
   search, test and dimension, would break when files move, and would leave a document that names a kind alone without
   a rule. A folder on the path gives each project of a repository its own versions with no path written anywhere.
@@ -98,6 +107,9 @@ suggestions read the library without a working copy.
   exact pin keeps its version ([Upgrading an estate](../../reference/concepts/templates.md#upgrading-an-estate-whose-templates-were-saved-only-in-the-library)).
 - `sqlflow check`, a run, lineage and the sync read the files, so a working copy is checked before it is committed;
   `sqlflow template folders --for <document>` shows what a document reads.
+- The Templates page no longer counts the mappings that pin a version, and a saved version is deleted whatever a
+  mapping names, since mappings read their folders. A row recorded before copies were kept reads as missing its copy
+  until the next sync of its repository.
 - The order the catalog keeps for a repository leaves out a delivery whose mapping's template no folder holds, since
   that mapping does not load; lineage still orders it by a built release of OSDU's lineage
   ([0016](0016-osdu-order.md)).

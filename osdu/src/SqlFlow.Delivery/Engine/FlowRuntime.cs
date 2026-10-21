@@ -593,9 +593,10 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>
     /// The schema of <paramref name="kind"/> at <paramref name="version"/>: the runtime's own template when it is that one,
-    /// else that version as the template folders on the mapping's path hold it, else as the saved templates hold it. A
-    /// version is the hash of its content, so every copy of it is the same schema: a record rendered before its template's
-    /// file changed is still checked against the version it was rendered for, which the sync saved while a folder held it.
+    /// else that version as the template folders on the mapping's path hold it, else as the saved templates hold it when
+    /// someone saved it there. A version is the hash of its content, so every copy of it is the same schema: a record
+    /// rendered before its template's file changed is still checked against the version it was rendered for, where one is
+    /// held.
     /// Without a version, the runtime's own template of that kind. Null when nothing holds it.
     /// </summary>
     private async Task<SchemaSnapshot?> SchemaOfAsync(string kind, string? version, CancellationToken ct)

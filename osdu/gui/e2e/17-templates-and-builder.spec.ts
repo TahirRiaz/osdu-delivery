@@ -4,9 +4,9 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./helpers";
 
 // Templates and the mapping builder (osdu/docs/reference/concepts/templates.md; the builder:
-// osdu/docs/reference/concepts/gui.md, Mapping builder). Runs after the seed (03), which saves the two templates the
-// sample mappings pin and syncs the fixture repository, so both templates are pinned by a synced mapping and the
-// repository's cache is in the catalog. Browsing OSDU reads the Open Group's public data definitions repository through
+// osdu/docs/reference/concepts/gui.md, Mapping builder). Runs after the seed (03), which saves the templates the sample
+// mappings fill in the library, as the Templates page saves them, and syncs the fixture repository, so its cache is in the
+// catalog. The library is not linked to the repository, whose documents read their templates from its template folder. Browsing OSDU reads the Open Group's public data definitions repository through
 // the control plane, which the suite cannot reach, so the browse test stands in for those three answers and lets
 // everything after them (the preview, the save) run against the real control plane.
 
@@ -59,15 +59,13 @@ async function openTemplates(page: Page): Promise<void> {
 }
 
 test.describe.serial("templates and the mapping builder", () => {
-  test("the saved templates say which template folders hold them and which mappings fill them, and a held version is not deleted", async ({ adminPage }) => {
+  test("a saved template is laid out and downloads as a file, and deleting it touches no repository", async ({ adminPage }) => {
     await openTemplates(adminPage);
 
     const rows = adminPage.getByTestId("templates-saved-table").getByTestId("table-row");
     const wellbore = rows.filter({ hasText: WELLBORE_KIND });
     await expect(wellbore).toHaveCount(1, { timeout: 30_000 });
     await expect(wellbore).toContainText(WELLBORE_VERSION);
-    // The sample's Wellbore mapping and the fixture's both pin it.
-    await expect(wellbore).toContainText("2 mappings");
     await expect(rows.filter({ hasText: WELLLOG_KIND })).toContainText(WELLLOG_VERSION);
 
     await wellbore.click();
@@ -75,9 +73,9 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-kind")).toHaveText(WELLBORE_KIND, { timeout: 15_000 });
     await expect(sheet.getByTestId("templates-view-version")).toHaveText(WELLBORE_VERSION);
     await expect(sheet.getByTestId("templates-view-state")).toHaveText("saved");
-    await expect(sheet.getByTestId("templates-view-saved")).toContainText("Filled by 2 synced mappings");
-    // The repository's template folder holds it: the sync saved it from there.
-    await expect(sheet.getByTestId("templates-view-held")).toContainText(`welldb/templates/${WELLBORE_FILE}`);
+    // The library says nothing of the repositories: their documents read their own template folders.
+    await expect(sheet.getByTestId("templates-view-held")).toHaveCount(0);
+    await expect(sheet.getByTestId("templates-view-saved")).not.toContainText("Filled by");
 
     // The variables a mapping fills are listed; what OSDU Delivery and OSDU write themselves shows only on request.
     // The tree opens fully folded; opening the data section shows what it holds.
@@ -123,10 +121,11 @@ test.describe.serial("templates and the mapping builder", () => {
       JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "samples", "welldb", "templates", WELLBORE_FILE), "utf8")),
     );
 
-    // The repository's template folder holds this version, so Delete sits beside the saved state disabled, and says why.
-    await expect(sheet.getByTestId("templates-view-actions").getByTestId("templates-delete")).toBeDisabled();
-    await sheet.getByTestId("templates-delete-blocked").hover();
-    await expect(adminPage.getByText(/Held by 1 template folder file of synced repositories/).first()).toBeVisible();
+    // A synced repository's template folder holds this same version, and Delete is offered all the same: the repository's
+    // documents read the file, so the confirmation says none is affected. Kept here, for the builder tests after this one.
+    await sheet.getByTestId("templates-view-actions").getByTestId("templates-delete").click();
+    await expect(adminPage.getByTestId("confirm-dialog")).toContainText("none of their documents is affected");
+    await adminPage.getByTestId("confirm-dialog-cancel").click();
     await expect(rows.filter({ hasText: WELLBORE_KIND })).toHaveCount(1);
   });
 

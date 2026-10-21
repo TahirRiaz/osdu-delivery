@@ -47,6 +47,12 @@ public sealed partial class OsduLedger
                     .ToListAsync(ct).ConfigureAwait(false)),
             ct);
 
+    public Task<RecordedTemplateCopy?> RepositoryTemplateCopyAsync(Guid repoId, string path, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return ReadAsync(db => Catalog.SyncedTemplates.CopyAsync(db, repoId, path, ct), ct);
+    }
+
     private static SyncedMapping Synced(DeliveryMapping row)
         => new(row.Id, row.RepoId, row.Reference, row.Kind, row.RelativePath, row.ContentHash, row.Yaml, string.Equals(row.Status, "valid", StringComparison.Ordinal), row.Message, row.TemplateVersion);
 }

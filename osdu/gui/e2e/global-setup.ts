@@ -28,8 +28,9 @@ import { E2E, databaseOf } from "../playwright.config";
  * `cache/data`, and the pre and ingestion flows that load those files.
  *
  * The template folder is the sample's own (`osdu/samples/welldb/templates`) with the fixture mappings' templates beside
- * it, which a sync records and saves in the library. The seed spec also saves them through the API, as the Templates
- * page does, so the library holds them before the first sync. Cache versions are catalog objects, so the seed spec
+ * it, which the estate's documents read and a sync records. The library of saved templates is not linked to it: the seed
+ * spec saves the same schemas through the API, as the Templates page does, for the builder and the explorer specs, which
+ * read the library. Cache versions are catalog objects, so the seed spec
  * imports the sample records as the cache's first version, and then refreshes the lookups cache flow, whose dictionary
  * and ingestion table types need no OSDU, as a node would.
  *

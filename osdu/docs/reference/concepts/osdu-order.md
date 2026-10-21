@@ -78,7 +78,7 @@ types inside it.
 - A reference to the record's own type (a parent wellbore) adds nothing: records of one flow are ordered against each
   other by [record waits](../flow/interfaces.md#records-that-wait-for-records).
 - A kind whose template no [template folder](templates.md#template-folders) on its mapping's path holds is read from a
-  [built release of OSDU's lineage](#osdus-lineage-by-release); so is one whose template's saved copy cannot be read,
+  [built release of OSDU's lineage](#osdus-lineage-by-release); so is one whose template's copy the sync kept cannot be read,
   where the catalog orders a repository. When neither knows it, the delivery orders nothing and waits for nothing, and
   lineage warns on its flow.
 

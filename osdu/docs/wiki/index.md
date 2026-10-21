@@ -98,7 +98,7 @@ other packages adopt the same contract.
   and how held records wait for what they miss.
 - [0018: a repository's template folders settle the template each document fills](decisions/0018-template-folders.md) -
   why templates live as files in a repository's template folders, how a document's template is settled, and why
-  the saved templates stay as a library.
+  the saved templates stay a separate library.
 
 ## Coverage
 

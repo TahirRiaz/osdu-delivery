@@ -244,9 +244,9 @@ saved template osdu:wks:master-data--Wellbore:1.3.0 version 58d6bdbd9d066a06
 ```
 
 The version is a 16-character hash of the schema. A mapping can pin it (`template.version`), or name the kind alone and
-fill the one version the nearest folder holding the kind holds. The command also saves the version in the module's
-database, the library the GUI and the MCP server read before the repository is synced; on a machine without the
-database it writes the file alone. The Templates page of the GUI downloads a saved version as the same file.
+fill the one version the nearest folder holding the kind holds. Given the module's database, the command also saves the
+version in the library, which the GUI's builder and explorer and the MCP server read; the repository's documents read
+only the file, and on a machine without the database the command writes the file alone. The Templates page of the GUI downloads a saved version as the same file.
 `sqlflow template folders` lists what the repository's template folders hold:
 
 ```text

@@ -44,8 +44,9 @@ Source: the change that moves templates into repository template folders: the co
 
 Wrote [0018](decisions/0018-template-folders.md): why a repository's template folders settle the template each document
 fills (a working copy can be read and checked in VS Code, a template of one's own is used as committed, and each project
-of a repository keeps its own versions), why the saved templates stay as a library that only assists, and why a template
-path in each document was not taken. Amended [0003](decisions/0003-rendering-location.md),
+of a repository keeps its own versions), why the saved templates stay a library of their own that no repository document
+reads, with each file's copy kept on its row instead, and why a template path in each document, or mirroring the
+repositories' templates into the library, was not taken. Amended [0003](decisions/0003-rendering-location.md),
 [0009](decisions/0009-searched-references.md), [0010](decisions/0010-assertion-flows-read-only.md),
 [0011](decisions/0011-dimension-flows.md) and [0016](decisions/0016-osdu-order.md) with a note each saying what 0018
 changes in them, since each named the saved template as what a document is read against. In the

@@ -85,7 +85,7 @@ public sealed class TemplateFolderSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task A_sync_records_every_file_of_the_template_folders_and_saves_each_template_they_hold_once()
+    public async Task A_sync_records_every_file_of_the_template_folders_with_a_copy_of_its_template_and_leaves_the_library_alone()
     {
         var a = ThingFile("a");
         var b = ThingFile("b");
@@ -110,27 +110,35 @@ public sealed class TemplateFolderSyncTests : IDisposable
             ],
             files.Select(f => (f.Path, f.Folder, f.Kind, f.Version, f.Problem is not null)));
 
-        // Each version once in the library, saved from the folder, however many files and repositories hold it.
-        var saved = Assert.Single(await SavedAsync(VersionOf(a)));
-        Assert.Equal("repository sync", saved.CapturedBy);
-        Assert.Equal($"template folder file templates/copy/thing.json of repository {_repo:D}", saved.Origin);
-        Assert.Single(await SavedAsync(VersionOf(b)));
+        // Each file that holds a template keeps a copy of it, which reads back as the version it holds; one that holds none
+        // keeps none. The library is not the repository's: nothing is saved there.
+        Assert.All(files.Where(f => f.Problem is null), f => Assert.Equal(f.Version, VersionOf(f.SchemaJson!)));
+        Assert.Null(files.Single(f => f.Path == "templates/broken.json").SchemaJson);
+        Assert.Empty(await SavedAsync(VersionOf(a)));
+        Assert.Empty(await SavedAsync(VersionOf(b)));
 
-        // A second sync of the same folders changes no row and saves nothing again.
-        var firstSeen = files.ToDictionary(f => f.Path, f => f.FirstSeenUtc);
+        // A second sync of the same folders changes no row.
+        var firstSeen = files.ToDictionary(f => f.Path, f => (f.FirstSeenUtc, f.SchemaJson));
         await SyncAsync();
-        Assert.All(await FilesAsync(), f => Assert.Equal(firstSeen[f.Path], f.FirstSeenUtc));
-        Assert.Single(await SavedAsync(VersionOf(a)));
+        Assert.All(await FilesAsync(), f => Assert.Equal(firstSeen[f.Path], (f.FirstSeenUtc, f.SchemaJson)));
         await using (var db = _db.CreateDbContext())
         {
             Assert.False(await DeliveryCatalogSync.TemplateFoldersChangedAsync(db, _repo, _root, CancellationToken.None));
         }
 
-        // A file the repository no longer holds loses its row; the version it held stays in the library.
+        // A row without its copy (recorded before copies were kept) gets it at the next sync.
+        await using (var db = _db.CreateDbContext())
+        {
+            await db.DeliveryRepositoryTemplates.Where(t => t.RepoId == _repo).ExecuteUpdateAsync(set => set.SetProperty(t => t.SchemaJson, (string?)null));
+        }
+
+        await SyncAsync();
+        Assert.All((await FilesAsync()).Where(f => f.Problem is null), f => Assert.Equal(f.Version, VersionOf(f.SchemaJson!)));
+
+        // A file the repository no longer holds loses its row, and its copy with it.
         Delete("p/templates/thing.json");
         await SyncAsync();
         Assert.DoesNotContain(await FilesAsync(), f => f.Path == "p/templates/thing.json");
-        Assert.Single(await SavedAsync(VersionOf(b)));
     }
 
     [Fact]
@@ -157,7 +165,7 @@ public sealed class TemplateFolderSyncTests : IDisposable
         Assert.Equal(1, changed.Updated);
         thing = await MappingAsync("Thing@1.0.0");
         Assert.Equal((VersionOf(c), "templates/thing.json"), (thing.TemplateVersion, thing.TemplatePath));
-        Assert.Single(await SavedAsync(VersionOf(c)));
+        Assert.Equal(VersionOf(c), VersionOf((await FilesAsync()).Single(f => f.Path == "templates/thing.json").SchemaJson!));
 
         // The nearer folder no longer holds the kind: the mapping reads the folder above.
         Delete("p/templates/thing.json");
@@ -208,7 +216,7 @@ public sealed class TemplateFolderSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task Two_repositories_holding_one_template_save_it_once_and_it_is_not_deleted_while_either_holds_it()
+    public async Task Two_repositories_holding_one_template_each_keep_their_own_copy_and_a_saved_version_of_it_is_deleted_freely()
     {
         var other = Samples.NewTempDirectory();
         var otherRepo = Guid.NewGuid();
@@ -217,26 +225,32 @@ public sealed class TemplateFolderSyncTests : IDisposable
             var a = ThingFile("shared");
             Write("templates/thing.json", a);
             Write("templates/thing.json", a, other);
+            Write("mappings/Thing@1.0.0.yaml", TemplateFolderFixtures.KindAloneMapping());
             await SyncAsync();
             await SyncAsync(otherRepo, other);
-            Assert.Single(await SavedAsync(VersionOf(a)));
-            Assert.Single(await FilesAsync(otherRepo));
+            Assert.Equal(VersionOf(a), VersionOf(Assert.Single(await FilesAsync()).SchemaJson!));
+            Assert.Equal(VersionOf(a), VersionOf(Assert.Single(await FilesAsync(otherRepo)).SchemaJson!));
+            Assert.Empty(await SavedAsync(VersionOf(a)));
 
+            // Someone saves the same schema in the library and deletes it again: the repositories never read it, so nothing
+            // refuses the delete and the mapping still settles from its repository's copy.
             var store = _db.Templates();
             var reference = new TemplateReference(Thing, VersionOf(a));
-            var refused = await Assert.ThrowsAsync<DeliveryException>(() => store.DeleteAsync(reference));
-            Assert.Equal(
-                $"The template {reference} is held by the template folder file(s) templates/thing.json of a synced repository, so it cannot be deleted. Remove the file from the repository and sync it first.",
-                refused.Message);
-
-            Delete("templates/thing.json");
-            await SyncAsync();
-            await Assert.ThrowsAsync<DeliveryException>(() => store.DeleteAsync(reference));
-
-            Delete("templates/thing.json", other);
-            await SyncAsync(otherRepo, other);
+            await store.SaveAsync(SqlFlow.Delivery.Snapshots.SchemaSnapshot.Parse(Thing, a, DateTimeOffset.UnixEpoch), "tests", "tests");
             await store.DeleteAsync(reference);
             Assert.Empty(await SavedAsync(VersionOf(a)));
+            await using (var db = _db.CreateDbContext())
+            {
+                var folders = await SyncedTemplates.ReadAsync(db, _repo, CancellationToken.None);
+                var read = await folders.ResolveAsync("mappings/Thing@1.0.0.yaml", Thing, null);
+                Assert.Equal((VersionOf(a), "templates/thing.json"), (read.Schema!.Version, read.Template!.Origin));
+            }
+
+            // One repository dropping the file leaves the other's copy where it is.
+            Delete("templates/thing.json");
+            await SyncAsync();
+            Assert.Empty(await FilesAsync());
+            Assert.Single(await FilesAsync(otherRepo));
         }
         finally
         {
@@ -253,15 +267,14 @@ public sealed class TemplateFolderSyncTests : IDisposable
         await SyncAsync();
 
         var ledger = _db.Ledger();
-        var store = _db.Templates();
-        var folders = await SyncedTemplates.ReadAsync(ledger, _repo, store, CancellationToken.None);
+        var folders = await SyncedTemplates.ReadAsync(ledger, _repo, CancellationToken.None);
         Assert.Equal(["templates/thing.json"], (await ledger.RepositoryTemplatesAsync(_repo)).Select(f => f.Path));
         var read = await folders.ResolveAsync("mappings/Thing@1.0.0.yaml", Thing, null);
         Assert.Equal((VersionOf(a), "templates/thing.json"), (read.Schema!.Version, read.Template!.Origin));
 
         await using (var db = _db.CreateDbContext())
         {
-            var direct = await SyncedTemplates.ReadAsync(db, _repo, store, CancellationToken.None);
+            var direct = await SyncedTemplates.ReadAsync(db, _repo, CancellationToken.None);
             Assert.Equal(VersionOf(a), direct.For("mappings/Thing@1.0.0.yaml").Pin(Thing, null, "where").Version);
         }
 

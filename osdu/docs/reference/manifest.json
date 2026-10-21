@@ -6095,14 +6095,14 @@
       "path": "tables/repository-template.md",
       "title": "osdu.RepositoryTemplate: each file of a repository's template folders, as the last sync found it",
       "type": "table",
-      "summary": "One row per file in a folder named templates of a synced repository: the kind and template version it holds, or why it holds none.",
+      "summary": "One row per file in a folder named templates of a synced repository: the template it holds with a copy of its schema, or why it holds none.",
       "keywords": [
         "osdu.RepositoryTemplate",
         "template folder",
         "templates folder",
         "repository template",
         "template file",
-        "held by",
+        "template copy",
         "repository sync"
       ],
       "related": [
@@ -6118,6 +6118,7 @@
         "osdu/src/SqlFlow.Delivery/Catalog/SyncedTemplates.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Mappings.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/OrderCatalog.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs"
       ]
     },
@@ -6413,7 +6414,7 @@
       "id": "delivery-table-template",
       "corpus": "reference",
       "path": "tables/template.md",
-      "title": "osdu.Template: each saved OSDU schema version, the library the pages, the explorer and the builder read",
+      "title": "osdu.Template: each saved OSDU schema version, the library the explorer, the builder and the assistant read",
       "type": "table",
       "summary": "One row per saved template: the OSDU kind, the content version (a hash of the bundled schema), the bundled JSON Schema, where it came from and who saved it.",
       "keywords": [
@@ -6436,7 +6437,7 @@
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateStore.cs",
-        "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs"
       ]
     },
@@ -6839,9 +6840,9 @@
       "id": "delivery-wiki-0018-template-folders",
       "corpus": "wiki",
       "path": "decisions/0018-template-folders.md",
-      "title": "Decision 0018: A repository's template folders settle the template each document fills, and the library only assists",
+      "title": "Decision 0018: A repository's template folders settle the template each document fills, and the library stands apart",
       "type": "decision",
-      "summary": "Why templates live as files in a repository's template folders, how a document's template is settled, and why the saved templates stay as a library.",
+      "summary": "Why templates live as files in a repository's template folders, how a document's template is settled, and why the saved templates stay a separate library.",
       "keywords": [
         "template folder",
         "templates folder",
@@ -6867,7 +6868,8 @@
         "osdu/src/SqlFlow.Delivery/Catalog/SyncedTemplates.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
         "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs"
+        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Ordering/OrderCatalog.cs"
       ]
     },
     {

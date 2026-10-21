@@ -84,7 +84,7 @@ public sealed class OrderCatalogTests : IDisposable
     }
 
     [Fact]
-    public async Task A_kind_whose_saved_template_is_missing_is_read_from_the_newest_built_release_holding_it()
+    public async Task A_kind_whose_template_copy_is_missing_is_read_from_the_newest_built_release_holding_it()
     {
         WellsAndWellbores();
         _a.Delivery("wells", "master-data--Well");
@@ -92,16 +92,20 @@ public sealed class OrderCatalogTests : IDisposable
         HoldTemplates();
         await ReconcileAsync(_repoA, _rootA);
 
-        // The order reads a template from the copy the sync saved of the version its folder holds. Without that copy, and
-        // with no release knowing the wellbores' kind, what the mapping fills cannot be told.
+        // The order reads a template from the copy the sync kept of the file its folder holds. Without that copy (a row
+        // recorded before copies were kept), and with no release knowing the wellbores' kind, what the mapping fills cannot
+        // be told, and the order says why.
         await using (var db = _database.CreateDbContext())
         {
-            await db.DeliveryTemplates.Where(t => t.Kind == "osdu:wks:master-data--Wellbore:1.0.0").ExecuteDeleteAsync();
+            await db.DeliveryRepositoryTemplates.Where(t => t.Kind == "osdu:wks:master-data--Wellbore:1.0.0")
+                .ExecuteUpdateAsync(set => set.SetProperty(t => t.SchemaJson, (string?)null));
         }
 
-        var unknown = (await ReadAsync()).Deliveries.Single(d => d.Delivery.Flow == "wellbores");
+        var unread = await ReadAsync();
+        var unknown = unread.Deliveries.Single(d => d.Delivery.Flow == "wellbores");
         Assert.Null(unknown.Schema);
         Assert.Null(unknown.Delivery.Filled);
+        Assert.Contains(unread.Problems, p => p.Contains("the copy the sync keeps of it is missing; sync the repository again", StringComparison.Ordinal));
 
         var store = new SchemaLineageStore(_database.CreateDbContext);
         await store.SaveAsync("v0.28.0", "aaaa", null, [Entry("master-data--Wellbore")], [], "tests", Utc);
@@ -113,7 +117,7 @@ public sealed class OrderCatalogTests : IDisposable
     }
 
     [Fact]
-    public async Task A_saved_template_that_does_not_read_as_one_is_said_and_the_release_is_asked_instead()
+    public async Task A_template_copy_that_does_not_read_as_one_is_said_and_the_release_is_asked_instead()
     {
         WellsAndWellbores();
         _a.Delivery("wellbores", "master-data--Wellbore", columns: ["WellID"]);
@@ -121,13 +125,15 @@ public sealed class OrderCatalogTests : IDisposable
         await ReconcileAsync(_repoA, _rootA);
         await using (var db = _database.CreateDbContext())
         {
-            await db.DeliveryTemplates.Where(t => t.Kind == "osdu:wks:master-data--Wellbore:1.0.0")
+            await db.DeliveryRepositoryTemplates.Where(t => t.Kind == "osdu:wks:master-data--Wellbore:1.0.0")
                 .ExecuteUpdateAsync(set => set.SetProperty(t => t.SchemaJson, "{ not json"));
         }
 
         var read = await ReadAsync();
         var problem = Assert.Single(read.Problems);
-        Assert.Contains("The saved template of osdu:wks:master-data--Wellbore:1.0.0", problem, StringComparison.Ordinal);
+        Assert.StartsWith("The template osdu:wks:master-data--Wellbore:1.0.0 version ", problem, StringComparison.Ordinal);
+        Assert.Contains("that mappings/Wellbores@1.0.0.yaml fills cannot be read", problem, StringComparison.Ordinal);
+        Assert.Contains("does not read as a schema", problem, StringComparison.Ordinal);
         Assert.Null(Assert.Single(read.Deliveries).Schema);
     }
 

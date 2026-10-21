@@ -27,7 +27,7 @@ public sealed record DeliveryDimensionCoverageDto(string Name, int Keys, int Val
 /// <summary>
 /// How a dimension is built (osdu/docs/reference/concepts/dimension-blueprint.md): the flow and partition it is read
 /// in, whether the flow declares it, its number in the ledger once built, its declaration as the flow's YAML writes it
-/// (or why it is not shown), the blueprint the declaration and the saved templates make, and how much of each attribute
+/// (or why it is not shown), the blueprint the declaration and the templates the flow reads make, and how much of each attribute
 /// its last build read.
 /// </summary>
 public sealed record DeliveryDimensionBlueprintDto(
@@ -40,11 +40,12 @@ public static partial class DeliveryDimensionEndpoints
     /// How a dimension of a flow is built, in the partition the request reads: its YAML beside what each line does, the records
     /// it reads and the template describing each, step by step through the records its keys name, and the table's columns
     /// with the reads each is written from. A dimension the flow no longer declares is laid out from what its last build read
-    /// with. It reads the catalog, the saved templates and the ledger; nothing here talks to OSDU.
+    /// with. It reads the catalog, the templates the flow's repository holds as its last sync kept them, and the ledger;
+    /// nothing here talks to OSDU.
     /// </summary>
     private static async Task<Results<Ok<DeliveryDimensionBlueprintDto>, ProblemHttpResult>> GetBlueprintAsync(
         Guid pipelineId, string name, string? partition, HttpRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
-        IPartitionRegistry registry, ITemplateStore templates, CancellationToken ct)
+        IPartitionRegistry registry, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > DeliveryDimension.MaxNameLength)
         {
@@ -93,7 +94,7 @@ public static partial class DeliveryDimensionEndpoints
             kinds = runs.Count == 0 ? [] : DimensionRunner.KindsOf(runs[0].Read.Templates);
         }
 
-        var folders = await SyncedTemplates.ReadAsync(ledger, pipeline.RepoId, templates, ct).ConfigureAwait(false);
+        var folders = await SyncedTemplates.ReadAsync(ledger, pipeline.RepoId, ct).ConfigureAwait(false);
         var blueprint = await DimensionBlueprints.DescribeAsync(described, folders, pipeline.RelativePath, kinds, ct).ConfigureAwait(false);
         var coverage = state is null ? [] : await ledger.DimensionAttributeCoverageAsync(state.DimensionId, ct).ConfigureAwait(false);
 

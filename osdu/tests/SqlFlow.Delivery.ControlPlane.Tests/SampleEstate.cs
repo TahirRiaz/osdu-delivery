@@ -159,14 +159,15 @@ internal static class SampleEstate
     }
 
     /// <summary>
-    /// Saves the templates the sample mappings fill, as <see cref="SaveTemplatesAsync"/> does, and records them as the files
-    /// of a template folder at the top of repository <paramref name="repoId"/>, as a sync of the sample estate records its
+    /// Records the templates the sample mappings fill as the files of a template folder at the top of repository
+    /// <paramref name="repoId"/>, each with the copy of its schema, as a sync of the sample estate records its
     /// <c>templates</c> folder: what the pages of a synced repository settle its documents' templates from. A test that
-    /// writes a repository's mapping rows itself, as a sync would, records its template folder with them.
+    /// writes a repository's mapping rows itself, as a sync would, records its template folder with them. The library is
+    /// left as it is, as a sync leaves it.
     /// </summary>
     public static async Task HoldTemplatesAsync(string connectionString, Guid repoId, DateTime nowUtc)
     {
-        await SaveTemplatesAsync(connectionString);
+        await MigrateModuleAsync(connectionString);
         await using var db = Context(connectionString);
         foreach (var (kind, file) in Templates)
         {
@@ -189,6 +190,7 @@ internal static class SampleEstate
             row.Kind = schema.Kind;
             row.Version = schema.Version;
             row.Problem = null;
+            row.SchemaJson = SqlFlow.Delivery.Json.DocumentJson.Compact(schema.Root);
             row.LastSeenUtc = nowUtc;
         }
 

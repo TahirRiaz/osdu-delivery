@@ -86,7 +86,7 @@ public static class SyncedMappings
 
         try
         {
-            var folders = await Catalog.SyncedTemplates.ReadAsync(ledger, synced.RepoId, saved: null, ct).ConfigureAwait(false);
+            var folders = await Catalog.SyncedTemplates.ReadAsync(ledger, synced.RepoId, ct).ConfigureAwait(false);
             return (loader.ParseMapping(synced.Yaml, synced.RelativePath, folders.For(synced.RelativePath)), null);
         }
         catch (FlowValidationException ex)

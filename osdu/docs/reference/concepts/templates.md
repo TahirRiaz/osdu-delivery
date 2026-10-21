@@ -87,10 +87,10 @@ all read the files. A template is put in a folder as a file: downloaded from the
 template capture --out`, or proposed with a mapping by the mapping builder. A template of one's own is a file like any
 other ([Templates of one's own](#templates-of-ones-own)).
 
-The **library** of saved templates (`[osdu].[Template]`) assists: the Templates page browses the OSDU data definitions,
-compares versions and saves them there, and the explorer, the mapping builder and the MCP tools read it. Every sync saves
-in it each version a repository's folders hold, so what the repositories use is there too. A version the library holds
-and no folder on a document's path holds is never that document's template.
+The **library** of saved templates (`[osdu].[Template]`) is for what reads templates where no repository is at hand: the
+Templates page browses the OSDU data definitions, compares versions and saves them there, and the explorer, the mapping
+builder and the MCP tools read it. It is not linked to the repositories: a sync saves nothing in it, nothing a repository
+holds keeps a version from being deleted, and a version the library holds is never a document's template.
 
 ```yaml
 template:
@@ -254,33 +254,28 @@ is invalid, so the library will not delete the version from under it.
 
 | Who | Reads |
 | --- | --- |
-| A run: the render, its preflight, the validation gate; `sqlflow check`, `preview` and `values`; an assertion or dimension run | The files of the template folders on the document's path. A record rendered for an exact version a folder no longer holds is checked against that version as the library holds it: one content, wherever it is kept. |
+| A run: the render, its preflight, the validation gate; `sqlflow check`, `preview` and `values`; an assertion or dimension run | The files of the template folders on the document's path. A record rendered for an exact version no folder holds any longer is checked against that version where the library holds it, someone having saved it there (one content, wherever it is kept); otherwise it is `unverified`. |
 | Lineage and the OSDU order it takes | The files, on the mapping's path, in the checkout being scanned ([lineage](lineage.md)). |
-| The repository sync | Every template folder of the repository: each file is a row of [`osdu.RepositoryTemplate`](../tables/repository-template.md), every mapping is settled from them, and every version they hold is saved in the library. |
-| The control plane's pages about a repository's documents: an assertion flow's board, a dimension's blueprint and views, a source's interface order, the search terms, a mapping's properties, shape and coverage, the mapping builder opening a mapping, and `GET /api/v1/delivery/templates/resolve` | The files the repository's last sync recorded, settled by the same rule, each schema read from the library, where the same sync saved it. |
+| The repository sync | Every template folder of the repository: each file is a row of [`osdu.RepositoryTemplate`](../tables/repository-template.md) with a copy of the template it holds, and every mapping is settled from them. |
+| The control plane's pages about a repository's documents: an assertion flow's board, a dimension's blueprint and views, a source's interface order, the search terms, a mapping's properties, shape and coverage, the mapping builder opening a mapping, and `GET /api/v1/delivery/templates/resolve` | The files the repository's last sync recorded, settled by the same rule, each schema read from the copy that sync kept of the file. A row recorded before copies were kept says to sync the repository again until the next sync keeps its copy. |
 | The explorer, the Templates page, the mapping builder's drafts, the MCP server's template tools | The library. |
 | `sqlflow template folders` | The files, in a working copy, with no database ([template](../cli/template.md)). |
 
 ## The library: saved templates
 
-The library is `[osdu].[Template]` ([table](../tables/template.md)): every version saved from the Templates page, by
-`sqlflow template capture` or `import`, or by a repository sync from a template folder. A version's origin says which:
-`OSDU data definitions <release> (<commit>) Generated/<path>`, `file <name>`, or `template folder file <path> of
-repository <id>` (saved by `repository sync`). The Templates page lists, for each version, the template folder files of
-synced repositories that hold it (**Held in**) and how many synced mappings fill it.
+The library is `[osdu].[Template]` ([table](../tables/template.md)): every version a person saved, from the Templates page
+or by `sqlflow template capture` or `import`. A version's origin says where it came from: `OSDU data definitions <release>
+(<commit>) Generated/<path>`, or `file <name>`. It serves what reads templates where no repository is at hand: the
+explorer checks a record against a saved template, the mapping builder starts a draft from one, and the MCP server's
+template tools lay one out.
 
-A version is deleted (**Delete** on the Templates page, `sqlflow template delete`, or `DELETE /api/v1/delivery/templates`,
-an author action) only while no repository's template folder holds it and no synced mapping fills it; otherwise it is
-refused, naming up to 20 of either, and the API answers 409:
-
-```text
-The template <kind> version <v> is held by the template folder file(s) welldb/templates/<file> of a synced repository, so it cannot be deleted. Remove the file from the repository and sync it first.
-The template <kind> version <v> is pinned by mapping(s) WellLog@1.0.0, so it cannot be deleted. Move those mappings to another template version first.
-```
-
-A version a sync saved stays in the library when the folder no longer holds it, since records were rendered for it; a
-version only a search names can be deleted, and the mappings that search with it then fail their preflight until their
-folders hold it.
+It is not linked to the repositories. A repository sync saves nothing in it, and keeps the templates a repository's
+folders hold as copies of its own, with each file's row ([`osdu.RepositoryTemplate`](../tables/repository-template.md)),
+which only the pages about that repository's documents read. So the Templates page says nothing of which repositories hold
+a version or which mappings fill it, and any saved version can be deleted (**Delete** on the Templates page,
+`sqlflow template delete`, or `DELETE /api/v1/delivery/templates`, an author action): no repository document reads it. A
+mapping drafted from a saved version is proposed with that version's file when the repository's folders do not hold it,
+so the repository reads its own copy from then on.
 
 ## Where templates come from
 
@@ -408,9 +403,10 @@ delivering ([running an OSDU flow](../cli/run.md)).
 
 ## Upgrading an estate whose templates were saved only in the library
 
-A mapping used to read its template from the library. A repository now has to hold the templates its documents read: until its folders hold them, its mappings are invalid with the message above, and its assertion and dimension flows
-read no template. Write each version a mapping pins into a template folder on its path, from the library the estate
-already has, and commit it:
+A mapping used to read its template from the library. A repository now has to hold the templates its documents read:
+until its folders hold them, its mappings are invalid with the message above, and its assertion and dimension flows read
+no template. Write each version a mapping pins into a template folder on its path, from the library the estate already
+has, and commit it:
 
 ```bash
 sqlflow template show --kind osdu:wks:work-product-component--WellLog:1.4.0 --version 26a3c3441882db4f \

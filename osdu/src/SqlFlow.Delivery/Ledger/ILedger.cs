@@ -706,6 +706,11 @@ public sealed record SyncedMapping(
 /// <param name="Problem">Why it holds no template; null when it holds one.</param>
 public sealed record SyncedTemplateFile(string Path, string Folder, string Kind, string Version, string? Problem);
 
+/// <summary>The copy the last sync kept of the schema a template folder file holds.</summary>
+/// <param name="SchemaJson">The schema as the sync read it, compact JSON.</param>
+/// <param name="SeenUtc">When the sync last saw the file.</param>
+public sealed record RecordedTemplateCopy(string SchemaJson, DateTime SeenUtc);
+
 /// <summary>What a check of a record's document came to, as the record keeps it: the outcome, the problems, and when.</summary>
 /// <param name="Outcome">What the check against the schema came to (<see cref="Validation.ValidationOutcomes"/>).</param>
 /// <param name="Problems">How many problems it found.</param>
@@ -2295,6 +2300,12 @@ public interface ILedger
     /// (osdu/docs/reference/concepts/templates.md, Template folders), in path order; empty when it holds none.
     /// </summary>
     Task<IReadOnlyList<SyncedTemplateFile>> RepositoryTemplatesAsync(Guid repoId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The copy the last sync of repository <paramref name="repoId"/> kept of the schema its template folder file at
+    /// <paramref name="path"/> holds; null when it recorded no such file, or no template in it.
+    /// </summary>
+    Task<RecordedTemplateCopy?> RepositoryTemplateCopyAsync(Guid repoId, string path, CancellationToken ct = default);
 
     /// <summary>
     /// The records that hold <paramref name="targetId"/> as the id they are delivered to, in any flow of the partition of

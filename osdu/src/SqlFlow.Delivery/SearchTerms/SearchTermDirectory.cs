@@ -160,21 +160,18 @@ public sealed class SearchTermDirectory
     public const int MaxBatch = 5000;
 
     private readonly OsduDbContext _db;
-    private readonly ITemplateStore _templates;
     private readonly DeliveryDocumentLoader _documents;
     private readonly TimeProvider _time;
     private readonly Dictionary<(Guid Repo, string Reference), (MappingDefinition? Mapping, string? Problem)> _mappings = [];
     private readonly Dictionary<(Guid Repo, string? Document, TemplateReference Reference), TemplateResolution> _schemas = [];
     private readonly Dictionary<Guid, Catalog.SyncedTemplates> _folders = [];
 
-    public SearchTermDirectory(OsduDbContext db, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider time)
+    public SearchTermDirectory(OsduDbContext db, DeliveryDocumentLoader documents, TimeProvider time)
     {
         ArgumentNullException.ThrowIfNull(db);
-        ArgumentNullException.ThrowIfNull(templates);
         ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(time);
         _db = db;
-        _templates = templates;
         _documents = documents;
         _time = time;
     }
@@ -821,7 +818,7 @@ public sealed class SearchTermDirectory
     {
         if (!_folders.TryGetValue(repo, out var folders))
         {
-            folders = await Catalog.SyncedTemplates.ReadAsync(_db, repo, _templates, ct).ConfigureAwait(false);
+            folders = await Catalog.SyncedTemplates.ReadAsync(_db, repo, ct).ConfigureAwait(false);
             _folders[repo] = folders;
         }
 

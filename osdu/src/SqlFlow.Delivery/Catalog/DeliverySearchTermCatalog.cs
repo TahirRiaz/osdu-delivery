@@ -53,7 +53,7 @@ public static class DeliverySearchTermCatalog
             .ToListAsync(ct).ConfigureAwait(false);
 
         // The template folders this sync has just recorded, which settle a mapping that names its template's kind alone.
-        var folders = await SyncedTemplates.ReadAsync(context, repoId, saved: null, ct).ConfigureAwait(false);
+        var folders = await SyncedTemplates.ReadAsync(context, repoId, ct).ConfigureAwait(false);
         var mappings = new Dictionary<string, MappingDefinition>(StringComparer.Ordinal);
         foreach (var row in rows.OrderBy(r => r.Reference, StringComparer.Ordinal))
         {
