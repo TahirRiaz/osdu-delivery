@@ -1,0 +1,84 @@
+# Flow: welldb-welllog-05-dimensions
+#
+# Builds the dimensions a search panel over the delivered well logs offers, from what OSDU holds: every log by its name,
+# with the wellbore it belongs to; every wellbore the logs name, by the wellbore's own name, read from the wellbore
+# record the reference names; and the curve mnemonics the logs carry, the spellings the well database files under another
+# curve grouped through ../dictionaries/curve-aliases.yaml. Nothing is written to OSDU: each dimension is a table of the
+# module's database (osdu.dim_<name>), and the view joins the logs to their wellbores for the pipelines that read it.
+#
+# It reads the well log kind the well log delivery writes, so lineage runs it after that delivery; a dimension's names are
+# unique across the module's database, so they carry the well database's name.
+flowType: dimension
+name: welldb-welllog-05-dimensions
+description: The well logs, their wellbores and their curve mnemonics, as OSDU holds them, ready for a search panel.
+batch: welldb
+partitions: [dev]
+
+parameters:
+  deliveredBy:
+    default: osdu-delivery
+    description: The DeliveredBy tag of the records to read, the one the sample's mappings write.
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+
+reliability:
+  concurrency: 4
+
+# The module's database, where the dimensions' tables and the view are, named as the pipelines reading the view name it.
+# The sample's local setup keeps the module in the catalog's database; a deployment with a module database of its own
+# names that one here.
+target:
+  connection: ${env:SQLFLOW_CATALOG_DB}
+
+dimensions:
+  - name: WelldbWellLog
+    description: Every well log the well database's flows delivered, by its name, with the wellbore it belongs to.
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
+    path: id
+    label: data.Name
+    columns: { key: WellLogID, value: LogName }
+    attributes:
+      WellboreID: { path: data.WellboreID, keep: key }
+
+  - name: WelldbWellbore
+    description: Every wellbore the well logs name, by the name the wellbore record holds.
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
+    path: data.WellboreID
+    label: data.FacilityName
+    unlabelled: Not specified
+    columns: { key: WellboreID, value: Wellbore }
+
+  - name: WelldbCurveMnemonic
+    description: The curve mnemonics of the well logs, each spelling the well database files under another curve grouped.
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"{deliveredBy}"'
+    path: data.Curves.Mnemonic
+    clean:
+      - trim
+      - upper
+      - map: curve-aliases
+    countRecords: true
+
+views:
+  - name: WelldbWellLogWellbore
+    description: Every delivered well log with the name of the wellbore it belongs to.
+    from: WelldbWellLog
+    join:
+      - { on: WellboreID, to: WelldbWellbore, as: Wellbore }
+    columns:
+      WellLogID: WellLogID
+      Log: LogName
+      Wellbore: Wellbore.Wellbore
+
+schedule: welldb-dimensions

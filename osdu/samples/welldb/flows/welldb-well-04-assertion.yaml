@@ -1,0 +1,50 @@
+# Flow: welldb-well-04-assertion
+#
+# Tests the wells the well database delivered, as OSDU holds them: each meets the business rules its mapping states
+# (../mappings/Well@1.2.0.yaml asserts the kelly bushing lies between sea level and 250 m), and the values the well
+# database's own records give are the ones OSDU holds for a well it names. It reads the well kind the well delivery
+# writes, so lineage runs it after that delivery in the master data schedule.
+flowType: assertion
+name: welldb-well-04-assertion
+batch: welldb
+description: The delivered wells meet their mapping's rules and hold the values the well database gives.
+partitions: [dev]
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+
+tests:
+  # Every delivered well meets what its mapping asserts of the values a record carries.
+  - name: well-rules
+    description: Each delivered well meets the rules its mapping states.
+    tags: [rules]
+    kind: osdu:wks:master-data--Well:1.2.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    assert:
+      - mapping: Well@1.2.0
+
+  # The values the well database's own record of Well A gives (../data/well), as OSDU holds them.
+  - name: well-a
+    description: Well A holds the kelly bushing elevation the well database records for it.
+    tags: [known-values]
+    kind: osdu:wks:master-data--Well:1.2.0
+    template: Well@1.2.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    assert:
+      - knownValues:
+          locateBy:
+            data.FacilityName: Well A
+          rows:
+            - locateBy: { data.VerticalMeasurements.VerticalMeasurementID: KB }
+              check:
+                data.VerticalMeasurements.VerticalMeasurement: { equals: 42.8, tolerance: 0.05 }
+
+schedule: welldb-master

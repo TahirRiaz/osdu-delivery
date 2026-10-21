@@ -1,0 +1,11 @@
+# Dictionary: curve-aliases
+#
+# The curve spellings the well database files under another curve, as its curve dictionary files them
+# (../cache/data/curve-dictionary: GRC, the environmentally corrected gamma ray, is filed as GR). The dimension flow
+# ../flows/welldb-welllog-05-dimensions.yaml groups the mnemonics the delivered logs carry through it, so a search panel
+# offers one entry per curve, whichever spelling a log was written with.
+documentType: dictionary
+name: curve-aliases
+description: Curve mnemonics the well database files under another curve, by the mnemonic they are filed under.
+entries:
+  GRC: GR

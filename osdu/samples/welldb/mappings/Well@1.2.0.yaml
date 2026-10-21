@@ -5,7 +5,8 @@
 # also the well's default: the value and its unit as the well database writes them ("42.8", "M"), the unit translated
 # through the depth unit table to the partition's UnitOfMeasure code and the reference point filed under KellyBushing,
 # as the well logs file it. Both references are checked against the partition's reference cache, which holds the values
-# welldb-ref-03-delivery delivers.
+# welldb-ref-03-delivery delivers. A well whose kelly bushing lies outside sea level to 250 m is held at the check
+# before sending (reference-elevation), and ../flows/welldb-well-04-assertion.yaml holds what OSDU has to the same rule.
 documentType: mapping
 name: Well
 version: 1.2.0
@@ -51,7 +52,12 @@ record:
     DefaultVerticalMeasurementID: KB
     VerticalMeasurements:
       - VerticalMeasurementID: KB
-        VerticalMeasurement: { $from: elevation }
+        VerticalMeasurement:
+          $from: elevation
+          $assert:
+            - name: reference-elevation
+              description: The well database's kelly bushings lie between sea level and 250 m above it.
+              between: [0, 250]
         VerticalMeasurementTypeID:
           $from: elevation_reference
           $modifiers:

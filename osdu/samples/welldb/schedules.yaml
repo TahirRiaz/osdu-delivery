@@ -1,13 +1,16 @@
-# The schedules of the welldb estate. Every flow of the estate joins one of them with `schedule: <name>`, so a schedule
-# fires its flows as one group in lineage order (pre-ingestion, then ingestion, then what reads the ingestion tables), and
-# "Run now" on the Schedules page (POST /api/v1/schedules/{id}/run) runs the whole chain on demand. A single flow still
-# runs on its own from the Pipelines page or with `sqlflow run <flow>`.
+# The schedules of the welldb estate. Every flow of the estate joins one of them with `schedule: <name>` (but the
+# retrieval, which runs on demand until its lake is yours), so a schedule fires its flows as one group in lineage order
+# (pre-ingestion, then ingestion, then what reads the ingestion tables), and "Run now" on the Schedules page
+# (POST /api/v1/schedules/{id}/run) runs the whole chain on demand. A single flow still runs on its own from the Pipelines
+# page or with `sqlflow run <flow>`.
 #
 # The nightly chain fills an empty partition in the order its records refer to each other: the reference data first,
 # which puts what it delivers into the partition's cache as it runs (its cache.after), then the wells and wellbores, which
 # refer to it and bring what they read up to date before they render (cache.before). Each link fires when the one before
-# it has run (`after:`), and lineage orders the flows inside each link. The cache refresh is a schedule of its own, which
-# nothing waits for: the pipelines' cache steps keep the cache current between refreshes.
+# it has run (`after:`), and lineage orders the flows inside each link: the wells are tested once they are delivered. The
+# cache refresh is a schedule of its own, which nothing waits for: the pipelines' cache steps keep the cache current
+# between refreshes. The logs come hourly, the dimensions over them after each hour's logs, and the inventory of what
+# OSDU holds weekly.
 schedules:
   # Nightly: the reference values the estate's records refer to land, are keyed and are delivered.
   welldb-reference:
@@ -21,7 +24,8 @@ schedules:
     cron: "30 0 * * *"
     timezone: UTC
 
-  # After the reference data: the wells, then the wellbores, which search for their wells by name.
+  # After the reference data: the wells, then the wellbores, which search for their wells by name; then the wells are
+  # tested as OSDU holds them.
   welldb-master:
     after: welldb-reference
 
@@ -32,3 +36,14 @@ schedules:
     timezone: UTC
     values:
       logSource: COMPOSITE
+
+  # After the logs: the dimensions over what OSDU holds of them are built again, so a search panel offers the logs,
+  # wellbores and curve mnemonics delivered that hour.
+  welldb-dimensions:
+    after: welldb-welllog
+
+  # Weekly, on its own: the inventory reads what OSDU holds of the kinds the estate delivers and sets it against every
+  # ledger of the partition. It only reads; an operator removes what it finds.
+  welldb-inventory:
+    cron: "0 4 * * 0"
+    timezone: UTC

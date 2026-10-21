@@ -60,6 +60,7 @@
     <Content Include="..\..\samples\welldb\reference\**" Link="samples\welldb\reference\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\mappings\**" Link="samples\welldb\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\cache\**" Link="samples\welldb\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\dictionaries\**" Link="samples\welldb\dictionaries\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\data\**" Link="samples\welldb\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\schedules.yaml" Link="samples\welldb\schedules.yaml" CopyToOutputDirectory="PreserveNewest" />
     <!-- Beside the source folder, not inside it: a template and a cache both live in the module's database, so neither

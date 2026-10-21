@@ -1,0 +1,47 @@
+# Flow: welldb-wellbore-04-retrieval
+#
+# Reads back the wellbores the well database's flows delivered, whole from OSDU's storage service, into the lake as JSON
+# lines, one folder per day: what OSDU holds of them, for the pipelines that read OSDU's records back. Each run reads what
+# changed since the last one (incremental on modifyTime), a few minutes behind, as the search index may be. It reads the
+# wellbore kind the wellbore delivery writes, so lineage orders it after that delivery.
+#
+# The lake below is the well database's; point target.location at a storage account the node's Azure credential can
+# write (or an absolute local folder) before its first run. It joins no schedule, so it runs when asked, from the
+# Pipelines page or with
+#   sqlflow run welldb-wellbore-04-retrieval.yaml --operation plan
+flowType: retrieval
+name: welldb-wellbore-04-retrieval
+batch: welldb
+description: The wellbores the well database delivered, read back from OSDU's storage into the lake.
+
+parameters:
+  deliveredBy:
+    default: osdu-delivery
+    description: The DeliveredBy tag of the records to retrieve, the one the sample's mappings write.
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    data-partition-id: dev
+  kinds:
+    - osdu:wks:master-data--Wellbore:1.*.*
+  query: 'tags.DeliveredBy:"{deliveredBy}"'
+  incremental:
+    field: modifyTime
+    since: 2026-01-01T00:00:00Z
+    lagMinutes: 5
+  fetchRecords: true
+
+target:
+  location: abfss://lake@welldbstorage.dfs.core.windows.net/osdu/wellbores/{date}
+  format: jsonl
+  compression: gzip
+  manifest: manifest.json
