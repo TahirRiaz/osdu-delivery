@@ -20,7 +20,7 @@ keywords:
   - build lineage
 related:
   - delivery-concept-lineage
-  - delivery-decision-0016
+  - delivery-wiki-0016-osdu-order
   - delivery-flow-interfaces
   - delivery-flow-mapping
   - delivery-concept-templates
@@ -197,6 +197,6 @@ The Order page (OSDU, Build) has three tabs ([the GUI](gui.md)):
 ## See also
 
 - [Lineage](lineage.md): the nodes, reads and writes behind the waves.
-- [Decision 0016](../../decisions/0016-osdu-order.md): why the order is read from OSDU's schemas, and why schedules are
+- [Decision 0016](../../wiki/decisions/0016-osdu-order.md): why the order is read from OSDU's schemas, and why schedules are
   shown rather than chained.
 - [SQLFlow: the lineage graph and the execution plan](../../../../sqlflow/docs/reference/concepts/lineage-graph-and-plan.md).

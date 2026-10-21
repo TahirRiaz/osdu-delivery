@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0004
+id: delivery-wiki-0004-preserved-keys
 title: "Decision 0004: Datasets, DDMSDatasets and ExtensionProperties belong to OSDU"
 type: decision
 summary: "Why an update keeps the properties a DDMS or External Data Services writes into a record, and leaves them out of the hash."
@@ -10,13 +10,14 @@ keywords:
   - "extensionproperties"
   - "record update"
   - "eds"
-related:
+referenceRefs:
   - delivery-flow-ddms
   - delivery-concept-change-detection
+updated: 2026-10-16
 ---
 # 0004: Datasets, DDMSDatasets and ExtensionProperties are OSDU's
 
-Status: proposed. Documented in [routes](../reference/flow/routes.md) and [change detection](../reference/concepts/change-detection.md).
+Status: proposed. Documented in [routes](../../reference/flow/routes.md) and [change detection](../../reference/concepts/change-detection.md).
 
 ## Context
 
@@ -26,7 +27,7 @@ the rendered document or its hash. An update that replaced the whole `data` bloc
 
 External Data Services does the same to a connected source data job: after every fetch it reads the job and writes it
 back with its run state (`LastSuccessfulRunDateUTC`, `FailedRecords`, `CreateTimeMax`;
-[../../specs/eds-dms/INTEGRATION.md](../../specs/eds-dms/INTEGRATION.md) section 2.1), on its own schedule.
+[../../specs/eds-dms/INTEGRATION.md](../../../specs/eds-dms/INTEGRATION.md) section 2.1), on its own schedule.
 
 ## Decision
 

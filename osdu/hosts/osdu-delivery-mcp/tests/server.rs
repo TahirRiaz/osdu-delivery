@@ -457,7 +457,7 @@ async fn the_instructions_name_only_what_the_server_has() {
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
         .filter(|word| word.starts_with("delivery-") && !word.ends_with('-'))
         .collect();
-    assert!(named.contains("delivery-guide-pattern-catalog") && named.contains("delivery-cli-run"), "{named:?}");
+    assert!(named.contains("delivery-wiki-pattern-catalog") && named.contains("delivery-cli-run"), "{named:?}");
     for id in &named {
         assert!(ids.contains(*id), "the instructions name the page {id}, which is not indexed");
     }
@@ -593,7 +593,7 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("one source delivers several kinds", &["delivery-flow-interfaces", "delivery-guide-multi-kind-source"]),
     ("save an osdu schema as a template", &["delivery-cli-template", "delivery-concept-templates"]),
     ("register a partition", &["delivery-cli-partition", "delivery-concept-partitions"]),
-    ("which route should a delivery flow use", &["delivery-flow-routes", "delivery-guide-pattern-catalog"]),
+    ("which route should a delivery flow use", &["delivery-flow-routes", "delivery-wiki-pattern-catalog"]),
     ("run payload recordKeys redeliver", &["delivery-cli-run"]),
     ("mapping expression when condition", &["delivery-flow-mapping-expressions", "delivery-flow-mapping-values"]),
     ("hold a record whose value breaks a business rule in the mapping", &["delivery-flow-mapping-assertions"]),
@@ -617,7 +617,7 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("in which order are wells, wellbores and well logs delivered", &["delivery-concept-osdu-order"]),
     ("which schedule must run before another schedule", &["delivery-concept-osdu-order"]),
     ("build osdu lineage of a data definitions release", &["delivery-concept-osdu-order"]),
-    ("update the cache during a schedule after a delivery", &["delivery-concept-partition-cache", "delivery-decision-0017"]),
+    ("update the cache during a schedule after a delivery", &["delivery-concept-partition-cache", "delivery-wiki-0017-pipelines-update-the-cache"]),
     ("update the cache before running a pipeline", &["delivery-concept-partition-cache", "delivery-flow-delivery"]),
     ("refresh only one type of a cache flow", &["delivery-flow-cache"]),
 ];

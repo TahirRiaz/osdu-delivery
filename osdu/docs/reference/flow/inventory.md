@@ -455,7 +455,7 @@ an `inventory-remove` activity of the audit trail.
 A `missing` id is a record a ledger delivered that OSDU no longer holds: a cleanup or an accident soft deleted or purged
 it. On the **missing** tab, pick ids or **Select all**, and **Deliver again**: each record is delivered again through the
 flow that delivered it, and a deliver run of each such flow is queued
-([decision 0015](../../decisions/0015-lost-records.md)).
+([decision 0015](../../wiki/decisions/0015-lost-records.md)).
 
 - **Under their own ids** (the default). Each record is marked as OSDU having lost it and asked to be planned again, as
   a verify with `reconcile` marks one. The storage route brings a soft-deleted record back before writing it (`PATCH

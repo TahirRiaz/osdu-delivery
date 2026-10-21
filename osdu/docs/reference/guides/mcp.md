@@ -162,11 +162,11 @@ run's report, a partition's cache page, a mapping in the builder); set `SQLFLOW_
 
 SQLFlow's documentation tools (`search_docs`, `get_doc`, `list_docs`, `related_docs`, `get_doc_by_cli_command`,
 `get_doc_by_yaml_path`) answer from this product's documentation beside SQLFlow's: the reference pages under
-`osdu/docs/reference` (ids starting with `delivery-`) and the decision records under `osdu/docs/decisions`. Their
-frontmatter is compiled into `osdu/docs/reference/manifest.json`, which the build embeds with every page it lists, so a
+`osdu/docs/reference` (ids starting with `delivery-`) and the wiki under `osdu/docs/wiki` (decisions, patterns,
+narratives, incidents and maps, ids starting with `delivery-wiki-`). Their frontmatter is compiled into `osdu/docs/reference/manifest.json`, which the build embeds with every page it lists, so a
 page edit reaches the server once the manifest is regenerated and the server rebuilt. The instructions a client reads at
 `initialize` introduce the product as an extension of SQLFlow, send a "how do I" question to
-`delivery-guide-pattern-catalog` first, and say which tool answers which question, the vocabulary the tools share
+`delivery-wiki-pattern-catalog` first, and say which tool answers which question, the vocabulary the tools share
 (record, interface, partition, submission) and the operations `trigger_run` takes per kind. The flow-language tools
 (`validate_flow`, `list_flow_keys`, `describe_flow_key`) know the module's flow kinds and documents from the key census in
 `osdu/docs/census`.

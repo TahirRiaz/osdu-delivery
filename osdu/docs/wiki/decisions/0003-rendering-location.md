@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0003
+id: delivery-wiki-0003-rendering-location
 title: "Decision 0003: rendering runs in the delivery service"
 type: decision
 summary: "Why the mapping is interpreted by the delivery against a pinned template and cache version, not by a facade service."
@@ -10,14 +10,16 @@ keywords:
   - "content hash"
   - "facade"
   - "recordpath"
-related:
+referenceRefs:
   - delivery-concept-templates
   - delivery-concept-change-detection
-  - delivery-decision-0009
+related:
+  - delivery-wiki-0009-searched-references
+updated: 2026-10-16
 ---
 # 0003: Rendering runs in the delivery service
 
-Status: proposed. Documented in [templates](../reference/concepts/templates.md) and [architecture](../reference/concepts/architecture.md).
+Status: proposed. Documented in [templates](../../reference/concepts/templates.md) and [architecture](../../reference/concepts/architecture.md).
 
 ## Context
 

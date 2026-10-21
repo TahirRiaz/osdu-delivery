@@ -20,7 +20,7 @@ related:
   - delivery-flow-cache
   - delivery-flow-dictionary
   - delivery-concept-templates
-  - delivery-guide-pattern-catalog
+  - delivery-wiki-pattern-catalog
   - cli-run
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DimensionDocumentMapper.cs

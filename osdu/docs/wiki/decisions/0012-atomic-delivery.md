@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0012
+id: delivery-wiki-0012-atomic-delivery
 title: "Decision 0012: every delivery completes or is undone, and the ledger names every id it minted"
 type: decision
 summary: "Why a delivery of many OSDU calls is a unit of work whose minted ids the ledger keeps, so an unfinished one can be undone."
@@ -10,14 +10,17 @@ keywords:
   - "minted ids"
   - "artifacts"
   - "partial failure"
-related:
+referenceRefs:
   - delivery-concept-removal-and-reversal
   - delivery-concept-protocols
   - delivery-concept-ledger
+related:
+  - delivery-wiki-0013-inventory-flows
+updated: 2026-10-16
 ---
 # 0012: Every delivery is a unit of work that completes or is undone, and the ledger names every id it minted
 
-Status: proposed. Documented in [protocols](../reference/concepts/protocols.md) and [removal and reversal](../reference/concepts/removal-and-reversal.md).
+Status: proposed. Documented in [protocols](../../reference/concepts/protocols.md) and [removal and reversal](../../reference/concepts/removal-and-reversal.md).
 
 ## Context
 

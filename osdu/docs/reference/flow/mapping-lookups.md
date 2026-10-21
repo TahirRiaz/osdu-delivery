@@ -27,7 +27,7 @@ related:
   - delivery-concept-partition-cache
   - delivery-concept-change-detection
   - delivery-concept-preflight
-  - delivery-guide-pattern-catalog
+  - delivery-wiki-pattern-catalog
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.Record.cs

@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0015
+id: delivery-wiki-0015-lost-records
 title: "Decision 0015: a record OSDU lost is delivered again under its own id, and under a new one only when an operator asks"
 type: decision
 summary: "Why a record OSDU lost is delivered again under the id it claimed, restored first when soft-deleted, and given a new id only on request."
@@ -13,16 +13,18 @@ keywords:
   - "new osdu id"
   - "reassign id"
   - "repair"
-related:
-  - delivery-decision-0002
-  - delivery-decision-0004
-  - delivery-decision-0013
+referenceRefs:
   - delivery-flow-inventory
   - delivery-concept-removal-and-reversal
+related:
+  - delivery-wiki-0002-client-supplied-ids
+  - delivery-wiki-0004-preserved-keys
+  - delivery-wiki-0013-inventory-flows
+updated: 2026-10-16
 ---
 # 0015: A record OSDU lost is delivered again under its own id, and under a new one only when an operator asks
 
-Status: proposed. Reference: [inventory flow, Repairing missing ids](../reference/flow/inventory.md#repairing-missing-ids). Amends
+Status: proposed. Reference: [inventory flow, Repairing missing ids](../../reference/flow/inventory.md#repairing-missing-ids). Amends
 [0002](0002-client-supplied-ids.md), whose records keep the id they first claimed.
 
 ## Context

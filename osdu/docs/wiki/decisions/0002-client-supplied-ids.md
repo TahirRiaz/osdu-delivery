@@ -1,5 +1,5 @@
 ---
-id: delivery-decision-0002
+id: delivery-wiki-0002-client-supplied-ids
 title: "Decision 0002: deterministic, client-supplied OSDU ids"
 type: decision
 summary: "Why OSDU ids are computed from the data by the delivery instead of assigned by OSDU, and what that guarantees."
@@ -10,14 +10,17 @@ keywords:
   - "duplicate records"
   - "idfrom"
   - "delivery key"
-related:
+referenceRefs:
   - delivery-flow-mapping
   - delivery-concept-ledger
+related:
+  - delivery-wiki-0015-lost-records
+updated: 2026-10-16
 ---
 # 0002: Deterministic, client-supplied OSDU ids
 
 Status: proposed; needs confirmation that the data partition accepts client-supplied ids for the kinds in
-scope. Documented in [mapping](../reference/flow/mapping.md) (The OSDU id).
+scope. Documented in [mapping](../../reference/flow/mapping.md) (The OSDU id).
 
 ## Context
 
@@ -36,7 +39,7 @@ dependency: it can be recomputed from the key at any time.
   second record.
 - References to records this system also delivers can be computed rather than searched, because their ids follow
   from their keys. The template format has no computed reference: a mapping reads such an id from the metadata cache
-  (`$cache: <Type>.id` with `$findBy`, [flow/mapping-lookups.md](../reference/flow/mapping-lookups.md)).
+  (`$cache: <Type>.id` with `$findBy`, [flow/mapping-lookups.md](../../reference/flow/mapping-lookups.md)).
 - If a partition rejects client-supplied ids for a kind, the protocol would need a lookup-by-natural-key
   step before the write and the ledger's `TargetId` would become authoritative. That is a protocol-level
   change; the mapping, hashing and ledger are unaffected.
