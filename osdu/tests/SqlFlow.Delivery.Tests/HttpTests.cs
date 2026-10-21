@@ -119,7 +119,8 @@ public class HeaderRedactionTests
         Assert.Equal("***", redacted["Authorization"]);
         Assert.Equal("***", redacted["Ocp-Apim-Subscription-Key"]);
         Assert.Equal("json", redacted["Accept"]);
-        var message = HeaderRedaction.RedactMessage("HTTP 401 from https://x/?api_key=secret123 with Bearer eyJhbGciOi.abc and {\"access_token\":\"tok\"}");
+        var token = "eyJhbGciOi.abc";
+        var message = HeaderRedaction.RedactMessage("HTTP 401 from https://x/?api_key=secret123 with Bearer " + token + " and {\"access_token\":\"tok\"}");
         Assert.DoesNotContain("secret123", message, StringComparison.Ordinal);
         Assert.DoesNotContain("eyJhbGciOi", message, StringComparison.Ordinal);
         Assert.DoesNotContain("\"tok\"", message, StringComparison.Ordinal);

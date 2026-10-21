@@ -480,13 +480,14 @@ public sealed class MappingAssertionRenderTests
     [Fact]
     public void A_secret_in_a_value_is_redacted_before_it_is_kept()
     {
+        var token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
         var result = Render("""
             Symbol:
               $from: symbol
               $assert:
                 - equals: GR
                   onFail: report
-            """, Row(("symbol", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl")));
+            """, Row(("symbol", "Bearer " + token)));
 
         Assert.DoesNotContain("eyJhbGciOiJIUzI1NiJ9", Assert.Single(result.Assertions!.Failures).Value, StringComparison.Ordinal);
     }
