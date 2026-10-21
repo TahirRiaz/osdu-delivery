@@ -1,5 +1,5 @@
 # Ingestion: the typed pre view of the UnitQuantity values into the keyed ingestion table
-# welldb-ref-unitquantity-03-delivery reads.
+# the unitquantity interface of welldb-ref-03-delivery reads.
 #
 # One row per value, keyed by its code, the key OSDU names a reference value by; SQLFlow's system columns say when the
 # row last changed and which file it came from, so every delivered record traces back to FileName_DW and RowNumber_DW.

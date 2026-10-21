@@ -4,8 +4,8 @@
 > delivered, and they carry `dev:` ids.** They stand in for that capture so a suite or a first-time setup can render with
 > no OSDU to capture from. Importing them into an estate that delivers for real puts ids into its cache that its platform
 > may not hold yet, so a record delivered against them could refer to something that does not exist. Fill a real
-> partition's cache by delivering the reference data (`welldb-ref-unitquantity-03-delivery`, then
-> `welldb-ref-03-delivery`) and running the cache flow with the `refresh` operation, which captures what the platform
+> partition's cache by delivering the reference data (`welldb-ref-03-delivery`, whose `cache.after` puts what it delivers
+> into the cache as it runs), or by running the cache flow with the `refresh` operation, which captures what the platform
 > actually holds.
 
 Not repository content, and not part of any source: a cache lives in the module's database
