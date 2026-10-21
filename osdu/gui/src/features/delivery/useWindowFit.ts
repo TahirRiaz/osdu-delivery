@@ -44,9 +44,10 @@ export function useWindowFit(
     };
 
     // Where the element starts moves when the window does, or when something laid out before it changes height (a strip
-    // that wraps, a filter bar that grows): those are the elements before it and before each of its ancestors. None of
-    // them is sized by the element, so fitting it never sets the observer off again; the fit waits for the next frame all
-    // the same, so a burst of changes is fitted once.
+    // that wraps, a filter bar that grows, a selection bar a table's toolbar shows): those are the elements before the one
+    // sized and before each of its ancestors, inside `ref`'s element as well as outside it. None of them is sized by the
+    // element, so fitting it never sets the observer off again; the fit waits for the next frame all the same, so a burst
+    // of changes is fitted once.
     let frame = 0;
     const schedule = () => {
       window.cancelAnimationFrame(frame);
@@ -61,7 +62,8 @@ export function useWindowFit(
       observer.observe(element);
     }
 
-    for (let node: Element | null = element; node !== null && node !== document.body; node = node.parentElement) {
+    const sized = (target === undefined ? element : target(element)) ?? element;
+    for (let node: Element | null = sized; node !== null && node !== document.body; node = node.parentElement) {
       for (let before = node.previousElementSibling; before !== null; before = before.previousElementSibling) {
         observer.observe(before);
       }

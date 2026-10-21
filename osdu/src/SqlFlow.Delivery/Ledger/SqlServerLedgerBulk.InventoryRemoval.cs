@@ -12,6 +12,7 @@ internal static partial class SqlServerLedgerBulk
 {
     // The ids of one finding the inventory holds as served (or, for a removal that names its ids, those ids whatever they are
     // now), in order after the last one read, each with what the ledgers hold of it now and the finding that gives it.
+    // A removal that takes its ids from a selection reads the finding's served ids the selection holds.
     private const string InventoryRemovalCandidatesSql = """
         SELECT TOP (@limit) r.[InventoryRecordId], r.[TargetId], r.[Version], r.[CreateUser],
             CASE WHEN r.[GoneUtc] IS NOT NULL OR r.[FirstSeenUtc] IS NULL THEN N'gone' ELSE r.[Finding] END AS [Recorded],
@@ -21,9 +22,7 @@ internal static partial class SqlServerLedgerBulk
             rec.[Status] AS [LedgerStatus], art.[ArtifactId], art.[State] AS [ArtifactState]
         FROM [osdu].[InventoryRecord] AS r
         {{ledger}}
-        WHERE r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND r.[InventoryRecordId] > @after
-            AND ((@byIds = 0 AND r.[Finding] = @finding AND r.[GoneUtc] IS NULL AND r.[FirstSeenUtc] IS NOT NULL)
-                OR (@byIds = 1 AND r.[TargetId] IN (SELECT i.[value] COLLATE Latin1_General_100_BIN2 FROM OPENJSON(@ids) AS i)))
+        WHERE r.[PartitionId] = @partitionId AND r.[InventoryId] = @inventoryId AND r.[InventoryRecordId] > @after AND {{named}}
         ORDER BY r.[InventoryRecordId];
         """;
 
@@ -148,19 +147,30 @@ internal static partial class SqlServerLedgerBulk
 
     /// <summary>
     /// The next ids a removal may act on, at most <paramref name="limit"/>, after <paramref name="after"/>: those of
-    /// <paramref name="finding"/> the inventory holds as served, or with <paramref name="ids"/> those ids whatever they are now;
-    /// each with the finding the reconcile's rule gives it against the ledgers as they stand and <paramref name="owners"/>.
+    /// <paramref name="finding"/> the inventory holds as served (only those <paramref name="selectionId"/> holds, when it names a
+    /// selection), or with <paramref name="ids"/> those ids whatever they are now; each with the finding the reconcile's rule gives
+    /// it against the ledgers as they stand and <paramref name="owners"/>.
     /// </summary>
     public static Task<IReadOnlyList<InventoryRemovalCandidate>> InventoryRemovalCandidatesAsync(
-        OsduDbContext db, short partitionId, int inventoryId, string finding, IReadOnlyList<string>? ids, IReadOnlyList<string> owners, long after, int limit, CancellationToken ct)
+        OsduDbContext db, short partitionId, int inventoryId, string finding, IReadOnlyList<string>? ids, long? selectionId, IReadOnlyList<string> owners, long after,
+        int limit, CancellationToken ct)
         => InTransactionAsync<IReadOnlyList<InventoryRemovalCandidate>>(db, async (connection, transaction) =>
         {
-            await using var command = Command(connection, transaction, InventorySql(InventoryRemovalCandidatesSql), slice: null);
+            // The ids named, the selection's, or every served id of the finding, written in rather than switched on a parameter,
+            // so each chunk seeks its own index.
+            const string served = "r.[Finding] = @finding AND r.[GoneUtc] IS NULL AND r.[FirstSeenUtc] IS NOT NULL";
+            var named = ids is not null
+                ? "r.[TargetId] IN (SELECT i.[value] COLLATE Latin1_General_100_BIN2 FROM OPENJSON(@ids) AS i)"
+                : selectionId is not null
+                    ? served + " AND EXISTS (SELECT 1 FROM [osdu].[InventorySelectionItem] AS s WHERE s.[PartitionId] = @partitionId AND s.[InventorySelectionId] = @selectionId AND s.[InventoryRecordId] = r.[InventoryRecordId])"
+                    : served;
+            var sql = InventorySql(InventoryRemovalCandidatesSql).Replace("{{named}}", named, StringComparison.Ordinal);
+            await using var command = Command(connection, transaction, sql, slice: null);
             command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@inventoryId", SqlDbType.Int) { Value = inventoryId });
             command.Parameters.Add(new SqlParameter("@finding", SqlDbType.NVarChar, 16) { Value = finding });
-            command.Parameters.Add(new SqlParameter("@byIds", SqlDbType.Bit) { Value = ids is not null });
             command.Parameters.Add(new SqlParameter("@ids", SqlDbType.NVarChar, -1) { Value = JsonSerializer.Serialize(ids ?? []) });
+            command.Parameters.Add(new SqlParameter("@selectionId", SqlDbType.BigInt) { Value = selectionId ?? 0 });
             command.Parameters.Add(new SqlParameter("@owners", SqlDbType.NVarChar, -1) { Value = JsonSerializer.Serialize(owners) });
             command.Parameters.Add(new SqlParameter("@after", SqlDbType.BigInt) { Value = after });
             command.Parameters.Add(new SqlParameter("@limit", SqlDbType.Int) { Value = limit });

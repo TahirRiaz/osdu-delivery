@@ -39,6 +39,7 @@ public sealed class RunPayloadPerKindTests
         [DeliveryRunPayload.DimensionsProperty] = """{"dimensions":["Field"]}""",
         [DeliveryRunPayload.InventoriesProperty] = """{"inventories":["WellLogs"]}""",
         [DeliveryRunPayload.RemovalProperty] = """{"removal":{"finding":"orphan","scope":"record","expected":1}}""",
+        [DeliveryRunPayload.SelectionProperty] = """{"selection":42}""",
     };
 
     /// <summary>What each kind's runs take besides the central configuration, as its documentation lists them.</summary>
@@ -54,7 +55,8 @@ public sealed class RunPayloadPerKindTests
         [CacheDefinition.FlowTypeName] = [],
         [AssertionFlowDefinition.FlowTypeName] = [DeliveryRunPayload.TestsProperty, DeliveryRunPayload.TagsProperty],
         [DimensionFlowDefinition.FlowTypeName] = [DeliveryRunPayload.DimensionsProperty],
-        [InventoryFlowDefinition.FlowTypeName] = [DeliveryRunPayload.InventoriesProperty, DeliveryRunPayload.RemovalProperty, DeliveryRunPayload.ConfirmProperty],
+        [InventoryFlowDefinition.FlowTypeName] =
+            [DeliveryRunPayload.InventoriesProperty, DeliveryRunPayload.RemovalProperty, DeliveryRunPayload.ConfirmProperty, DeliveryRunPayload.SelectionProperty],
     };
 
     private const string Configuration = """
@@ -127,7 +129,7 @@ public sealed class RunPayloadPerKindTests
             Refusal(dimension, Payloads[DeliveryRunPayload.ConfirmProperty]));
 
         Assert.Equal(
-            "payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal and confirm.",
+            "payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal, confirm and selection.",
             Refusal(new InventoryFlowKind(Loader), Payloads[DeliveryRunPayload.RunIdProperty]));
 
         Assert.Equal(
@@ -152,6 +154,7 @@ public sealed class RunPayloadPerKindTests
         new InventoryFlowKind(Loader).ValidateParameters(With(DeliveryOperations.Reconcile, "\"inventories\":[\"WellLogs\"]"));
         new InventoryFlowKind(Loader).ValidateParameters(With(
             DeliveryOperations.Remove, "\"inventories\":[\"WellLogs\"],\"removal\":{\"finding\":\"orphan\",\"scope\":\"record\",\"expected\":1},\"confirm\":\"dev\""));
+        new InventoryFlowKind(Loader).ValidateParameters(With(DeliveryOperations.Match, "\"inventories\":[\"WellLogs\"],\"selection\":7"));
 
         // A property written as false or empty asks for nothing, so no kind refuses it, as the delivery kind never has.
         new CacheFlowKind(Loader).ValidateParameters(new RunParameters { Payload = """{"force":false,"recordKeys":[],"tests":[]}""" });

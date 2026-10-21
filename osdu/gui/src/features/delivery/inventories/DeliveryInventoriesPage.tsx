@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ClipboardList } from "lucide-react";
@@ -11,6 +12,7 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { inventoryApi, type Inventory } from "../../../api/inventories";
 import { KindText } from "../KindText";
+import { filtersOf, filtersText } from "../explorer/explorerModel";
 import { useActivePartition } from "../activePartition";
 import { ProblemView } from "../TemplateSheet";
 import { RaisedCounts, RunStatusPill, StandingGlyph } from "./InventoryBadges";
@@ -42,8 +44,8 @@ function referenceOf(params: URLSearchParams): InventoryRef | null {
  * holds, set against every ledger of the partition, each id with its finding. The page is two views of one address: every
  * inventory, with what its last reconcile raised and its newest run, and one inventory's report, whose grid takes the page's
  * whole width and scrolls inside it. A lookup by OSDU id across the partition's inventories is in the heading of both. The
- * inventory, the finding, the tab and the id open in the report's panel live in the address, so a link lands on the same
- * view.
+ * inventory, the finding, the tab, the id open in the report's panel and the conditions its ids are selected by (`f`, as the
+ * explorer writes them) live in the address, so a link lands on the same view.
  */
 export default function DeliveryInventoriesPage() {
   const [params, setParams] = useSearchParams();
@@ -56,6 +58,8 @@ export default function DeliveryInventoriesPage() {
   });
   const reference = referenceOf(params);
   const tab = params.get("tab");
+  const conditionsText = params.get("f");
+  const conditions = useMemo(() => filtersOf(conditionsText), [conditionsText]);
   const view: InventoryView = tab === "runs" || tab === "removals" ? tab : "ids";
 
   const update = (changes: Record<string, string | null>) => setParams((current) => {
@@ -72,7 +76,7 @@ export default function DeliveryInventoriesPage() {
   }, { replace: true });
 
   const open = (ref: InventoryRef | null) => (ref === null
-    ? update({ partition: null, inventory: null, finding: null, tab: null, id: null })
+    ? update({ partition: null, inventory: null, finding: null, tab: null, id: null, f: null })
     : navigate(inventoryRoute(ref)));
 
   if (reference !== null) {
@@ -90,6 +94,9 @@ export default function DeliveryInventoriesPage() {
           onOpen={open}
           openId={openIdOf(params)}
           onOpenId={(id) => update({ id })}
+          conditions={conditions}
+          // Other conditions select other ids, so the id open in the panel is let go.
+          onConditions={(next) => update({ f: filtersText(next), id: null })}
         />
       </Page>
     );

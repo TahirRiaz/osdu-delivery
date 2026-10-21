@@ -30,6 +30,12 @@ keywords:
   - inventory tables
   - InventoryRecord
   - InventoryScan staging
+  - select ids by attribute
+  - filter inventory by facility name
+  - match operation
+  - selection
+  - remove by selection
+  - InventorySelection
 yamlPath: "(root, flowType: inventory)"
 related:
   - delivery-concept-search-paging
@@ -49,6 +55,15 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryRunner.cs
   - osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryRunner.Removal.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryRunner.Match.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Inventories/SearchRequestCounter.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/InventorySelections.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.InventorySelection.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventorySelection.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryInventoryEndpoints.Selections.cs
+  - osdu/src/SqlFlow.Delivery.Data/Migrations/20261020222949_InventorySelections.cs
+  - osdu/gui/src/features/delivery/inventories/inventorySelection.ts
+  - osdu/gui/src/features/delivery/inventories/InventorySelectionParts.tsx
   - osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryReaders.cs
   - osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryReport.cs
   - osdu/src/SqlFlow.Delivery/Ledger/Inventories.cs
@@ -76,6 +91,8 @@ The ledgers say what the delivery flows delivered and minted; the inventory says
 disagree is the report. Use it to find records no ledger knows (orphans), records a ledger expects that OSDU no longer
 holds (missing), ids an unfinished delivery left behind, and records a ledger removed or forgot that OSDU still serves.
 The ids OSDU stopped serving stay in the inventory as `gone`, with when they went, until an operator removes them from it.
+An operator can also select its ids by what OSDU holds of them, a property of the records or a column of a source system,
+and remove what the selection holds ([Selecting ids by what OSDU holds](#selecting-ids-by-what-osdu-holds)).
 
 A ledger can fall out of step with OSDU for reasons no delivery controls: a service that acted after its answer was
 lost, an ingestion workflow that wrote more than it reported, a record written outside the flows, a ledger deleted or a
@@ -233,9 +250,10 @@ flow removes them from the inventory alone (scope `inventory`), since nothing is
 | `reconcile` | Compares each inventory, as its last build left it, with the ledgers as they stand now, reading from storage only the ids a ledger expects. Refused for an inventory never built. |
 | `plan` | Counts through the search the records each inventory matches (and lists the kinds a storage read expands to), reading no id and keeping nothing. |
 | `remove` | Removes from OSDU the ids of one finding of one inventory, as an operator asked, for a flow that declares `removal`; or removes gone ids from the inventory alone, for any inventory flow. |
+| `match` | Finds which ids of one inventory hold what an operator's conditions ask in OSDU and keeps them as the selection the payload names ([Selecting ids by what OSDU holds](#selecting-ids-by-what-osdu-holds)). Reads OSDU's search; changes nothing there. |
 
-The payload takes `inventories` (names; none takes every inventory). A `remove` run also takes `removal` and `confirm`,
-and names exactly one inventory:
+The payload takes `inventories` (names; none takes every inventory). A `match` run names exactly one inventory and the
+`selection` it fills. A `remove` run also takes `removal` and `confirm`, and names exactly one inventory:
 
 ```json
 {
@@ -251,11 +269,13 @@ and names exactly one inventory:
 | `removal.scope` | `record` (a soft delete) or `everything` (a purge, only where `removal.purge` is true) for an id OSDU serves; `inventory` (the inventory's own row, nothing asked of OSDU) for a gone id, its only scope, and only its. |
 | `removal.expected` | How many ids the operator was shown, at least 1. With no `ids`, the inventory must hold exactly that many ids of the finding. |
 | `removal.ids` | The ids picked, 1 to 1,000, each once, as many as `expected`. Left out, every id of the finding is removed. |
+| `removal.selection` | The selection whose ids of the finding are removed, every one of them, as many as `expected`; only for `orphan`, `stale` and `forgotten`, and never beside `ids` ([Removing what a selection holds](#removing-what-a-selection-holds)). |
+| `selection` | The selection a `match` run fills, by its number. |
 | `confirm` | The partition the run acts in, typed back; it must be the run's partition. |
 
-`removal` and `confirm` are refused on any other operation. Anything else in the payload is refused before the run
-starts, for example
-`payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal and confirm.`
+`removal` and `confirm` are refused on any other operation, and `selection` on any but `match`. Anything else in the
+payload is refused before the run starts, for example
+`payload runId does not apply to an inventory flow: only a delivery flow's reverse run names the run it reverses; an inventory flow's payload names only inventories, removal, confirm and selection.`
 
 ```bash
 sqlflow run flows/welldb-06-inventory.yaml --set partition=dev
@@ -309,13 +329,107 @@ the [orphans guide](../guides/finding-orphans.md#4-act-on-each-finding).
 
 Inventories run one after another; one that fails leaves the others to complete, and the run ends failed naming it.
 
+## Selecting ids by what OSDU holds
+
+An inventory knows each id by its finding; what the record holds (its name, the well it belongs to, the system it came
+from) is OSDU's. To act on part of a finding, say the orphans of one wellbore, an operator selects the ids by what OSDU
+holds of them: conditions on the records' properties, matched with the inventory's own ids by the OSDU id. The ids that
+hold them are a selection, which the report lists and a removal can take whole.
+
+The conditions are the explorer's ([conditions and properties](../concepts/explorer.md#conditions-and-properties)), at
+most 12, all holding together: a property of the inventory's kind, asked the way the platform indexes it (`contains`,
+`is`, `is one of`, `starts with`, a range, `has a value`, and their negations), or a column of a source system the flows
+read ([search terms](../concepts/search-terms.md)), carried through its mapping before OSDU is asked. A selection is
+opened with them (`POST /api/v1/delivery/inventories/{partition}/{inventoryId}/selections`, body `filters`), and filled
+by a `match` run of the inventory flow, through the flow's own `source` and credentials, as its build reads.
+
+### How a match reads OSDU
+
+1. A source column reached through other records (the well's name, for a wellbore) is read first, as the explorer reads
+   it, into a condition on the inventory's own records; every condition is then one clause of the query.
+2. The records the conditions find in the inventory's kind, narrowed by its `query`, are counted: one request.
+3. They are read the way that sends fewer searches:
+   - **by conditions** (`conditions`): every record they find, 1,000 a page, paged as the flow's `source.paging` says;
+     this is the way nearly always, since the conditions find no more records than the kind holds; or
+   - **by ids** (`ids`): the ids the inventory serves, 500 to a search (fewer when the conditions compare many values,
+     since the search takes 1,024 clauses in a query), each search asking the conditions of those ids alone. A kind that
+     grew far past the inventory since its last build is read this way, so the match costs a search per 500 of the
+     inventory's ids however many records of the kind the conditions find.
+4. Each record found that the inventory serves a row of is kept, matched by its OSDU id, with the version the search index
+   holds and what it holds at each property the conditions ask (the first 20 values of each, cut to 4,000 characters in
+   all). A record the inventory serves no row of (written since its last build, or outside its query) is counted as
+   outside the inventory, and not kept.
+
+Only ids the inventory serves can be selected: OSDU's search does not serve a missing, unlisted or gone id, so no
+condition reaches one. For an inventory read through storage, a record the search index does not hold is never selected
+either. An id whose indexed version is not the one the inventory listed changed since its last build; the match counts
+it, and a removal skips it.
+
+A match keeps each page as it reads it, so the page following it shows how far it got. One that stops (the search refusing
+or failing, the run cancelled, its process stopped) keeps no id, and its selection says why; a run tried again starts its
+match afresh. A match is a run of the flow, so one queued while a build or a removal of the flow runs waits for it.
+
+```bash
+sqlflow run flows/welldb-06-inventory.yaml --set partition=dev --operation match --payload '{"inventories":["Wellbores"],"selection":41}'
+```
+
+The run fills a selection the control plane opened; the page and the API open them, and a run naming no selection, or one
+of another inventory, is refused.
+
+### What a selection says
+
+| Status | Meaning |
+| --- | --- |
+| `queued` | Opened, its match queued as a run of the flow. |
+| `running` | Reading OSDU: how much it has to read (`toCheck`, the records the conditions find or the inventory's ids) and has read (`checked`). |
+| `completed` | Read OSDU whole: it holds the inventory's ids that hold what the conditions ask (`matched`), with the records found outside the inventory (`outside`), the ids at another version than the inventory listed (`changed`), and the search requests it sent. |
+| `failed` | Stopped, holding no id; `error` says why. A selection whose run ended without finishing it, or was never queued, is closed so when it is read. |
+| `expired` | Older than a week and kept for the removal that took its ids: its conditions and counts stay, its ids were retired. |
+
+A completed selection made against an earlier build of the inventory is `stale`: its ids are still listed, and a removal
+refuses to take them until the conditions are matched again. The same conditions, however they are spelled, asked again of
+the same build answer with the match already made of them (200); `refresh` reads OSDU again (202). Each id of a selection
+is counted under the finding the inventory gives it now, so its counts follow a reconcile or a removal.
+
+A selection is kept a week. The next match of the partition retires those older: deleted whole, or, when a removal took
+their ids, kept `expired` with their ids deleted, so the removal still says what it removed by.
+
+### Removing what a selection holds
+
+A removal names a `selection` in place of `ids`: every id of the finding the selection holds, as many as `expected`,
+however many that is. Only `orphan`, `stale` and `forgotten` ids, which go from OSDU, are taken from a selection; a removal
+names ids or a selection, not both. It is refused unless the selection is one of the inventory's, its match completed and
+was made against the inventory's last build, and it holds exactly `expected` ids of the finding. Every id is then checked
+again just before it goes, as any removal checks it ([What a removal does](#what-a-removal-does)). The removal keeps the
+selection it took its ids from, and the **Removals** tab says which conditions chose them.
+
+```json
+{
+  "inventories": ["Wellbores"],
+  "removal": { "finding": "orphan", "scope": "record", "expected": 212, "selection": 41 },
+  "confirm": "dev"
+}
+```
+
+### In the GUI
+
+**Filter**, at the end of the Ids tab's line, opens the explorer's editor on the inventory's kind: its properties, the
+columns of the source systems its flows read, and the values the kind's records hold, the commonest first. Each condition
+is a chip over the grid, changed by a click and dropped by its cross, and the conditions live in the page's address (`f`),
+so a link opens the same selection. At the end of the chips' row the match says where it stands: asking, matching with how
+far it got and its run, matched (when, and behind the mark what it found, the query and how it read OSDU), built again
+since the match, or failed with why. While it holds, every tab counts its matching ids before its own (`212 / 60,000`),
+the grid lists only them, with a column for each property the conditions ask, and **Select all** picks every matching id
+of a removable finding for one removal by the selection. The CSV export adds the matching ids, with their values.
+
 ## What a removal does
 
 A removal is a `remove` run, queued from the inventory's page in the GUI (`POST
 /api/v1/delivery/inventories/{partition}/{inventoryId}/removals`) or run with `sqlflow run --operation remove`. Before it
 reads anything it is refused unless the flow allows the finding and the scope, `confirm` names the run's partition, the
 inventory has been reconciled, and the inventory holds as many ids of the finding as `expected` (or a row of every id
-named). The page and the API also refuse while a run of the flow is queued or running.
+named; or, for a removal by a selection, the selection holds as many, matched against the inventory's last build). The page
+and the API also refuse while a run of the flow is queued or running.
 
 It then reads the ids 500 at a time, in order. Each id is checked again just before it goes, and left in OSDU, skipped
 with why, when the inventory no longer finds it so, the ledgers give it another finding now, storage serves another
@@ -391,7 +505,9 @@ its kind, status, run number, ids listed, added, changed, gone and served again,
 counts by finding, the owners and how they were known, pages, requests and error. A plan's result is, per inventory, the
 query, how it reads, which versions, the records it would read, the kinds a storage read expands to, and its problems. A
 removal's result is its number, the finding, the scope, how many ids were asked for, and how many were removed, already
-gone, skipped and failed, with why it stopped.
+gone, skipped and failed, with why it stopped. A match's result is the selection it filled, its status, how it read OSDU and
+the query, the ids the inventory served, how many matched, how many records were outside the inventory and how many ids
+changed since its build, the search requests it sent, its notes, and why it stopped.
 
 ## Lineage and the GUI
 
@@ -400,7 +516,8 @@ lineage orders it after the delivery flows writing those kinds ([lineage](../con
 pipeline has an **Inventories** tab. **OSDU**, **In OSDU**, **Inventories** lists every inventory with what its last
 reconcile raised; an inventory's report has its counts by finding over a grid of ids, the tabs Ids, Runs and (for a flow
 that allows removal, or one that has removed anything) Removals, a lookup by OSDU id, and a CSV export. The **gone** tab
-picks ids, or every one, to remove from the inventory, and the **missing** tab picks ids to deliver again.
+picks ids, or every one, to remove from the inventory, and the **missing** tab picks ids to deliver again. **Filter**
+selects the ids by what OSDU holds ([In the GUI](#in-the-gui)).
 
 ## The tables an inventory keeps
 
@@ -417,7 +534,9 @@ apart, and no table has a foreign key into another. The comparison with the ledg
 | `osdu.InventoryScan` | id one build's read listed, while the build runs | `(PartitionId, ScanId)`; `(PartitionId, InventoryRunId, TargetId)` | the read, a chunk at a time | the merge, and nothing else |
 | `osdu.InventoryRecord` | id an inventory holds, or a ledger of the partition expects it to hold | `(PartitionId, InventoryRecordId)`; unique on `(PartitionId, InventoryId, TargetId)`; `(PartitionId, InventoryId, InventoryRecordId)`; `(PartitionId, InventoryId, Finding, InventoryRecordId)`; `(PartitionId, TargetId)` including the inventory, finding and `GoneUtc` | the merge, the reconcile, the storage checks, a removal (which marks ids gone) and a removal of gone ids (which deletes rows) | the counts by finding, the **Ids** grid and its tabs, the CSV export, the lookup by OSDU id, a removal and a repair |
 | `osdu.InventoryVersion` | version storage keeps of a record (`versions: all`) | `(PartitionId, InventoryRecordId, Version)` | the versions step of a build, which replaces the versions of each record it reads; a removal of gone ids, which deletes them with their row | no page, verb or route reads it; the record's `VersionsAt` says which version its list was read at |
-| `osdu.InventoryRemoval` | removal an operator asked for | `(PartitionId, InventoryRemovalId)`; `(PartitionId, InventoryId, InventoryRemovalId)` | a `remove` run: opened `running`, its tallies added to by every chunk or round, closed `completed` or `failed` | the **Removals** tab, `.../{inventoryId}/removals`, `.../removals/{removalId}` |
+| `osdu.InventoryRemoval` | removal an operator asked for | `(PartitionId, InventoryRemovalId)`; `(PartitionId, InventoryId, InventoryRemovalId)` | a `remove` run: opened `running`, its tallies added to by every chunk or round, closed `completed` or `failed`; it keeps the selection it took its ids from (`InventorySelectionId`) | the **Removals** tab, `.../{inventoryId}/removals`, `.../removals/{removalId}` |
+| `osdu.InventorySelection` | selection an operator's conditions opened | `(PartitionId, InventorySelectionId)`; `(PartitionId, InventoryId, ConditionsKey, InventorySelectionId)`; `(PartitionId, CreatedUtc)` | the control plane, which opens it `queued` with the conditions as written (`ConditionsJson`, and their hash `ConditionsKey`) and as the search is asked them (`FiltersJson`); the `match` run, which starts it against the inventory's last build (`BuildRunId`), adds to its counts with every page and closes it `completed` or `failed`; a read of it, which closes one whose run ended without finishing it; the next match of the partition, which retires those older than a week | the report's selection, `.../selections/{selectionId}`, a removal by the selection, the **Removals** tab |
+| `osdu.InventorySelectionItem` | id of an inventory a match found | `(PartitionId, InventorySelectionId, InventoryRecordId)` | each page or chunk of a match, joined with `osdu.InventoryRecord` by the OSDU id in one transaction, with the version the index holds (`MatchedVersion`) and the values at the conditions' properties (`ValuesJson`); deleted with a failed match and when the selection retires | the grid and counts of a selection, its CSV export, a removal by the selection |
 | `osdu.InventoryRemovalItem` | id a removal reached; for a removal of gone ids, only each id it kept | `(PartitionId, InventoryRemovalItemId)`; `(PartitionId, InventoryRemovalId, InventoryRemovalItemId)`; `(PartitionId, InventoryRemovalId, Outcome, InventoryRemovalItemId)`; `(PartitionId, TargetId)` including the removal and outcome | each chunk or round of a removal, in the transaction that acts on the inventory's rows | a removal's items, `.../removals/{removalId}/items`, and the lookup by OSDU id, which shows the latest 100 outcomes of an id |
 
 A repair keeps no table of its own: it reads the inventory's `missing` rows (each with the ledger and record that claims
@@ -499,3 +618,8 @@ ids ([Removing gone ids](#removing-gone-ids)); a removal from OSDU marks its ids
 | `payload removal asks for gone ids with scope record: a gone id is one OSDU no longer serves, so there is nothing of it in OSDU to remove; its removal takes the inventory's own row (inventory).` | A gone removal with another scope than `inventory`. |
 | `payload removal asks for orphan ids with scope inventory: OSDU serves an id the inventory finds orphan, and the next build would list it again; ...` | `scope: inventory` for an id OSDU serves. |
 | `Storage no longer knows the cursor of its listing of <kind> part way through, so the listing cannot be read whole; the next build reads it again from the start.` | A storage listing lost its cursor. |
+| `Inventory 'Wellbores' has not been built in 'dev', so it holds no id to match; build it first. Nothing was matched.` | `match` before a build; the selection is closed with it. |
+| `Inventory 'Wellbores' in 'dev' holds no selection 41: it was opened for another inventory, or retired since. Nothing was matched.` | `match` naming a selection the inventory does not hold. |
+| `Selection 41 of inventory 'Wellbores' holds 209 orphan id(s) now, and the removal was asked for 212: what it holds changed since it was shown. Nothing was removed; look at it again and ask again.` | The selection's ids changed finding since the operator looked. |
+| `Selection 41 was matched against an earlier build of inventory 'Wellbores', and the inventory was built again since: match its conditions again before removing what it holds. Nothing was removed.` | A removal by a stale selection. |
+| `Selection 41 of inventory 'Wellbores' is running, not completed: only a match that read OSDU whole says which ids hold what its conditions ask. Nothing was removed.` | A removal by a selection whose match did not complete. |

@@ -105,9 +105,13 @@ public static class InventoryRemovals
         => reason is null ? null : reason.Length <= MaxReasonLength ? reason : reason[..MaxReasonLength];
 }
 
-/// <summary>What a removal starts with: its inventory, the run it is, who asked, and what it was asked to remove.</summary>
+/// <summary>
+/// What a removal starts with: its inventory, the run it is, who asked, what it was asked to remove, and the selection it takes
+/// its ids from when it takes them from one.
+/// </summary>
 public sealed record InventoryRemovalStart(
-    int InventoryId, Guid? RunId, string Actor, string Finding, string Scope, bool NamesIds, long Requested, long? ActivityId, DateTime StartedUtc);
+    int InventoryId, Guid? RunId, string Actor, string Finding, string Scope, bool NamesIds, long Requested, long? ActivityId, DateTime StartedUtc,
+    long? SelectionId = null);
 
 /// <summary>
 /// An id a removal may act on, as the inventory holds it and as the ledgers of the partition hold it now: the finding the
@@ -204,6 +208,9 @@ public sealed record InventoryRemovalState
 
     /// <summary>The audit trail's activity of the removal.</summary>
     public long? ActivityId { get; init; }
+
+    /// <summary>The selection the removal took its ids from; null for one that named its ids or took every id of the finding.</summary>
+    public long? SelectionId { get; init; }
 }
 
 /// <summary>One id of a removal as the module's database holds it.</summary>

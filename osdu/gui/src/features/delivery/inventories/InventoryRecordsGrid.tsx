@@ -13,7 +13,7 @@ import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cn } from "@/lib/utils";
 import { deliveryRecordRoute } from "../../../api/delivery";
 import {
-  GONE_FINDING, MISSING_FINDING, inventoryApi, type Inventory, type InventoryRecord, type InventoryRemovalAccepted, type InventoryRemovalPolicy,
+  GONE_FINDING, MISSING_FINDING, REMOVABLE_FINDINGS, inventoryApi, type Inventory, type InventoryRecord, type InventoryRemovalAccepted, type InventoryRemovalPolicy,
 } from "../../../api/inventories";
 import { RecordName } from "../RecordName";
 import { idParts } from "../osduRecordModel";
@@ -25,7 +25,10 @@ import { FindingGlyph } from "./InventoryBadges";
 import { InventoryIdPanel } from "./InventoryIdPanel";
 import { InventoryRepairDialog } from "./InventoryRepairDialog";
 import { RemovalDialog } from "../RemovalDialog";
+import { fieldLabel } from "../explorer/explorerModel";
 import { findingVisual, findingWhy } from "./inventoryFormat";
+import { SelectionPanel, SelectionValueCell } from "./InventorySelectionParts";
+import type { InventorySelectionState } from "./inventorySelection";
 
 const PAGE = 200;
 
@@ -43,6 +46,19 @@ const MAX_PICKED = 1000;
 
 /** The row whose id is open in the panel, marked as the cache history marks the row its panel shows. */
 const OPEN_ROW: CSSProperties = { backgroundColor: "var(--accent)" };
+
+/** The findings whose ids no condition reaches: OSDU's search does not serve them, so a match never selects one. */
+const UNSEARCHED: readonly string[] = ["missing", "unlisted", "gone"];
+
+/**
+ * The ids an operator's conditions select (osdu/docs/reference/flow/inventory.md, Selecting ids by what OSDU holds): where
+ * their match stands, the conditions as a sentence, and how to drop them.
+ */
+export interface GridSelection {
+  state: InventorySelectionState;
+  sentence: string;
+  onClear: () => void;
+}
 
 /** Whether a key went to a field, which keeps every key it is given. */
 function typedInField(target: EventTarget | null): boolean {
@@ -103,17 +119,26 @@ function LedgerCell({ row }: { row: InventoryRecord }) {
  * from OSDU through the removal dialog, which queues a run of the flow. Gone ids, which OSDU no longer serves, are picked and
  * removed the same way from the inventory alone, whatever the flow declares; missing ids are picked the same way and their
  * records delivered again through their own flows.
+ *
+ * While an operator's conditions select ids, the grid lists only the ids their match found, each with what it held at the
+ * properties the conditions ask, a column each; every one of them can be picked at once and removed by the selection itself,
+ * however many. While the match is asked for or reads OSDU, or when it cannot hold any id, a panel saying so stands in the
+ * grid's place under the same toolbar.
  */
-export function InventoryRecordsGrid({ inventory, finding, total, leading, trailing, openId, onOpen, removal, removesGone = false, repairsMissing = false }: {
+export function InventoryRecordsGrid({ inventory, finding, total, leading, trailing, below, selection, openId, onOpen, removal, removesGone = false, repairsMissing = false }: {
   inventory: Inventory;
   /** The finding whose ids are listed; null lists every id, each with its finding. */
   finding: string | null;
-  /** How many ids the grid can show, as the counts say; null when unknown. */
+  /** How many ids the grid can show, as the counts say (of the selection's, while one holds); null when unknown. */
   total: number | null;
   /** What leads the grid's toolbar: the findings to pick from. */
   leading?: ReactNode;
   /** What the toolbar holds before View at its end (the export). */
   trailing?: ReactNode;
+  /** What stands under the toolbar's line: the conditions the ids are selected by. */
+  below?: ReactNode;
+  /** The ids the conditions select; absent while there are none. */
+  selection?: GridSelection;
   /** The OSDU id open in the bottom panel; null when none is. */
   openId: string | null;
   /** Opens an id in the panel, or closes it with null; absent where the reader cannot read OSDU. */
@@ -128,14 +153,22 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
   // Every id adds a Finding column, so that view starts without the time each id has had its finding too.
   const atFirst = finding === null ? AT_FIRST_EVERY_ID : AT_FIRST_FINDING;
   const [hidden, toggleColumn] = useHiddenColumns(`osdu.inventories.records.columns.${finding === null ? "all" : "finding"}`, atFirst);
+  // The ids a match holds are listed once it read OSDU whole; a match made against an earlier build still lists what it found.
+  const phase = selection?.state.phase ?? "none";
+  const selected = phase === "completed" || phase === "stale" ? selection?.state.selection : undefined;
+  const awaiting = selection !== undefined && selected === undefined;
+  // The rows the grid lists come from the inventory, or from one match of it: a new source never shows the old one's rows
+  // while its own are read, since those are not the ids its counts are of.
+  const source = awaiting ? "awaiting" : selected === undefined ? "inventory" : `selection-${selected.selectionId}`;
   const pages = useInfiniteQuery({
-    queryKey: ["delivery", "inventories", "records", inventory.partition, inventory.inventoryId, finding],
+    queryKey: ["delivery", "inventories", "records", inventory.partition, inventory.inventoryId, finding, selected?.selectionId ?? null],
     queryFn: ({ pageParam }) => inventoryApi.records(inventory.partition, inventory.inventoryId, {
-      finding: finding ?? undefined, after: pageParam, limit: PAGE,
+      finding: finding ?? undefined, after: pageParam, limit: PAGE, selection: selected?.selectionId,
     }),
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (last) => last.next,
-    placeholderData: keepPreviousData,
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[6] === (selected?.selectionId ?? null) ? keepPreviousData(previous) : undefined),
+    enabled: !awaiting,
   });
   const rows = useMemo(() => pages.data?.pages.flatMap((page) => page.items), [pages.data]);
   const more = () => {
@@ -151,9 +184,21 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
   const missing = finding === MISSING_FINDING;
   const removable = removal !== undefined && finding !== null && removal.findings.includes(finding) ? removal : undefined;
   const removes = gone ? removesGone : missing ? repairsMissing : removable !== undefined;
+  // Every id of a selection is removed by the selection itself, which only the findings OSDU serves and a removal takes from
+  // OSDU allow; the ids of any other finding a selection lists are picked one by one.
+  const bySelection = selected !== undefined && finding !== null && REMOVABLE_FINDINGS.some((f) => f === finding);
+  const everyAllowed = selected === undefined || bySelection;
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [everyOne, setEveryOne] = useState(false);
   const [removing, setRemoving] = useState(false);
+  // What was picked belongs to the rows it was picked from: conditions added, changed or dropped, or OSDU read again, start
+  // with nothing picked, so nothing out of sight is ever removed.
+  const [pickedFrom, setPickedFrom] = useState(source);
+  if (pickedFrom !== source) {
+    setPickedFrom(source);
+    setPicked(new Set());
+    setEveryOne(false);
+  }
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const clearPicked = () => {
@@ -367,10 +412,18 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
       ),
     },
   ];
-  const columns = all.filter((column) => !hidden.has(column.id));
-  const noun = finding === null ? "id" : `${findingVisual(finding).label.toLowerCase()} id`;
+  // What each id held at the properties the conditions ask, a column each after the id: why the row is there.
+  const valueColumns: Column<InventoryRecord>[] = (selected?.columns ?? []).map((path) => ({
+    id: `value:${path}`,
+    header: fieldLabel(path),
+    render: (row) => <SelectionValueCell values={row.values?.[path]} testId="inventory-record-value" />,
+  }));
+  const columns = [all[0], ...valueColumns, ...all.slice(1)].filter((column) => !hidden.has(column.id));
+  const findingNoun = finding === null ? "id" : `${findingVisual(finding).label.toLowerCase()} id`;
+  const noun = selected === undefined ? findingNoun : `matching ${findingNoun}`;
   const picking = removes && (picked.size > 0 || everyOne);
   const tooMany = !everyOne && pickedIds.length > MAX_PICKED;
+  const staleNote = phase === "stale" ? "The inventory was built again since this match: match the conditions again before removing what it holds" : null;
   const toolbar = (
     <div className="flex min-w-0 flex-col">
       <div className="flex min-w-0 items-center gap-1 border-b border-border pl-1.5 pr-2">
@@ -380,12 +433,13 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
           <GridViewMenu columns={choices} hidden={hidden} atFirst={atFirst} onToggle={toggleColumn} compact testId="inventory-records-view" />
         </div>
       </div>
+      {below}
       {picking && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-accent/40 px-3 py-1.5" data-testid="inventory-selection-bar">
           <span className="text-[13px] font-medium tabular-nums" data-testid="inventory-selection-count">
             {everyOne ? `All ${(total ?? 0).toLocaleString("en-US")} ${noun}s selected` : `${pickedIds.length.toLocaleString("en-US")} selected`}
           </span>
-          {!everyOne && total !== null && total > pickedIds.length && (
+          {!everyOne && everyAllowed && total !== null && total > pickedIds.length && (
             <Button variant="link" size="sm" className="h-6 px-0 text-[13px]" onClick={() => setEveryOne(true)} data-testid="inventory-select-every">
               {`Select all ${total.toLocaleString("en-US")} ${noun}s`}
             </Button>
@@ -421,8 +475,10 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
                 size="sm"
                 className="ml-auto h-7"
                 onClick={() => setRemoving(true)}
-                disabled={tooMany || removalCount === 0}
-                title={gone ? "Remove the selected ids from the inventory: OSDU no longer serves them, and nothing is asked of it" : "Remove the selected ids from OSDU, each checked again first"}
+                disabled={tooMany || removalCount === 0 || (everyOne && staleNote !== null)}
+                title={everyOne && staleNote !== null
+                  ? staleNote
+                  : gone ? "Remove the selected ids from the inventory: OSDU no longer serves them, and nothing is asked of it" : "Remove the selected ids from OSDU, each checked again first"}
                 data-testid="inventory-remove-selected"
               >
                 <Trash2 />
@@ -434,9 +490,25 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
     </div>
   );
 
+  // With conditions selecting ids, the grid says why an empty finding holds none: no condition reaches an id OSDU's search
+  // does not serve.
+  const emptyMessage = selected !== undefined
+    ? finding !== null && UNSEARCHED.includes(finding)
+      ? `No ${findingNoun} matches: OSDU's search does not serve ${findingVisual(finding).label.toLowerCase()} ids, so no condition reaches them.`
+      : `No ${findingNoun} holds what the conditions ask.`
+    : finding === null ? "The inventory holds no id yet." : `No id is ${findingVisual(finding).label.toLowerCase()}.`;
+
   return (
-    <div ref={grid} className="flex min-w-0 flex-col" data-testid="inventory-records">
-      {pages.isError
+    <div ref={grid} className="flex min-w-0 flex-col" data-testid="inventory-records" data-selection={selected?.selectionId}>
+      {awaiting && selection !== undefined
+        ? (
+          // The toolbar and the conditions stay over the match, so a finding can still be picked and a condition changed.
+          <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid="inventory-grid">
+            {toolbar}
+            <SelectionPanel state={selection.state} sentence={selection.sentence} onClear={selection.onClear} />
+          </Card>
+        )
+        : pages.isError
         ? (
           // The findings stay over the problem, so another finding can still be picked.
           <Card className="gap-0 overflow-hidden rounded-lg p-0">
@@ -483,7 +555,7 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
                   testId="inventory-records-footer"
                 />
               )}
-              emptyMessage={finding === null ? "The inventory holds no id yet." : `No id is ${findingVisual(finding).label.toLowerCase()}.`}
+              emptyMessage={emptyMessage}
               data-testid="inventory-records-table"
             />
           </DimensionGrid>
@@ -505,7 +577,14 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
         <RemovalDialog
           open={removing}
           onClose={() => setRemoving(false)}
-          inventory={{ inventory, finding, ids: everyOne ? null : pickedIds, count: removalCount, policy: removable }}
+          inventory={{
+            inventory,
+            finding,
+            ids: everyOne ? null : pickedIds,
+            count: removalCount,
+            policy: removable,
+            selection: everyOne && bySelection && selected !== undefined ? { id: selected.selectionId, sentence: selection?.sentence ?? "" } : undefined,
+          }}
           onQueued={(accepted: InventoryRemovalAccepted) => {
             clearPicked();
             toast.success(

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Columns3, ListFilter, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -14,21 +14,38 @@ const EDITOR_WIDTH = "w-[420px]";
 
 /**
  * Filter: a new condition on one property or source column of the records in view, made in the editor (the attribute,
- * what it must hold, the value).
+ * what it must hold, the value). A grid's toolbar takes it compact, as a quiet button among its own; a page's place line
+ * takes it as an outlined one.
  */
-export function ExplorerAddFilter({ partition, request, onAdd }: {
+export function ExplorerAddFilter({ partition, request, onAdd, compact = false, title, disabled = false, testId = "explorer-add-filter" }: {
   partition: string | null;
   request: ExplorerSearchRequest & { filters: ExplorerFilter[] };
   onAdd: (filter: ExplorerFilter) => void;
+  /** Drawn as a quiet button the height of a grid toolbar's own. */
+  compact?: boolean;
+  /** What the button says on hover; what it narrows, in the page's words. */
+  title?: string;
+  disabled?: boolean;
+  testId?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const hint = title ?? "Narrow the records by what one property holds: its words, its value, a range, or whether it holds one";
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" title="Narrow the records by what one property holds: its words, its value, a range, or whether it holds one" data-testid="explorer-add-filter">
-          <ListFilter />
-          Filter
-        </Button>
+        {compact
+          ? (
+            <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[12.5px] text-muted-foreground hover:text-foreground" title={hint} disabled={disabled} data-testid={testId}>
+              <ListFilter className="size-3.5" />
+              Filter
+            </Button>
+          )
+          : (
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" title={hint} disabled={disabled} data-testid={testId}>
+              <ListFilter />
+              Filter
+            </Button>
+          )}
       </PopoverTrigger>
       <PopoverContent align="end" className={`${EDITOR_WIDTH} p-0`} data-testid="explorer-add-filter-panel">
         {open && (
@@ -50,12 +67,15 @@ export function ExplorerAddFilter({ partition, request, onAdd }: {
  * The conditions the records are narrowed to, one chip each, read as a sentence (`WellboreName starts with Wellbore A`): a
  * click opens the editor to change it, the cross drops it, and Clear all drops them all. Every condition holds, together
  * with the search typed. A condition on a source column (a search term) says the column's name, marked as one, with its
- * system and the property it is searched in on hover; one whose column is no longer searched says so.
+ * system and the property it is searched in on hover; one whose column is no longer searched says so. What the page says
+ * of the conditions as a whole (where a match of them stands) ends the row.
  */
-export function ExplorerFilterChips({ partition, request, onFilters }: {
+export function ExplorerFilterChips({ partition, request, onFilters, trailing }: {
   partition: string | null;
   request: ExplorerSearchRequest & { filters: ExplorerFilter[] };
   onFilters: (filters: ExplorerFilter[]) => void;
+  /** What ends the row, after Clear all: the page's word on the conditions as a whole. */
+  trailing?: ReactNode;
 }) {
   const [editing, setEditing] = useState<number | null>(null);
   const terms = useSearchTerms(request.kind, request.filters.some((filter) => filter.term !== undefined), true);
@@ -141,6 +161,7 @@ export function ExplorerFilterChips({ partition, request, onFilters }: {
           Clear all
         </button>
       )}
+      {trailing !== undefined && <div className="ml-auto flex min-w-0 items-center">{trailing}</div>}
     </div>
   );
 }

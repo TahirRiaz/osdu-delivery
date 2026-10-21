@@ -362,8 +362,8 @@ public sealed record InventoryRemovalPolicy
 
 /// <summary>
 /// What a removal run removes (the run payload's <c>removal</c>, with the inventory in <c>inventories</c> and the partition in
-/// <c>confirm</c>): the ids of one finding, every one of them or those it names, how much of each it takes, and how many the
-/// operator was shown, which the run holds the inventory to before it removes anything.
+/// <c>confirm</c>): the ids of one finding, every one of them, those it names, or those a selection holds, how much of each it
+/// takes, and how many the operator was shown, which the run holds the inventory to before it removes anything.
 /// </summary>
 public sealed record InventoryRemovalRequest
 {
@@ -382,8 +382,15 @@ public sealed record InventoryRemovalRequest
     /// <summary>How many ids the operator was shown: every id of the finding, or as many as <see cref="Ids"/> names.</summary>
     public required long Expected { get; init; }
 
-    /// <summary>The ids removed, when the operator picked them; empty removes every id of the finding.</summary>
+    /// <summary>The ids removed, when the operator picked them; empty removes every id of the finding (or of <see cref="Selection"/>).</summary>
     public IReadOnlyList<string> Ids { get; init; } = [];
+
+    /// <summary>
+    /// The selection whose ids of the finding are removed (osdu/docs/reference/flow/inventory.md, Selecting ids by what OSDU
+    /// holds): those that held what the operator's conditions asked in OSDU. Null removes every id of the finding, or those
+    /// <see cref="Ids"/> names; a removal names ids or a selection, not both.
+    /// </summary>
+    public long? Selection { get; init; }
 
     /// <summary>True when the removal names its ids rather than taking every id of the finding.</summary>
     public bool NamesIds => Ids.Count > 0;

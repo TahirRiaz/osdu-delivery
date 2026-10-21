@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([The partition cache](osdu/docs/reference/concepts/partition-cache.md#a-record-held-for-a-reference-waits-for-it)).
 - **A cache run can refresh some of its types.** Pick them in the run dialog, or name them in the payload's `types`; the
   rest of the partition's cache stays as it is ([Cache flow](osdu/docs/reference/flow/cache.md#operations-and-the-run-payload)).
+- **Select an inventory's ids by what OSDU holds.** On an inventory's report, Filter takes the explorer's conditions on
+  the records (a property, or a column of a source system): a match run of the inventory flow finds the ids that hold
+  them, each tab counts its matching ids, the grid lists them with their values, and every matching orphan, stale or
+  forgotten id can be removed at once, however many
+  ([Selecting ids by what OSDU holds](osdu/docs/reference/flow/inventory.md#selecting-ids-by-what-osdu-holds)).
 
 ### Changed
 
@@ -101,6 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An inventory's grid keeps its footer in view when ids are picked.** The bar that says what is picked made the grid
+  taller than the window, so its last rows and its footer went below the page's edge; the grid now shrinks to make room.
 - **A cache flow's run dialog no longer offers Force,** which a cache run refuses: a refresh captures every type it is
   given in full ([Cache flow](osdu/docs/reference/flow/cache.md#operations-and-the-run-payload)).
 - **A Radix environment delivers every flow.** The Radix application set only the LogType flow's access groups, so

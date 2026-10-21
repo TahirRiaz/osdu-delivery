@@ -16,6 +16,8 @@ import { GridFooter } from "../dimensions/DimensionGrid";
 import { ExplainTip } from "@/components/ExplainTip";
 import { FindingGlyph, RunStatusPill } from "./InventoryBadges";
 import { findingVisual } from "./inventoryFormat";
+import { conditionSentence, useInventoryTerms } from "./inventorySelection";
+import type { SearchTermView } from "../../../api/searchTerms";
 
 /** The workbench's bottom panel content the removals raise: a removal's number after this prefix. */
 const PANEL = "inventory-removal:";
@@ -68,11 +70,31 @@ function Tally({ removal, testId }: { removal: InventoryRemoval; testId: string 
   );
 }
 
-/** What a removal was asked to do, in a line: how many ids of which finding, and how much of each record. */
-function asked(removal: InventoryRemoval): string {
+/**
+ * What a removal was asked to do, in a line: how many ids of which finding (picked, every one, or those matching the conditions
+ * of a selection, named by their sentence), and how much of each record.
+ */
+function asked(removal: InventoryRemoval, terms: SearchTermView[] | undefined): string {
   const label = findingVisual(removal.finding).label.toLowerCase();
   const how = removal.scope === "everything" ? "purged" : removal.scope === "inventory" ? "removed from the inventory" : "soft deleted";
-  return `${removal.requested.toLocaleString("en-US")} ${label}${removal.namesIds ? " picked" : ", every one"}, ${how}`;
+  const which = removal.selection !== undefined
+    ? ` matching ${conditionSentence(removal.selection.conditions, terms)}`
+    : removal.namesIds ? " picked" : ", every one";
+  return `${removal.requested.toLocaleString("en-US")} ${label}${which}, ${how}`;
+}
+
+/** What the selection a removal took its ids from was, as its explanation says it: the conditions, the query and the match. */
+function selectionText(removal: InventoryRemoval, terms: SearchTermView[] | undefined): string | null {
+  const selection = removal.selection;
+  if (selection === undefined) {
+    return null;
+  }
+
+  return [
+    `The ids that held ${conditionSentence(selection.conditions, terms)} in OSDU, as selection ${selection.selectionId} matched them: ${selection.matched.toLocaleString("en-US")} id(s) of every finding.`,
+    selection.query === undefined ? null : `Query: ${selection.query}`,
+    selection.status === "expired" ? "The selection is older than a week: its conditions and counts are kept, its ids were retired." : null,
+  ].filter((line): line is string => line !== null).join("\n\n");
 }
 
 /**
@@ -90,6 +112,7 @@ function keepsEveryId(removal: InventoryRemoval): boolean {
  */
 function RemovalItemsPanel({ inventory, removal }: { inventory: Inventory; removal: InventoryRemoval }) {
   const [outcome, setOutcome] = useState<InventoryRemovalOutcome | null>(null);
+  const terms = useInventoryTerms(inventory.kind, removal.selection?.conditions.some((condition) => condition.term !== undefined) ?? false);
   const pages = useInfiniteQuery({
     queryKey: ["delivery", "inventories", "removal-items", inventory.partition, removal.inventoryRemovalId, outcome],
     queryFn: ({ pageParam }) => inventoryApi.removalItems(inventory.partition, removal.inventoryRemovalId, { outcome: outcome ?? undefined, after: pageParam, limit: PAGE }),
@@ -166,9 +189,15 @@ function RemovalItemsPanel({ inventory, removal }: { inventory: Inventory; remov
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="inventory-removal-panel" data-removal={removal.inventoryRemovalId}>
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-1.5 text-[12.5px]">
-        <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
           <FindingGlyph finding={removal.finding} />
-          <span className="font-medium">{asked(removal)}</span>
+          {selectionText(removal, terms) === null
+            ? <span className="font-medium">{asked(removal, terms)}</span>
+            : (
+              <ExplainTip title="Selected by" text={selectionText(removal, terms)!} testId="inventory-removal-panel-selection">
+                <span className="cursor-help font-medium">{asked(removal, terms)}</span>
+              </ExplainTip>
+            )}
         </span>
         <span className="text-muted-foreground">
           {"by "}
@@ -230,6 +259,8 @@ function RemovalItemsPanel({ inventory, removal }: { inventory: Inventory; remov
  */
 export function InventoryRemovals({ inventory, removals, error }: { inventory: Inventory; removals: InventoryRemoval[] | undefined; error: unknown }) {
   const { ownedId, show } = useOwnedPanel(PANEL);
+  // The source columns a removal's conditions name, read once for the inventory's kind when any removal names one.
+  const terms = useInventoryTerms(inventory.kind, (removals ?? []).some((r) => r.selection?.conditions.some((condition) => condition.term !== undefined) ?? false));
   const open = useCallback((removal: InventoryRemoval) => show(
     String(removal.inventoryRemovalId),
     `Removal · ${removal.inventoryRemovalId}`,
@@ -256,9 +287,15 @@ export function InventoryRemovals({ inventory, removals, error }: { inventory: I
       fill: true,
       floor: 220,
       render: (row) => (
-        <span className="inline-flex min-w-0 items-center gap-1.5 text-[12.5px]">
+        <span className="inline-flex min-w-0 items-center gap-1.5 text-[12.5px]" data-testid="inventory-removal-asked" data-selection={row.selection?.selectionId}>
           <FindingGlyph finding={row.finding} />
-          <TruncatedText text={asked(row)} maxWidth={420} />
+          {selectionText(row, terms) === null
+            ? <TruncatedText text={asked(row, terms)} maxWidth={420} />
+            : (
+              <ExplainTip title="Selected by" text={selectionText(row, terms)!} testId="inventory-removal-selection">
+                <span className="min-w-0 max-w-[420px] cursor-help truncate">{asked(row, terms)}</span>
+              </ExplainTip>
+            )}
         </span>
       ),
     },
