@@ -6,7 +6,7 @@ namespace SqlFlow.Delivery.Templates;
 
 /// <summary>What a scan of a repository found: its template folders, and what it saw that is almost one.</summary>
 /// <param name="Folders">Every template folder under the repository, in ordinal path order.</param>
-/// <param name="Warnings">A folder named like a template folder but not exactly (<c>Templates</c>), or one reached through a link, which no document reads.</param>
+/// <param name="Warnings">A folder named like a template folder but not exactly (<c>Templates</c>, or <c>template</c> holding schema files), or one reached through a link, which no document reads.</param>
 public sealed record TemplateFolderScan(IReadOnlyList<TemplateFolder> Folders, IReadOnlyList<string> Warnings)
 {
     /// <summary>Every file of every folder, in folder order and then path order.</summary>
@@ -25,6 +25,9 @@ public static class TemplateFolders
 {
     /// <summary>The name a template folder has, exactly: a folder named otherwise (<c>Templates</c>) is not read on any system.</summary>
     public const string FolderName = "templates";
+
+    /// <summary>The singular a template folder is easily given, which the scan warns of when the folder holds schema files.</summary>
+    private const string SingularName = "template";
 
     /// <summary>The largest file read as a template. The largest published OSDU schema, bundled, is well under a megabyte.</summary>
     public const int MaxFileBytes = 8 * 1024 * 1024;
@@ -136,7 +139,8 @@ public static class TemplateFolders
                     // so the scan goes on looking inside it as a document's walk would.
                     folders.Add(Read(child, Shown));
                 }
-                else if (string.Equals(name, FolderName, StringComparison.OrdinalIgnoreCase))
+                else if (string.Equals(name, FolderName, StringComparison.OrdinalIgnoreCase)
+                    || (string.Equals(name, SingularName, StringComparison.OrdinalIgnoreCase) && HoldsJson(child)))
                 {
                     warnings.Add($"{Shown(child)} is named '{name}', and a template folder is named '{FolderName}' exactly, so no document reads the templates in it.");
                 }
@@ -264,6 +268,22 @@ public static class TemplateFolders
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var relative = Path.GetRelativePath(top, path).Replace('\\', '/');
         return relative == "." ? string.Empty : relative;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="directory"/> holds a <c>.json</c> file of its own: a folder named <c>template</c> is warned of
+    /// only then, so a folder of that name kept for something else is left alone.
+    /// </summary>
+    private static bool HoldsJson(string directory)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(directory, "*.json", OneLevel).Any();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Whether <paramref name="directory"/> holds a folder named exactly <see cref="FolderName"/>, not a link to one.</summary>

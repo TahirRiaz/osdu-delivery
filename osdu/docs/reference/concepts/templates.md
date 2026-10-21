@@ -153,8 +153,8 @@ consequences follow.
 
 ## Template folders
 
-A template folder is a folder named exactly `templates` (lower case, on every system: a folder named `Templates` is not
-read, and the sync warns of it), anywhere in a repository; a repository holds as many as its projects need. Its template
+A template folder is a folder named exactly `templates` (lower case, on every system: a folder named `Templates`, or
+`template` holding `.json` files, is not read, and the sync warns of it), anywhere in a repository; a repository holds as many as its projects need. Its template
 files are the `.json` files in it and in the folders under it, except:
 
 - a folder named `templates` inside it, which is a template folder of its own;
