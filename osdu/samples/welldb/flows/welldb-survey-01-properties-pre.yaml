@@ -1,0 +1,41 @@
+# Pre-ingestion: the well database's survey station property files into the pre layer.
+#
+# The second file of a survey: one row per property its stations carry (MD, INC, AZI), with the code of the
+# TrajectoryStationPropertyType record the property is and the unit it is written in. It lands whatever CSV files are
+# under ../data/survey-properties into [pre].[WellboreTrajectoryStation] as raw text, then refreshes the typed view
+# [pre].[v_WellboreTrajectoryStation] that the ingestion flow beside it reads. The station values themselves stay in the
+# payload files under ../data/stations.
+name: welldb-survey-01-properties-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/survey-properties
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: WellboreTrajectoryStation
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: survey_id, type: varchar(50) }
+    - { name: station_ordinal, type: int }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-master

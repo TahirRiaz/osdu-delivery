@@ -1,0 +1,32 @@
+# Ingestion: the typed survey header view into the keyed ingestion table the trajectories interface of
+# welldb-survey-03-delivery reads.
+#
+# One row per survey of the well database (source_project, survey_id), with SQLFlow's own system columns saying when the
+# row last changed and which file it came from, so every delivered record traces back to FileName_DW and RowNumber_DW.
+flowType: ing
+name: welldb-survey-02-header-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_WellboreTrajectory
+
+target:
+  server: osduData
+  object: OsduData.silver.WellboreTrajectory
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_project, survey_id]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-master

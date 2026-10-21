@@ -10,7 +10,7 @@
 # anything is sent (osdu/docs/reference/flow/mapping.md, When a mapping changes).
 documentType: mapping
 name: WellboreTrajectory
-version: 1.3.0
+version: 1.0.0
 template:
   kind: osdu:wks:work-product-component--WellboreTrajectory:1.3.0
   version: bfbc5973bbdeb7ec

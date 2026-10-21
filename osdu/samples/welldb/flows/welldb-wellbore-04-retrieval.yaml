@@ -6,12 +6,13 @@
 # wellbore kind the wellbore delivery writes, so lineage orders it after that delivery.
 #
 # The lake below is the well database's; point target.location at a storage account the node's Azure credential can
-# write (or an absolute local folder) before its first run. It joins no schedule, so it runs when asked, from the
-# Pipelines page or with
+# write (or an absolute local folder) before its first run. It joins no schedule and runs when asked (mode: manual), from
+# the Pipelines page or with
 #   sqlflow run welldb-wellbore-04-retrieval.yaml --operation plan
 flowType: retrieval
 name: welldb-wellbore-04-retrieval
 batch: welldb
+mode: manual
 description: The wellbores the well database delivered, read back from OSDU's storage into the lake.
 
 parameters:

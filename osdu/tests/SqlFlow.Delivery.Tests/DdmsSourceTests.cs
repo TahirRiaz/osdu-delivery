@@ -83,7 +83,7 @@ public sealed class DdmsSourceTests : IDisposable
                 datasets:
                   stations: { object: OsduData.silver.WellboreTrajectoryStation, join: { source_project: source_project, survey_id: survey_id }, orderBy: [station_ordinal] }
                 bulk: { root: '{{root}}/stations', locationColumn: station_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
-                mapping: WellboreTrajectory@1.3.0
+                mapping: WellboreTrajectory@1.0.0
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:

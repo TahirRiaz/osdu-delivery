@@ -1,0 +1,55 @@
+{
+  "acl": {
+    "owners": [
+      "data.welldb.owners@dev.dataservices.energy"
+    ],
+    "viewers": [
+      "data.welldb.viewers@dev.dataservices.energy"
+    ]
+  },
+  "data": {
+    "AvailableTrajectoryStationProperties": [
+      {
+        "Name": "MD",
+        "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:m:",
+        "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:MD:"
+      },
+      {
+        "Name": "INC",
+        "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:dega:",
+        "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:Inclination:"
+      },
+      {
+        "Name": "AZI",
+        "StationPropertyUnitID": "dev:reference-data--UnitOfMeasure:dega:",
+        "TrajectoryStationPropertyTypeID": "dev:reference-data--TrajectoryStationPropertyType:AzimuthTN:"
+      }
+    ],
+    "BaseDepthMeasuredDepth": 1830,
+    "Name": "Definitive survey",
+    "SurveyReferenceIdentifier": "SRV-0003/1",
+    "SurveyType": "Definitive",
+    "SurveyVersion": "1",
+    "TopDepthMeasuredDepth": 0,
+    "VerticalMeasurement": {
+      "VerticalMeasurement": 27.7,
+      "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:",
+      "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:"
+    },
+    "WellboreID": "dev:master-data--Wellbore:Wellbore-B-2-A:"
+  },
+  "id": "dev:work-product-component--WellboreTrajectory:783b2c29ec7d5a8eb48f44f5f45c588e",
+  "kind": "osdu:wks:work-product-component--WellboreTrajectory:1.3.0",
+  "legal": {
+    "legaltags": [
+      "dev-osdu-default-legal"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "tags": {
+    "DeliveredBy": "osdu-delivery",
+    "SourceProject": "PROJECT_A"
+  }
+}

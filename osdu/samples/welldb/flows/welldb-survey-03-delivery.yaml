@@ -1,0 +1,107 @@
+# Flow: welldb-survey-03-delivery
+#
+# Delivers what the well database records along each wellbore, one interface per kind (osdu/docs/reference/flow/
+# interfaces.md): the directional surveys, as WellboreTrajectory 1.3.0 records whose stations the wellbore DDMS keeps, and
+# the formation tops, as WellboreMarkerSet 1.2.1 records whose markers travel in the record. Each interface keeps a ledger,
+# a submission history and a watermark of its own, and the route each takes follows from what it declares: the surveys
+# declare bulk, so they go to the wellbore DDMS (the record, then its stations as bulk data in a session); the marker sets
+# declare none, so they go through the storage service.
+#
+# Both search for the wellbore they belong to by name, so lineage runs this source after welldb-wellbore-03-delivery in
+# the master data schedule; their references to units, station property types and the vertical measurement type are
+# checked against the partition's cache, which welldb-ref-03-delivery fills as it delivers.
+flowType: delivery
+name: welldb-survey-03-delivery
+batch: welldb
+
+partitions:
+  - name: dev
+
+source:
+  connection: ${env:OSDU_DATA_DB}
+  # When the well database last changed the survey or the set: a row modified after the version the ledger holds goes
+  # through render and the hash check again.
+  lastModified: update_date
+  work: ../.work/survey
+
+# Before the run renders, the unit tables both mappings translate through are read again from the ingestion tables their
+# cache flow reads, so a spelling the data team added since the last refresh is in the cache.
+cache:
+  before: [UnitAlias, DepthUnitAlias]
+
+interfaces:
+  trajectories:
+    description: >-
+      One work-product-component--WellboreTrajectory record per survey, the stations streamed to the wellbore DDMS as
+      bulk data, one column per property the survey lists.
+    record:
+      object: OsduData.silver.WellboreTrajectory
+      key: [source_project, survey_id]
+      primaryKey: RecId
+    # The properties the survey's stations carry, which the record lists and the DDMS checks the bulk columns against.
+    datasets:
+      stations:
+        object: OsduData.silver.WellboreTrajectoryStation
+        join:
+          source_project: source_project
+          survey_id: survey_id
+        orderBy: [station_ordinal]
+    # The stations stay where the export wrote them; the survey's row says which folder, and the hash of what it holds.
+    bulk:
+      root: ../data/stations
+      locationColumn: station_folder
+      pattern: "chunk_*.parquet"
+      hashColumn: payload_hash
+      chunkCountColumn: chunk_count
+    mapping: WellboreTrajectory@1.3.0
+    change:
+      payloadDetect: contentHash
+
+  markersets:
+    description: >-
+      One work-product-component--WellboreMarkerSet record per set of formation tops, each top a marker with the measured
+      depth it was picked at.
+    record:
+      object: OsduData.silver.WellboreMarkerSet
+      key: [source_project, marker_set_id]
+      primaryKey: RecId
+    datasets:
+      markers:
+        object: OsduData.silver.WellboreMarker
+        join:
+          source_project: source_project
+          marker_set_id: marker_set_id
+        orderBy: [marker_ordinal]
+    mapping: WellboreMarkerSet@1.2.1
+
+change:
+  detect: renderedHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  # Where the wellbore DDMS is under the platform's endpoint, as welldb-welllog-03-header-delivery names it: the
+  # trajectories interface, which declares bulk, goes to the DDMS serving its entity type.
+  ddms:
+    wellbore:
+      root: /api/os-wellbore-ddms
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+schedule: welldb-master
+
+verify:
+  reconcile: false

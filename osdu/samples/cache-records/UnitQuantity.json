@@ -13,6 +13,7 @@
     { "id": "dev:reference-data--UnitQuantity:length", "Code": "length", "Name": "length", "ID": "length" },
     { "id": "dev:reference-data--UnitQuantity:mass%20per%20volume", "Code": "mass per volume", "Name": "mass per volume", "ID": "mass per volume" },
     { "id": "dev:reference-data--UnitQuantity:none", "Code": "none", "Name": "non-dimensional", "ID": "none" },
+    { "id": "dev:reference-data--UnitQuantity:plane%20angle", "Code": "plane angle", "Name": "plane angle", "ID": "plane angle" },
     { "id": "dev:reference-data--UnitQuantity:time%20per%20length", "Code": "time per length", "Name": "time per length", "ID": "time per length" }
   ]
 }

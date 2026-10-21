@@ -207,12 +207,14 @@ export const TEMPLATES = [
   { kind: "osdu:wks:reference-data--WellLogSamplingDomainType:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--WellLogSamplingDomainType_1.0.0.json"), version: "e05745bb62213c7a" },
   { kind: "osdu:wks:reference-data--TechnicalAssuranceType:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--TechnicalAssuranceType_1.0.0.json"), version: "9687cd156c86735a" },
   { kind: "osdu:wks:reference-data--VerticalMeasurementType:1.0.3", file: join("samples", "templates", "osdu_wks_reference-data--VerticalMeasurementType_1.0.3.json"), version: "29e50d85666ca947" },
+  { kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:1.0.0", file: join("samples", "templates", "osdu_wks_reference-data--TrajectoryStationPropertyType_1.0.0.json"), version: "84ae5a46853e48e9" },
+  { kind: "osdu:wks:work-product-component--WellboreMarkerSet:1.2.1", file: join("samples", "templates", "osdu_wks_work-product-component--WellboreMarkerSet_1.2.1.json"), version: "ec9ad4f8f4e6e713" },
   { kind: "osdu:wks:work-product-component--Document:1.0.0", file: join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "templates", "osdu_wks_work-product-component--Document_1.0.0.json"), version: "5c6898ebc6775f6e" },
-  { kind: "osdu:wks:work-product-component--WellboreTrajectory:1.3.0", file: join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "templates", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"), version: "bfbc5973bbdeb7ec" },
+  { kind: "osdu:wks:work-product-component--WellboreTrajectory:1.3.0", file: join("samples", "templates", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"), version: "bfbc5973bbdeb7ec" },
 ] as const;
 
 /** The fixture mappings the wellbore flows and the interfaces source pin, copied beside the sample's WellLog mapping. */
-export const FIXTURE_MAPPINGS = ["Wellbore@1.0.0", "Document@1.0.0", "WellboreTrajectory@1.3.0"] as const;
+export const FIXTURE_MAPPINGS = ["Wellbore@1.0.0", "Document@1.0.0", "WellboreTrajectory@1.0.0"] as const;
 
 /** The flows of the estate taken from the fixture documents rather than the sample: synced and read, never run. */
 export const FIXTURE_FLOWS = [

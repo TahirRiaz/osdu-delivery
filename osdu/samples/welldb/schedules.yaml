@@ -25,7 +25,7 @@ schedules:
     timezone: UTC
 
   # After the reference data: the wells, then the wellbores, which search for their wells by name; then the wells are
-  # tested as OSDU holds them.
+  # tested as OSDU holds them, and each wellbore's survey and formation tops are delivered, found by its name.
   welldb-master:
     after: welldb-reference
 

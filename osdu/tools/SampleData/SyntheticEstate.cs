@@ -4,8 +4,9 @@ using SqlFlow.Delivery.Tests;
 namespace SqlFlow.Delivery.Tools.SampleData;
 
 /// <summary>
-/// The sample estate's data, made up: a handful of well logs with their curve grids, and the lookup tables the sample
-/// mapping translates their values through. Nothing here comes from a real well, a real company or a real database; every
+/// The sample estate's data, made up: a handful of well logs with their curve grids, the wells and wellbores they are
+/// logged in with each wellbore's directional survey and formation tops, and the lookup tables the sample mapping
+/// translates their values through. Nothing here comes from a real well, a real company or a real database; every
 /// value is generated from a seed, so the same seed always gives the same logs, byte for byte, and the suites can check
 /// that the committed files are exactly what the generator writes (SampleDataGeneratorTests).
 /// <para>The logs keep the shape the sample flows read and the relationships the suites rely on. The first log is a full
@@ -319,6 +320,163 @@ public static class SyntheticEstate
         ArgumentOutOfRangeException.ThrowIfNegative(index);
         return string.Create(CultureInfo.InvariantCulture, $"LOG-{index + 1:D4}/1");
     }
+
+    /// <summary>
+    /// The properties every sample survey's stations carry, as the well database's survey metadata names them: the column
+    /// in the payload file, the code of the TrajectoryStationPropertyType record it is, and the unit as the well database
+    /// writes it. The measured depth comes first, as the DDMS reads it as the reference the survey's top and base agree on.
+    /// </summary>
+    public static IReadOnlyList<SampleStationProperty> StationProperties { get; } =
+    [
+        new("MD", "MD", "M"),
+        new("INC", "Inclination", "DEG"),
+        new("AZI", "AzimuthTN", "DEG"),
+    ];
+
+    /// <summary>How far apart a survey's stations are along the hole, in metres: a station every hundred feet or so.</summary>
+    public const double StationInterval = 30;
+
+    /// <summary>The formation tops the well database picks, shallowest first; a marker set takes the first three or four.</summary>
+    private static readonly string[] Tops = ["Top Alder", "Top Birch", "Top Cedar", "Top Dogwood"];
+
+    /// <summary>The id of the survey of the wellbore of the log at <paramref name="index"/>, written as a log id is.</summary>
+    public static string SurveyId(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        return string.Create(CultureInfo.InvariantCulture, $"SRV-{index + 1:D4}/1");
+    }
+
+    /// <summary>The id of the marker set of the wellbore of the log at <paramref name="index"/>.</summary>
+    public static string MarkerSetId(int index)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        return string.Create(CultureInfo.InvariantCulture, $"MKS-{index + 1:D4}/1");
+    }
+
+    /// <summary>
+    /// The directional surveys of the wellbores the first <paramref name="count"/> logs of <paramref name="seed"/> are
+    /// logged in: one per wellbore, in the order a well database lists them (by wellbore). Each survey runs from the
+    /// surface to the first station at or below the deepest point its wellbore's log reaches, a station every
+    /// <see cref="StationInterval"/> metres: straight down to a kick-off point, then building angle at a steady rate to a
+    /// tangent it holds, the azimuth drifting a little from station to station. A survey's values depend on the seed and
+    /// its wellbore's place alone, so asking for more logs leaves the earlier surveys as they were.
+    /// </summary>
+    public static IReadOnlyList<SampleSurvey> Surveys(int count, ulong seed)
+    {
+        if (count is < 1 or > MaxLogs)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"A sample estate holds between 1 and {MaxLogs} logs.");
+        }
+
+        var surveys = new List<SampleSurvey>(count);
+        for (var index = 0; index < count; index++)
+        {
+            surveys.Add(Survey(index, seed));
+        }
+
+        return [.. surveys.OrderBy(s => s.WellboreUwi, StringComparer.Ordinal)];
+    }
+
+    /// <summary>
+    /// The formation tops the well database picked in the wellbores the first <paramref name="count"/> logs of
+    /// <paramref name="seed"/> are logged in: one marker set per wellbore, three or four tops each, every top deeper than the
+    /// one above it and above the wellbore's total depth.
+    /// </summary>
+    public static IReadOnlyList<SampleMarkerSet> MarkerSets(int count, ulong seed)
+    {
+        if (count is < 1 or > MaxLogs)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"A sample estate holds between 1 and {MaxLogs} logs.");
+        }
+
+        var sets = new List<SampleMarkerSet>(count);
+        for (var index = 0; index < count; index++)
+        {
+            sets.Add(MarkerSet(index, seed));
+        }
+
+        return [.. sets.OrderBy(s => s.WellboreUwi, StringComparer.Ordinal)];
+    }
+
+    /// <summary>
+    /// Writes the surveys and marker sets of the first <paramref name="count"/> logs' wellbores under
+    /// <paramref name="dataRoot"/>, named for <paramref name="date"/> (yyyyMMdd).
+    /// </summary>
+    public static Task WriteSurveysAsync(string dataRoot, int count, ulong seed, string date, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(date);
+        return SampleSurveys.WriteAsync(dataRoot, Surveys(count, seed), MarkerSets(count, seed), date, ct);
+    }
+
+    private static SampleSurvey Survey(int index, ulong seed)
+    {
+        // Each survey draws from a stream of its own, apart from its wellbore's log's, so the log's values stay as they were.
+        var random = new SplitMix64(seed ^ (0xD1B54A32D192ED03UL * (ulong)(index + 1)));
+        var log = WellLog(index, seed);
+        var (well, _, _) = WellboreOf(index);
+        var (elevation, updated) = WellFacts(well, seed);
+
+        var stations = (int)Math.Ceiling(log.IndexMax / StationInterval) + 1;
+        var kickoff = StationInterval * Math.Round(random.Between(10, 30));
+        var buildPerStation = random.Between(1.5, 3.0);
+        var tangent = random.Between(25, 55);
+        var azimuth = random.Between(0, 360);
+        var rows = new List<IReadOnlyList<double>>(stations);
+        for (var i = 0; i < stations; i++)
+        {
+            var md = i * StationInterval;
+            if (i == 0)
+            {
+                // The surface station: the survey's tie-on, straight down.
+                rows.Add([md, 0, 0]);
+            }
+            else if (md <= kickoff)
+            {
+                // A vertical hole wanders a fraction of a degree, its azimuth anywhere.
+                rows.Add([md, Angle(Math.Min(Math.Abs(0.25 * random.Normal()), 1)), Azimuth(random.Between(0, 360))]);
+            }
+            else
+            {
+                var inclination = Math.Clamp(Math.Min(tangent, (md - kickoff) / StationInterval * buildPerStation) + (0.15 * random.Normal()), 0, 90);
+                azimuth = (azimuth + (0.4 * random.Normal()) + 360) % 360;
+                rows.Add([md, Angle(inclination), Azimuth(azimuth)]);
+            }
+        }
+
+        return new SampleSurvey(
+            Project, SurveyId(index), "Definitive survey", "Definitive", "1", WellboreName(index),
+            elevation.ToString("0.0", CultureInfo.InvariantCulture) + " M", updated, StationProperties, rows);
+    }
+
+    private static SampleMarkerSet MarkerSet(int index, ulong seed)
+    {
+        var random = new SplitMix64(seed ^ (0x8CB92BA72F3D8DD7UL * (ulong)(index + 1)));
+        var log = WellLog(index, seed);
+        var (well, _, _) = WellboreOf(index);
+        var (elevation, updated) = WellFacts(well, seed);
+
+        // The tops sit in the lower two thirds of the hole, each a little deeper than the one above it.
+        var total = Math.Ceiling(log.IndexMax / StationInterval) * StationInterval;
+        var picks = random.Between(0, 1) < 0.5 ? 3 : 4;
+        var depth = total * random.Between(0.3, 0.45);
+        var markers = new List<SampleMarker>(picks);
+        for (var i = 0; i < picks; i++)
+        {
+            markers.Add(new SampleMarker(Tops[i], Math.Round(depth, 1, MidpointRounding.AwayFromZero)));
+            depth += total * random.Between(0.08, 0.14);
+        }
+
+        return new SampleMarkerSet(
+            Project, MarkerSetId(index), "WellDB formation tops", WellboreName(index),
+            elevation.ToString("0.0", CultureInfo.InvariantCulture) + " M", updated, markers);
+    }
+
+    /// <summary>An angle as a survey export writes it: degrees, to two decimals.</summary>
+    private static double Angle(double degrees) => Math.Round(degrees, 2, MidpointRounding.AwayFromZero);
+
+    /// <summary>An azimuth as a survey export writes it: an angle from 0 up to, but not including, 360 degrees.</summary>
+    private static double Azimuth(double degrees) => Angle(degrees) % 360;
 
     private static string LookupFile(string root, string folder, string stem, string date) => Path.Combine(root, folder, $"{stem}_{date}.csv");
 

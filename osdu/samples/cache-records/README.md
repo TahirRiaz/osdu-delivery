@@ -21,10 +21,10 @@ and the well database's own curve types (`WellDB:GR`, named as OSDU names a comp
 writes these files from the reference data, and the suites check that they are exactly what it writes. Each id is the
 one the reference delivery gives the value: its code, as `dataset.idFrom: key` writes it.
 
-The well log and well mappings check each id they build against these records, as they check it against the
-partition's own once the reference flow has refreshed. The suites import them as that flow's capture, and so does the
-control plane suite's mapping builder test, which seeds a partition's cache from them. The suites' fixture mappings and
-the GUI end-to-end suite's seed step import records of their own instead
+The well, well log, trajectory and marker set mappings check each id they build against these records, as they check it
+against the partition's own once the reference flow has refreshed. The suites import them as that flow's capture, and so
+does the control plane suite's mapping builder test, which seeds a partition's cache from them. The suites' fixture
+mappings and the GUI end-to-end suite's seed step import records of their own instead
 (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/cache-records`), exactly what their cache flow
 (`Fixtures/documents/cache/fixtures-osdu-00-reference-cache.yaml`) declares.
 

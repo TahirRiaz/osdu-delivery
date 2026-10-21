@@ -1,0 +1,40 @@
+# Pre-ingestion: the well database's marker set files into the pre layer.
+#
+# The first flow of the chain the markersets interface of welldb-survey-03-delivery reads. It lands whatever CSV files
+# are under ../data/marker-set into [pre].[WellboreMarkerSet] as raw text, then refreshes the typed view
+# [pre].[v_WellboreMarkerSet] that the ingestion flow beside it reads. The files hold one row per set of formation tops
+# the well database picked in a wellbore; the sample's are made up by osdu/tools/SampleData.
+name: welldb-markerset-01-header-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/marker-set
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: WellboreMarkerSet
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: marker_set_id, type: varchar(50) }
+    - { name: update_date, type: datetime2 }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-master

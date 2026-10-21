@@ -1,0 +1,4 @@
+code,name,description,attribution_authority,attribution_publication,attribution_revision,source,commit_date,unit_quantity
+AzimuthTN,Azimuth True North,True North hole azimuth. Corrected to True North azimuth reference.,,,,Workbook ReferenceValues/Published/TrajectoryStationPropertyType.1.xlsx; commit SHA e3ae7f79.,2024-07-04T12:33:51+00:00,plane angle
+Inclination,Inclination,"Hole inclination, measured from vertical.",,,,Workbook ReferenceValues/Published/TrajectoryStationPropertyType.1.xlsx; commit SHA e3ae7f79.,2024-07-04T12:33:51+00:00,plane angle
+MD,Measured Depth,Measured depth along the wellbore with zero reference point given by WellboreTrajectory data.VerticalMeasurement.,,,,Workbook ReferenceValues/Published/TrajectoryStationPropertyType.1.xlsx; commit SHA e3ae7f79.,2024-07-04T12:33:51+00:00,length

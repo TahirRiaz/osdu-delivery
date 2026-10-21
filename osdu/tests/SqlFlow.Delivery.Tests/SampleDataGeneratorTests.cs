@@ -9,8 +9,9 @@ namespace SqlFlow.Delivery.Tests;
 /// The sample estate's data against the generator that writes it (osdu/tools/SampleData): the committed files are exactly
 /// what the generator writes with its default seed, so none of them is edited by hand or copied from a real source; the
 /// generator gives the same logs for the same seed and the earlier logs unchanged when asked for more; and the data keeps
-/// the relationships the sample mapping and the suites rely on (every unit spelling translated, every code the curve
-/// dictionary gives held by the sample reference data, values within each curve type's physical range).
+/// the relationships the sample mappings and the suites rely on (every unit spelling translated, every code the curve
+/// dictionary and the surveys give held by the sample reference data, values within each curve type's physical range,
+/// every survey and set of tops in a wellbore the sample delivers and no deeper than its survey reaches).
 /// </summary>
 public sealed class SampleDataGeneratorTests
 {
@@ -78,6 +79,82 @@ public sealed class SampleDataGeneratorTests
     }
 
     [Fact]
+    public async Task The_committed_surveys_and_marker_sets_are_what_the_generator_writes_with_its_default_seed()
+    {
+        var root = Samples.NewTempDirectory();
+        try
+        {
+            await SyntheticEstate.WriteSurveysAsync(root, SyntheticEstate.DefaultLogs, SyntheticEstate.DefaultSeed, "20260924");
+            foreach (var folder in new[] { SampleSurveys.SurveyFolder, SampleSurveys.PropertyFolder, SampleSurveys.MarkerSetFolder, SampleSurveys.MarkerFolder })
+            {
+                var written = Directory.GetFiles(Path.Combine(root, folder), "*.csv").Single();
+                var committed = Directory.GetFiles(Path.Combine(Samples.Data, folder), "*.csv").Single();
+                Assert.Equal(Path.GetFileName(written), Path.GetFileName(committed));
+                Assert.Equal(
+                    (await File.ReadAllTextAsync(written)).ReplaceLineEndings("\n"),
+                    (await File.ReadAllTextAsync(committed)).ReplaceLineEndings("\n"));
+            }
+
+            // The stations are compared as read back: a payload file names the library that wrote it, which an upgrade
+            // changes without changing a value.
+            var generated = await SampleSurveys.LoadSurveysAsync(root);
+            var surveys = SampleSurveys.Surveys();
+            Assert.Equal(generated.Count, surveys.Count);
+            Assert.All(generated.Zip(surveys), pair => Assert.Equal(pair.First.Stations, pair.Second.Stations));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Every_survey_and_set_of_tops_is_in_a_wellbore_of_the_sample_and_runs_no_deeper_than_its_survey()
+    {
+        var wells = Single(Path.Combine(Samples.Data, SyntheticEstate.WellFolder)).ToDictionary(r => r["well_name"]!, StringComparer.Ordinal);
+        var wellbores = Single(Path.Combine(Samples.Data, SyntheticEstate.WellboreFolder)).ToDictionary(r => r["wellbore_name"]!, StringComparer.Ordinal);
+        var logs = SampleWellLogs.Logs().ToDictionary(l => l.WellboreUwi, StringComparer.Ordinal);
+        var surveys = SampleSurveys.Surveys();
+        var sets = SampleSurveys.MarkerSets();
+
+        // One survey and one set of tops per wellbore, measured from where the wellbore's well is.
+        Assert.Equal(wellbores.Keys.Order(StringComparer.Ordinal), surveys.Select(s => s.WellboreUwi));
+        Assert.Equal(wellbores.Keys.Order(StringComparer.Ordinal), sets.Select(s => s.WellboreUwi));
+        foreach (var survey in surveys)
+        {
+            var well = wells[wellbores[survey.WellboreUwi]["well_name"]!];
+            Assert.Equal($"{well["elevation"]} {well["elevation_unit"]}", survey.ElevMeasRef);
+
+            // From the surface, a station every interval, to the first station at or below the deepest point the log reaches.
+            Assert.Equal(0, survey.TopMd);
+            Assert.All(survey.Stations.Select((station, i) => (station, i)), s => Assert.Equal(s.i * SyntheticEstate.StationInterval, s.station[0]));
+            Assert.InRange(survey.BaseMd - logs[survey.WellboreUwi].IndexMax, 0, SyntheticEstate.StationInterval - 0.0001);
+
+            // Every station holds an inclination of a hole and an azimuth below a full turn.
+            Assert.All(survey.Stations, station => Assert.InRange(station[1], 0, 90));
+            Assert.All(survey.Stations, station => Assert.InRange(station[2], 0, 359.99));
+        }
+
+        foreach (var set in sets)
+        {
+            var survey = surveys.Single(s => s.WellboreUwi == set.WellboreUwi);
+            Assert.Equal(survey.ElevMeasRef, set.ElevMeasRef);
+            Assert.InRange(set.Markers.Count, 3, 4);
+            Assert.All(set.Markers.Zip(set.Markers.Skip(1)), pair => Assert.True(pair.First.MeasuredDepth < pair.Second.MeasuredDepth, $"{set.MarkerSetId}: {pair.Second.Name} lies below {pair.First.Name}"));
+            Assert.All(set.Markers, marker => Assert.InRange(marker.MeasuredDepth, 0.1, survey.BaseMd));
+        }
+
+        // Every property a survey lists is a station property type the reference data holds, in a unit the unit table spells.
+        var propertyTypes = Single(Path.Combine(ReferenceData, "trajectory-station-property-type")).Select(r => r["code"]!).ToHashSet(StringComparer.Ordinal);
+        var spellings = SyntheticEstate.UnitAliasRows().Select(r => r["source_unit"]!).ToHashSet(StringComparer.Ordinal);
+        Assert.All(surveys.SelectMany(s => s.Properties), property =>
+        {
+            Assert.Contains(property.PropertyType, propertyTypes);
+            Assert.Contains(property.Unit, spellings);
+        });
+    }
+
+    [Fact]
     public void Every_log_names_a_wellbore_of_the_sample_and_every_wellbore_a_well_measured_from_where_its_logs_are()
     {
         var wells = Single(Path.Combine(Samples.Data, SyntheticEstate.WellFolder)).ToDictionary(r => r["well_name"]!, StringComparer.Ordinal);
@@ -128,9 +205,9 @@ public sealed class SampleDataGeneratorTests
 
         Assert.Equal(Column(SyntheticEstate.CurveDictionaryRows(), "log_curve_type_id"), Column(codes["LogCurveType"], "code"));
 
-        // The unit quantities are the ones the units, families and curve types are measured in, so each of those
-        // references names a record the sample delivers.
-        var quantities = codes["UnitOfMeasure"].Concat(codes["LogCurveFamily"]).Concat(codes["LogCurveType"]);
+        // The unit quantities are the ones the units, families, station property types and curve types are measured in,
+        // so each of those references names a record the sample delivers.
+        var quantities = codes["UnitOfMeasure"].Concat(codes["LogCurveFamily"]).Concat(codes["TrajectoryStationPropertyType"]).Concat(codes["LogCurveType"]);
         Assert.Equal(Column(quantities, "unit_quantity"), Column(codes["UnitQuantity"], "code"));
 
         // Every code is one OSDU's ids carry as the record's key: no value of a kind is written twice.

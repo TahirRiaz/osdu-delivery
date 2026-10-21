@@ -404,7 +404,7 @@ public static class SampleWellLogs
         return (index.Select(d => d!.Value).ToList(), columns.ToDictionary(c => c.Key, c => (IReadOnlyList<double?>)c.Value, StringComparer.Ordinal));
     }
 
-    private static string SingleCsv(string folder)
+    internal static string SingleCsv(string folder)
     {
         var files = Directory.GetFiles(folder, "*.csv");
         return files.Length == 1
@@ -412,10 +412,10 @@ public static class SampleWellLogs
             : throw new InvalidDataException($"{folder} holds {files.Length} CSV files; the sample holds exactly one.");
     }
 
-    private static string Text(IReadOnlyDictionary<string, string?> row, string column)
+    internal static string Text(IReadOnlyDictionary<string, string?> row, string column)
         => row.TryGetValue(column, out var value) && value is not null ? value : throw new InvalidDataException($"The sample row has no '{column}'.");
 
-    private static double Double(IReadOnlyDictionary<string, string?> row, string column)
+    internal static double Double(IReadOnlyDictionary<string, string?> row, string column)
         => double.Parse(Text(row, column), NumberStyles.Float, CultureInfo.InvariantCulture);
 
     private static List<List<string>> ParseCsv(string text)
@@ -483,9 +483,9 @@ public static class SampleWellLogs
         return records;
     }
 
-    private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+    internal static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
-    private static string Moment(DateTime utc) => utc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+    internal static string Moment(DateTime utc) => utc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
     private static string Escape(string? value)
     {

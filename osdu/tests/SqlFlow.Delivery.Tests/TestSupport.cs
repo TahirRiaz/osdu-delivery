@@ -775,7 +775,6 @@ public static class Samples
         throw new InvalidOperationException("The render still asked the search something after ten rounds.");
     }
 
-    /// <summary>The sample schema of a kind, read from its bundled file, or from the fixture schemas for a kind the estate does not deliver.</summary>
     /// <summary>
     /// The kind of every bundled schema the sample estate and the fixtures keep, from its file name
     /// (<c>osdu_wks_master-data--Wellbore_1.3.0.json</c> is <c>osdu:wks:master-data--Wellbore:1.3.0</c>), in kind order: what a
@@ -795,6 +794,7 @@ public static class Samples
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)];
 
+    /// <summary>The sample schema of a kind, read from its bundled file, or from the fixture schemas for a kind the estate does not deliver.</summary>
     public static SchemaSnapshot SampleTemplate(string kind)
     {
         ArgumentNullException.ThrowIfNull(kind);
