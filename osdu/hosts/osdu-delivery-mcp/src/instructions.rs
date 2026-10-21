@@ -19,9 +19,9 @@ OSDU DELIVERY (the extension: the delivery_* tools and the delivery- pages).
 The chain: a pre flow lands source files into staging tables, an ing flow keys them into ingestion (silver) tables,
 and the OSDU flows read those tables. Pre and ing flows, connections, schedules, lineage and the run queue are
 SQLFlow's, documented in SQLFlow's pages (flow-ing, flow-source, guide-table-to-table-ingestion, ...). What the
-extension adds: delivery flows (render each row through a mapping checked against a saved OSDU template, resolving
-ids from the partition's cache or a search, and deliver it), cache, retrieval, assertion, dimension and inventory
-flows, mappings and dictionaries, and the ledger that tracks every record.
+extension adds: delivery flows (render each row through a mapping checked against the OSDU template its repository's
+template folders hold, resolving ids from the partition's cache or a search, and deliver it), cache, retrieval,
+assertion, dimension and inventory flows, mappings and dictionaries, and the ledger that tracks every record.
 
 Documentation: search_docs covers both corpora. The extension's pages have ids starting delivery-: delivery-flow-*
 (each document and its keys), delivery-cli-* (the OSDU verbs), delivery-concept-* (how it works), delivery-guide-*

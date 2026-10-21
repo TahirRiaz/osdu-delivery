@@ -28,8 +28,8 @@ OSDU's lineage as one release of the OSDU data definitions declares it: which re
 by whom it was built, and how much it holds. What each kind refers to is in [`osdu.SchemaLineageKind`](schema-lineage-kind.md).
 A release is built once and kept; building it again replaces its kinds under the same row. A kind the release lists that
 cannot be read is kept as a failure with why ([OSDU's lineage by release](../concepts/osdu-order.md#osdus-lineage-by-release)).
-The OSDU order reads a kind from the newest built release holding it when no template of the kind is saved. Not a ledger
-table: it has no `PartitionId`.
+The OSDU order reads a kind from the newest built release holding it when no template folder on the mapping's path holds
+the kind's template. Not a ledger table: it has no `PartitionId`.
 
 ## Columns
 
@@ -56,5 +56,5 @@ table: it has no `PartitionId`.
 
 - **Written** by `POST /api/v1/delivery/order/releases` and the Order page's **Releases** tab (`SchemaLineageStore.cs`).
 - **Read** by the OSDU order, `GET /api/v1/delivery/order/releases`, and the repository sync, which computes a
-  repository's lineage again when a release built after its mappings were synced holds a kind one of them fills with no
-  saved template (`DeliveryCatalogSync.cs`).
+  repository's lineage again when a release built after its mappings were synced holds a kind one of them fills that no
+  template folder on its path holds (`DeliveryCatalogSync.cs`).

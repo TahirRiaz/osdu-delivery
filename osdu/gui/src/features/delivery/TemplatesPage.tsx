@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ClipboardPaste, Cloud, Download, FileJson, Loader2, Trash2, type LucideIcon } from "lucide-react";
+import { ClipboardPaste, Cloud, Download, FileJson, FolderGit2, Loader2, Trash2, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -44,7 +44,16 @@ function originVisual(origin: string): { icon: LucideIcon; label: string } | nul
     return { icon: Cloud, label: "OSDU" };
   }
 
+  if (origin.startsWith("template folder ")) {
+    return { icon: FolderGit2, label: "Folder" };
+  }
+
   return origin === "pasted schema" ? { icon: ClipboardPaste, label: "Pasted" } : null;
+}
+
+/** The template folder files that hold a version, one per line, as a hover lists them. */
+function holdersText(template: DeliveryTemplate): string {
+  return template.heldBy.map((holder) => `${holder.repository}: ${holder.path}`).join("\n");
 }
 
 function OriginCell({ origin }: { origin: string }) {
@@ -83,6 +92,22 @@ const savedColumns: Column<DeliveryTemplate>[] = [
   },
   { id: "origin", header: "Origin", render: (row) => <OriginCell origin={row.origin} /> },
   {
+    id: "held",
+    header: "Held in",
+    align: "right",
+    // The repositories whose template folders hold the version, which their documents read it from; the files are on hover.
+    render: (row) => (
+      <span
+        className={cn("font-mono tabular-nums", row.heldBy.length === 0 && "text-muted-foreground")}
+        title={row.heldBy.length === 0 ? "No repository's template folder holds this version" : holdersText(row)}
+        data-testid="templates-saved-held"
+      >
+        {row.heldBy.length}
+        <span className="@max-3xl/table:sr-only">{` folder file${row.heldBy.length === 1 ? "" : "s"}`}</span>
+      </span>
+    ),
+  },
+  {
     id: "pinned",
     header: "Pinned by",
     align: "right",
@@ -96,10 +121,12 @@ const savedColumns: Column<DeliveryTemplate>[] = [
 ];
 
 /**
- * Templates: the OSDU record schemas the catalog holds as templates, which mappings pin. A saved version is its content
- * and never changes. New versions come from the OSDU data definitions (the Open Group's public repository of OSDU schemas)
- * or, for a schema of one's own, from a bundled schema file, and each is looked at, variable by variable, before it is saved.
- * A saved version downloads as that bundled file, for a repository to keep as a reference.
+ * Templates: the OSDU record schemas the catalog holds as templates, the library. A repository's documents read their
+ * templates from the repository's template folders, and every sync saves what those folders hold here, so each version
+ * says which folder files hold it; the library also holds what was saved here, from the OSDU data definitions (the Open
+ * Group's public repository of OSDU schemas) or, for a schema of one's own, from a bundled schema file, each looked at
+ * variable by variable before it is saved. A saved version is its content and never changes, and it downloads as the
+ * bundled file a template folder keeps.
  */
 export default function TemplatesPage() {
   const queryClient = useQueryClient();
@@ -154,8 +181,8 @@ export default function TemplatesPage() {
       void queryClient.invalidateQueries({ queryKey: ["delivery", "templates"] });
     },
     onError: (error) => {
-      // A 409 names the synced mappings that pinned the version since the sheet was read; the sheet keeps the problem in
-      // view, and reads the version again so Delete shows the pins that now hold it.
+      // A 409 names the template folder files or the synced mappings that took up the version since the sheet was read;
+      // the sheet keeps the problem in view, and reads the version again so Delete shows what now holds it.
       setDeleteOpen(false);
       toast.error(problemText(error));
       void queryClient.invalidateQueries({ queryKey: ["delivery", "templates"] });
@@ -187,19 +214,26 @@ export default function TemplatesPage() {
         </Button>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">
-        {`The bundled schema as ${templateFileName(selected.kind)}, for a repository to keep. Importing it saves this same version.`}
+        {`The bundled schema as ${templateFileName(selected.kind)}, for a repository's template folder, where its documents read it. Importing it saves this same version.`}
       </TooltipContent>
     </Tooltip>
   );
 
-  // A version a synced mapping pins cannot be deleted, so Delete is not offered for it; the API refuses it regardless.
+  // A version a repository's template folder holds, or a synced mapping fills, cannot be deleted, so Delete is not offered
+  // for it; the API refuses it regardless.
   const pinnedBy = detail.data?.saved?.pinnedBy ?? 0;
+  const heldBy = detail.data?.saved?.heldBy ?? [];
+  const deleteBlocked = heldBy.length > 0
+    ? `Held by ${heldBy.length} template folder file${heldBy.length === 1 ? "" : "s"} of synced repositories (${heldBy.map((h) => `${h.repository}: ${h.path}`).join(", ")}). Remove ${heldBy.length === 1 ? "it" : "them"} from the repository and sync it before deleting this version.`
+    : pinnedBy > 0
+      ? `Filled by ${pinnedBy} synced mapping${pinnedBy === 1 ? "" : "s"}. Move ${pinnedBy === 1 ? "it" : "them"} to another template version before deleting this one.`
+      : null;
   const deleteButton = (
     <Button
       variant="destructive-outline"
       size="xs"
       onClick={() => setDeleteOpen(true)}
-      disabled={remove.isPending || pinnedBy > 0}
+      disabled={remove.isPending || deleteBlocked !== null}
       data-testid="templates-delete"
     >
       <Trash2 />
@@ -222,7 +256,7 @@ export default function TemplatesPage() {
     <Page data-testid="page-delivery-templates">
       <PageHeader
         title="Templates"
-        subtitle="OSDU record schemas saved as templates. Every property becomes a variable a mapping can fill, and a saved version never changes."
+        subtitle="OSDU record schemas saved as templates: those the repositories' template folders hold, which their documents read, and those saved here. Every property becomes a variable a mapping can fill, and a saved version never changes."
       />
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList data-testid="templates-tabs">
@@ -280,15 +314,13 @@ export default function TemplatesPage() {
           <>
             {/* Anyone who can read a version can download it; deleting it is an author's action. */}
             {downloadButton}
-            {canAuthor && (pinnedBy > 0 ? (
+            {canAuthor && (deleteBlocked !== null ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   {/* A disabled button takes no pointer or focus, so the wrapper is what carries the reason. */}
                   <span tabIndex={0} className="inline-flex rounded-md" data-testid="templates-delete-blocked">{deleteButton}</span>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  {`Pinned by ${pinnedBy} synced mapping${pinnedBy === 1 ? "" : "s"}. Move ${pinnedBy === 1 ? "it" : "them"} to another template version before deleting this one.`}
-                </TooltipContent>
+                <TooltipContent className="max-w-xs">{deleteBlocked}</TooltipContent>
               </Tooltip>
             ) : deleteButton)}
           </>
@@ -301,7 +333,7 @@ export default function TemplatesPage() {
         title="Delete this template version"
         message={selected === null
           ? ""
-          : `Delete ${selected.kind} version ${selected.version}? No synced mapping pins it. A mapping that names it later has nothing to render against until the same schema is saved again.`}
+          : `Delete ${selected.kind} version ${selected.version}? No repository's template folder holds it and no synced mapping fills it. The builder and the explorer no longer offer it until the same schema is saved again.`}
         confirmLabel="Delete"
         danger
         busy={remove.isPending}

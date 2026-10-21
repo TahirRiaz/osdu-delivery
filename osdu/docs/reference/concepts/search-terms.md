@@ -234,16 +234,18 @@ words them:
 | `the cached type <Type> does not capture <field>` | a `$findBy` field, or the field read, is not captured |
 | `the mapping declares no search <Name>` | a `$search` naming no `searches:` entry |
 
-Whether a route can be compared is then decided against the saved [templates](templates.md), each time the terms are
-read: the property the route writes is compared as the template the mapping pins says the platform indexes it (text, a
-keyword, a number, a boolean or a date, inside a nested list through it), and for a lookup or a search, the properties
-the records are found by as the schema of those records says (the search's pinned schema, or the newest saved template
-of the cached type's kind). A template not saved makes the route not searchable:
+Whether a route can be compared is then decided against the [templates](templates.md) the mapping reads, as the
+template folders on its path held them at the repository's last sync, each time the terms are read: the property the
+route writes is compared as the template the mapping fills says the platform indexes it (text, a keyword, a number, a
+boolean or a date, inside a nested list through it), and for a lookup or a search, the properties the records are found
+by as the schema of those records says (the search's pinned schema, or the newest template the mapping reads of the
+cached type's kind). A template the mapping does not read makes the route not searchable:
 
-- `the template <kind> version <version> that <mapping> pins is not saved; save it on the Templates page`
-- `no saved template of <kind> says how its records are indexed; save one on the Templates page to search through <Type>`
+- `the template of <Name@version> cannot be read: ...`
+- `no template the mapping reads of <kind> says how its records are indexed; put one in a template folder on the mapping's path to search through <Type>`
 
-Saving the template makes the routes it describes searchable at the next read, with no sync.
+A template's file put in a folder on the mapping's path makes the routes it describes searchable once the repository is
+synced again.
 
 ### The conditions a route takes
 

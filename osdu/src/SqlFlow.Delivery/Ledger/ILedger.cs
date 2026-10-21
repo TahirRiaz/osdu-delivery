@@ -694,7 +694,17 @@ public sealed record RecordCompletion
 /// <param name="Yaml">Its text.</param>
 /// <param name="Valid">Whether the sync loaded it.</param>
 /// <param name="Message">Why the sync could not load it, when it could not.</param>
-public sealed record SyncedMapping(Guid Id, Guid RepoId, string Reference, string Kind, string RelativePath, string ContentHash, string Yaml, bool Valid, string? Message);
+/// <param name="TemplateVersion">The template version the sync settled it to, from the template folders on its path; empty when none.</param>
+public sealed record SyncedMapping(
+    Guid Id, Guid RepoId, string Reference, string Kind, string RelativePath, string ContentHash, string Yaml, bool Valid, string? Message, string TemplateVersion = "");
+
+/// <summary>A file of a repository's template folder as the last sync found it.</summary>
+/// <param name="Path">The file's path in the repository.</param>
+/// <param name="Folder">The template folder it is in, its path in the repository.</param>
+/// <param name="Kind">The kind its schema declares; empty when it holds no template.</param>
+/// <param name="Version">The template version it holds; empty when it holds none.</param>
+/// <param name="Problem">Why it holds no template; null when it holds one.</param>
+public sealed record SyncedTemplateFile(string Path, string Folder, string Kind, string Version, string? Problem);
 
 /// <summary>What a check of a record's document came to, as the record keeps it: the outcome, the problems, and when.</summary>
 /// <param name="Outcome">What the check against the schema came to (<see cref="Validation.ValidationOutcomes"/>).</param>
@@ -2279,6 +2289,12 @@ public interface ILedger
     /// declares it, at most <c>50</c>; empty when none is synced.
     /// </summary>
     Task<IReadOnlyList<SyncedMapping>> SyncedMappingsAsync(string reference, CancellationToken ct = default);
+
+    /// <summary>
+    /// The files of the template folders of repository <paramref name="repoId"/> as its last sync found them
+    /// (osdu/docs/reference/concepts/templates.md, Template folders), in path order; empty when it holds none.
+    /// </summary>
+    Task<IReadOnlyList<SyncedTemplateFile>> RepositoryTemplatesAsync(Guid repoId, CancellationToken ct = default);
 
     /// <summary>
     /// The records that hold <paramref name="targetId"/> as the id they are delivered to, in any flow of the partition of

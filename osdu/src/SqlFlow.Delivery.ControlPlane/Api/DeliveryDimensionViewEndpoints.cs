@@ -13,6 +13,7 @@ using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Catalog;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -133,7 +134,8 @@ public static class DeliveryDimensionViewEndpoints
         IReadOnlyList<DimensionViewJoinVerdict> joinChecks = [];
         if (pipeline is not null && declared is not null)
         {
-            joinChecks = await DimensionViewTemplates.CheckAsync(documents.ParseDimension(pipeline.Yaml, pipeline.RelativePath), declared, templates, ct).ConfigureAwait(false);
+            var folders = await SyncedTemplates.ReadAsync(ledger, pipeline.RepoId, templates, ct).ConfigureAwait(false);
+            joinChecks = await DimensionViewTemplates.CheckAsync(documents.ParseDimension(pipeline.Yaml, pipeline.RelativePath), declared, folders, ct).ConfigureAwait(false);
         }
         if (detail is null && declared is null)
         {
@@ -156,7 +158,7 @@ public static class DeliveryDimensionViewEndpoints
     /// what a person keeps or changes in the flow's YAML; nothing is written.
     /// </summary>
     private static async Task<Results<Ok<DeliveryDimensionViewSuggestionDto>, ProblemHttpResult>> SuggestAsync(
-        Guid pipelineId, string? from, CatalogDbContext db, DeliveryDocumentLoader documents, ITemplateStore templates, CancellationToken ct)
+        Guid pipelineId, string? from, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, ITemplateStore templates, CancellationToken ct)
     {
         var pipeline = await db.Pipelines.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pipelineId, ct).ConfigureAwait(false);
         if (pipeline is null)
@@ -189,7 +191,8 @@ public static class DeliveryDimensionViewEndpoints
             return Problem(StatusCodes.Status404NotFound, "Not found", $"Dimension flow '{flow.Name}' has no dimension named '{from.Trim()}'.");
         }
 
-        var joins = await DimensionViewTemplates.SuggestAsync(flow, dimension.Name, templates, ct).ConfigureAwait(false);
+        var folders = await SyncedTemplates.ReadAsync(ledger, pipeline.RepoId, templates, ct).ConfigureAwait(false);
+        var joins = await DimensionViewTemplates.SuggestAsync(flow, dimension.Name, folders, ct).ConfigureAwait(false);
         var yaml = joins.Count == 0
             ? "join: []"
             : "join:\n" + string.Join("\n", joins.Select(j => $"  - {{ on: {j.On}, to: {j.To}, as: {j.As} }}"));

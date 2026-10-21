@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Clock3, FileJson, Pin, Save, Tag, TriangleAlert, type LucideIcon } from "lucide-react";
+import { Clock3, FileJson, FolderGit2, Pin, Save, Tag, TriangleAlert, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -67,7 +67,8 @@ interface TemplateHeaderProps {
 
 /**
  * A template's header: its name, whether it is saved and the actions on it beside that, the kind it is, OSDU's description, and one
- * row of facts (the version, where it comes from, when and by whom it was saved, and what pins it).
+ * row of facts (the version, where it comes from, when and by whom it was saved, which repositories' template folders hold
+ * it, and how many synced mappings fill it).
  */
 export function TemplateHeader({ kind, detail, source, actions }: TemplateHeaderProps) {
   const saved = detail?.saved ?? null;
@@ -104,13 +105,27 @@ export function TemplateHeader({ kind, detail, source, actions }: TemplateHeader
               <span>Saved <RelativeTime value={saved.capturedUtc} /> by {saved.capturedBy}</span>
             </Fact>
           )}
-          <Fact icon={Pin} label="Pinned by">
+          {saved !== null && (
+            <Fact icon={FolderGit2} label="Held by" testId="templates-view-held">
+              <span
+                className="text-muted-foreground"
+                title={saved.heldBy.map((holder) => `${holder.repository}: ${holder.path}`).join("\n") || undefined}
+              >
+                {saved.heldBy.length === 0
+                  ? "No repository's template folder holds it"
+                  : saved.heldBy.length === 1
+                    ? `Held by ${saved.heldBy[0].path} in ${saved.heldBy[0].repository}`
+                    : `Held by ${saved.heldBy.length} template folder files of synced repositories`}
+              </span>
+            </Fact>
+          )}
+          <Fact icon={Pin} label="Filled by">
             <span className="text-muted-foreground">
               {saved === null
-                ? "Not saved, so no mapping can pin it yet"
+                ? "Not saved, so no synced mapping fills it yet"
                 : saved.pinnedBy === 0
-                  ? "No synced mapping pins it"
-                  : `Pinned by ${saved.pinnedBy} synced mapping${saved.pinnedBy === 1 ? "" : "s"}`}
+                  ? "No synced mapping fills it"
+                  : `Filled by ${saved.pinnedBy} synced mapping${saved.pinnedBy === 1 ? "" : "s"}`}
             </span>
           </Fact>
         </dl>

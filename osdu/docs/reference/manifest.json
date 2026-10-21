@@ -142,7 +142,7 @@
       "path": "cli/check.md",
       "title": "sqlflow check: the preflight of a delivery flow, its mapping, template and cache, without sending anything",
       "type": "cli-command",
-      "summary": "Check a delivery flow before it runs: the pinned mapping against its saved template and the partition cache it reads, the route, and with --connect its tables.",
+      "summary": "Check a delivery flow before it runs: the mapping against the template its folders hold and the cache it reads, the route, and with --connect its tables.",
       "keywords": [
         "check",
         "preflight",
@@ -719,11 +719,13 @@
       "id": "delivery-cli-template",
       "corpus": "reference",
       "path": "cli/template.md",
-      "title": "sqlflow template: save, list, show and delete the OSDU schemas a mapping pins",
+      "title": "sqlflow template: a repository's template folders, and the saved templates of the library",
       "type": "cli-command",
-      "summary": "Capture a kind's schema from the OSDU data definitions or import a schema file as a template, and list, show or delete saved templates.",
+      "summary": "Read a working copy's template folders, write a template into one from the OSDU data definitions or a file, and list, show or delete the saved templates.",
       "keywords": [
         "template",
+        "template folders",
+        "templates folder",
         "template capture",
         "template import",
         "osdu schema",
@@ -735,7 +737,9 @@
         "osdu.template",
         "offline schema",
         "template file",
-        "show --out"
+        "template of one's own",
+        "show --out",
+        "folders --for"
       ],
       "cliCommand": "template",
       "related": [
@@ -749,6 +753,8 @@
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateChain.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateStore.cs",
         "osdu/src/SqlFlow.Delivery/Templates/OsduDataDefinitions.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateSources.cs",
@@ -2092,7 +2098,8 @@
         "unverified",
         "invalid record",
         "verifyreferences",
-        "template not saved",
+        "template not found",
+        "template folder",
         "required property",
         "why nothing was sent"
       ],
@@ -2548,13 +2555,17 @@
       "id": "delivery-concept-templates",
       "corpus": "reference",
       "path": "concepts/templates.md",
-      "title": "Templates: OSDU schemas saved as the records a mapping fills, with versions mappings pin",
+      "title": "Templates: OSDU schemas a repository's template folders hold, settled for each document by the folders on its path",
       "type": "concept",
-      "summary": "What a template is, where it comes from (the OSDU data definitions or a file), how its version is a content hash a mapping pins, and comparing versions.",
+      "summary": "What a template is, the template folders a repository keeps them in, how a document's template is settled, the library, and comparing versions.",
       "keywords": [
         "template",
+        "template folder",
+        "templates folder",
         "osdu schema",
         "template version",
+        "kind alone",
+        "nearest folder",
         "data definitions",
         "capture",
         "import",
@@ -2563,11 +2574,14 @@
         "compare versions",
         "breaking change",
         "kind",
+        "custom template",
+        "template of one's own",
         "sqlflow template",
         "osdu:schemarepository",
         "save template",
         "download template",
-        "template file"
+        "template file",
+        "library"
       ],
       "related": [
         "delivery-flow-mapping",
@@ -2576,10 +2590,15 @@
         "delivery-flow-mapping-lookups",
         "delivery-guide-writing-a-mapping",
         "delivery-concept-lineage",
-        "delivery-concept-architecture"
+        "delivery-concept-architecture",
+        "delivery-table-template",
+        "delivery-table-repository-template"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Templates/OsduTemplate.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateChain.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateSource.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateStore.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateSources.cs",
         "osdu/src/SqlFlow.Delivery/Templates/OsduDataDefinitions.cs",
@@ -2589,10 +2608,15 @@
         "osdu/src/SqlFlow.Delivery/Json/CanonicalJson.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs",
         "osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs",
         "osdu/src/SqlFlow.Delivery/Rendering/MappingRenderer.cs",
         "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/MappingLineage.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/SyncedTemplates.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Assertions/AssertionTemplates.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionBlueprint.cs",
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs",
@@ -2600,9 +2624,10 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs",
         "osdu/gui/src/features/delivery/TemplatesPage.tsx",
         "osdu/gui/src/features/delivery/TemplatesBrowseTab.tsx",
+        "osdu/gui/src/features/delivery/MappingProposeSheet.tsx",
         "osdu/gui/src/features/delivery/templateFormat.ts",
-        "osdu/samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json",
-        "osdu/samples/templates/osdu_wks_master-data--Wellbore_1.3.0.json"
+        "osdu/samples/welldb/templates/osdu_wks_work-product-component--WellLog_1.4.0.json",
+        "osdu/samples/welldb/templates/osdu_wks_master-data--Wellbore_1.3.0.json"
       ]
     },
     {
@@ -3916,7 +3941,7 @@
         "osdu/src/SqlFlow.Delivery/Engine/Protocols/WellboreDdmsRules.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Protocols/WellboreDdmsBulkLink.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs",
-        "osdu/samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json",
+        "osdu/samples/welldb/templates/osdu_wks_work-product-component--WellLog_1.4.0.json",
         "osdu/specs/wellbore-ddms/openapi.json"
       ]
     },
@@ -4061,7 +4086,7 @@
       "path": "guides/dimensions.md",
       "title": "Building a dimension of OSDU values and using it to filter search, drop-downs and reports",
       "type": "guide",
-      "summary": "Build a dimension flow end to end: pick key, label and attributes, save templates, plan, build, check the values, then search, query the table or cache it.",
+      "summary": "Build a dimension flow end to end: pick key, label and attributes, keep templates, plan, build, check the values, then search, query the table or cache it.",
       "keywords": [
         "build a dimension",
         "pick list of osdu values",
@@ -4147,7 +4172,7 @@
       "path": "guides/getting-started.md",
       "title": "Getting started: your first delivery, from source files to a wellbore record in OSDU",
       "type": "guide",
-      "summary": "Deliver a first wellbore end to end: land and key the files, save the template, write the mapping and flow, check, preview, plan, deliver, read the ledger.",
+      "summary": "Deliver a first wellbore end to end: land and key the files, keep the template, write the mapping and flow, check, preview, plan, deliver, read the ledger.",
       "keywords": [
         "getting started",
         "quickstart",
@@ -4398,7 +4423,7 @@
         "osdu/src/SqlFlow.Delivery/Identity/TargetId.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Waits.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs",
-        "osdu/samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json"
+        "osdu/samples/welldb/templates/osdu_wks_work-product-component--WellLog_1.4.0.json"
       ]
     },
     {
@@ -4631,7 +4656,7 @@
         "osdu/src/SqlFlow.Delivery/Rendering/EntryValues.cs",
         "osdu/src/SqlFlow.Delivery/Validation/Preflight.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs",
-        "osdu/samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json"
+        "osdu/samples/welldb/templates/osdu_wks_work-product-component--WellLog_1.4.0.json"
       ]
     },
     {
@@ -4680,9 +4705,9 @@
       "id": "delivery-guide-writing-a-mapping",
       "corpus": "reference",
       "path": "guides/writing-a-mapping.md",
-      "title": "Writing a mapping: from a saved template to a mapping that checks clean",
+      "title": "Writing a mapping: from a template in a template folder to a mapping that checks clean",
       "type": "guide",
-      "summary": "Save the template, scaffold the mapping in the builder or the MCP server, fill it in, then validate, check, test values and preview a record until clean.",
+      "summary": "Put the template in a template folder, scaffold the mapping in the builder or the MCP server, fill it in, then check, test values and preview until clean.",
       "keywords": [
         "write a mapping",
         "new mapping",
@@ -4694,6 +4719,7 @@
         "sqlflow preview",
         "sqlflow validate mapping",
         "template capture",
+        "template folder",
         "preflight failed",
         "held record reasons",
         "mapping example"
@@ -4715,6 +4741,7 @@
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryPreviewVerbs.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryCliModule.cs",
         "osdu/src/SqlFlow.Delivery/Templates/MappingBuilder.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
         "osdu/src/SqlFlow.Delivery/Documents/MappingCatalog.cs",
         "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
         "osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs",
@@ -5876,7 +5903,7 @@
       "path": "tables/mapping.md",
       "title": "osdu.Mapping: each mapping document a repository sync found, the read model behind the mappings page",
       "type": "table",
-      "summary": "One row per mapping document a repository holds: its reference, the kind and template version it pins, its text, a parsed summary, and whether it loads.",
+      "summary": "One row per mapping document a repository holds: its reference, the template it fills and the file it was read from, its text, a summary, and whether it loads.",
       "keywords": [
         "osdu.Mapping",
         "mapping table",
@@ -5890,6 +5917,7 @@
         "delivery-flow-mapping",
         "delivery-concept-templates",
         "delivery-table-template",
+        "delivery-table-repository-template",
         "delivery-table-interface"
       ],
       "sourceRefs": [
@@ -6059,6 +6087,38 @@
         "osdu/src/SqlFlow.Delivery/Ledger/RecordIdentity.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs"
+      ]
+    },
+    {
+      "id": "delivery-table-repository-template",
+      "corpus": "reference",
+      "path": "tables/repository-template.md",
+      "title": "osdu.RepositoryTemplate: each file of a repository's template folders, as the last sync found it",
+      "type": "table",
+      "summary": "One row per file in a folder named templates of a synced repository: the kind and template version it holds, or why it holds none.",
+      "keywords": [
+        "osdu.RepositoryTemplate",
+        "template folder",
+        "templates folder",
+        "repository template",
+        "template file",
+        "held by",
+        "repository sync"
+      ],
+      "related": [
+        "delivery-concept-database",
+        "delivery-concept-templates",
+        "delivery-table-template",
+        "delivery-table-mapping",
+        "delivery-cli-template"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/SyncedTemplates.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Mappings.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs"
       ]
     },
     {
@@ -6353,7 +6413,7 @@
       "id": "delivery-table-template",
       "corpus": "reference",
       "path": "tables/template.md",
-      "title": "osdu.Template: each saved OSDU schema version that mappings are checked and rendered against",
+      "title": "osdu.Template: each saved OSDU schema version, the library the pages, the explorer and the builder read",
       "type": "table",
       "summary": "One row per saved template: the OSDU kind, the content version (a hash of the bundled schema), the bundled JSON Schema, where it came from and who saved it.",
       "keywords": [
@@ -6370,6 +6430,7 @@
         "delivery-concept-templates",
         "delivery-cli-template",
         "delivery-table-mapping",
+        "delivery-table-repository-template",
         "delivery-table-schema-lineage"
       ],
       "sourceRefs": [
