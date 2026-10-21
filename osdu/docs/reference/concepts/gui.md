@@ -97,6 +97,9 @@ scopes](../../../../sqlflow/docs/reference/concepts/authentication-and-identity.
 - the side bar closed the first time the workbench opens, so it opens on the page with only the activity bar beside
   it; a click on any activity bar icon opens the side bar, and from then on it starts as the person last left it in
   their browser;
+- the side bar's menu folded the first time it opens, every group and section showing only its name; an activity bar
+  icon unfolds the group it names, and from then on each group and section starts as the person last left it in their
+  browser;
 - a **Partition** picker in the title bar, which every OSDU page reads in;
 - tabs and header actions on the pipeline and run pages of the six kinds it adds (delivery, retrieval, cache, assertion,
   dimension, inventory), and their fields in the trigger dialog;
@@ -140,7 +143,7 @@ and a link that names a partition (`?partition=`) makes it the title bar's. See 
 | | Records | `/delivery/records` |
 | | Audit trail | `/delivery/activity` |
 | In OSDU | Explorer | `/delivery/explorer` |
-| | Tests | `/delivery/assertions` |
+| | Assertions | `/delivery/assertions` |
 | | Inventories | `/delivery/inventories` |
 | | Dimensions | `/delivery/dimensions` |
 | Build | Mappings | `/delivery/documents` (and the Mapping builder, `/delivery/mappings/build`) |
@@ -152,8 +155,9 @@ and a link that names a partition (`?partition=`) makes it the title bar's. See 
 
 **Ledger** is what the delivery system sent and keeps; **In OSDU** is what OSDU holds, read live by the explorer or by
 the assertion, inventory and dimension flows; **Build** is what a delivered document is built from; **Setup** is what is
-kept in the GUI rather than in a flow. The command palette lists the same entries, headed `OSDU · Ledger`, `OSDU · In
-OSDU` and so on.
+kept in the GUI rather than in a flow. A click on a section's name folds its entries away or brings them back, as a
+click on **OSDU** does for the whole group, and the browser keeps each section as it was left. The command palette lists
+the same entries, headed `OSDU · Ledger`, `OSDU · In OSDU` and so on, whatever is folded.
 
 ## Ledger
 

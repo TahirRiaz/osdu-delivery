@@ -5,7 +5,7 @@ import { expect, test } from "./helpers";
 // The OSDU cache page: the header names the cache and the files that fill it, a summary row says which version is read
 // and what it holds, and four tabs answer one question each: Records (what it holds), History (its versions), Deliveries
 // (what it means for the records already in OSDU) and Setup (its cache flows and the OSDU feature flags). The records are
-// browsed from a list of the types beside them; the history keeps a searchable type picker in the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare thirteen types
+// browsed from a list of the types beside them; the history keeps a searchable type picker in the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare fourteen types
 // (none asking for approval): the reference data the fixture mappings read and the partition's reference data the well
 // log mapping checks its ids against, both declaring UnitOfMeasure, whose records were imported through the CLI (the
 // first two versions, on a database no estate was seeded into before), and the lookup tables the well log mapping
@@ -84,7 +84,7 @@ test.describe.serial("osdu cache", () => {
     await expect(tree.getByTestId("delivery-cache-setup-flow")).toHaveCount(3, { timeout: 30_000 });
     const summary = setup.getByTestId("delivery-cache-setup-summary");
     await expect(summary.getByTestId("delivery-cache-setup-fact-flows")).toContainText(CACHE);
-    await expect(summary.getByTestId("delivery-cache-setup-fact-types").getByRole("button")).toHaveCount(13);
+    await expect(summary.getByTestId("delivery-cache-setup-fact-types").getByRole("button")).toHaveCount(14);
     await expect(summary).toContainText("updated on their next delivery");
     await expect(tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^Wellbore$/ })).toHaveCount(0);
 

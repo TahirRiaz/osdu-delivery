@@ -139,13 +139,12 @@ public static class OsduReferenceValues
     /// The records a refresh of the sample's reference cache flow (<c>osdu-reference-00-cache</c>) captures once the
     /// sample's reference data is delivered, by entity type: each row of the reference files under
     /// <paramref name="referenceRoot"/> as the id the reference delivery gives it (the code, as <c>idFrom: key</c> writes
-    /// it) and the fields the cache flow captures. The unit quantities are not among them: a cache flow of their own
-    /// captures them, and only the reference data's own mappings check against it.
+    /// it) and the fields the cache flow captures, the unit quantities among them.
     /// </summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>> CacheRecords(string referenceRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(referenceRoot);
-        var kinds = Kinds.Where(k => k.Entity != "UnitQuantity").Select(k => (k.Entity, k.Folder, k.CacheFields))
+        var kinds = Kinds.Select(k => (k.Entity, k.Folder, k.CacheFields))
             .Append(("LogCurveType", LogCurveTypeFolder, (IReadOnlyList<string>)["Code", "Name"]));
         var records = new SortedDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string>>>(StringComparer.Ordinal);
         foreach (var (entity, folder, fields) in kinds)

@@ -65,6 +65,12 @@ source:
 render:
   mapping: WellLog@1.4.0
 
+# Before the run renders, the lookup tables the mapping translates through are read again from the ingestion tables their
+# cache flow reads, so a spelling or a curve mnemonic the data team added since the last refresh is in the cache. The
+# reference data the logs are checked against is kept current by the reference source as it delivers it.
+cache:
+  before: [UnitAlias, DepthUnitAlias, CurveDictionary]
+
 change:
   detect: renderedHash
   payloadDetect: contentHash

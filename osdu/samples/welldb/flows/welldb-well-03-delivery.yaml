@@ -2,9 +2,10 @@
 #
 # Delivers the well database's wells as master-data--Well 1.2.0 records through the storage service, from the ingestion
 # table welldb-well-02-ing loads, rendered with ../mappings/Well@1.2.0.yaml. A well's elevation refers to a unit and a
-# vertical measurement type, which welldb-ref-03-delivery delivers and the reference cache captures, so lineage runs
-# this flow after that cache; the wellbore delivery searches for the wells this flow delivers, so it runs after this
-# flow.
+# vertical measurement type, which welldb-ref-03-delivery delivers into OSDU and the partition's cache, so lineage runs
+# this flow after it; cache.before brings those types up to date from OSDU as this run starts, which also takes in values
+# another repository or a person loaded. The wellbore delivery searches for the wells this flow delivers, so it runs after
+# this flow.
 flowType: delivery
 name: welldb-well-03-delivery
 batch: welldb
@@ -23,6 +24,11 @@ source:
 
 render:
   mapping: Well@1.2.0
+
+# The cache types the mapping reads (the units and the vertical measurement types its ids are checked against), brought
+# up to date from OSDU before the run renders.
+cache:
+  before: auto
 
 change:
   detect: renderedHash

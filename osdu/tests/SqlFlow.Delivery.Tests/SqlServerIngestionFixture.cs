@@ -591,6 +591,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         if (name == "welldb-welllog-03-header-delivery")
         {
             text = Replace(text, ShippedTarget, LocalTarget, name);
+
+            // The chain renders against the cache the fixture imports, with no cache flow synced to bring up to date, so
+            // the shipped cache step stays out, as the platform it would reach does.
+            text = Replace(text, "\ncache:\n  before: [UnitAlias, DepthUnitAlias, CurveDictionary]\n", "\n", name);
             if (fanOut > 0)
             {
                 text = Replace(

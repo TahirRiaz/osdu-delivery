@@ -66,8 +66,8 @@ record:
       $from: commit_date
       $modifiers: [date]
       $required: false
-    # The unit quantity the value is measured in, which welldb-ref-unitquantity-03-delivery delivers: checked against
-    # the partition's unit quantities, as osdu-unitquantity-00-cache captured them.
+    # The unit quantity the value is measured in, which the unitquantity interface of welldb-ref-03-delivery delivers
+    # first: checked against the partition's unit quantities, which that interface puts into the cache as it ends.
     UnitQuantityID:
       $from: unit_quantity
       $modifiers:
