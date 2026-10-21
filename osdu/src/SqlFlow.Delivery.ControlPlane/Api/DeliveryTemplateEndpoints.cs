@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
@@ -265,7 +266,12 @@ public static class DeliveryTemplateEndpoints
         return TypedResults.Ok(Detail(OsduTemplate.From(schema), info is null ? null : ToDto(info, pins), types));
     }
 
-    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> GetTemplateSchemaAsync(
+    /// <summary>
+    /// A saved version's bundled schema as a file to save (<see cref="TemplateSources.FileText"/>), named after its kind
+    /// (<see cref="TemplateSources.FileName"/>): what the Templates page shows as Schema JSON and downloads, for a
+    /// repository to keep beside the mappings that pin it.
+    /// </summary>
+    private static async Task<Results<FileContentHttpResult, ProblemHttpResult>> GetTemplateSchemaAsync(
         string? kind, string? version, ITemplateStore templates, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(version))
@@ -277,7 +283,7 @@ public static class DeliveryTemplateEndpoints
         var schema = await templates.LoadAsync(reference, ct).ConfigureAwait(false);
         return schema is null
             ? Problem($"There is no saved template {reference}.", StatusCodes.Status404NotFound, "Not found")
-            : TypedResults.Text(Delivery.Json.DocumentJson.Indented(schema.Root), "application/json");
+            : TypedResults.File(Encoding.UTF8.GetBytes(TemplateSources.FileText(schema)), "application/json", TemplateSources.FileName(schema.Kind));
     }
 
     private static async Task<Results<Ok<DeliveryTemplateDetailDto>, ProblemHttpResult>> PreviewTemplateAsync(

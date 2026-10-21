@@ -3724,7 +3724,7 @@ export const deliveryApi = {
   /** A saved template laid out variable by variable; with `scope`, each variable names the types of that partition's cache it can be read from. */
   templateDetail: (kind: string, version: string, scope?: string) =>
     get<DeliveryTemplateDetail>("/api/v1/delivery/templates/detail", { kind, version, scope }),
-  /** The saved template's bundled schema as JSON text, exactly as it was saved. */
+  /** The saved template's bundled schema, which the control plane answers as a file to save, read as its JSON text. */
   templateSchema: (kind: string, version: string) =>
     getText(`/api/v1/delivery/templates/schema?${new URLSearchParams({ kind, version }).toString()}`),
   /**

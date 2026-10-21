@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A saved template downloads as a file.** **Download** in a saved version's sheet on the Templates page,
+  `sqlflow template show --out <file.json>`, or `GET /api/v1/delivery/templates/schema`, which now answers a file to save
+  named after the kind, gives its bundled schema in the form `osdu/samples/templates` keeps, for a repository to keep
+  beside the mappings that pin it; importing the file saves the same version, and a repository sync does not read it. `sqlflow template capture --out` now writes that form too, with the keys in the order the schema was
+  written rather than sorted. ([Templates](osdu/docs/reference/concepts/templates.md#a-template-as-a-file))
+
 - **The sample is a complete package.** Beside its well logs, the welldb sample delivers the wells and wellbores they
   are logged in, each wellbore's directional survey (its stations to the Wellbore DDMS) and formation tops, and every
   OSDU reference value its records refer to, OSDU's own published values and the well database's own curve types, so it

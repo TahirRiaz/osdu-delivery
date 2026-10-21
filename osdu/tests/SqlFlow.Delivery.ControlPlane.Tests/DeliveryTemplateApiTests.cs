@@ -92,7 +92,13 @@ public sealed class DeliveryTemplateApiTests
         {
             Assert.Equal(HttpStatusCode.OK, schema.StatusCode);
             Assert.Equal("application/json", schema.Content.Headers.ContentType?.MediaType);
-            Assert.NotNull(JsonNode.Parse(await schema.Content.ReadAsStringAsync())?["properties"]?["data"]);
+            var text = await schema.Content.ReadAsStringAsync();
+            Assert.NotNull(JsonNode.Parse(text)?["properties"]?["data"]);
+
+            // The answer is a file to save, named as the samples name theirs, which imports again as this same version.
+            Assert.Equal("attachment", schema.Content.Headers.ContentDisposition?.DispositionType);
+            Assert.Equal(WellboreFile, schema.Content.Headers.ContentDisposition?.FileNameStar ?? schema.Content.Headers.ContentDisposition?.FileName);
+            Assert.Equal(WellboreVersion, TemplateSources.FromBundledJson(text, WellboreKind, DateTimeOffset.UnixEpoch, WellboreFile).Version);
         }
 
         using var notRecord = await SendAsync(client, reader, HttpMethod.Post, "/api/v1/delivery/templates/preview", new { kind = WellboreKind, schema = new { type = "object" } });

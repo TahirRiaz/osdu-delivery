@@ -18,6 +18,8 @@ keywords:
   - sqlflow template
   - osdu:schemarepository
   - save template
+  - download template
+  - template file
 related:
   - delivery-flow-mapping
   - delivery-cli-template
@@ -48,6 +50,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs
   - osdu/gui/src/features/delivery/TemplatesPage.tsx
   - osdu/gui/src/features/delivery/TemplatesBrowseTab.tsx
+  - osdu/gui/src/features/delivery/templateFormat.ts
   - osdu/samples/templates/osdu_wks_work-product-component--WellLog_1.4.0.json
   - osdu/samples/templates/osdu_wks_master-data--Wellbore_1.3.0.json
 ---
@@ -125,7 +128,8 @@ is sent ([change detection](change-detection.md)).
 
 Templates live in the module's database, in the `osdu` schema (`[osdu].[Template]`): the kind, the version, the bundled
 schema, when it was saved, by whom, and where from. They are not files of the repository and not tied to a partition:
-one saved version serves every partition and every repository. The control plane's disk does not have to survive a
+one saved version serves every partition and every repository. A repository can keep a copy of one as a file, for
+reference ([a template as a file](#a-template-as-a-file)), but nothing reads it from there. The control plane's disk does not have to survive a
 restart for them, since the database is where everything durable lives ([architecture](architecture.md)).
 
 ## Where templates come from
@@ -192,6 +196,29 @@ outside itself once bundled, and declares the `data` property every OSDU record 
 | Not JSON | `<where>: the schema is not valid JSON (...).` |
 | A kind that is not a record kind | `Kind '<kind>' must be 'authority:source:entityType:major.minor.patch'.` |
 
+## A template as a file
+
+Any saved version can be written out as a file, for a repository to keep beside the mappings that pin it, where a
+developer reads the schema without opening the GUI:
+
+- **Download** in a saved version's sheet on the Templates page (any signed-in user);
+- `sqlflow template show --kind <kind> --version <v> --out <file.json>` ([template](../cli/template.md));
+- `GET /api/v1/delivery/templates/schema?kind=&version=`, which answers it as a file to save
+  (`Content-Disposition: attachment`), so a browser or `curl -OJ` saves it under its name.
+
+The file is the bundled schema, indented, with its keys in the order the schema was written: the form
+`osdu/samples/templates` keeps the sample schemas in, and the form `capture --out` writes. It is named after the kind,
+each colon an underscore (`osdu_wks_work-product-component--WellLog_1.4.0.json`).
+
+The copy is a reference; the saved version is what counts:
+
+- **Importing the file saves the same version** (`template <kind> version <v> was already saved`), because a version is
+  the hash of the canonical form, which indentation and key order do not change. `sqlflow template import` on the copy
+  therefore says whether it is still the version its mappings pin, and saves it to a database that does not have it yet.
+- **A repository sync does not read it.** Mappings render, check and compute their lineage against the version saved in
+  the database. Editing the copy changes nothing there; imported, an edited copy becomes a new version beside the old one,
+  which a mapping uses only once it pins it.
+
 ## How mappings pin a template
 
 - **A mapping pins its own template** under `template` (`kind` and `version`), and a delivery flow's run loads exactly
@@ -252,7 +279,7 @@ records would be delivered again before delivering ([running an OSDU flow](../cl
 | --- | --- | --- | --- |
 | List saved versions, with how many synced mappings pin each | Saved tab | `sqlflow template list` | `GET /templates` |
 | Lay one version out as variables | Saved tab, a row | `sqlflow template show --kind <kind> [--version <v>]` | `GET /templates/detail?kind=&version=` |
-| Read the bundled schema | | | `GET /templates/schema?kind=&version=` |
+| Read the bundled schema, or keep it as a file | Saved tab, a row: Schema JSON, Download | `sqlflow template show --kind <kind> [--version <v>] --out <file.json>` | `GET /templates/schema?kind=&version=` (a file to save) |
 | List releases, list a release's record kinds | Browse OSDU | | `GET /templates/osdu/releases`, `GET /templates/osdu/schemas?release=` |
 | Read a kind from a release | Browse OSDU | | `GET /templates/osdu/schema?release=&kind=` |
 | Lay out a schema without saving it | Browse OSDU, Import file | | `POST /templates/preview` |

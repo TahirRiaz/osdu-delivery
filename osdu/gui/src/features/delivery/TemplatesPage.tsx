@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ClipboardPaste, Cloud, FileJson, Trash2, type LucideIcon } from "lucide-react";
+import { ClipboardPaste, Cloud, Download, FileJson, Loader2, Trash2, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLocalStorageState } from "@/hooks/useLocalStorageState";
+import { downloadText } from "@/lib/download";
 import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryTemplate } from "../../api/delivery";
 import { useAuth } from "@/auth/AuthContext";
@@ -23,6 +24,7 @@ import { KindText } from "./KindText";
 import { TemplatesBrowseTab } from "./TemplatesBrowseTab";
 import { TemplatesImportTab } from "./TemplatesImportTab";
 import { problemText } from "./problemText";
+import { templateFileName, templateSchemaQuery } from "./templateFormat";
 import { ProblemView, TemplateSheet } from "./TemplateSheet";
 
 type TemplatesTab = "saved" | "browse" | "import";
@@ -97,6 +99,7 @@ const savedColumns: Column<DeliveryTemplate>[] = [
  * Templates: the OSDU record schemas the catalog holds as templates, which mappings pin. A saved version is its content
  * and never changes. New versions come from the OSDU data definitions (the Open Group's public repository of OSDU schemas)
  * or, for a schema of one's own, from a bundled schema file, and each is looked at, variable by variable, before it is saved.
+ * A saved version downloads as that bundled file, for a repository to keep as a reference.
  */
 export default function TemplatesPage() {
   const queryClient = useQueryClient();
@@ -158,6 +161,36 @@ export default function TemplatesPage() {
       void queryClient.invalidateQueries({ queryKey: ["delivery", "templates"] });
     },
   });
+
+  // The saved version as a file: the text the Schema JSON tab shows, read once for both, named as the samples name their
+  // schemas. A repository can keep it beside the mappings that pin it, and importing it saves this same version.
+  const download = useMutation({
+    mutationFn: async (template: { kind: string; version: string }) => {
+      const text = await queryClient.fetchQuery(templateSchemaQuery(template.kind, template.version));
+      downloadText(templateFileName(template.kind), text, "application/json");
+    },
+    onSuccess: (_result, template) => toast.success(`Downloaded ${templateFileName(template.kind)}.`),
+    onError: (error) => toast.error(`The schema could not be downloaded: ${problemText(error)}`),
+  });
+  const downloadButton = selected === null ? null : (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="outline"
+          size="xs"
+          onClick={() => download.mutate(selected)}
+          disabled={download.isPending}
+          data-testid="templates-download"
+        >
+          {download.isPending ? <Loader2 className="animate-spin" /> : <Download />}
+          Download
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        {`The bundled schema as ${templateFileName(selected.kind)}, for a repository to keep. Importing it saves this same version.`}
+      </TooltipContent>
+    </Tooltip>
+  );
 
   // A version a synced mapping pins cannot be deleted, so Delete is not offered for it; the API refuses it regardless.
   const pinnedBy = detail.data?.saved?.pinnedBy ?? 0;
@@ -243,18 +276,22 @@ export default function TemplatesPage() {
           ? <ProblemView error={detail.error} testId="templates-detail-error" />
           : remove.isError ? <ProblemView error={remove.error} testId="templates-delete-error" /> : null}
         detail={detail.data}
-        actions={canAuthor && detail.data !== undefined ? (
-          pinnedBy > 0 ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                {/* A disabled button takes no pointer or focus, so the wrapper is what carries the reason. */}
-                <span tabIndex={0} className="inline-flex rounded-md" data-testid="templates-delete-blocked">{deleteButton}</span>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs">
-                {`Pinned by ${pinnedBy} synced mapping${pinnedBy === 1 ? "" : "s"}. Move ${pinnedBy === 1 ? "it" : "them"} to another template version before deleting this one.`}
-              </TooltipContent>
-            </Tooltip>
-          ) : deleteButton
+        actions={detail.data !== undefined ? (
+          <>
+            {/* Anyone who can read a version can download it; deleting it is an author's action. */}
+            {downloadButton}
+            {canAuthor && (pinnedBy > 0 ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* A disabled button takes no pointer or focus, so the wrapper is what carries the reason. */}
+                  <span tabIndex={0} className="inline-flex rounded-md" data-testid="templates-delete-blocked">{deleteButton}</span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  {`Pinned by ${pinnedBy} synced mapping${pinnedBy === 1 ? "" : "s"}. Move ${pinnedBy === 1 ? "it" : "them"} to another template version before deleting this one.`}
+                </TooltipContent>
+              </Tooltip>
+            ) : deleteButton)}
+          </>
         ) : undefined}
         busy={remove.isPending}
         testId="templates-saved-sheet"

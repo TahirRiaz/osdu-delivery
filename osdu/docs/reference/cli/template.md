@@ -15,6 +15,8 @@ keywords:
   - release tag
   - osdu.template
   - offline schema
+  - template file
+  - show --out
 cliCommand: template
 related:
   - delivery-concept-templates
@@ -39,19 +41,19 @@ sourceRefs:
 # sqlflow template
 
 OSDU Delivery's command line is `sqlflow`: SQLFlow's CLI with the OSDU verbs added. `template` is one of those verbs. It
-saves OSDU schemas as templates in the module's database, where a mapping pins one by kind and version, and lists, shows
-and deletes the saved ones. What a template is, how a mapping pins it and how versions compare is in
+saves OSDU schemas as templates in the module's database, where a mapping pins one by kind and version, and lists, shows,
+writes out and deletes the saved ones. What a template is, how a mapping pins it and how versions compare is in
 [Templates](../concepts/templates.md); this page is the verb.
 
 ## Synopsis
 
 ```bash
-sqlflow template capture --kind <kind> [--release <tag>] [--out <file.json>] [--db <conn-ref>] [--json]
-sqlflow template import <schema.json> --kind <kind> [--release <tag>]       [--db <conn-ref>] [--json]
-sqlflow template import --from-dir <dir> --kind <kind>                      [--db <conn-ref>] [--json]
-sqlflow template list                                                       [--db <conn-ref>] [--json]
-sqlflow template show --kind <kind> [--version <version>]                   [--db <conn-ref>] [--json]
-sqlflow template delete --kind <kind> --version <version>                   [--db <conn-ref>]
+sqlflow template capture --kind <kind> [--release <tag>] [--out <file.json>]  [--db <conn-ref>] [--json]
+sqlflow template import <schema.json> --kind <kind> [--release <tag>]         [--db <conn-ref>] [--json]
+sqlflow template import --from-dir <dir> --kind <kind>                        [--db <conn-ref>] [--json]
+sqlflow template list                                                         [--db <conn-ref>] [--json]
+sqlflow template show --kind <kind> [--version <version>] [--out <file.json>] [--db <conn-ref>] [--json]
+sqlflow template delete --kind <kind> --version <version>                     [--db <conn-ref>]
 ```
 
 ## Description
@@ -119,7 +121,7 @@ first 12 characters of its commit and the file:
 | --- | --- | --- | --- |
 | `--kind <kind>` | OSDU kind | none | Required for every subcommand but `list`: `authority:source:entityType:major.minor.patch`, such as `osdu:wks:work-product-component--WellLog:1.4.0`. |
 | `--release <tag>` | release tag | the newest release | `capture`, and `import` of an unbundled file: the release of the data definitions to read. |
-| `--out <file.json>` | path | none | `capture` only: also write the bundled schema to this file (folders are created), so a repository can keep it beside the mapping and import it again without the network. |
+| `--out <file.json>` | path | none | `capture` and `show`: also write the template's bundled schema to this file (folders are created), so a repository can keep it beside the mapping and import it again without the network. `capture` writes the schema it saves, `show` the saved version, as the Templates page downloads it. |
 | `--from-dir <dir>` | path | none | `import` only: bundle from a local checkout instead of a file. |
 | `--version <version>` | template version | the most recently saved | `show`: the version to lay out. `delete`: required. |
 | `--db <conn-ref>` | connection reference | `${env:SQLFLOW_CATALOG_DB}` | The catalog database, which holds the `osdu` schema unless `SQLFLOW_OSDU_DB` names its own. |
@@ -132,8 +134,8 @@ first 12 characters of its commit and the file:
 Both print one line: `saved template <kind> version <version>` for a new version, or
 `template <kind> version <version> was already saved` when the content is a saved version. With `--json` they print the
 template as `{ kind, version, capturedUtc, capturedBy, origin, outcome }`, where `outcome` is `created` or `unchanged`.
-`capture --out` writes the file before the template is saved, and notes `Wrote the bundled schema of <kind> to <path>` on
-stderr, so the file is there even when the save then fails. The template records who saved it as
+`capture --out` writes the file before the template is saved, and notes `Wrote the bundled schema of template <kind> version
+<version> to <path>` on stderr, so the file is there even when the save then fails. The template records who saved it as
 `cli:<user>@<machine>`.
 
 ### list
@@ -158,6 +160,12 @@ for a reference, and `unit <context>` for a value with a unit. With `--json` eac
 `{ path, shape, type, itemType, required, role, relationships, unitContext, description }`, where `role` is `Mapping`,
 `Engine` or `Osdu`.
 
+With `--out <file.json>`, `show` also writes the saved version to the file, before it lays the version out, and notes
+`Wrote the bundled schema of template <kind> version <version> to <path>` on stderr, so stdout and `--json` are as without
+it. The file is the bundled schema, indented, with its keys in the order the schema was written: what the Templates page
+downloads, and what `capture --out` writes. Importing it saves nothing new
+([a template as a file](../concepts/templates.md#a-template-as-a-file)).
+
 ### delete
 
 Deletes one version and prints `deleted template <kind> version <version>`. A version a synced mapping pins is refused,
@@ -177,6 +185,7 @@ naming up to 20 of the mappings that pin it: move them to another version (and s
 | `<where>: the schema declares no 'data' property, so it does not describe an OSDU record.` | The file is not a record schema (an abstract building block, for example). |
 | `The data definitions folder '<dir>' does not exist.` / `No schema file '<path>' under '<dir>'.` | `--from-dir` names the wrong folder. |
 | `There is no saved template for '<kind>'.` / `There is no template <kind> version <version>.` | `show` or `delete` of something not saved. |
+| `The bundled schema of template <kind> version <version> could not be written to '<path>': <reason>` | `--out` names a file that cannot be written: a folder on the way is a file, the disk is full, or the account may not write there. |
 | `The template <kind> version <version> is pinned by mapping(s) <list>, so it cannot be deleted. Move those mappings to another template version first.` | `delete` of a pinned version. |
 
 Each is printed as `ERROR  <message>` on stderr; a missing `--kind`, file or `--version` is a usage error followed by the
@@ -208,6 +217,12 @@ Bundle from a local checkout of the data definitions:
 sqlflow template import --from-dir ~/src/data-definitions/Generated --kind osdu:wks:master-data--Wellbore:1.3.0
 ```
 
+Keep the saved version a mapping pins in the repository, for developers to read beside the mapping, whichever way it was saved:
+
+```bash
+sqlflow template show --kind osdu:wks:master-data--Wellbore:1.3.0 --version 58d6bdbd9d066a06 --out templates/osdu_wks_master-data--Wellbore_1.3.0.json
+```
+
 See what a mapping has to fill, then remove a version nothing pins any more:
 
 ```bash
@@ -229,4 +244,4 @@ sqlflow template delete --kind osdu:wks:master-data--Wellbore:1.3.0 --version 58
 - [The mapping document](../flow/mapping.md): the `template` key a mapping pins a version with.
 - [Writing a mapping](../guides/writing-a-mapping.md): from a saved template to a valid mapping.
 - [sqlflow check](check.md): checks a flow's mapping against the template it pins.
-- [The GUI](../concepts/gui.md): the Templates page, which browses the data definitions and saves templates through the control plane.
+- [The GUI](../concepts/gui.md): the Templates page, which browses the data definitions, saves templates through the control plane and downloads a saved one as a file.
