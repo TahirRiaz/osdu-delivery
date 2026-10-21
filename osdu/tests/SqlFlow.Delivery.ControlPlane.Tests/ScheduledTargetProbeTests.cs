@@ -421,7 +421,8 @@ public sealed class ScheduledTargetProbeTests
 
             if (path == "/api/search/v2/info")
             {
-                throw new HttpRequestException("The connection was reset while sending Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret-token");
+                var token = "eyJhbGciOiJIUzI1NiJ9.secret-token";
+                throw new HttpRequestException($"The connection was reset while sending Authorization: Bearer {token}");
             }
 
             return path.EndsWith("/info", StringComparison.Ordinal)

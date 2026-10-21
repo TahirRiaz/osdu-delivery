@@ -1544,11 +1544,14 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
     private static HttpResponseMessage TimeSeriesError(HttpStatusCode status, string message)
         => Json(status, new JsonObject { ["result"] = TimeSeriesResult((int)status, status.ToString(), message) });
 
+    // The token the fake Airflow 2 issues and then expects back: an unsigned JWT that expires in 2100.
+    private const string AirflowAccessToken = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig";
+
     private HttpResponseMessage Airflow(string method, string path, HttpRequestMessage request)
     {
         if (path == "/auth/token" && method == "POST")
         {
-            return Json(HttpStatusCode.Created, new JsonObject { ["access_token"] = "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig" });
+            return Json(HttpStatusCode.Created, new JsonObject { ["access_token"] = AirflowAccessToken });
         }
 
         var prefix = $"/api/{AirflowVersion}/dags/";
@@ -1557,7 +1560,7 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
             return Error(HttpStatusCode.NotFound, "no airflow route");
         }
 
-        var expected = AirflowVersion == "v2" ? "Bearer eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig" : "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("airflow-user:airflow-password"));
+        var expected = AirflowVersion == "v2" ? "Bearer " + AirflowAccessToken : "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("airflow-user:airflow-password"));
         if (request.Headers.Authorization?.ToString() != expected)
         {
             return Error(HttpStatusCode.Unauthorized, "unauthenticated");

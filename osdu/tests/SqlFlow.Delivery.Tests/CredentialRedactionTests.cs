@@ -67,12 +67,13 @@ public class CredentialRedactionTests
     [Fact]
     public void A_password_in_a_url_an_authorization_header_or_a_connection_string_is_redacted()
     {
+        var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes("user:password"));
         var message = HeaderRedaction.RedactMessage(
             "The proxy tunnel request to proxy 'http://proxyuser:proxypass@proxy.example.org:8080/' failed; "
-            + "sent Authorization: Basic dXNlcjpwYXNzd29yZA== and Server=db;Password=dbpass;Database=delivery");
+            + $"sent Authorization: Basic {basic} and Server=db;Password=dbpass;Database=delivery");
 
         Assert.DoesNotContain("proxypass", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("dXNlcjpwYXNzd29yZA", message, StringComparison.Ordinal);
+        Assert.DoesNotContain(basic.TrimEnd('='), message, StringComparison.Ordinal);
         Assert.DoesNotContain("dbpass", message, StringComparison.Ordinal);
         Assert.Contains("http://***@proxy.example.org:8080/", message, StringComparison.Ordinal);
         Assert.Contains("Authorization: Basic ***", message, StringComparison.Ordinal);
