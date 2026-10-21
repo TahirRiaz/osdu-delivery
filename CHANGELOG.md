@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The sample is a complete package.** Beside its well logs, the welldb sample delivers the wells and wellbores they
   are logged in and every OSDU reference value its records refer to, OSDU's own published values and the well
   database's own curve types, so it fills an empty partition with records whose references all resolve. Lineage
-  orders it: reference data, the caches capturing it, wells, wellbores, then logs. The reference values and the order
-  are explained on [The OSDU order](osdu/docs/reference/concepts/osdu-order.md) and in the
+  orders it: the reference data, which puts what it delivers into the partition's cache as it runs, then wells,
+  wellbores and logs, which bring the cache types they read up to date before they render. The reference values and the
+  order are explained on [The OSDU order](osdu/docs/reference/concepts/osdu-order.md) and in the
   [sample](osdu/samples/welldb).
 - **Lineage orders delivery flows by what their records refer to.** A delivery flow runs after the flows of its
   repository delivering the entity types its records refer to, as OSDU's schemas declare them, however its mapping writes
