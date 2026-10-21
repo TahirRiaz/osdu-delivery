@@ -15,7 +15,7 @@ export function templateSchemaQuery(kind: string, version: string) {
 /**
  * The file a template downloads as: its kind, each colon an underscore
  * (osdu_wks_work-product-component--WellLog_1.4.0.json), the name the control plane gives the schema it answers
- * (TemplateSources.FileName) and the one osdu/samples/templates names the sample schemas by.
+ * (TemplateSources.FileName) and the one the sample's template folder, osdu/samples/welldb/templates, names its schemas by.
  */
 export function templateFileName(kind: string): string {
   return `${kind.replace(/:/g, "_")}.json`;

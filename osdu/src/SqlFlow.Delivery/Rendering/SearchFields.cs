@@ -37,7 +37,10 @@ public sealed class ResolvedSearches
     /// Resolves <paramref name="mapping"/>'s searches against the schemas in <paramref name="schemas"/>, which holds the
     /// saved template each search pins, or lacks it when it is not saved.
     /// </summary>
-    public static ResolvedSearches Resolve(MappingDefinition mapping, IReadOnlyDictionary<TemplateReference, SchemaSnapshot> schemas)
+    public static ResolvedSearches Resolve(
+        MappingDefinition mapping,
+        IReadOnlyDictionary<TemplateReference, SchemaSnapshot> schemas,
+        IReadOnlyDictionary<TemplateReference, string>? missing = null)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schemas);
@@ -53,8 +56,9 @@ public sealed class ResolvedSearches
         {
             if (!schemas.TryGetValue(search.Schema, out var schema))
             {
-                problems.Add(
-                    $"{where}: search '{name}' pins template {search.Schema}, which is not saved. Save it on the Templates page, or with 'sqlflow template import'.");
+                problems.Add(missing is not null && missing.TryGetValue(search.Schema, out var reason)
+                    ? $"{where}: search '{name}' cannot read the template it pins, {search.Schema}: {reason}"
+                    : $"{where}: search '{name}' cannot read the template it pins, {search.Schema}.");
                 continue;
             }
 

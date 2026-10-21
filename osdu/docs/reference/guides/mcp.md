@@ -131,7 +131,7 @@ Every `delivery_*` tool calls a route under `/api/v1/delivery` and nothing else 
 | When did the cache last change? | `delivery_cache_versions` |
 | What awaits approval, and what will it redeliver? | `delivery_cache_changes` |
 | Which mapping does this flow use? Which flows does it affect? | `delivery_mappings` |
-| Is this mapping valid? What does it leave required and empty? | `delivery_check_mapping` |
+| Is this mapping valid? What does it leave required and empty? | `delivery_check_mapping` (with a synced repository's `repoId`, checked against the template the template folders on the mapping's path hold) |
 | Start a mapping for a template. | `delivery_scaffold_mapping` |
 | Which properties does this kind require? | `delivery_templates` |
 | Which versions of a kind does a release publish? | `delivery_osdu_schemas` |

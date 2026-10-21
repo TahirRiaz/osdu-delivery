@@ -77,10 +77,11 @@ public sealed class OrderCatalog : IOrderCatalog
     /// <summary>
     /// The active delivery interfaces the catalog holds, on <paramref name="db"/>: those of repository
     /// <paramref name="repoId"/>, or of every repository when none is named. Each is read as the OSDU order reads it: the
-    /// partition its records reach, and the mapping it pins, read for the properties it fills against the template that
-    /// mapping pins, or against the newest built release of OSDU's lineage holding the kind when that template is not
-    /// saved. An interface whose mapping is not valid, names no OSDU kind, or whose partition cannot be read is left out, as
-    /// lineage leaves it out; its own repository's sync reports why.
+    /// partition its records reach, and the mapping it pins, read for the properties it fills against the template the sync
+    /// settled that mapping to from the template folders on its path (saved by the same sync), or against the newest built
+    /// release of OSDU's lineage holding the kind when that saved copy cannot be read. An interface whose mapping is not
+    /// valid (a mapping whose template no folder on its path holds is not), names no OSDU kind, or whose partition cannot be
+    /// read is left out; its own repository's sync reports why.
     /// </summary>
     public static async Task<CatalogDeliveries> ReadAsync(OsduDbContext db, Guid? repoId = null, CancellationToken ct = default)
     {
@@ -96,7 +97,7 @@ public sealed class OrderCatalog : IOrderCatalog
                 db.DeliveryMappings.AsNoTracking().Where(m => m.Status == "valid"),
                 i => new { i.RepoId, Reference = i.MappingReference },
                 m => new { m.RepoId, m.Reference },
-                (i, m) => new { i.RepoId, i.FlowName, i.Interface, i.TargetPartition, i.RelativePath, m.Yaml, m.TemplateVersion })
+                (i, m) => new { i.RepoId, i.FlowName, i.Interface, i.TargetPartition, i.RelativePath, m.Yaml, m.TemplateVersion, MappingPath = m.RelativePath })
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
@@ -110,15 +111,24 @@ public sealed class OrderCatalog : IOrderCatalog
             .ToList();
         var deliveries = new List<CatalogDelivery>(distinct.Count);
         var problems = new List<string>();
-        var mappings = new Dictionary<string, MappingDefinition?>(StringComparer.Ordinal);
+        // A mapping that names its template's kind alone settles to what its repository's folders hold, so one document reads
+        // as one mapping per repository.
+        var mappings = new Dictionary<(Guid Repo, string Yaml), MappingDefinition?>();
+        var folders = new Dictionary<Guid, Catalog.SyncedTemplates>();
         var schemas = new Dictionary<(string Kind, string Version), (OsduTemplate? Template, SchemaNode? Node)>();
         foreach (var row in distinct)
         {
-            if (!mappings.TryGetValue(row.Yaml, out var mapping))
+            if (!mappings.TryGetValue((row.RepoId, row.Yaml), out var mapping))
             {
                 try
                 {
-                    mapping = Documents.ParseMapping(row.Yaml, row.RelativePath);
+                    if (!folders.TryGetValue(row.RepoId, out var held))
+                    {
+                        held = await Catalog.SyncedTemplates.ReadAsync(db, row.RepoId, saved: null, ct).ConfigureAwait(false);
+                        folders[row.RepoId] = held;
+                    }
+
+                    mapping = Documents.ParseMapping(row.Yaml, row.MappingPath, held.For(row.MappingPath));
                 }
                 catch (SqlFlowException ex)
                 {
@@ -128,7 +138,7 @@ public sealed class OrderCatalog : IOrderCatalog
                     mapping = null;
                 }
 
-                mappings[row.Yaml] = mapping;
+                mappings[(row.RepoId, row.Yaml)] = mapping;
             }
 
             if (mapping is null || OsduEntity.OfKind(mapping.Kind) is null)

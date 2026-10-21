@@ -32,11 +32,20 @@ public enum TemplateSaveOutcome
 public sealed record TemplateSaved(TemplateInfo Template, TemplateSaveOutcome Outcome);
 
 /// <summary>
-/// Where templates live (osdu/docs/reference/concepts/templates.md): OSDU schemas owned by OSDU Delivery, each saved
-/// version immutable and identified by its kind and content version.
+/// The saved templates, the library (osdu/docs/reference/concepts/templates.md): OSDU schemas saved in the module's
+/// database, each version immutable and identified by its kind and content version. Every version a repository's template
+/// folder holds is saved here by the sync, beside those saved from the Templates page or the command line, so the pages,
+/// the explorer and the mapping builder can read them; a repository's documents read their templates from their template
+/// folders, never from here. As a source, the library settles a version exactly and a kind alone by the newest saved.
 /// </summary>
-public interface ITemplateStore
+public interface ITemplateStore : ITemplateSource
 {
+    Task<TemplateResolution> ITemplateSource.ResolveAsync(string? document, string kind, string? version, CancellationToken ct)
+        => TemplateLibrary.ResolveAsync(this, kind, version, ct);
+
+    Task<IReadOnlyList<TemplateInfo>> ITemplateSource.ListForAsync(string? document, CancellationToken ct)
+        => ListAsync(ct);
+
     /// <summary>The schema of a saved template version, or null when that version is not saved.</summary>
     Task<SchemaSnapshot?> LoadAsync(TemplateReference reference, CancellationToken ct = default);
 
@@ -178,6 +187,21 @@ public sealed class OsduTemplateStore : ITemplateStore
         db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.TrackAll;
         var row = await FindAsync(db, reference, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"There is no template {reference}.");
+        // A version a repository's template folder holds is saved again by that repository's next sync: what decides it is
+        // the file, so the file is what to remove.
+        var held = await db.DeliveryRepositoryTemplates.AsNoTracking()
+            .Where(t => t.Kind == reference.Kind && t.Version == reference.Version)
+            .Select(t => t.Path)
+            .Distinct()
+            .OrderBy(p => p)
+            .Take(MaxNamedMappings)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (held.Count > 0)
+        {
+            throw new DeliveryException(
+                $"The template {reference} is held by the template folder file(s) {string.Join(", ", held)} of a synced repository, so it cannot be deleted. Remove the file from the repository and sync it first.");
+        }
+
         var users = await db.DeliveryMappings.AsNoTracking()
             .Where(m => m.Kind == reference.Kind && m.TemplateVersion == reference.Version)
             .Select(m => m.Reference)

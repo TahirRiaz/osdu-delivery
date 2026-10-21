@@ -13,6 +13,7 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Catalog;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -380,8 +381,11 @@ public static class DeliveryAssertionEndpoints
             var history = (await ledger.AssertionHistoryAsync(bound.LedgerId, null, BoardHistory, withDetail: false, ct).ConfigureAwait(false))
                 .GroupBy(r => r.TestName, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Select(Point).ToList(), StringComparer.OrdinalIgnoreCase);
+            // Each test's template as the flow reads it: from the template folders its repository's last sync recorded on the
+            // flow's path, as its run reads them from the files.
+            var folders = await SyncedTemplates.ReadAsync(ledger, pipeline.RepoId, templates, ct).ConfigureAwait(false);
             var fits = await AssertionTemplates.FitAsync(
-                bound.Tests, templates, (reference, token) => SyncedMappings.ByReferenceAsync(ledger, documents, reference, token), ct).ConfigureAwait(false);
+                bound.Tests, folders, pipeline.RelativePath, (reference, token) => SyncedMappings.ByReferenceAsync(ledger, documents, reference, token), ct).ConfigureAwait(false);
             var runs = await ledger.ListAssertionRunsAsync(bound.LedgerId, 1, ct).ConfigureAwait(false);
             var lastRun = runs.Count > 0 ? runs[0] : null;
             var ofFlow = latest.TryGetValue(bound.LedgerId, out var found) ? found : new Dictionary<string, AssertionResultState>(StringComparer.OrdinalIgnoreCase);

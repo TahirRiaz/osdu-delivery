@@ -11,6 +11,7 @@ using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Catalog;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -82,7 +83,8 @@ public static partial class DeliveryDimensionEndpoints
         }
 
         // The kinds the last build read describe the records while the declaration still reads that kind; a pattern changed
-        // since is described by the saved templates it matches, as its next build will be.
+        // since is described by the templates the flow reads that it matches, as its next build will be: those of the
+        // template folders its repository's last sync recorded on the flow's path.
         var described = spec ?? FromState(state!);
         IReadOnlyList<DimensionKind> kinds = [];
         if (state?.LastRunId is { } runId && string.Equals(described.Kind, state.Kind, StringComparison.Ordinal))
@@ -91,7 +93,8 @@ public static partial class DeliveryDimensionEndpoints
             kinds = runs.Count == 0 ? [] : DimensionRunner.KindsOf(runs[0].Read.Templates);
         }
 
-        var blueprint = await DimensionBlueprints.DescribeAsync(described, templates, kinds, ct).ConfigureAwait(false);
+        var folders = await SyncedTemplates.ReadAsync(ledger, pipeline.RepoId, templates, ct).ConfigureAwait(false);
+        var blueprint = await DimensionBlueprints.DescribeAsync(described, folders, pipeline.RelativePath, kinds, ct).ConfigureAwait(false);
         var coverage = state is null ? [] : await ledger.DimensionAttributeCoverageAsync(state.DimensionId, ct).ConfigureAwait(false);
 
         DeliveryDimensionYamlDto? yaml = null;

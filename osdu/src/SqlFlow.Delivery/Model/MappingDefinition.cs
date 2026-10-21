@@ -16,6 +16,18 @@ public sealed record MappingDefinition
 
     public string? SourcePath { get; init; }
 
+    /// <summary>
+    /// The file the mapping was read from, as a full path, when it was read from disk: where the template folders it reads
+    /// are walked from. Null for a mapping read from the catalog or from text, whose <see cref="SourcePath"/> names it.
+    /// </summary>
+    public string? Location { get; init; }
+
+    /// <summary>
+    /// The document the mapping's templates are read for: the file it was read from, or the path the catalog names it by,
+    /// which the folders the catalog recorded for its repository are walked from the same way.
+    /// </summary>
+    public string? TemplateDocument => Location ?? SourcePath;
+
     public required string Name { get; init; }
 
     /// <summary>Semantic version of the mapping. Part of the render context and so of every record's render.</summary>
@@ -27,8 +39,17 @@ public sealed record MappingDefinition
     /// </summary>
     public string? Fingerprint { get; init; }
 
-    /// <summary>The template version the mapping fills.</summary>
+    /// <summary>
+    /// The template version the mapping fills: the one it names, or, when it names the kind alone, the one version of the
+    /// kind the nearest template folder on its path holds (osdu/docs/reference/concepts/templates.md, Template folders).
+    /// </summary>
     public required TemplateReference Template { get; init; }
+
+    /// <summary>
+    /// Whether the document names its template's version (<c>template.version</c>), rather than following the version the
+    /// template folders on its path hold. True for a definition built in code.
+    /// </summary>
+    public bool TemplateVersionNamed { get; init; } = true;
 
     public string? Description { get; init; }
 
