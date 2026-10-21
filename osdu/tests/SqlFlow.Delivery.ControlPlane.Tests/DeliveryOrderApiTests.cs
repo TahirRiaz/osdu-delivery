@@ -126,7 +126,9 @@ public sealed class DeliveryOrderApiTests
         var templates = new OrderEstate.MemoryTemplates();
         var mastersEstate = new OrderEstate(rootMasters, templates);
         var estateEstate = new OrderEstate(rootEstate, templates);
-        var now = new DateTime(2026, 10, 21, 0, 0, 0, DateTimeKind.Utc);
+        // Days ahead of the clock, so both schedules' next fires are still to come when the control plane reads them: one
+        // already due would be fired and timed again by its scheduler, and the two would no longer fire an hour apart.
+        var now = DateTime.UtcNow.Date.AddDays(2);
         var kinds = new List<string>();
         try
         {
