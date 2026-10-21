@@ -1752,7 +1752,10 @@ public sealed record LedgerEntry
     /// </summary>
     public string? Partition { get; init; }
 
-    /// <summary><see cref="LedgerKinds.Delivery"/>, <see cref="LedgerKinds.Retrieval"/> or <see cref="LedgerKinds.Assertion"/>.</summary>
+    /// <summary>
+    /// <see cref="LedgerKinds.Delivery"/>, <see cref="LedgerKinds.Retrieval"/>, <see cref="LedgerKinds.Assertion"/>,
+    /// <see cref="LedgerKinds.Dimension"/> or <see cref="LedgerKinds.Inventory"/>.
+    /// </summary>
     public required string Kind { get; init; }
 
     /// <summary>The flow the ledger belongs to: the source, for an interface of a source.</summary>

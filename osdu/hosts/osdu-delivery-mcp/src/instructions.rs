@@ -25,11 +25,13 @@ flows, mappings and dictionaries, and the ledger that tracks every record.
 
 Documentation: search_docs covers both corpora. The extension's pages have ids starting delivery-: delivery-flow-*
 (each document and its keys), delivery-cli-* (the OSDU verbs), delivery-concept-* (how it works), delivery-guide-*
-(tasks end to end), delivery-wiki-* (why, and which shape solves which problem: decisions, patterns, narratives,
-incidents, maps). For a 'how do I' question, read delivery-wiki-pattern-catalog, which maps each problem to the
-shape that solves it and the page that documents it; then search with the question's own
-words and get_doc the page. Answer from the pages and cite their ids. The CLI is `sqlflow`: check, preview, values,
-records, config, partition, cache, template, assertions, dimensions and inventory are the extension's verbs
+(tasks end to end), delivery-table-* (each table of the osdu schema: its columns, keys and indexes; search_docs finds
+them with type table, and delivery-concept-database lists them all), delivery-wiki-* (why, and which shape solves
+which problem: decisions, patterns, narratives, incidents, maps). For a 'how do I' question, read
+delivery-wiki-pattern-catalog, which maps each problem to the shape that solves it and the page that documents it;
+then search with the question's own words and get_doc the page. Answer from the pages and cite their ids. The CLI is
+`sqlflow`: check, preview, values, records, config, partition, cache, template, assertions, dimensions and inventory
+are the extension's verbs
 (delivery-cli-<verb>); run, trigger, validate, db, worker and the rest are SQLFlow's (cli-<verb>).
 validate_flow, list_flow_keys and describe_flow_key know flowType delivery, retrieval, cache, assertion, dimension
 and inventory, and the mapping and dictionary documents.
