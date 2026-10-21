@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them, each tab counts its matching ids, the grid lists them with their values, and every matching orphan, stale or
   forgotten id can be removed at once, however many
   ([Selecting ids by what OSDU holds](osdu/docs/reference/flow/inventory.md#selecting-ids-by-what-osdu-holds)).
+- **The OSDU menu's sections fold, and the menu starts folded.** A click on Ledger, In OSDU, Build or Setup in the side
+  bar folds its entries away or brings them back. A browser opening the workbench for the first time shows every group
+  and section folded to its name; from then on each starts as it was left
+  ([The OSDU menu](osdu/docs/reference/concepts/gui.md#the-osdu-menu)).
 
 ### Changed
 
