@@ -12,11 +12,16 @@ keywords:
 referenceRefs:
   - delivery-flow-dimension
   - delivery-guide-dimensions
-updated: 2026-10-16
+related:
+  - delivery-wiki-0018-template-folders
+updated: 2026-10-21
 ---
 # 0011: Dimension flows read every distinct value by ranges, and keep each key beside the value a person picks
 
 Status: proposed. Documented in [dimension flow](../../reference/flow/dimension.md).
+
+> **Amended by [0018](0018-template-folders.md).** How the index stores a path is read from the template of each kind
+> that the template folders on the flow's path hold, not from the saved templates.
 
 ## Context
 

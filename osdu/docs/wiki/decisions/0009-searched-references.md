@@ -15,11 +15,16 @@ referenceRefs:
   - delivery-flow-cache
 related:
   - delivery-wiki-0003-rendering-location
-updated: 2026-10-16
+  - delivery-wiki-0018-template-folders
+updated: 2026-10-21
 ---
 # 0009: References to business data are searched for, not cached
 
 Status: proposed. Documented in [mapping lookups](../../reference/flow/mapping-lookups.md). Amends [0003](0003-rendering-location.md).
+
+> **Amended by [0018](0018-template-folders.md).** A search's `schema` is read from the template folders on the
+> mapping's path, not from the saved templates, and may name the kind alone to take the one version the nearest folder
+> holding it holds.
 
 ## Context
 
