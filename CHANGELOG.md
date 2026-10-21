@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every table of the osdu schema has a reference page.** Each says what one row is, what every column holds, what
+  each key and index serves and what writes and reads the table, and
+  [The osdu schema](osdu/docs/reference/concepts/database.md) lists them by what they serve; the MCP server's
+  `search_docs` searches them when its `type` is `table`.
 - **A saved template downloads as a file.** **Download** in a saved version's sheet on the Templates page,
   `sqlflow template show --out <file.json>`, or `GET /api/v1/delivery/templates/schema`, which now answers a file to save
   named after the kind, gives its bundled schema in the form `osdu/samples/templates` keeps, for a repository to keep
@@ -55,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The decision records and the pattern catalog are pages of the wiki.** They moved to
+  [osdu/docs/wiki](osdu/docs/wiki/index.md), in SQLFlow's wiki format, and the MCP server knows them by new ids:
+  `delivery-wiki-0014-inventory-removals` for what was `delivery-decision-0014`, and `delivery-wiki-pattern-catalog` for
+  `delivery-guide-pattern-catalog`; an old id finds nothing, so search for the page instead.
 - **A repository's waves can change at its next sync.** Flows that referred to each other only by ids written from
   columns or literals now run in the order of what they refer to, and a delivery checked against a cache whose flow also
   captures what it delivers now runs before that cache flow rather than unordered against it. Schedules keep their
