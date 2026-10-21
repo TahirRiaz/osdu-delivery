@@ -84,7 +84,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use yaml_rust2::{Yaml, YamlLoader};
 
-    const REFERENCE_TYPES: &[&str] = &["cli-command", "flow-reference", "concept", "guide"];
+    const REFERENCE_TYPES: &[&str] = &["cli-command", "flow-reference", "concept", "guide", "table"];
+
+    /// The folder of `osdu/docs/reference` a table page lives in, one page per table of the osdu schema.
+    const TABLES_FOLDER: &str = "osdu/docs/reference/tables/";
 
     /// A wiki page's type, and the folder of `osdu/docs/wiki` a page of that type lives in, as SQLFlow's wiki has them.
     const WIKI_TYPES: &[(&str, &str)] = &[
@@ -187,6 +190,11 @@ mod tests {
                 assert!(id.starts_with("delivery-wiki-"), "{id} is a wiki page, so its id starts delivery-wiki-");
             } else {
                 assert!(REFERENCE_TYPES.contains(&page.meta.doc_type.as_str()), "{id} has the type {}", page.meta.doc_type);
+                assert_eq!(
+                    page.meta.path.starts_with(TABLES_FOLDER),
+                    page.meta.doc_type == "table",
+                    "{id}: a table page is of type table and lives in {TABLES_FOLDER}, and only a table page does"
+                );
             }
             assert!(!page.meta.summary.trim().is_empty() && page.meta.summary.chars().count() <= 160, "{id}'s summary");
             assert!(page.meta.keywords.len() >= 3, "{id} has {} keywords", page.meta.keywords.len());

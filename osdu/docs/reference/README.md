@@ -23,6 +23,8 @@ osdu/docs/reference/
   concepts/<slug>.md     how the extension works: the ledger, record lifecycle, submissions, change detection, templates,
                          the partition cache, partitions, protocols, removal and reversal, lineage, the GUI, the API, ...
   guides/<slug>.md       task-oriented walkthroughs
+  tables/<table>.md      one page per table of the osdu schema (type table): every column, key and index, checked
+                         against the model by DatabaseTablePagesTests; concepts/database.md lists them all
 osdu/docs/wiki/          why it is this way and how the pieces fit, in SQLFlow's wiki format (index.md, log.md,
                          decisions/, patterns/, narratives/, incidents/, maps/), indexed beside the reference pages
 osdu/docs/census/        the key census of every document the extension adds (the editor and validate_flow surface)
@@ -39,7 +41,7 @@ Each page is Markdown with YAML frontmatter, then `# <title>`, then the body, as
 ---
 id: delivery-flow-cache
 title: "Cache flow (flowType: cache): OSDU reference data and lookup tables in a partition's cache"
-type: flow-reference        # cli-command | flow-reference | concept | guide (the wiki's types: osdu/docs/wiki)
+type: flow-reference        # cli-command | flow-reference | concept | guide | table (the wiki's: osdu/docs/wiki)
 summary: "One sentence, at most 160 characters, in the words a user asks with."
 keywords:
   - lookup table

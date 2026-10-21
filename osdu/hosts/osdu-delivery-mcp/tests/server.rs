@@ -620,7 +620,42 @@ const QUESTIONS: &[(&str, &[&str])] = &[
     ("update the cache during a schedule after a delivery", &["delivery-concept-partition-cache", "delivery-wiki-0017-pipelines-update-the-cache"]),
     ("update the cache before running a pipeline", &["delivery-concept-partition-cache", "delivery-flow-delivery"]),
     ("refresh only one type of a cache flow", &["delivery-flow-cache"]),
+    ("which table holds what in the osdu schema", &["delivery-concept-database"]),
+    ("which database table holds a record's attempts", &["delivery-concept-database", "delivery-concept-ledger"]),
 ];
+
+/// Questions about what a table of the osdu schema holds, asked with `type: table`, and the table page that answers each.
+const TABLE_QUESTIONS: &[(&str, &str)] = &[
+    ("the source file and row a delivery attempt was built from", "delivery-table-attempt"),
+    ("which cache flow captured a cached record", "delivery-table-cache-member"),
+    ("the orphan ids an inventory found", "delivery-table-inventory-record"),
+    ("what a worker appended under its lease", "delivery-table-record-event"),
+    ("who approved a cache change and its rollout", "delivery-table-update-tag"),
+    ("the audit trail of interventions", "delivery-table-activity"),
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_table_question_finds_its_table_when_the_search_asks_for_tables() {
+    let estate = Estate::start(vec![]).await;
+    let mut session = Session::open(&estate).await;
+
+    let mut missed = Vec::new();
+    for (question, answer) in TABLE_QUESTIONS {
+        let found = session.json("search_docs", json!({ "query": question, "type": "table", "limit": 5 })).await;
+        let results = found["results"].as_array().expect("search results");
+        assert!(results.iter().all(|hit| hit["type"] == "table"), "'{question}' found a page that is no table: {results:?}");
+        if !results.iter().any(|hit| hit["id"] == *answer) {
+            let top: Vec<&str> = results.iter().filter_map(|hit| hit["id"].as_str()).collect();
+            missed.push(format!("'{question}' found {top:?}, not {answer}"));
+        }
+    }
+    assert!(missed.is_empty(), "table questions whose table is not in the top five:\n{}", missed.join("\n"));
+
+    // Without the type, a task question is answered by the pages that explain the task, never by a table page.
+    let untyped = session.json("search_docs", json!({ "query": "replace a value from the cache", "limit": 50 })).await;
+    let results = untyped["results"].as_array().expect("search results");
+    assert!(results.iter().all(|hit| hit["type"] != "table"), "{results:?}");
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_question_finds_the_page_that_answers_it() {

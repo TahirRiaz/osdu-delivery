@@ -1897,7 +1897,11 @@ public sealed class DeliveryCacheSetEntry
     /// <summary>What the mapping read: <c>id</c>, <c>Name</c>, <c>NameAlias.AliasName</c>.</summary>
     public string Path { get; set; } = string.Empty;
 
-    /// <summary>match (the value the source resolved by) or value (a value written into the document).</summary>
+    /// <summary>
+    /// How the render used it: match (the value the source resolved by), value (a value written into the document), empty
+    /// (a path that held no value), unlisted (a key a lookup table listed no row under), listed (the rows a $findAll found
+    /// by a key), unverified (an id written as an unverified reference) or missing (an id the cache did not hold).
+    /// </summary>
     public string Kind { get; set; } = "value";
 
     public string ValueHash { get; set; } = string.Empty;
@@ -1931,7 +1935,9 @@ public sealed class DeliveryUpdateTag
 
     /// <summary>
     /// changed (the value moved, or a path that gave none gives one), removed (the cached record is gone), unmatched (what it
-    /// matched by is gone) or listed (a lookup table now lists a key records looked up and found no row under).
+    /// matched by is gone), listed (a lookup table now lists a key records looked up and found no row under, or a type now
+    /// holds a record by a value records found none by), relisted (the rows a key finds are no longer the ones records read)
+    /// or found (the cache now holds a record records reference as an unverified id).
     /// </summary>
     public string Change { get; set; } = "changed";
 
@@ -2919,7 +2925,7 @@ public sealed class DeliveryLedger
     /// <summary>The ledger identity every row of the ledger carries.</summary>
     public Guid FlowId { get; set; }
 
-    /// <summary>delivery, retrieval or assertion: the kind of flow whose ledger this is.</summary>
+    /// <summary>delivery, retrieval, assertion, dimension or inventory: the kind of flow whose ledger this is.</summary>
     public string Kind { get; set; } = string.Empty;
 
     /// <summary>The flow (for a source with interfaces, the source) the ledger belongs to.</summary>
