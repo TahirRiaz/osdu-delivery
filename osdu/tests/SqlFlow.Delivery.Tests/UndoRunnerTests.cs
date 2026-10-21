@@ -160,7 +160,8 @@ public sealed class UndoRunnerTests
     [Fact]
     public async Task Notes_are_redacted_before_they_are_kept()
     {
-        var route = new Answering(works => works.SelectMany(w => w.Items).Select(i => UndoResult.Failed(i, "HTTP 401 from GET /records: Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.secret-token-value")).ToList());
+        var token = "eyJhbGciOiJSUzI1NiJ9.secret-token-value";
+        var route = new Answering(works => works.SelectMany(w => w.Items).Select(i => UndoResult.Failed(i, $"HTTP 401 from GET /records: Authorization: Bearer {token}")).ToList());
 
         var undo = await RunOneAsync(route, Artifact(1));
 
