@@ -45,6 +45,37 @@ public sealed class SampleRecordTests
         RenderedRecord.AssertIsKept(WellLogVersions.CurrentMapping, logId.Replace('/', '_'), result);
     }
 
+    /// <summary>
+    /// A sample survey: a sidetrack's trajectory with the three properties every sample survey's stations carry, its
+    /// depths measured from its well's KB.
+    /// </summary>
+    [Fact]
+    public async Task A_sample_survey_renders_the_record_kept_for_it()
+    {
+        var survey = SampleSurveys.Surveys().Single(s => s.SurveyId == "SRV-0003/1");
+        var result = await RenderAsync(
+            "WellboreTrajectory@1.3.0",
+            SampleSurveys.SurveyRow(survey),
+            new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> { ["stations"] = SampleSurveys.PropertyRows(survey) },
+            Wellbore(survey.WellboreUwi));
+
+        RenderedRecord.AssertIsKept("WellboreTrajectory@1.3.0", "SRV-0003_1", result);
+    }
+
+    /// <summary>A sample marker set: the formation tops picked in a wellbore, shallowest first.</summary>
+    [Fact]
+    public async Task A_sample_marker_set_renders_the_record_kept_for_it()
+    {
+        var set = SampleSurveys.MarkerSets().Single(m => m.MarkerSetId == "MKS-0001/1");
+        var result = await RenderAsync(
+            "WellboreMarkerSet@1.2.1",
+            SampleSurveys.MarkerSetRow(set),
+            new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> { ["markers"] = SampleSurveys.MarkerRows(set) },
+            Wellbore(set.WellboreUwi));
+
+        RenderedRecord.AssertIsKept("WellboreMarkerSet@1.2.1", "MKS-0001_1", result);
+    }
+
     [Fact]
     public async Task A_wellbore_with_an_alias_renders_the_record_kept_for_it()
     {
@@ -60,7 +91,7 @@ public sealed class SampleRecordTests
     public async Task A_trajectory_with_three_station_properties_renders_the_record_kept_for_it()
     {
         var result = await RenderAsync(
-            "WellboreTrajectory@1.3.0",
+            "WellboreTrajectory@1.0.0",
             Row(
                 ("source_project", "PROJECT_A"),
                 ("survey_id", "T-1001"),
@@ -82,7 +113,7 @@ public sealed class SampleRecordTests
             },
             Wellbore("OSDU-DEV-1-A"));
 
-        RenderedRecord.AssertIsKept("WellboreTrajectory@1.3.0", "T-1001", result);
+        RenderedRecord.AssertIsKept("WellboreTrajectory@1.0.0", "T-1001", result);
     }
 
     [Fact]

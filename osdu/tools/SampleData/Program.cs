@@ -6,9 +6,10 @@ namespace SqlFlow.Delivery.Tools.SampleData;
 
 /// <summary>
 /// Writes the sample estate's data: a handful of made-up well logs (the header file, the curve file and one parquet chunk
-/// per log, as the sample flows read them) with the wells and wellbores they are logged in, the lookup tables the sample
-/// mapping translates their values through, or the reference data the sample's records refer to. The logs, wells,
-/// wellbores and lookup tables are synthetic and deterministic (<see cref="SyntheticEstate"/>): the same seed writes the
+/// per log, as the sample flows read them) with the wells and wellbores they are logged in and each wellbore's survey and
+/// formation tops, the lookup tables the sample mapping translates their values through, or the reference data the
+/// sample's records refer to. The logs, wells, wellbores, surveys, tops and lookup tables are synthetic and deterministic
+/// (<see cref="SyntheticEstate"/>): the same seed writes the
 /// same bytes, nothing is read from a network or a database, and no credential is needed. The reference data is OSDU's
 /// own, read from a local checkout of the OSDU data definitions (<see cref="OsduReferenceValues"/>). The committed files of
 /// <c>osdu/samples/welldb</c> are what <c>--out osdu/samples/welldb/data --date 20260924</c>,
@@ -24,8 +25,12 @@ public static partial class Program
                SampleData --reference <reference data folder> --osdu <manifests folder> [--cache-records <folder>] [--date <yyyyMMdd>]
 
           --out <folder>       Writes the well logs: <folder>/welllog/welllog_<date>.csv, <folder>/curves-meta/curves_<date>.csv
-                               and <folder>/curves/<project>/<log id>/chunk_00000.parquet, and the wells and wellbores they
-                               are logged in: <folder>/well/well_<date>.csv and <folder>/wellbore/wellbore_<date>.csv,
+                               and <folder>/curves/<project>/<log id>/chunk_00000.parquet; the wells and wellbores they
+                               are logged in: <folder>/well/well_<date>.csv and <folder>/wellbore/wellbore_<date>.csv;
+                               and each wellbore's survey and formation tops: <folder>/survey/survey_<date>.csv,
+                               <folder>/survey-properties/survey_properties_<date>.csv,
+                               <folder>/stations/<project>/<survey id>/chunk_00000.parquet,
+                               <folder>/marker-set/marker_set_<date>.csv and <folder>/marker/marker_<date>.csv,
                                replacing the files the generator wrote there before.
           --lookups <folder>   Writes the lookup tables: <folder>/unit-alias/unit_alias_<date>.csv,
                                <folder>/depth-unit-alias/depth_unit_alias_<date>.csv and
@@ -100,9 +105,15 @@ public static partial class Program
         Clear(root, SampleWellLogs.PayloadFolder, SampleWellLogs.ChunkFileName, SearchOption.AllDirectories);
         Clear(root, SyntheticEstate.WellFolder, "*.csv", SearchOption.TopDirectoryOnly);
         Clear(root, SyntheticEstate.WellboreFolder, "*.csv", SearchOption.TopDirectoryOnly);
+        Clear(root, SampleSurveys.SurveyFolder, "*.csv", SearchOption.TopDirectoryOnly);
+        Clear(root, SampleSurveys.PropertyFolder, "*.csv", SearchOption.TopDirectoryOnly);
+        Clear(root, SampleSurveys.PayloadFolder, SampleSurveys.ChunkFileName, SearchOption.AllDirectories);
+        Clear(root, SampleSurveys.MarkerSetFolder, "*.csv", SearchOption.TopDirectoryOnly);
+        Clear(root, SampleSurveys.MarkerFolder, "*.csv", SearchOption.TopDirectoryOnly);
 
         await SampleWellLogs.WriteAsync(root, logs, date).ConfigureAwait(false);
         await SyntheticEstate.WriteMasterDataAsync(root, count, seed, date).ConfigureAwait(false);
+        await SyntheticEstate.WriteSurveysAsync(root, count, seed, date).ConfigureAwait(false);
 
         // Read back through the same reader the suites use, which checks every header's payload hash against its chunk.
         var reread = await SampleWellLogs.LoadAsync(root).ConfigureAwait(false);
@@ -112,6 +123,18 @@ public static partial class Program
             Console.WriteLine(string.Create(
                 CultureInfo.InvariantCulture,
                 $"  {log.WellboreUwi} {log.SourceProject}/{log.LogId}: {log.Curves.Count} curve(s), {log.Depths.Count} depth(s), payload hash {log.GridHash()}, delivery key {log.Key}"));
+        }
+
+        // The surveys are read back the same way, which checks each one's top, base and payload hash against its stations.
+        var surveys = await SampleSurveys.LoadSurveysAsync(root).ConfigureAwait(false);
+        var markerSets = SampleSurveys.LoadMarkerSets(root);
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {surveys.Count} survey(s) and {markerSets.Count} marker set(s):"));
+        foreach (var survey in surveys)
+        {
+            var tops = markerSets.Single(m => m.WellboreUwi == survey.WellboreUwi).Markers;
+            Console.WriteLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  {survey.WellboreUwi} {survey.SourceProject}/{survey.SurveyId}: {survey.Stations.Count} station(s) to {survey.BaseMd} m, payload hash {survey.StationHash()}; {tops.Count} top(s)"));
         }
     }
 

@@ -399,6 +399,26 @@ public sealed class LineageTests : IDisposable
         Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-04-header-assertion" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellLogKind));
         Assert.DoesNotContain(report.Edges, e => e.Flow == "welldb-welllog-04-header-assertion" && e.Relation == LineageRelation.Writes);
 
+        // The surveys and the tops land and are keyed by chains of their own, and the source delivering them searches for
+        // the wellbores they were run in and refers to the station property types the reference source delivers.
+        foreach (var (pre, ing) in new[]
+        {
+            ("welldb-survey-01-header-pre", "welldb-survey-02-header-ing"),
+            ("welldb-survey-01-properties-pre", "welldb-survey-02-properties-ing"),
+            ("welldb-markerset-01-header-pre", "welldb-markerset-02-header-ing"),
+            ("welldb-markerset-01-markers-pre", "welldb-markerset-02-markers-ing"),
+        })
+        {
+            Assert.True(WaveOf(report, pre) < WaveOf(report, ing), $"{pre} runs before {ing}");
+            Assert.True(WaveOf(report, ing) < WaveOf(report, "welldb-survey-03-delivery"), $"{ing} runs before the survey source");
+        }
+
+        Assert.True(WaveOf(report, "welldb-wellbore-03-delivery") < WaveOf(report, "welldb-survey-03-delivery"));
+        Assert.True(WaveOf(report, "welldb-ref-03-delivery") < WaveOf(report, "welldb-survey-03-delivery"));
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-ref-03-delivery" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("TrajectoryStationPropertyType"));
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-survey-03-delivery" && e.Relation == LineageRelation.Writes && e.ObjectKey == TypeKey("osdu:wks:work-product-component--WellboreTrajectory:1.3.0"));
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-survey-03-delivery" && e.Relation == LineageRelation.Writes && e.ObjectKey == TypeKey("osdu:wks:work-product-component--WellboreMarkerSet:1.2.1"));
+
         // What reads OSDU back runs once what it reads has landed: the wells are tested, the wellbores read back into the
         // lake, the dimensions built over the logs, and the inventory taken of every kind the estate delivers.
         foreach (var (writer, reader) in new[]
@@ -430,12 +450,14 @@ public sealed class LineageTests : IDisposable
                 "az://welldbstorage/lake/osdu/wellbores",
                 InRepo("cache/data/curve-dictionary"), InRepo("cache/data/depth-unit-alias"), InRepo("cache/data/unit-alias"),
                 InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"),
-                InRepo("data/stations"), InRepo("data/well"), InRepo("data/wellbore"),
+                InRepo("data/marker"), InRepo("data/marker-set"), InRepo("data/stations"),
+                InRepo("data/survey"), InRepo("data/survey-properties"), InRepo("data/well"), InRepo("data/wellbore"),
                 InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("dictionaries/curve-aliases.yaml"),
                 InRepo("flows/samples/wells/out/metadata"),
                 InRepo("reference/data/log-curve-business-value"), InRepo("reference/data/log-curve-family"),
                 InRepo("reference/data/log-curve-main-family"), InRepo("reference/data/log-curve-type"),
                 InRepo("reference/data/log-type"), InRepo("reference/data/technical-assurance-type"),
+                InRepo("reference/data/trajectory-station-property-type"),
                 InRepo("reference/data/unit-of-measure"), InRepo("reference/data/unit-quantity"),
                 InRepo("reference/data/vertical-measurement-type"), InRepo("reference/data/well-log-sampling-domain-type"),
             ],
@@ -492,9 +514,9 @@ public sealed class LineageTests : IDisposable
         Assert.Equal(
             [
                 "Document@1.0.0", "LogCurveBusinessValue@1.0.0", "LogCurveFamily@1.1.0", "LogCurveMainFamily@1.0.0", "LogCurveType@1.1.0",
-                "LogType@1.0.0", "TechnicalAssuranceType@1.0.0", "UnitOfMeasure@1.0.0", "UnitQuantity@1.0.0",
-                "VerticalMeasurementType@1.0.3", "Well@1.2.0", "WellLog@1.4.0", "WellLogSamplingDomainType@1.0.0", "Wellbore@1.0.0",
-                "Wellbore@1.3.0", "WellboreTrajectory@1.3.0",
+                "LogType@1.0.0", "TechnicalAssuranceType@1.0.0", "TrajectoryStationPropertyType@1.0.0", "UnitOfMeasure@1.0.0",
+                "UnitQuantity@1.0.0", "VerticalMeasurementType@1.0.3", "Well@1.2.0", "WellLog@1.4.0", "WellLogSamplingDomainType@1.0.0",
+                "Wellbore@1.0.0", "Wellbore@1.3.0", "WellboreMarkerSet@1.2.1", "WellboreTrajectory@1.0.0", "WellboreTrajectory@1.3.0",
             ],
             types.Values.Where(o => ServerIdentity.DatasetSystem(o.Key) == OsduLineage.MappingSystem).Select(o => o.Name).Order(StringComparer.Ordinal).ToList());
         Assert.Contains(report.Edges, e => e.Flow == "wells-osdu-04-metadata-retrieval" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));

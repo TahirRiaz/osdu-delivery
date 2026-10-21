@@ -1,7 +1,7 @@
 # Flow: welldb-ref-03-delivery
 #
 # Delivers the reference data the sample's records refer to, one interface per reference kind, so a partition that has
-# none of it receives everything the sample's wells, wellbores and logs point at. Each value is OSDU's own, as the OSDU
+# none of it receives everything the sample's wells, wellbores, logs and surveys point at. Each value is OSDU's own, as the OSDU
 # data definitions publish it, except the curve types, which are the well database's own (a partition defines its
 # LogCurveType values itself, and OSDU names a company's as <Company>:<mnemonic>, so these are WellDB:GR and so on).
 #
@@ -9,8 +9,8 @@
 # dev:reference-data--UnitOfMeasure:g%2Fcm3. A partition that already holds a value under that id (OSDU's reference data
 # is loaded into most partitions) keeps its record: the record is held, naming the id, and nothing is sent over it.
 #
-# Some of the reference data refers to other reference data: a unit, a curve family and a curve type each refer to the
-# unit quantity they are measured in, and that reference is checked against the partition's cache. The interfaces run in
+# Some of the reference data refers to other reference data: a unit, a curve family, a curve type and a station property
+# type each refer to the unit quantity they are measured in, and that reference is checked against the partition's cache. The interfaces run in
 # the order OSDU's schemas give (the unit quantities first), and cache.after puts what each interface delivered into the
 # partition's cache as it ends: the units are checked against the unit quantities delivered a moment before, with no cache
 # flow run in between (osdu/docs/reference/flow/delivery.md, cache). The master data and the logs that run after this
@@ -125,6 +125,15 @@ interfaces:
       key: [code]
       primaryKey: RecId
     mapping: VerticalMeasurementType@1.0.3
+  trajectorystationpropertytype:
+    description: >-
+      One reference-data--TrajectoryStationPropertyType record per value (OPEN governance in OSDU), the properties the
+      sample's surveys carry at every station: measured depth, inclination and azimuth.
+    record:
+      object: OsduData.silver.TrajectoryStationPropertyType
+      key: [code]
+      primaryKey: RecId
+    mapping: TrajectoryStationPropertyType@1.0.0
 
 change:
   detect: renderedHash

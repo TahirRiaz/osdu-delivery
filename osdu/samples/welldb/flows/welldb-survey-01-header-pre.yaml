@@ -1,0 +1,50 @@
+# Pre-ingestion: the well database's directional survey header files into the pre layer.
+#
+# The first flow of the chain the trajectories interface of welldb-survey-03-delivery reads. It lands whatever CSV files
+# are under ../data/survey into [pre].[WellboreTrajectory] as raw text, then refreshes the typed view
+# [pre].[v_WellboreTrajectory] that the ingestion flow beside it reads. The files hold one row per survey of the well
+# database, naming the wellbore it was run in and the folder its stations are in; the sample's are made up by
+# osdu/tools/SampleData, and a file placed in that folder by hand takes exactly the same path.
+name: welldb-survey-01-header-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/survey
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: WellboreTrajectory
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    # The columns whose type the delivery depends on are declared rather than inferred: the survey id and version are
+    # text the mapping writes as they stand (a survey id reads "SRV-0001/1"), the update time is what the delivery
+    # orders versions by, and the chunk count is the number of payload files a record has.
+    - { name: survey_id, type: varchar(50) }
+    - { name: survey_version, type: varchar(50) }
+    - { name: update_date, type: datetime2 }
+    - { name: chunk_count, type: int }
+    # The top and base are depths the record carries (TopDepthMeasuredDepth, BaseDepthMeasuredDepth). Inferred, a file
+    # whose surveys all start at depth 0 would type top_md as bit; a decimal holds every digit a depth is written with.
+    - { name: top_md, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+    - { name: base_md, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-master

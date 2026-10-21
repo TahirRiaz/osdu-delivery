@@ -1,0 +1,32 @@
+# Ingestion: the typed marker view into the keyed ingestion table the markersets interface of welldb-survey-03-delivery
+# reads as its markers dataset.
+#
+# One row per top of a marker set (source_project, marker_set_id, marker_name), joined to its set by the set's key; the
+# record lists them in marker_ordinal order, shallowest first.
+flowType: ing
+name: welldb-markerset-02-markers-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_WellboreMarker
+
+target:
+  server: osduData
+  object: OsduData.silver.WellboreMarker
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_project, marker_set_id, marker_name]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-master

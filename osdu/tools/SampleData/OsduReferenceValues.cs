@@ -11,9 +11,9 @@ namespace SqlFlow.Delivery.Tools.SampleData;
 /// publishes it, and the curve types the well database defines itself. The OSDU values are read from the reference value
 /// manifests of the OSDU data definitions (<c>ReferenceValues/Manifests/reference-data</c> of
 /// <c>https://community.opengroup.org/osdu/data/data-definitions</c>), selected by what the sample refers to: the units
-/// the lookup tables translate to, the families and main families the curve dictionary files curves under, the codes the
-/// mappings write as literals (<see cref="SyntheticEstate.MappedCodes"/>), and the unit quantities those units, families
-/// and curve types are measured in. Nothing else is taken, so the reference data and the records referring to it are one
+/// the lookup tables translate to, the families and main families the curve dictionary files curves under, the station
+/// properties the surveys carry, the codes the mappings write as literals (<see cref="SyntheticEstate.MappedCodes"/>), and
+/// the unit quantities those units, families, station properties and curve types are measured in. Nothing else is taken, so the reference data and the records referring to it are one
 /// closed set: every reference a sample record makes names a record the sample delivers.
 /// <para>A record carries the values OSDU publishes for it, except its name aliases (<c>NameAlias</c>), which would bring
 /// in the alias types and standards organisations they name, and the property type of a family, which would bring in
@@ -63,11 +63,14 @@ public static class OsduReferenceValues
         new("WellLogSamplingDomainType", "well-log-sampling-domain-type", "well_log_sampling_domain_type", "OPEN/WellLogSamplingDomainType.1.json", Common, ["Code", "Name"]),
         new("TechnicalAssuranceType", "technical-assurance-type", "technical_assurance_type", "FIXED/TechnicalAssuranceType.1.json", Common, ["Code", "Name"]),
         new("VerticalMeasurementType", "vertical-measurement-type", "vertical_measurement_type", "OPEN/VerticalMeasurementType.1.json", Common, ["Code", "Name"]),
+        new("TrajectoryStationPropertyType", "trajectory-station-property-type", "trajectory_station_property_type", "OPEN/TrajectoryStationPropertyType.1.json",
+            [.. Common, ("unit_quantity", "UnitQuantityID")], ["Code", "Name"]),
     ];
 
     /// <summary>
     /// The codes the sample refers to, by entity type, before the unit quantities they are measured in are added: what the
-    /// lookup tables translate to, what the curve dictionary files curves under, and what the mappings write as literals.
+    /// lookup tables translate to, what the curve dictionary files curves under, the station properties the surveys carry,
+    /// and what the mappings write as literals.
     /// </summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<string>> ReferencedCodes()
     {
@@ -76,6 +79,7 @@ public static class OsduReferenceValues
             ["UnitOfMeasure"] = Distinct(SyntheticEstate.UnitAliasRows().Concat(SyntheticEstate.DepthUnitAliasRows()).Select(r => r["osdu_unit"]!)),
             ["LogCurveMainFamily"] = Distinct(SyntheticEstate.CurveDictionaryRows().Select(r => r["log_curve_main_family_id"]!)),
             ["LogCurveFamily"] = Distinct(SyntheticEstate.CurveDictionaryRows().Select(r => Uri.UnescapeDataString(r["log_curve_family_id"]!))),
+            ["TrajectoryStationPropertyType"] = Distinct(SyntheticEstate.StationProperties.Select(p => p.PropertyType)),
         };
         foreach (var (entity, mapped) in SyntheticEstate.MappedCodes)
         {
@@ -88,7 +92,8 @@ public static class OsduReferenceValues
     /// <summary>
     /// Reads the manifests under <paramref name="manifestsRoot"/> (the data definitions'
     /// <c>ReferenceValues/Manifests/reference-data</c>) and returns the rows of each kind the sample delivers, in code
-    /// order: the codes it refers to, and the unit quantities of the units, families and curve types among them. A code the
+    /// order: the codes it refers to, and the unit quantities of the units, families, station properties and curve types
+    /// among them. A code the
     /// manifests do not publish fails with the code and the manifest named.
     /// </summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Select(string manifestsRoot)
@@ -105,7 +110,8 @@ public static class OsduReferenceValues
                 .ToList();
         }
 
-        var quantities = selected["UnitOfMeasure"].Concat(selected["LogCurveFamily"]).Concat(SyntheticEstate.LogCurveTypeRows())
+        var quantities = selected["UnitOfMeasure"].Concat(selected["LogCurveFamily"]).Concat(selected["TrajectoryStationPropertyType"])
+            .Concat(SyntheticEstate.LogCurveTypeRows())
             .Select(r => r["unit_quantity"]!);
         var quantityKind = Kinds.Single(k => k.Entity == "UnitQuantity");
         selected["UnitQuantity"] = Distinct(quantities)

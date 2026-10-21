@@ -77,7 +77,7 @@ public sealed class WorkflowDocumentsTests
               trajectories:
                 record: { object: Estate.ing.Survey, key: [survey_id] }
                 bulk: { root: ../data/stations, locationColumn: station_folder, hashColumn: station_hash }
-                mapping: WellboreTrajectory@1.3.0
+                mapping: WellboreTrajectory@1.0.0
                 route: manifest
               named:
                 record: { object: Estate.ing.WellLog2, key: [log_id] }

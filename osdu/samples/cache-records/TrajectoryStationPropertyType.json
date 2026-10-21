@@ -1,0 +1,8 @@
+{
+  "entityType": "reference-data--TrajectoryStationPropertyType",
+  "items": [
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:AzimuthTN", "Code": "AzimuthTN", "Name": "Azimuth True North" },
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:Inclination", "Code": "Inclination", "Name": "Inclination" },
+    { "id": "dev:reference-data--TrajectoryStationPropertyType:MD", "Code": "MD", "Name": "Measured Depth" }
+  ]
+}
