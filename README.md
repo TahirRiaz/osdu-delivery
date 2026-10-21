@@ -158,12 +158,13 @@ signed-in person's own permissions. See the [MCP guide](osdu/docs/reference/guid
 ## Try it
 
 The sample in [osdu/samples/welldb](osdu/samples/welldb) is a complete package that fills an empty partition: the OSDU
-reference values its records refer to (units, unit quantities, curve families, log and measurement types), the well
-database's own curve types, three wells, five wellbores and five synthetic well logs with their curve data. Every
-reference a record makes names a record the package delivers, and the suites check that it does. Lineage orders the
-deliveries the way the records refer to each other: the reference data, which puts what it delivers into the partition's
-cache as it runs, the wells, the wellbores that name them, and the logs, whose curves go to the Wellbore DDMS. The wells
-and the logs bring the cache types they read up to date before they render. It has all three parts: a drop-off zone
+reference values its records refer to (units, unit quantities, curve families, log, measurement and survey station
+types), the well database's own curve types, three wells, five wellbores, and for each wellbore a synthetic well log with
+its curve data, a directional survey with its stations and a set of formation tops. Every reference a record makes names
+a record the package delivers, and the suites check that it does. Lineage orders the deliveries the way the records
+refer to each other: the reference data, which puts what it delivers into the partition's cache as it runs, the wells,
+the wellbores that name them, then the logs and the surveys, whose curves and stations go to the Wellbore DDMS, with the
+tops. The wells, the logs and the surveys bring the cache types they read up to date before they render. It has all three parts: a drop-off zone
 with sample files and the flows that load them, the templates its mappings pin (in
 [osdu/samples/templates](osdu/samples/templates)), and cache flows for the lookup tables and the partition's reference
 data. Once the records land it reads OSDU back: tests check the wells against their mapping's rules and the values the
