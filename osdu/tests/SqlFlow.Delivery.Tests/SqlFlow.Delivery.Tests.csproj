@@ -38,6 +38,7 @@
          from OSDU's schema service, not a file a repository sync reads. -->
     <Content Include="..\..\samples\welldb\mappings\**" Link="samples\welldb\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\cache\**" Link="samples\welldb\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\welldb\dictionaries\**" Link="samples\welldb\dictionaries\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\welldb\schedules.yaml" Link="samples\welldb\schedules.yaml" CopyToOutputDirectory="PreserveNewest" />
     <!-- The key census files the editor analyses the module's documents with, checked against the loaders. -->
     <Content Include="..\..\docs\census\*.json" Link="census\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />

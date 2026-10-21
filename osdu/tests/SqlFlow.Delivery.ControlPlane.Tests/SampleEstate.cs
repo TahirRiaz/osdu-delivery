@@ -53,11 +53,11 @@ internal static class SampleEstate
     public const string SourceFolder = "welldb";
 
     /// <summary>
-    /// What the source folder holds, and so what a copy of the estate is made of: the documents, what they render with,
-    /// and the drop-off folder. Neither the templates nor the cache records are among them, because neither is
+    /// What the source folder holds, and so what a copy of the estate is made of: the documents, what they render with
+    /// (mappings and the dictionaries a dimension flow cleans its values through), and the drop-off folder. Neither the templates nor the cache records are among them, because neither is
     /// repository content: both live in the module's database, and the repository holds only what declares them.
     /// </summary>
-    private static readonly string[] Parts = ["flows", "reference", "cache", "mappings", "data"];
+    private static readonly string[] Parts = ["flows", "reference", "cache", "dictionaries", "mappings", "data"];
 
     /// <summary>The schedule library every flow of the estate joins a schedule of.</summary>
     private const string ScheduleLibrary = "schedules.yaml";

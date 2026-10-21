@@ -1,0 +1,40 @@
+# Flow: welldb-osdu-06-inventory
+#
+# Reads what OSDU holds of the kinds the well database delivers and compares it with every ledger of the partition: an id
+# no ledger names (orphan), a version the ledger does not hold as the one delivered (stale), and a record a ledger names
+# that OSDU no longer holds (missing). Its reports say what the well database's flows left behind and where OSDU drifted
+# from what they delivered; nothing is written to OSDU unless a remove run is asked for, and then only an orphan or a
+# stale version, taken out reversibly.
+flowType: inventory
+name: welldb-osdu-06-inventory
+description: What OSDU holds of the well database's kinds, held against every ledger of the partition.
+batch: welldb
+partitions: [dev]
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+
+inventories:
+  - name: WelldbWells
+    kind: "*:*:master-data--Well:*"
+  - name: WelldbWellbores
+    kind: "*:*:master-data--Wellbore:*"
+  - name: WelldbWellLogs
+    kind: "*:*:work-product-component--WellLog:*"
+    versions: all
+
+# A remove run may take out what no ledger names and versions the ledgers do not hold as delivered, reversibly; a record
+# a ledger names is never removed by an inventory.
+removal:
+  findings: [orphan, stale]
+
+# Weekly, on its own (../schedules.yaml).
+schedule: welldb-inventory
