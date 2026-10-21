@@ -162,8 +162,11 @@ public sealed class DeliveryOrderApiTests
                 }
 
                 // The masters fire at three, the estate at two: the estate's wellbores go out an hour before the wells they name.
-                AddSchedule(db, masters, "masters-" + suffix, "wells", now.AddHours(3));
-                AddSchedule(db, estate, "estate-" + suffix, "wellbores", now.AddHours(2));
+                // Both fires lie days ahead of the clock: the control plane's scheduler fires a schedule whose next fire has
+                // passed and moves it to the next hour, which would give both the same next fire.
+                var day = DateTime.UtcNow.Date.AddDays(2);
+                AddSchedule(db, masters, "masters-" + suffix, "wells", day.AddHours(3));
+                AddSchedule(db, estate, "estate-" + suffix, "wellbores", day.AddHours(2));
                 await db.SaveChangesAsync();
             }
 
