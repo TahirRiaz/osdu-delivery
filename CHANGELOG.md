@@ -139,6 +139,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Nodes page marks the members waiting their turn as at the group cap
   ([Deployment](sqlflow/docs/reference/guides/deployment.md)).
 
+### Security
+
+- **An unzip cannot write outside its target.** An archive names its entries itself, and on an Azure Blob or S3 target
+  an entry such as `../x` landed beside the target folder. A copy flow now fails with `escapes the target root` on any
+  target when an archive entry, or a source object's key, would leave it
+  ([Copy flow](sqlflow/docs/reference/flow/cpy.md#operations)).
+- **No dependency with a known advisory.** System.Security.Cryptography.Pkcs resolves at 10.0.13, past the .NET denial
+  of service advisories CVE-2026-84008 and CVE-2026-70162, and the GUI's dompurify at 3.4.17, past its two DOM XSS
+  advisories.
+
 ## [1.0.1] - 2026-10-19
 
 Module schema 1.46.0 and SQLFlow `fe87877c`, as in 1.0.0; the one change to `sqlflow/` since is to its tests
