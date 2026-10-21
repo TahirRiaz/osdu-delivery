@@ -1,13 +1,13 @@
 # Cache flow: osdu-reference-00-cache
 #
 # The OSDU reference data the sample's mappings resolve their references against, captured from the partition itself:
-# the records of every reference type a well, a wellbore or a well log of the well database points to, which
+# the records of every reference type a well, a wellbore, a well log or a survey of the well database points to, which
 # welldb-ref-03-delivery delivers, so lineage runs this flow after it. That source puts what it delivers into this cache
 # as it runs (its cache.after), so the pipelines after it in a schedule find the values without this flow; this flow is
-# the nightly full refresh, which also brings in values someone else loaded and takes out what OSDU no longer holds. The mapping finds each reference in this cache by
-# its code and writes the id of the record it found, so a log goes out only with references to records the partition
-# holds, and a value the partition has no record for holds the log with the reason, instead of reaching OSDU as a
-# reference to nothing.
+# the nightly full refresh, which also brings in values someone else loaded and takes out what OSDU no longer holds. The
+# mapping finds each reference in this cache by its code and writes the id of the record it found, so a log goes out
+# only with references to records the partition holds, and a value the partition has no record for holds the log with
+# the reason, instead of reaching OSDU as a reference to nothing.
 #
 # Units are matched on ID, Code and Name, the fields a unit is known by. The translations the platform does not hold
 # (the well database's unit spellings and its curve dictionary) stay lookup tables, in welldb-lookups-00-cache: the
@@ -37,8 +37,8 @@ source:
         scope: ${env:OSDU_SCOPE}
 
 types:
-  # UnitQuantity: what the units, curve families and curve types are measured in, which their references are checked
-  # against. Found by Code, then Name, then ID.
+  # UnitQuantity: what the units, curve families, curve types and station property types are measured in, which their
+  # references are checked against. Found by Code, then Name, then ID.
   - kind: "osdu:wks:reference-data--UnitQuantity:*"
     name: UnitQuantity
     fields: [data.Code, data.Name, data.ID]
@@ -79,6 +79,10 @@ types:
     fields: [data.Code, data.Name]
   - kind: "osdu:wks:reference-data--LogCurveFamily:*"
     name: LogCurveFamily
+    fields: [data.Code, data.Name]
+  # A survey's station properties: the TrajectoryStationPropertyTypeID of each property its stations carry.
+  - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"
+    name: TrajectoryStationPropertyType
     fields: [data.Code, data.Name]
 
 schedule: welldb-cache

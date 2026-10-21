@@ -1,0 +1,41 @@
+# Pre-ingestion: the well database's marker files into the pre layer.
+#
+# One row per formation top a marker set picks: its name and the measured depth it was picked at. It lands whatever CSV
+# files are under ../data/marker into [pre].[WellboreMarker] as raw text, then refreshes the typed view
+# [pre].[v_WellboreMarker] that the ingestion flow beside it reads.
+name: welldb-markerset-01-markers-pre
+batch: welldb
+
+source:
+  type: csv
+  location: ../data/marker
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_DATA_DB}
+  schema: pre
+  table: WellboreMarker
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: marker_set_id, type: varchar(50) }
+    - { name: marker_ordinal, type: int }
+    # The depth a marker is picked at is a number each Markers item carries (MarkerMeasuredDepth).
+    - { name: marker_md, expr: "NULLIF(@ColName, '')", type: "decimal(38,18)" }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: welldb-master

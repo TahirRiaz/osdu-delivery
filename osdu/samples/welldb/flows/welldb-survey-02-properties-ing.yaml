@@ -1,0 +1,32 @@
+# Ingestion: the typed station property view into the keyed ingestion table the trajectories interface of
+# welldb-survey-03-delivery reads as its stations dataset.
+#
+# One row per property of a survey (source_project, survey_id, station_property), joined to its survey by the survey's
+# key; the record lists them in station_ordinal order.
+flowType: ing
+name: welldb-survey-02-properties-ing
+batch: welldb
+
+connections:
+  osduData: ${env:OSDU_DATA_DB}
+
+source:
+  server: osduData
+  object: OsduData.pre.v_WellboreTrajectoryStation
+
+target:
+  server: osduData
+  object: OsduData.silver.WellboreTrajectoryStation
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_project, survey_id, station_property]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: welldb-master

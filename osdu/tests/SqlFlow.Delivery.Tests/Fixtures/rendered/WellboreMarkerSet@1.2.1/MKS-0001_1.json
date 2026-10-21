@@ -1,0 +1,51 @@
+{
+  "acl": {
+    "owners": [
+      "data.welldb.owners@dev.dataservices.energy"
+    ],
+    "viewers": [
+      "data.welldb.viewers@dev.dataservices.energy"
+    ]
+  },
+  "data": {
+    "Markers": [
+      {
+        "MarkerMeasuredDepth": 1032.7,
+        "MarkerName": "Top Alder"
+      },
+      {
+        "MarkerMeasuredDepth": 1420.9,
+        "MarkerName": "Top Birch"
+      },
+      {
+        "MarkerMeasuredDepth": 1730.5,
+        "MarkerName": "Top Cedar"
+      },
+      {
+        "MarkerMeasuredDepth": 2007.8,
+        "MarkerName": "Top Dogwood"
+      }
+    ],
+    "Name": "WellDB formation tops",
+    "VerticalMeasurement": {
+      "VerticalMeasurement": 42.8,
+      "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:",
+      "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:"
+    },
+    "WellboreID": "dev:master-data--Wellbore:Wellbore-A-1:"
+  },
+  "id": "dev:work-product-component--WellboreMarkerSet:21296b2f08325f95b335725196154906",
+  "kind": "osdu:wks:work-product-component--WellboreMarkerSet:1.2.1",
+  "legal": {
+    "legaltags": [
+      "dev-osdu-default-legal"
+    ],
+    "otherRelevantDataCountries": [
+      "US"
+    ]
+  },
+  "tags": {
+    "DeliveredBy": "osdu-delivery",
+    "SourceProject": "PROJECT_A"
+  }
+}

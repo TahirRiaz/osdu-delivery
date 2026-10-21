@@ -1,0 +1,93 @@
+# Mapping: the well database's formation tops into the WellboreMarkerSet 1.2.1 template.
+#
+# One record per marker set, its id the delivery key (a UUIDv5 over the system, the project and the set id), so a set is
+# always the same record. The dataset is the set's row, and its child dataset "markers" one row per top it picks, in
+# marker_ordinal order (shallowest first); each top becomes an item of Markers with its name and the measured depth it
+# was picked at. The markers travel in the record itself, through the storage service: version 1.2.1 keeps them there,
+# and a set this size has no bulk data.
+#
+# The wellbore is found by name, as a log's and a survey's are, and the depths are measured from the well's KB, whose
+# unit is translated through the depth unit table and checked against the partition's reference data.
+documentType: mapping
+name: WellboreMarkerSet
+version: 1.2.1
+template:
+  kind: osdu:wks:work-product-component--WellboreMarkerSet:1.2.1
+  version: ec9ad4f8f4e6e713
+description: The well database's formation tops (one record per marker set), each top a marker with its measured depth.
+
+dataset:
+  system: welldb
+  # The delivery key is UUIDv5 over (source system, project, marker set id).
+  key: [source_project, marker_set_id]
+  label: "{wellbore_uwi} / {marker_set_name} ({marker_set_id})"
+  identity: [wellbore_uwi, marker_set_id]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+searches:
+  Wellbore:
+    kind: "osdu:wks:master-data--Wellbore:*"
+    schema:
+      kind: osdu:wks:master-data--Wellbore:1.3.0
+      version: 58d6bdbd9d066a06
+    description: The partition's wellbores, found by name or by one of their aliases.
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [US]
+  tags:
+    DeliveredBy: osdu-delivery
+    SourceProject: { $from: source_project }
+
+  data:
+    Name:
+      $from: marker_set_name
+      $modifiers: [trim]
+    WellboreID:
+      $search: Wellbore
+      $findBy:
+        - data.FacilityName = wellbore_uwi
+        - data.NameAliases.AliasName = wellbore_uwi
+
+    # The point the tops' depths are measured from, as the well's KB elevation ("42.8 M").
+    VerticalMeasurement:
+      VerticalMeasurement:
+        $from: elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 1 }
+      VerticalMeasurementUnitOfMeasureID:
+        $from: elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 2 }
+          - replace: $cache.DepthUnitAlias
+          - ref: reference-data--UnitOfMeasure
+      VerticalMeasurementTypeID: "{$param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
+
+    # The tops: one item per row of the markers child dataset, shallowest first.
+    Markers:
+      $forEach: markers
+      $item:
+        MarkerName: { $from: marker_name }
+        MarkerMeasuredDepth:
+          $from: marker_md
+          $assert:
+            - name: below-the-reference
+              description: A top is picked below the point its depth is measured from.
+              greaterThan: 0
