@@ -158,6 +158,10 @@ public sealed class LineageTests : IDisposable
     private static string Datasets(RegisteredFlowLineage lineage, LineageRelation relation)
         => string.Join(", ", lineage.Datasets.Where(d => d.Relation == relation).Select(d => $"{d.System}/{d.Namespace}/{d.Group}/{d.Name}"));
 
+    /// <summary>The OSDU types a flow writes, without the cache types its cache steps write.</summary>
+    private static string TypeWrites(RegisteredFlowLineage lineage)
+        => string.Join(", ", lineage.Datasets.Where(d => d.Relation == LineageRelation.Writes && d.System != "osdu-cache").Select(d => $"{d.System}/{d.Namespace}/{d.Group}/{d.Name}"));
+
     private static int WaveOf(LineageReport report, string flow)
     {
         var wave = report.ExecutionPlan.Waves.FirstOrDefault(w => w.Flows.Contains(flow, StringComparer.OrdinalIgnoreCase));
@@ -221,8 +225,13 @@ public sealed class LineageTests : IDisposable
         var payload = Assert.Single(lineage.Files);
         Assert.Equal((LineageRelation.Reads, "../data/curves", "chunk_*.parquet"), (payload.Relation, payload.Location, payload.FilePattern));
 
-        // The flow itself reads no cache type and searches no kind: its mapping does, and the flow reads the mapping.
-        var written = Assert.Single(lineage.Datasets);
+        // The flow itself reads no cache type and searches no kind: its mapping does, and the flow reads the mapping. Its
+        // before step writes the lookup tables it reads again before it renders (cache.before), so the flows reading them
+        // run after it.
+        Assert.Equal(
+            ["CurveDictionary", "DepthUnitAlias", "UnitAlias"],
+            lineage.Datasets.Where(d => d.System == "osdu-cache").Select(d => d.Relation == LineageRelation.Writes ? d.Name : $"read {d.Name}").Order(StringComparer.Ordinal));
+        var written = Assert.Single(lineage.Datasets, d => d.System != "osdu-cache");
         Assert.Equal(
             (LineageRelation.Writes, "osdu-type", "dev", "work-product-component", "osdu:wks:work-product-component--WellLog:1.4.0"),
             (written.Relation, written.System, written.Namespace, written.Group, written.Name));
@@ -279,7 +288,7 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
             "osdu-type/dev/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0, osdu-type/dev/dataset/osdu:wks:dataset--File.Generic:1.0.0",
-            Datasets(lineage, LineageRelation.Writes));
+            TypeWrites(lineage));
     }
 
     [Fact]
@@ -366,15 +375,19 @@ public sealed class LineageTests : IDisposable
         Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-04-metadata-retrieval"));
 
         // The sample fills an empty partition in the order its records refer to each other, each step after what it reads:
-        // the unit quantities, their capture, the reference data checked against it, the capture of that, the wells, the
-        // wellbores that search for them, and the logs that search for the wellbores.
+        // the reference data, the unit quantities among it, which puts what it delivers into the cache as it runs, the wells
+        // checked against it, the wellbores that search for them, and the logs that search for the wellbores.
         string[] order =
         [
-            "welldb-ref-unitquantity-03-delivery", "osdu-unitquantity-00-cache", "welldb-ref-03-delivery", "osdu-reference-00-cache",
-            "welldb-well-03-delivery", "welldb-wellbore-03-delivery", "welldb-welllog-03-header-delivery",
+            "welldb-ref-03-delivery", "welldb-well-03-delivery", "welldb-wellbore-03-delivery", "welldb-welllog-03-header-delivery",
         ];
         Assert.All(order.Zip(order.Skip(1)), step => Assert.True(
             WaveOf(report, step.First) < WaveOf(report, step.Second), $"{step.First} runs before {step.Second}"));
+
+        // The reference source writes the cache types its records go into, so the nightly refresh of the same types runs
+        // after it, and the wells, which read them, run after both.
+        Assert.True(WaveOf(report, "welldb-ref-03-delivery") < WaveOf(report, "osdu-reference-00-cache"));
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-ref-03-delivery" && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("UnitQuantity"));
 
         // The assertion flow reads the kind the well log delivery writes, so its tests run once the logs have landed.
         Assert.True(WaveOf(report, "welldb-welllog-03-header-delivery") < WaveOf(report, "welldb-welllog-04-header-assertion"));
@@ -431,7 +444,10 @@ public sealed class LineageTests : IDisposable
         Assert.Contains(report.Edges, e => e.Flow is null && e.ViaModule == wellLog && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
         Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-03-header-delivery" && e.ViaModule == wellLog && e.Relation == LineageRelation.Reads && e.ObjectKey == CacheKey("UnitAlias"));
         Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-03-header-delivery" && e.ViaModule == wellLog && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellboreKind));
-        Assert.DoesNotContain(report.Edges, e => e.Flow == "welldb-welllog-03-header-delivery" && e.ViaModule is null && e.ObjectKey == CacheKey("UnitAlias"));
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "welldb-welllog-03-header-delivery" && e.ViaModule is null && e.Relation == LineageRelation.Reads && e.ObjectKey == CacheKey("UnitAlias"));
+
+        // Its before step reads the lookup tables again before it renders, so the flow writes them as well.
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-03-header-delivery" && e.ViaModule is null && e.Relation == LineageRelation.Writes && e.ObjectKey == CacheKey("UnitAlias"));
 
         // The reference cache flow fills the types the mapping's ids are checked against, so it runs before the delivery.
         Assert.True(WaveOf(report, "osdu-reference-00-cache") < WaveOf(report, "welldb-welllog-03-header-delivery"));
@@ -846,7 +862,7 @@ public sealed class LineageTests : IDisposable
         Assert.Equal(
             "delivery flow 'welldb-welllog-03-header-delivery' shows no node for mapping 'WellLog@1.4.0': its partition, group or name is longer than 256 characters, or its identity longer than 900.",
             Assert.Single(lineage.Warnings));
-        Assert.Equal("osdu-type/dev/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0", Datasets(lineage, LineageRelation.Writes));
+        Assert.Equal("osdu-type/dev/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0", TypeWrites(lineage));
         var reads = Datasets(lineage, LineageRelation.Reads);
         Assert.StartsWith(NamedByTheWellLogMapping, reads, StringComparison.Ordinal);
         Assert.Contains("osdu-cache/dev/cache/LogType", reads, StringComparison.Ordinal);

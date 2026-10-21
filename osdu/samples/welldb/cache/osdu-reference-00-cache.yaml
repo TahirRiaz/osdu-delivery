@@ -2,7 +2,9 @@
 #
 # The OSDU reference data the sample's mappings resolve their references against, captured from the partition itself:
 # the records of every reference type a well, a wellbore or a well log of the well database points to, which
-# welldb-ref-03-delivery delivers, so lineage runs this flow after it. The mapping finds each reference in this cache by
+# welldb-ref-03-delivery delivers, so lineage runs this flow after it. That source puts what it delivers into this cache
+# as it runs (its cache.after), so the pipelines after it in a schedule find the values without this flow; this flow is
+# the nightly full refresh, which also brings in values someone else loaded and takes out what OSDU no longer holds. The mapping finds each reference in this cache by
 # its code and writes the id of the record it found, so a log goes out only with references to records the partition
 # holds, and a value the partition has no record for holds the log with the reason, instead of reaching OSDU as a
 # reference to nothing.
@@ -35,6 +37,11 @@ source:
         scope: ${env:OSDU_SCOPE}
 
 types:
+  # UnitQuantity: what the units, curve families and curve types are measured in, which their references are checked
+  # against. Found by Code, then Name, then ID.
+  - kind: "osdu:wks:reference-data--UnitQuantity:*"
+    name: UnitQuantity
+    fields: [data.Code, data.Name, data.ID]
   # CurveUnit, DepthUnit and VerticalMeasurementUnitOfMeasureID, after the unit tables translate the well database's
   # spelling. Found by Code, then Name, then ID.
   - kind: "osdu:wks:reference-data--UnitOfMeasure:*"

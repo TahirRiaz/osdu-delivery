@@ -224,9 +224,18 @@ public sealed class CacheStepsTests
 
     // ---------------------------------------------------------------------------------------------------------------- helpers
 
+    /// <summary>The sample flow with the cache block the test names in place of its own.</summary>
     private static FlowDefinition Flow(string cache)
     {
-        var yaml = File.ReadAllText(Samples.Flow).ReplaceLineEndings("\n").TrimEnd() + "\n" + cache + "\n";
+        var lines = File.ReadAllLines(Samples.Flow).ToList();
+        var start = lines.IndexOf("cache:");
+        if (start >= 0)
+        {
+            var end = lines.FindIndex(start + 1, line => line.Length > 0 && !char.IsWhiteSpace(line[0]));
+            lines.RemoveRange(start, (end < 0 ? lines.Count : end) - start);
+        }
+
+        var yaml = string.Join("\n", lines).TrimEnd() + "\n" + cache + "\n";
         return new DeliveryDocumentLoader().ParseFlow(yaml, Samples.Flow);
     }
 

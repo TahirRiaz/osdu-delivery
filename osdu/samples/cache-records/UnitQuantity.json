@@ -1,0 +1,18 @@
+{
+  "entityType": "reference-data--UnitQuantity",
+  "items": [
+    { "id": "dev:reference-data--UnitQuantity:1", "Code": "1", "Name": "dimensionless", "ID": "1" },
+    { "id": "dev:reference-data--UnitQuantity:A", "Code": "A", "Name": "plane angle", "ID": "A" },
+    { "id": "dev:reference-data--UnitQuantity:API%20gamma%20ray", "Code": "API gamma ray", "Name": "API gamma ray", "ID": "API gamma ray" },
+    { "id": "dev:reference-data--UnitQuantity:L", "Code": "L", "Name": "length", "ID": "L" },
+    { "id": "dev:reference-data--UnitQuantity:L3M%2FI2T3", "Code": "L3M/I2T3", "Name": "electrical resistivity", "ID": "L3M/I2T3" },
+    { "id": "dev:reference-data--UnitQuantity:M%2FL3", "Code": "M/L3", "Name": "mass per volume", "ID": "M/L3" },
+    { "id": "dev:reference-data--UnitQuantity:T%2FL", "Code": "T/L", "Name": "time per length", "ID": "T/L" },
+    { "id": "dev:reference-data--UnitQuantity:dimensionless", "Code": "dimensionless", "Name": "dimensionless", "ID": "dimensionless" },
+    { "id": "dev:reference-data--UnitQuantity:electrical%20resistivity", "Code": "electrical resistivity", "Name": "electrical resistivity", "ID": "electrical resistivity" },
+    { "id": "dev:reference-data--UnitQuantity:length", "Code": "length", "Name": "length", "ID": "length" },
+    { "id": "dev:reference-data--UnitQuantity:mass%20per%20volume", "Code": "mass per volume", "Name": "mass per volume", "ID": "mass per volume" },
+    { "id": "dev:reference-data--UnitQuantity:none", "Code": "none", "Name": "non-dimensional", "ID": "none" },
+    { "id": "dev:reference-data--UnitQuantity:time%20per%20length", "Code": "time per length", "Name": "time per length", "ID": "time per length" }
+  ]
+}

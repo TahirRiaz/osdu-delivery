@@ -86,7 +86,7 @@ export default function globalSetup(): void {
     );
     writeFileSync(
       join(sourceDir, folderOf(flow), `${flow}.yaml`),
-      withoutTheLegalCheck(inDataDatabase(withoutSchedule(shipped, flow), flow, dataDatabase)),
+      withoutTheLegalCheck(inDataDatabase(withoutCacheSteps(withoutSchedule(shipped, flow), flow), flow, dataDatabase)),
     );
   }
 
@@ -296,6 +296,20 @@ function withoutSchedule(yaml: string, flow: string): string {
     .replace(/^(?:#.*\r?\n)*schedule:[ \t]*[A-Za-z0-9_.-]+[ \t]*(?:#.*)?(?:\r?\n|$)/m, "");
   if (/^schedule:/m.test(stripped)) {
     throw new Error(`The fixture flow '${flow}' still declares a schedule block; the e2e suite needs flows that join no schedule.`);
+  }
+
+  return stripped;
+}
+
+/**
+ * A sample flow without its cache steps (its top-level `cache:` block). The suite's runs stop short of OSDU and render
+ * against the cache the seed imports, so a step that would bring the cache up to date before or after a run stays out,
+ * as the platform it reads does.
+ */
+function withoutCacheSteps(yaml: string, flow: string): string {
+  const stripped = yaml.replace(/^cache:\r?\n(?:[ \t].*\r?\n)*/m, "");
+  if (/^cache:/m.test(stripped)) {
+    throw new Error(`The fixture flow '${flow}' still declares a cache block; the e2e suite needs flows whose runs stop short of OSDU.`);
   }
 
   return stripped;
