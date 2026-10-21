@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   orders it: the reference data, which puts what it delivers into the partition's cache as it runs, then wells,
   wellbores and logs, which bring the cache types they read up to date before they render. The reference values and the
   order are explained on [The OSDU order](osdu/docs/reference/concepts/osdu-order.md) and in the
-  [sample](osdu/samples/welldb).
+  [sample](osdu/samples/welldb). The sample also reads OSDU back with every other kind of flow: assertions of the wells
+  (their mapping's own `$assert` rule and known values), dimensions and a view over the logs, a weekly inventory, and a
+  retrieval of the wellbores.
 - **Lineage orders delivery flows by what their records refer to.** A delivery flow runs after the flows of its
   repository delivering the entity types its records refer to, as OSDU's schemas declare them, however its mapping writes
   the reference (a column, a literal, the cache or a search), and each repository sync warns where its waves cannot keep

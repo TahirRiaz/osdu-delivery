@@ -166,7 +166,10 @@ cache as it runs, the wells, the wellbores that name them, and the logs, whose c
 and the logs bring the cache types they read up to date before they render. It has all three parts: a drop-off zone
 with sample files and the flows that load them, the templates its mappings pin (in
 [osdu/samples/templates](osdu/samples/templates)), and cache flows for the lookup tables and the partition's reference
-data. A data quality test checks the logs once they land. `sqlflow lineage welldb` prints the order.
+data. Once the records land it reads OSDU back: tests check the wells against their mapping's rules and the values the
+well database gives, and the logs as delivered; dimensions over the logs, cleaned through a dictionary, give a search
+panel its choices; a weekly inventory sets what OSDU holds against every ledger; and a retrieval reads the wellbores back
+into a lake. `sqlflow lineage welldb` prints the order.
 
 You need a SQL Server and an OSDU instance you can write to. The
 [getting started guide](osdu/docs/reference/guides/getting-started.md) sets up the databases and the OSDU connection,
