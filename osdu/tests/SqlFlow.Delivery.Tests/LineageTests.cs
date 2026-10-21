@@ -20,9 +20,10 @@ namespace SqlFlow.Delivery.Tests;
 /// reads its ingestion tables, its payload files and the mapping it pins, and writes the OSDU type its mapping fills;
 /// the mapping is a node of its own, which reads the cache types it names, the cache types holding what its ids are
 /// checked against, and the kinds it searches; a cache flow reads OSDU types and writes partition cache types; a
-/// retrieval flow reads OSDU types and lands files. The sample estate is copied to a folder of its own, scanned with the
-/// module's kinds registered, and its waves ordered from the files the pre flows read to the OSDU types the delivery
-/// flows write and the flows that read them back. A mapping that cannot be read, or that lies outside the checkout,
+/// retrieval flow reads OSDU types and lands files; a dimension flow reads OSDU types and the dictionaries it cleans values
+/// through, and writes its tables; an inventory flow reads OSDU types only. The sample estate is copied to a folder of
+/// its own, scanned with the module's kinds registered, and its waves ordered from the files the pre flows read to the
+/// OSDU types the delivery flows write and the flows that read them back. A mapping that cannot be read, or that lies outside the checkout,
 /// costs a flow its OSDU nodes with a warning and nothing else; a template lineage cannot read costs it the cache types
 /// only that template tells of.
 /// </summary>
@@ -53,7 +54,7 @@ public sealed class LineageTests : IDisposable
     public LineageTests()
     {
         Directory.CreateDirectory(_root);
-        foreach (var folder in new[] { "flows", "reference", "cache", "mappings", "data" })
+        foreach (var folder in new[] { "flows", "reference", "cache", "dictionaries", "mappings", "data" })
         {
             Copy(Path.Combine(Samples.Source, folder), Path.Combine(_root, Source, folder));
         }
@@ -95,6 +96,7 @@ public sealed class LineageTests : IDisposable
             [
                 new DeliveryFlowKind(documents, templates ?? new MappingTemplateSource(Samples.SampleTemplates)),
                 new CacheFlowKind(documents), new RetrievalFlowKind(documents), new AssertionFlowKind(documents),
+                new DimensionFlowKind(documents), new InventoryFlowKind(documents),
             ]);
     }
 
@@ -103,7 +105,10 @@ public sealed class LineageTests : IDisposable
     {
         var documents = new DeliveryDocumentLoader();
         return YamlDocumentLoader.CreateDefault(
-            [new DeliveryFlowKind(documents), new CacheFlowKind(documents), new RetrievalFlowKind(documents), new AssertionFlowKind(documents)]);
+            [
+                new DeliveryFlowKind(documents), new CacheFlowKind(documents), new RetrievalFlowKind(documents), new AssertionFlowKind(documents),
+                new DimensionFlowKind(documents), new InventoryFlowKind(documents),
+            ]);
     }
 
     /// <summary>
@@ -394,14 +399,40 @@ public sealed class LineageTests : IDisposable
         Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-04-header-assertion" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellLogKind));
         Assert.DoesNotContain(report.Edges, e => e.Flow == "welldb-welllog-04-header-assertion" && e.Relation == LineageRelation.Writes);
 
-        // Every file node is where the flows read and land it, relative to the checkout.
+        // What reads OSDU back runs once what it reads has landed: the wells are tested, the wellbores read back into the
+        // lake, the dimensions built over the logs, and the inventory taken of every kind the estate delivers.
+        foreach (var (writer, reader) in new[]
+        {
+            ("welldb-well-03-delivery", "welldb-well-04-assertion"),
+            ("welldb-wellbore-03-delivery", "welldb-wellbore-04-retrieval"),
+            ("welldb-welllog-03-header-delivery", "welldb-welllog-05-dimensions"),
+            ("welldb-well-03-delivery", "welldb-osdu-06-inventory"),
+            ("welldb-wellbore-03-delivery", "welldb-osdu-06-inventory"),
+            ("welldb-welllog-03-header-delivery", "welldb-osdu-06-inventory"),
+        })
+        {
+            Assert.True(WaveOf(report, writer) < WaveOf(report, reader), $"{writer} runs before {reader}");
+        }
+
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "welldb-well-04-assertion" && e.Relation == LineageRelation.Writes);
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "welldb-osdu-06-inventory" && e.Relation == LineageRelation.Writes);
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-05-dimensions" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellLogKind));
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-05-dimensions" && e.Relation == LineageRelation.Writes);
+        Assert.Contains(report.Edges, e => e.Flow == "welldb-welllog-05-dimensions" && e.Relation == LineageRelation.Reads
+            && report.Objects.Any(o => o.Key == e.ObjectKey && o.Name == InRepo("dictionaries/curve-aliases.yaml")));
+
+        // Every file node is where the flows read and land it: relative to the checkout (the dictionary the dimensions clean
+        // their mnemonics through among them), or the lake folder the wellbores are read back into, named by its account and
+        // container.
         var files = report.Objects.Where(o => o.Kind == LineageNodeKind.File).Select(o => o.Name).Order(StringComparer.Ordinal).ToList();
         Assert.Equal(
             [
+                "az://welldbstorage/lake/osdu/wellbores",
                 InRepo("cache/data/curve-dictionary"), InRepo("cache/data/depth-unit-alias"), InRepo("cache/data/unit-alias"),
                 InRepo("data/curves"), InRepo("data/curves-meta"), InRepo("data/document-files"),
                 InRepo("data/stations"), InRepo("data/well"), InRepo("data/wellbore"),
-                InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("flows/samples/wells/out/metadata"),
+                InRepo("data/wellbore-aliases"), InRepo("data/welllog"), InRepo("dictionaries/curve-aliases.yaml"),
+                InRepo("flows/samples/wells/out/metadata"),
                 InRepo("reference/data/log-curve-business-value"), InRepo("reference/data/log-curve-family"),
                 InRepo("reference/data/log-curve-main-family"), InRepo("reference/data/log-curve-type"),
                 InRepo("reference/data/log-type"), InRepo("reference/data/technical-assurance-type"),
