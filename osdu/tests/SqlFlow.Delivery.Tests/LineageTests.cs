@@ -823,7 +823,8 @@ public sealed class LineageTests : IDisposable
             + "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID, osdu.data.Curves[].CurveUnit and 2 more, and the entity type of each is told by its template "
             + "(osdu:wks:work-product-component--WellLog:1.4.0 version 26a3c3441882db4f), so the cache types those references are checked against are left out. "
             + "Its template is not read: no template folder on the path of welldb/mappings/WellLog@1.4.0.yaml holds template "
-            + "osdu:wks:work-product-component--WellLog:1.4.0 version 26a3c3441882db4f. It reads welldb/templates. Put the template's file in one of them",
+            + "osdu:wks:work-product-component--WellLog:1.4.0 version 26a3c3441882db4f. It reads welldb/templates. Put the file holding version "
+            + "26a3c3441882db4f in one of them",
             lineage.Warnings[0],
             StringComparison.Ordinal);
         Assert.Contains("is not ordered by what its records refer to", lineage.Warnings[1], StringComparison.Ordinal);
