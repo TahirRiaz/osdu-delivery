@@ -109,7 +109,8 @@ play no part in this repository's waves; they run in that repository's schedules
 A delivery that checks its records against a cache type, where every cache flow capturing that type also captures what
 the delivery writes, no longer reads it: the cache flow runs after the delivery instead of the two being ordered in
 neither direction. Reference data that refers to other reference data (a unit to its unit quantity) is then delivered,
-in the order of its references, before the cache flow captures it.
+in the order of its references, before the cache flow captures it; a source whose `cache.after` puts what each interface
+delivers into the cache delivers both in one run, the unit quantities first ([cache](../flow/delivery.md#cache)).
 
 A flow that leaves its partitions to the registry is part of the order of every partition the repository names, so a
 flow of a named partition that refers to what it delivers runs after it, and the other way round.
