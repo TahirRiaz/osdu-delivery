@@ -91,7 +91,7 @@ Every template saved or written is checked the same way, whatever its source:
 
 Without `--for`, every template folder under `<dir>` (by default the repository's top: the nearest folder holding `.git`
 above the current folder, or the current folder), in path order, each file with the template it holds or why it holds
-none. A folder named like a template folder but not exactly (`Templates`), and a template folder reached through a link,
+none. A folder named like a template folder but not exactly (`Templates`, or `template` holding `.json` files), and a template folder reached through a link,
 are warned of on stderr, since no document reads them.
 
 ```text

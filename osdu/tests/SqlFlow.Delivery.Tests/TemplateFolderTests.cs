@@ -315,13 +315,20 @@ public sealed class TemplateFoldersTests : IDisposable
         Write("a/deep/er/templates/y.json", Schema(Thing, "Y"));
         Write("templates/z.json", Schema(Thing, "Z"));
         Write("c/Templates/w.json", Schema(Thing, "W"));
+        Write("d/template/v.json", Schema(Thing, "V"));
+        Write("e/template/notes.md", "A folder of that name kept for something else.");
         Write(".git/templates/ignored.json", Schema(Thing, "Ignored"));
         Write("obj/templates/ignored.json", Schema(Thing, "Ignored"));
         var scan = TemplateFolders.Scan(_root, CancellationToken.None);
         Assert.Equal(["a/deep/er/templates", "b/templates", "templates"], scan.Folders.Select(f => f.Shown));
+
+        // The plural in another case, and the singular holding schema files, are warned of; a singular holding none is not.
         Assert.Equal(
-            ["c/Templates is named 'Templates', and a template folder is named 'templates' exactly, so no document reads the templates in it."],
-            scan.Warnings);
+            [
+                "c/Templates is named 'Templates', and a template folder is named 'templates' exactly, so no document reads the templates in it.",
+                "d/template is named 'template', and a template folder is named 'templates' exactly, so no document reads the templates in it.",
+            ],
+            scan.Warnings.Order(StringComparer.Ordinal));
         Assert.Equal(3, scan.Files.Count());
 
         // The folder named otherwise is not read for a document beside it either: the one above it is.
