@@ -210,8 +210,10 @@ public sealed class DeliveryCliModule : ICliModule
                 "                                   default), and with --out write the bundled schema beside the mapping that",
                 "                                   pins it, so a repository can import it again without the network",
                 "sqlflow template import <schema.json> --kind <kind> [--release <tag>] | import --from-dir <dir> --kind <kind>",
-                "sqlflow template list | show --kind <kind> [--version <v>] | delete --kind <kind> --version <v>",
-                "                                   The templates in the module's database: the OSDU schemas mappings pin (needs --db)",
+                "sqlflow template list | show --kind <kind> [--version <v>] [--out <file.json>] | delete --kind <kind> --version <v>",
+                "                                   The templates in the module's database: the OSDU schemas mappings pin (needs --db);",
+                "                                   show --out writes the saved version's bundled schema to a file, as the",
+                "                                   Templates page downloads it, for a repository to keep",
             ],
             DeliveryVerbs.TemplateAsync)
         {

@@ -200,7 +200,7 @@ See [removal and reversal](removal-and-reversal.md) for what each scope does.
 | `POST /flows/{pipelineId}/check-values` | operate | body `targets` (template paths, at most 200), `values`, `maxRows` (10,000; 0 for the whole scope), `samples` (20), `skipSamples`, `mapping`; `interface`, `partition` | 202 with a compute task that finds the rows whose values the mapping's template will not take. |
 | `GET /templates` | read | | The saved template versions, with origin, who saved each and how many mappings pin it. |
 | `GET /templates/detail` | read | `kind`, `version`, `scope` | One saved version laid out variable by variable; with `scope`, the cached types each variable can read. |
-| `GET /templates/schema` | read | `kind`, `version` | The bundled schema of a saved version. |
+| `GET /templates/schema` | read | `kind`, `version` | The bundled schema of a saved version, as a file to save named after its kind ([a template as a file](templates.md#a-template-as-a-file)). |
 | `POST /templates/preview` | read | body `kind`, `schema`, `scope`, `release` | A bundled schema laid out without saving it. |
 | `POST /templates` | author | body `kind`, `schema`, `origin`, `release` | Saves a template version; `outcome` is `created` or `unchanged`. |
 | `DELETE /templates` | author | `kind`, `version` | Deletes a version; 409 `Template in use` while a synced mapping pins it. |

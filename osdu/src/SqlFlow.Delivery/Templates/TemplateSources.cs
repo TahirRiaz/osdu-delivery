@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Snapshots;
+using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Templates;
@@ -45,6 +46,31 @@ public static class TemplateSources
         ArgumentException.ThrowIfNullOrWhiteSpace(where);
         RequireKind(kind);
         return Validated(kind, ParseObject(json, where), capturedUtc, where);
+    }
+
+    /// <summary>
+    /// A template as a file: the bundled schema indented, its keys in the order the schema was written, which is the form
+    /// <c>osdu/samples/templates</c> keeps the sample schemas in. <see cref="FromBundledJson"/> reads it back as the same
+    /// version, since a version is the hash of the canonical form, so a copy kept in a repository can be checked against
+    /// the version its mappings pin by importing it. The control plane answers it as the file <see cref="FileName"/> names,
+    /// which the Templates page downloads, and <c>sqlflow template</c> writes it with <c>--out</c>.
+    /// </summary>
+    public static string FileText(SchemaSnapshot schema)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        return DocumentJson.Indented(schema.Root);
+    }
+
+    /// <summary>
+    /// The name a template's file goes by: its kind, each colon an underscore
+    /// (<c>osdu_wks_work-product-component--WellLog_1.4.0.json</c>), as <c>osdu/samples/templates</c> names the sample
+    /// schemas. A record kind holds only letters, digits, underscores, dots and dashes between its colons, so every file
+    /// system takes the name as it is.
+    /// </summary>
+    public static string FileName(string kind)
+    {
+        RequireKind(kind);
+        return kind.Replace(':', '_') + ".json";
     }
 
     /// <summary>

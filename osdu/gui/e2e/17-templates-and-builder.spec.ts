@@ -111,6 +111,16 @@ test.describe.serial("templates and the mapping builder", () => {
     await sheet.getByTestId("templates-view-tab-schema").click();
     await expect(sheet.getByTestId("templates-view-schema-json")).toBeVisible({ timeout: 15_000 });
 
+    // Download saves the schema as a file named as the samples name theirs, holding the schema the sample file holds.
+    const [download] = await Promise.all([
+      adminPage.waitForEvent("download"),
+      sheet.getByTestId("templates-view-actions").getByTestId("templates-download").click(),
+    ]);
+    expect(download.suggestedFilename()).toBe(WELLBORE_FILE);
+    expect(JSON.parse(readFileSync(await download.path(), "utf8"))).toEqual(
+      JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "samples", "templates", WELLBORE_FILE), "utf8")),
+    );
+
     // The synced Wellbore mappings pin this version, so Delete sits beside the saved state disabled, and says why.
     await expect(sheet.getByTestId("templates-view-actions").getByTestId("templates-delete")).toBeDisabled();
     await sheet.getByTestId("templates-delete-blocked").hover();

@@ -683,7 +683,14 @@ internal static class DeliveryVerbs
         }).ToArray()),
     };
 
-    public static async Task<int> TemplateAsync(CliVerbContext context)
+    public static Task<int> TemplateAsync(CliVerbContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return TemplateAsync(ModuleCommand.Of(context));
+    }
+
+    /// <summary><c>sqlflow template</c> over the command it runs for, whether the command line or a suite runs it.</summary>
+    internal static async Task<int> TemplateAsync(ModuleCommand context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var ct = context.CancellationToken;
@@ -715,14 +722,7 @@ internal static class DeliveryVerbs
                 // so its templates can be imported again without reaching the data definitions (sqlflow template import).
                 if (context.Arguments.GetOption("--out") is { } outPath)
                 {
-                    var directory = Path.GetDirectoryName(Path.GetFullPath(outPath));
-                    if (!string.IsNullOrEmpty(directory))
-                    {
-                        Directory.CreateDirectory(directory);
-                    }
-
-                    await File.WriteAllTextAsync(outPath, CanonicalJson.Pretty(file.Schema.Root), ct).ConfigureAwait(false);
-                    context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote the bundled schema of {kind} to {Path.GetFullPath(outPath)}"));
+                    await WriteTemplateFileAsync(context, file.Schema, outPath, ct).ConfigureAwait(false);
                 }
 
                 return Report(context, await store.SaveAsync(file.Schema, file.Origin, actor, ct).ConfigureAwait(false));
@@ -789,6 +789,14 @@ internal static class DeliveryVerbs
                     ?? throw new FlowValidationException($"There is no saved template for '{kind}'.");
                 var schema = await store.LoadAsync(new TemplateReference(kind, version), ct).ConfigureAwait(false)
                     ?? throw new FlowValidationException($"There is no template {new TemplateReference(kind, version)}.");
+
+                // The saved version as a file, the one the Templates page downloads, for a repository to keep beside the
+                // mappings that pin it; importing it again saves nothing new.
+                if (context.Arguments.GetOption("--out") is { } outPath)
+                {
+                    await WriteTemplateFileAsync(context, schema, outPath, ct).ConfigureAwait(false);
+                }
+
                 var template = OsduTemplate.From(schema);
                 if (context.Json)
                 {
@@ -855,7 +863,35 @@ internal static class DeliveryVerbs
             () => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, OsduDataDefinitions.DefaultCacheDirectory,
             OsduDataDefinitions.DefaultFreshness, OsduDataDefinitions.DefaultDownloadTimeout, time);
 
-    private static int Report(CliVerbContext context, TemplateSaved saved)
+    /// <summary>
+    /// Writes a template as a file (<see cref="TemplateSources.FileText"/>) to <paramref name="outPath"/>, creating the
+    /// folders it needs, and notes where on stderr, so that stdout stays the subcommand's own output. A path that cannot be
+    /// written is refused with the reason, as every other refusal of the verb is.
+    /// </summary>
+    private static async Task WriteTemplateFileAsync(ModuleCommand context, SchemaSnapshot schema, string outPath, CancellationToken ct)
+    {
+        var reference = new TemplateReference(schema.Kind, schema.Version);
+        string path;
+        try
+        {
+            path = Path.GetFullPath(outPath);
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            await File.WriteAllTextAsync(path, TemplateSources.FileText(schema), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            throw new DeliveryException($"The bundled schema of template {reference} could not be written to '{outPath}': {ex.Message}", ex);
+        }
+
+        context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote the bundled schema of template {reference} to {path}"));
+    }
+
+    private static int Report(ModuleCommand context, TemplateSaved saved)
     {
         if (context.Json)
         {

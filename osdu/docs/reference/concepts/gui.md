@@ -397,8 +397,8 @@ takes it; **Propose to repository** opens a pull request through SQLFlow's propo
 OSDU record schemas saved as templates. Three tabs:
 
 - **Saved**: the saved versions, filtered by kind, version, origin or who saved it, each with where it came from and how
-  many mappings pin it. A version opens laid out as a template; **Delete** is offered only while no synced mapping pins
-  it.
+  many mappings pin it. A version opens laid out as a template; **Download** saves its bundled schema as a file for a
+  repository to keep, and **Delete** is offered only while no synced mapping pins it.
 - **Browse OSDU**: the OSDU data definitions, the Open Group's public repository of OSDU schemas, by **Release**,
   searched by kind, with **Every version**, **Compare versions**, **Save template**, and **Sync with the repository**,
   which reads the release list again and downloads the release in view.
