@@ -177,7 +177,7 @@ test.describe.serial("lineage", () => {
     const tree = adminPage.getByRole("tree", { name: "Catalog tree" });
     await tree.getByRole("treeitem", { name: /^Datasets/ }).click();
     await tree.getByRole("treeitem", { name: /^osdu cache/ }).click();
-    await tree.getByRole("treeitem", { name: new RegExp(`^${PARTITION.replace(/[$.{}]/g, "\\$&")}`) }).first().click();
+    await tree.getByRole("treeitem", { name: new RegExp(`^${PARTITION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) }).first().click();
     await tree.getByRole("treeitem", { name: /^cache/ }).click();
     await expect(tree.getByRole("treeitem", { name: /^UnitOfMeasure/ })).toBeVisible();
   });

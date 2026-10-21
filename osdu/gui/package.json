@@ -59,6 +59,7 @@
     "vite": "^8.3.4"
   },
   "overrides": {
+    "dompurify": "^3.4.16",
     "osdu-delivery-gui-lint": {
       "typescript": "~6.0.3"
     }
