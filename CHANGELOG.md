@@ -96,6 +96,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The sign-in page says what OSDU Delivery is for, and is set on the brand's navy.** In place of four paragraphs of
+  features, it shows the README's pitch in two lines and one sentence, a picture of the kinds of data it delivers
+  (wells, logs, seismic, documents, production data and more) flowing into OSDU, the "powered by SQLFlow" lockup, and the
+  sign-in form, in both themes ([The GUI](osdu/docs/reference/concepts/gui.md)).
 - **The side bar's menu is a tree.** OSDU and the platform's groups are branches, each OSDU section a branch under its
   group and each entry a leaf under its section, every level indented under the one above with a guide line, and a
   group's and a section's name the same size as its entries. Tab enters the menu at the page shown, the arrow keys move
