@@ -6621,7 +6621,9 @@
         "record update",
         "eds"
       ],
-      "related": [],
+      "related": [
+        "delivery-wiki-0019-linked-templates"
+      ],
       "sourceRefs": []
     },
     {
@@ -6902,7 +6904,8 @@
         "delivery-wiki-0009-searched-references",
         "delivery-wiki-0010-assertion-flows-read-only",
         "delivery-wiki-0011-dimension-flows",
-        "delivery-wiki-0016-osdu-order"
+        "delivery-wiki-0016-osdu-order",
+        "delivery-wiki-0019-linked-templates"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
@@ -6918,6 +6921,41 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs",
         "osdu/gui/src/features/delivery/TemplatesPage.tsx",
         "osdu/gui/src/features/delivery/TemplatesBrowseTab.tsx"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0019-linked-templates",
+      "corpus": "wiki",
+      "path": "decisions/0019-linked-templates.md",
+      "title": "Decision 0019: A custom template is linked to its canonical kind, and its records read their parent from OSDU",
+      "type": "decision",
+      "summary": "Why a custom template names its canonical parent kind, why a record's parent is the same minted id, and why it is read from storage as it renders.",
+      "keywords": [
+        "linked template",
+        "custom template",
+        "parent record",
+        "$parent",
+        "x-osdu-inheriting-from-kind",
+        "DDMSDatasets",
+        "same id other namespace",
+        "custom schema"
+      ],
+      "related": [
+        "delivery-wiki-0018-template-folders",
+        "delivery-wiki-0009-searched-references",
+        "delivery-wiki-0004-preserved-keys",
+        "delivery-wiki-0002-client-supplied-ids"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateParent.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.Record.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/EntryValues.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/MappingRenderer.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/OsduRecordSearch.cs",
+        "osdu/src/SqlFlow.Delivery/Validation/Preflight.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Parents.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryLineage.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/ParentDeliveryTests.cs"
       ]
     },
     {
