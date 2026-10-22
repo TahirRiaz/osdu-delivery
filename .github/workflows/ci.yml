@@ -30,12 +30,17 @@ concurrency:
 # Conventions, Power BI extractor, Build and test, Container images and Terraform checks are the checks the main ruleset
 # requires (.github/rulesets/main.json): renaming a job renames its check, so a rename changes both files together. A
 # required job its condition skips counts as passed.
+#
+# A repository that runs CI of its own (a fork with workflows of its own) turns this workflow off with the repository
+# variable CI_ENABLED set to false, as DEPLOY_METHOD turns off the Deploy workflow: every job then skips. Turning it off
+# that way, rather than by editing this file, keeps the file as it is here, so syncing the fork never conflicts on it.
 jobs:
   # The repository's own rules, checked on what a push or a pull request brings: sqlflow/ gains only generic
   # extension points, each in a commit of its own (tools/check-vendored-sqlflow.sh), and no added line carries an
   # em dash and no commit is attributed to an AI assistant (tools/check-conventions.sh).
   conventions:
     name: Conventions
+    if: vars.CI_ENABLED != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -122,6 +127,7 @@ jobs:
   # sanitizers too: a leak or an out-of-bounds read fails the build.
   pbix-extract:
     name: Power BI extractor
+    if: vars.CI_ENABLED != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -146,6 +152,7 @@ jobs:
   # the category fails, naming the trait.
   build-test:
     name: Build and test
+    if: vars.CI_ENABLED != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -215,9 +222,10 @@ jobs:
   full-tests:
     name: Full test suite
     if: >-
+      vars.CI_ENABLED != 'false' && (
       github.event_name == 'workflow_dispatch'
       || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-tests'))
+      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-tests')))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -350,6 +358,7 @@ jobs:
   # workflow. A push, a tag and a run by hand always build them.
   changes:
     name: What the change touches
+    if: vars.CI_ENABLED != 'false'
     runs-on: ubuntu-latest
     outputs:
       images: ${{ steps.paths.outputs.images }}
@@ -392,7 +401,7 @@ jobs:
   images:
     name: Container images
     needs: [ changes ]
-    if: needs.changes.outputs.images == 'true'
+    if: vars.CI_ENABLED != 'false' && needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -541,6 +550,7 @@ jobs:
   # declare. The CLI is the 1.8 line, the floor versions.tf names, so the checks prove the floor holds.
   terraform:
     name: Terraform checks
+    if: vars.CI_ENABLED != 'false'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -579,7 +589,7 @@ jobs:
     # deployment can name an exact build and a rollback has something to name.
     # A tag's images wait for its full test suite too; on main, which runs no full suite, they wait for the rest.
     needs: [ pbix-extract, build-test, images, full-tests ]
-    if: ${{ !cancelled() && !failure() && github.event_name == 'push' && vars.IMAGE_REGISTRY != '' }}
+    if: ${{ vars.CI_ENABLED != 'false' && !cancelled() && !failure() && github.event_name == 'push' && vars.IMAGE_REGISTRY != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -642,7 +652,7 @@ jobs:
   release:
     name: Release
     needs: [ build-test, full-tests ]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: vars.CI_ENABLED != 'false' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -433,7 +433,9 @@ The control plane picks them up on its next attempt, with no redeploy. From then
 ### Deploying from GitHub
 
 A repository deploys one way, and the repository variable `DEPLOY_METHOD` says which: the **Deploy** workflow
-(`.github/workflows/deploy.yml`) runs only when it is `terraform`, and runs the same `deploy.ps1`:
+(`.github/workflows/deploy.yml`) runs only when it is `terraform`, and runs the same `deploy.ps1`. A fork that deploys
+with workflows of its own leaves `DEPLOY_METHOD` unset and sets `CI_ENABLED` to `false`, keeping both workflow files as
+they are so its syncs do not conflict on them ([CONTRIBUTING.md](../../CONTRIBUTING.md#forks)):
 
 - a push to `main` deploys to **dev** once CI has passed on it;
 - **test** and **prod** are promoted by running the workflow by hand from `main` (Actions > Deploy > Run workflow),
