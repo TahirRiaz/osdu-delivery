@@ -288,7 +288,8 @@ jobs:
       # SQLFlow's own suites and the OSDU module's suites, every category, in one run over the solution, one
       # project at a time: the DB-backed suites share the database above and migrate and seed it.
       # The GitHub App live suite signs in as the repository's read-only test App and reads its test repository,
-      # writing nothing (sqlflow/docs/reference/guides/github-app.md); without these it fails, naming them.
+      # writing nothing (sqlflow/docs/reference/guides/github-app.md). The App is optional: where the repository sets
+      # none of these, the suite is skipped.
       - name: Test
         env:
           SQLFLOW_PBIX_EXTRACT: ${{ github.workspace }}/sqlflow/tools/pbix-extract/build/pbix-extract
