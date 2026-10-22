@@ -287,9 +287,14 @@ jobs:
 
       # SQLFlow's own suites and the OSDU module's suites, every category, in one run over the solution, one
       # project at a time: the DB-backed suites share the database above and migrate and seed it.
+      # The GitHub App live suite signs in as the repository's read-only test App and reads its test repository,
+      # writing nothing (sqlflow/docs/reference/guides/github-app.md); without these it fails, naming them.
       - name: Test
         env:
           SQLFLOW_PBIX_EXTRACT: ${{ github.workspace }}/sqlflow/tools/pbix-extract/build/pbix-extract
+          SQLFLOW_TEST_GITHUB_APP_ID: ${{ vars.SQLFLOW_TEST_GITHUB_APP_ID }}
+          SQLFLOW_TEST_GITHUB_APP_PRIVATE_KEY: ${{ secrets.SQLFLOW_TEST_GITHUB_APP_PRIVATE_KEY }}
+          SQLFLOW_TEST_GITHUB_REPOSITORY: ${{ vars.SQLFLOW_TEST_GITHUB_REPOSITORY }}
         run: dotnet test OsduDelivery.sln --no-build -c Release -m:1 --verbosity normal
 
       # The MCP server is Rust: SQLFlow's server as a library, and the product's host that composes it with the
