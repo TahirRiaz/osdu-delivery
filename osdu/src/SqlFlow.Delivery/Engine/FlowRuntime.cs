@@ -1627,6 +1627,8 @@ public sealed partial class FlowRuntime : IDisposable
     /// </summary>
     public Task<RemovalSummary> RemoveAsync(RemovalSelection selection, RemovalChoice scope, bool purgeLedger = false, CancellationToken ct = default)
     {
+        // A selection by filter is resolved here, when the removal runs: whoever queued it (the API, which counted it, or a run
+        // triggered by hand, which did not), what it matches now is what it removes, and never a part of it.
         ArgumentNullException.ThrowIfNull(selection);
         if (purgeLedger && scope is not (RemovalChoice.Record or RemovalChoice.Everything))
         {
@@ -1640,8 +1642,7 @@ public sealed partial class FlowRuntime : IDisposable
         {
             var removalStarted = _context.Time.GetUtcNow().UtcDateTime;
             var ledger = RequireLedger();
-            var keys = selection.Keys
-                ?? await ledger.ListKeysAsync(Flow.Id, selection.Filter!, RemovalLimits.MaxSelection, ct).ConfigureAwait(false);
+            var keys = selection.Keys ?? await FilteredKeysAsync(ledger, selection.Filter!, ct).ConfigureAwait(false);
             var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
             var results = new List<RemovalRecordResult>(keys.Count);
 
@@ -1684,6 +1685,24 @@ public sealed partial class FlowRuntime : IDisposable
             };
             return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
         }, ct);
+    }
+
+    /// <summary>
+    /// The records a removal's listing filter matches now, as the listing counts them. A filter that matches more than one
+    /// removal takes is refused, as the API refuses it, so a removal never takes the part of what it matches that the listing's
+    /// order happens to put first.
+    /// </summary>
+    private async Task<IReadOnlyList<DeliveryKey>> FilteredKeysAsync(ILedger ledger, RecordQuery filter, CancellationToken ct)
+    {
+        var matched = await ledger.CountAsync(Flow.Id, filter, RemovalLimits.MaxSelection + 1, ct).ConfigureAwait(false);
+        if (!matched.Exact || matched.Count > RemovalLimits.MaxSelection)
+        {
+            throw new DeliveryException(string.Create(
+                CultureInfo.InvariantCulture,
+                $"The filter matches more than {RemovalLimits.MaxSelection} records as far as the listing counts; a removal takes at most {RemovalLimits.MaxSelection} at a time. Narrow the filter and remove in parts."));
+        }
+
+        return await ledger.ListKeysAsync(Flow.Id, filter, RemovalLimits.MaxSelection, ct).ConfigureAwait(false);
     }
 
     /// <summary>
