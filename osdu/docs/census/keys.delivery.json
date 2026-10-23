@@ -466,14 +466,14 @@
       "path": "interfaces.<name>.parallelism.fanOut",
       "type": "integer",
       "required": false,
-      "description": "Member runs a large submission spreads over across the fleet, 0 to 64; 0 runs everything on the node that claimed the run. It needs the record table's `primaryKey`, whose ranges the members read. Set here, it overrides the source's value for this interface.",
-      "default": "the source's value, else 0"
+      "description": "The most member runs a submission of `fanOutMinRecords` records or more spreads over across the fleet, 0 to 64; never more than it has work batches for beyond the coordinating run's own. Planning fans out only when the record table names its `primaryKey`, whose ranges the members read; without one, only the sending fans out. 0 runs everything on the node that claimed the run. Set here, it overrides the source's value for this interface.",
+      "default": "the source's value, else 8"
     },
     {
       "path": "interfaces.<name>.parallelism.fanOutMinRecords",
       "type": "integer",
       "required": false,
-      "description": "Below this many records a submission never fans out; at least 1. Set here, it overrides the source's value for this interface.",
+      "description": "Below this many records a submission never fans out, neither its planning nor its sending; at least 1. Set here, it overrides the source's value for this interface.",
       "default": "the source's value, else 1000"
     },
     {
@@ -927,7 +927,7 @@
       "path": "interfaces.<name>.record.primaryKey",
       "type": "string",
       "required": false,
-      "description": "The record table's identity primary key (the ingestion flow's `target.identityColumn`, such as `RecId`): an integer identity column that is the table's single-column primary key. A read pages by it and a fan-out cuts its slices on it; it is required when `parallelism.fanOut` is above 0."
+      "description": "The record table's identity primary key (the ingestion flow's `target.identityColumn`, such as `RecId`): an integer identity column that is the table's single-column primary key. A read pages by it, and a fan-out cuts the read into slices on it; without it the read is planned on one run and only the sending fans out."
     },
     {
       "path": "interfaces.<name>.record.scope",
@@ -1606,14 +1606,14 @@
       "path": "parallelism.fanOut",
       "type": "integer",
       "required": false,
-      "description": "Member runs a large submission spreads over across the fleet, 0 to 64; 0 runs everything on the node that claimed the run. It needs the record table's `primaryKey`, whose ranges the members read.",
-      "default": "0"
+      "description": "The most member runs a submission of `fanOutMinRecords` records or more spreads over across the fleet, 0 to 64; never more than it has work batches for beyond the coordinating run's own. Planning fans out only when the record table names its `primaryKey`, whose ranges the members read; without one, only the sending fans out. 0 runs everything on the node that claimed the run.",
+      "default": "8"
     },
     {
       "path": "parallelism.fanOutMinRecords",
       "type": "integer",
       "required": false,
-      "description": "Below this many records a submission never fans out; at least 1.",
+      "description": "Below this many records a submission never fans out, neither its planning nor its sending; at least 1.",
       "default": "1000"
     },
     {
@@ -2072,7 +2072,7 @@
       "path": "source.record.primaryKey",
       "type": "string",
       "required": false,
-      "description": "The record table's identity primary key (the ingestion flow's `target.identityColumn`, such as `RecId`): an integer identity column that is the table's single-column primary key. A read pages by it and a fan-out cuts its slices on it; it is required when `parallelism.fanOut` is above 0."
+      "description": "The record table's identity primary key (the ingestion flow's `target.identityColumn`, such as `RecId`): an integer identity column that is the table's single-column primary key. A read pages by it, and a fan-out cuts the read into slices on it; without it the read is planned on one run and only the sending fans out."
     },
     {
       "path": "source.record.scope",

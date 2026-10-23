@@ -457,7 +457,13 @@ public sealed class SubmissionIntake
         var workRoot = prepared.WorkRoot;
         var summary = new PlanSummary();
         var batchRecords = Math.Max(1, flow.Parallelism.BatchRecords);
-        var nextBatch = batchBase;
+
+        // A share planned before (a run resuming its submission, a member executed again, a coordinating run planning the
+        // share of a member that was stopped) leaves records queued in batch files that their references point into, and
+        // the plan passes those records over as already queued. Its batches follow the ones written before, so no file a
+        // queued record reads its document from is written again.
+        var previous = await _ledger.LastWorkBatchIndexAsync(submission.SubmissionId, batchBase, checked(batchBase + BatchesPerPartition), ct).ConfigureAwait(false);
+        var nextBatch = previous is { } last ? checked(last + 1) : batchBase;
         var batches = 0;
         long staged = 0;
 

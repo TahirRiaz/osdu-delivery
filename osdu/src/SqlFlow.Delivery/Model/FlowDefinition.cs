@@ -1030,10 +1030,15 @@ public sealed record FlowParallelism
     public int Concurrency { get; init; } = 8;
 
     /// <summary>
-    /// The most member runs a deliver run spreads a large submission over across the fleet, planning first, then sending
-    /// (osdu/docs/reference/concepts/submissions.md, Many nodes). 0 keeps everything on the run that claimed the work.
+    /// The most member runs a deliver run spreads a submission of at least <see cref="FanOutMinRecords"/> records over across
+    /// the fleet, planning first (when the record table names its identity primary key), then sending, never more than it
+    /// has work batches for (osdu/docs/reference/concepts/submissions.md, Many nodes). <see cref="DefaultFanOut"/> unless the
+    /// flow says otherwise; 0 keeps everything on the run that claimed the work.
     /// </summary>
-    public int FanOut { get; init; }
+    public int FanOut { get; init; } = DefaultFanOut;
+
+    /// <summary>How many member runs a large submission spreads over unless the flow says otherwise.</summary>
+    public const int DefaultFanOut = 8;
 
     /// <summary>Fan out only when the source holds at least this many candidate records, or a submission this many planned ones. Default 1000.</summary>
     public int FanOutMinRecords { get; init; } = 1000;

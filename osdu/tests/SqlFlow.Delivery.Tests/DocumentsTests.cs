@@ -215,23 +215,27 @@ public class YamlDocumentLoaderTests
         Assert.Equal("flow.yaml: " + expected, refused.Message);
     }
 
+    /// <summary>
+    /// A flow fans out unless it says otherwise, and needs no identity primary key to: without one its read is planned on the
+    /// coordinating run and its sending still fans out; with one the read is cut on it and planned across the fleet too.
+    /// </summary>
     [Fact]
-    public void A_fan_out_needs_the_record_table_s_identity_primary_key()
+    public void A_flow_fans_out_by_default_and_needs_no_primary_key_to()
     {
         var loader = new DeliveryDocumentLoader();
         var flow = Flow.ReplaceLineEndings("\n");
-        Assert.Null(loader.ParseFlow(flow, "f").Source.Record.PrimaryKey);
+        var parsed = loader.ParseFlow(flow, "f");
+        Assert.Null(parsed.Source.Record.PrimaryKey);
+        Assert.Equal(FlowParallelism.DefaultFanOut, parsed.Parallelism.FanOut);
+        Assert.Equal(1000, parsed.Parallelism.FanOutMinRecords);
 
-        // Without one, a flow reads by its record key on one node; asked to fan out, it is refused and told what to name.
         var fanned = flow.Replace("  concurrency: 2", "  concurrency: 2\n  fanOut: 4", StringComparison.Ordinal);
-        var refused = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(fanned, "f.yaml"));
-        Assert.StartsWith("f.yaml:", refused.Message, StringComparison.Ordinal);
-        Assert.Contains("source.record.primaryKey names none", refused.Message, StringComparison.Ordinal);
-        Assert.Contains("target.identityColumn", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(4, loader.ParseFlow(fanned, "f").Parallelism.FanOut);
+        Assert.Equal(0, loader.ParseFlow(flow.Replace("  concurrency: 2", "  concurrency: 2\n  fanOut: 0", StringComparison.Ordinal), "f").Parallelism.FanOut);
 
         var keyed = fanned.Replace("    key: [source_project, log_id]\n", "    key: [source_project, log_id]\n    primaryKey: RecId\n", StringComparison.Ordinal);
-        var parsed = loader.ParseFlow(keyed, "f");
-        Assert.Equal(("RecId", 4), (parsed.Source.Record.PrimaryKey, parsed.Parallelism.FanOut));
+        var parsedKeyed = loader.ParseFlow(keyed, "f");
+        Assert.Equal(("RecId", 4), (parsedKeyed.Source.Record.PrimaryKey, parsedKeyed.Parallelism.FanOut));
 
         var bracketed = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(keyed.Replace("primaryKey: RecId", "primaryKey: \"[RecId]\"", StringComparison.Ordinal), "f"));
         Assert.Contains("source.record.primaryKey", bracketed.Message, StringComparison.Ordinal);
