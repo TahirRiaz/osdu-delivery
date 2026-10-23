@@ -640,6 +640,7 @@ the document loads; its values are checked by each run, as a trigger's are.
 | `sync` | Reads the ledger's records from the ingestion tables and consolidates the ledger; sends nothing. |
 | `reverse` | Puts OSDU back as it was before one run or submission. |
 | `undo` | Undoes what deliveries that did not complete left in OSDU. |
+| `remove` | Removes the records the payload names from OSDU to the extent its scope asks, and from the ledger with `purgeLedger`: what **Remove** on the Records tab queues. |
 | `delete-ledger` | Removes every record of the ledger from OSDU (reversibly), then deletes the ledger; the payload names the partition to confirm. |
 
 The payload each operation takes, the result and the exit codes are on [running an OSDU flow](../cli/run.md).

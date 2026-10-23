@@ -714,6 +714,7 @@
         "verify",
         "reverse",
         "undo",
+        "remove records",
         "delete-ledger",
         "refresh",
         "trigger",
@@ -929,7 +930,6 @@
         "private networks",
         "worker container image",
         "delivery-check-values",
-        "delivery-delete",
         "positional argument refused",
         "hosted service failed to start"
       ],
