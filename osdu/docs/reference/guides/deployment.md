@@ -114,12 +114,11 @@ the node's options (`--pool` from `SQLFLOW_WORKER_POOL`, `--poll-seconds`, `--dr
 run another verb.
 
 What brings the workers up is queued runs, and a delivery queues more than one: a submission of 1,000 records or more fans
-out by default over up to eight member runs of the same flow, which the replica target counts like any other queued run,
+out by default over up to eight slice runs of the same flow, which the replica target counts like any other queued run,
 so a large delivery scales the pool out and an idle one lets it go back
 ([submissions](../concepts/submissions.md#many-nodes), `parallelism` on the [delivery flow](../flow/delivery.md#parallelism)).
-Its members read and write the delivery's work batches on whichever node runs them, so a flow fans out only when its
-`source.work` is on storage every node reaches, such as the deployment's own, `${env:LANDING_URL}/.work/<flow>`; a relative
-`source.work` is a folder in each worker's own copy of the repository, and keeps the delivery on one run.
+Each slice run delivers its own share of the records from the worker that takes it, its work batches in that worker's own
+copy of the repository, so the workers need no storage in common for it.
 The pool never grows past its ceiling (`worker_max_replicas` in Terraform, `workerMaxReplicas` in Bicep, 10 by default).
 
 ## The databases

@@ -122,7 +122,7 @@ Nothing in the vendored `sqlflow/` names OSDU. Each point below is generic, and 
 | Host modules (`IControlPlaneModule`, `ICliModule`, `McpModule`) and branding (`ProductBranding`) | The module itself in each host, and the product's name |
 | Flow kinds, companion documents and executors | The eight document kinds and six executors above |
 | Run parameters (operation, values, payload, requester) | Each kind's operations and payload, carried by a run or a schedule fire |
-| Fan-out (`IRunFanOut`) | A large delivery spreading its intake and drain over member runs |
+| Fan-out (`IRunFanOut`) | A large delivery queued again once per share of its key slices, each run delivering its share |
 | Compute operations (`IComputeOperation`) | The value check and the removal a node runs |
 | Module database (`ModuleDatabase`, `IsReachableOn`) | `OsduDbContext` over the `osdu` schema, migrated, reported and verified with the catalog |
 | Catalog sync extension (`ICatalogSyncExtension`) | Mappings, cache definitions and interfaces as rows, and the question whether lineage must be computed again |

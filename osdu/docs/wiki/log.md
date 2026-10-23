@@ -266,3 +266,15 @@ host reaches it through the catalog's connection, a node through `SQLFLOW_CATALO
 `Osdu:Database:Connection` and `osdu_database_name` are refused rather than ignored; why the control plane owns the
 schema; and why a database of the module's own was dropped. Brought the pattern catalog's nodes-in-a-customer-network
 row to the variable. Indexed 0026.
+
+## [2026-10-23] ingest | A fan-out is the flow queued once per share, decision 0025 amended
+
+Source: the human's review of the two-stage fan-out and of the shared work folder built for it: one pipeline
+execution is split into sub-executions of the same pipeline, each with its filter, and nothing passes between them.
+Read with SQLFlow's run fan-out (`sqlflow/src/SqlFlow.Orchestration/IRunFanOut.cs`) and its export segments
+(`sqlflow/src/SqlFlow.SqlServer/Export/ExportSegmentPlanner.cs`), which the human asked to reuse where they fit.
+
+Amended [0025](decisions/0025-parallelism-and-default-fan-out.md): each run of a fan-out delivers its own share of the
+key slices from its own node, on SQLFlow's run fan-out, in place of intake and drain members over a shared work folder;
+the export's segment planner was looked at for the cut and not taken. [0006](decisions/0006-work-batches.md) says the
+same.
