@@ -113,7 +113,7 @@ window is anchored on an OSDU flow. `--assertions-only` is refused for every kin
 
 | Kind | Needs the module database for |
 | --- | --- |
-| `delivery` | Every operation: the ledger, the templates and the partition's cache live there. Without it a run fails, for example with `This host has no osdu database connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB); the delivery ledger, templates and caches are unavailable. ...` |
+| `delivery` | Every operation: the ledger, the templates and the partition's cache live there. Without it a run fails, for example with `This host has no osdu database connection; the delivery ledger and caches are unavailable. ...` |
 | `cache` | `refresh`: it writes the version into the partition's cache. |
 | `assertion` | `test`: it keeps the report there. |
 | `dimension` | `build`: it keeps the builds there, and reads the templates of the kinds the dimensions read. |
@@ -121,9 +121,8 @@ window is anchored on an OSDU flow. `--assertions-only` is refused for every kin
 | `removal` | Every operation: it compares with the delivery ledgers kept there, and keeps its runs and the deletions it finds in them. |
 | `retrieval` | Nothing; when it has one, each `retrieve` is recorded in the flow's ledger. |
 
-On a workstation the module database is the catalog's (`--db`, else `${env:SQLFLOW_CATALOG_DB}`) unless
-`SQLFLOW_OSDU_DB` names one of its own ([The osdu module database in sqlflow db](db.md)). A node takes it from
-`SQLFLOW_OSDU_DB` alone. The flow's own references (its ingestion connection, the OSDU endpoint and credentials) resolve
+The module database is the catalog's: on a workstation `--db`, else `${env:SQLFLOW_CATALOG_DB}`, and on a node
+`${env:SQLFLOW_CATALOG_DB}` alone ([The osdu module database in sqlflow db](db.md)). The flow's own references (its ingestion connection, the OSDU endpoint and credentials) resolve
 on the machine that runs it, from the central configuration a run carries first ([sqlflow config](config.md)) and the
 environment after. The control plane attaches that configuration to the runs it queues of every OSDU kind (an
 inventory's `remove` run included); a `sqlflow run` on a workstation carries none and resolves from the environment
