@@ -13,6 +13,7 @@ using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Verify;
 using SqlFlow.Delivery.Engine.Worker;
+using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -932,7 +933,7 @@ public sealed partial class FlowRuntime : IDisposable
         }
 
         var store = _context.Cache ?? throw new DeliveryException(
-            $"Pipeline '{Flow.Label}' names cache steps, and caches live in the module's database, which this host was started without. Start it with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB).");
+            $"Pipeline '{Flow.Label}' names cache steps, and caches live in the module's database, which this host was started without. {OsduModuleDatabase.StartWithCatalogConnection}");
         var scope = await LedgerRegistration.PartitionAsync(Flow, _context.Secrets, ct).ConfigureAwait(false);
         var declaration = await store.DeclarationAsync(scope, ct).ConfigureAwait(false);
 
