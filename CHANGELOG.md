@@ -133,6 +133,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A removal is a run of the flow, listed under Runs.** **Remove** on the Records tab and on a record's page queues a
+  `remove` run of the pipeline, which shows under **Runs** with its trace and outcome, waits for a delivery of the
+  pipeline that is running, and ends failed when OSDU refuses a record; the removal routes answer `runId` in place of
+  `taskId`, and the `delivery-delete` node task is gone
+  ([Removing records from OSDU](osdu/docs/reference/concepts/removal-and-reversal.md#removing-records-from-osdu)).
 - **What runs at once is a flow's `parallelism` block; `reliability` keeps what makes a request hold.** `concurrency`,
   `fanOut`, `fanOutMinRecords`, `batchRecords` and `batchSize` move from `reliability` to `parallelism`,
   `renderParallelism` becomes `parallelism.renderers` and `parallelInterfaces` `parallelism.interfaces`, and an
@@ -285,6 +290,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Removing every record of a listing narrowed to an issue removes only that issue's records.** **Select all N
+  matching**, then **Remove**, on a Records tab opened from the Issues tab took out of OSDU every record the rest of the
+  filter matched, not just those the issue keeps blocked; the removal now carries the whole filter, and refuses one that
+  matches more than 25,000 records when it runs as well as when it is asked
+  ([Removing records from OSDU](osdu/docs/reference/concepts/removal-and-reversal.md#removing-records-from-osdu)).
 - **A delivery never waits for ever on member runs no node starts.** A coordinating run whose members stay queued, on a
   pool with no place free, stops them and does their part itself: its sending at once, its planning after three minutes
   ([many nodes](osdu/docs/reference/concepts/submissions.md#many-nodes)).

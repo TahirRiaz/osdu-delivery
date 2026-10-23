@@ -85,7 +85,7 @@ A run of a delivery flow performs one operation, the one it names (`sqlflow run 
 | `replan` | Read every row of the scope again and deliver what renders differently. |
 | `verify` | Read back delivered records from OSDU and record `match`, `drifted` or `missing`: up to 5,000 records a run, those not verified in the last 24 hours unless forced. |
 | `sync` | Consolidate the ledger with the ingestion tables; renders and sends nothing ([Removal and reversal](removal-and-reversal.md#syncing-the-ledger-with-the-source)). |
-| `reverse`, `undo`, `delete-ledger` | Put back what a run delivered, undo unfinished deliveries, delete the ledger ([Removal and reversal](removal-and-reversal.md)). |
+| `reverse`, `undo`, `remove`, `delete-ledger` | Put back what a run delivered, undo unfinished deliveries, remove records, delete the ledger ([Removal and reversal](removal-and-reversal.md)). |
 
 Every operation of a source with interfaces runs each interface it selects in order ([Interfaces](../flow/interfaces.md)),
 each under its own ledger identity, as a run of that interface alone would.
