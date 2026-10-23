@@ -686,7 +686,7 @@ public sealed partial class FlowRuntime : IDisposable
 
     /// <summary>Intake plus drain, fanned out across the fleet when the flow asks for it: the <c>deliver</c> operation.</summary>
     public Task<RunResult> RunAsync(bool force, CancellationToken ct = default)
-        => TrackAsync("deliver", new { force, source = Flow.Source.Record.Object, selection = Selection.Describe(), parameters = Parameters, fanOut = Flow.Reliability.FanOut }, null, async () =>
+        => TrackAsync("deliver", new { force, source = Flow.Source.Record.Object, selection = Selection.Describe(), parameters = Parameters, fanOut = Flow.Parallelism.FanOut }, null, async () =>
         {
             var started = _context.Time.GetUtcNow().UtcDateTime;
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
@@ -2295,10 +2295,10 @@ public sealed partial class FlowRuntime : IDisposable
         SubmissionId = submission.SubmissionId;
         var header = prepared.Header;
         var dispatcher = _context.Dispatcher;
-        var fanOut = Flow.Reliability.FanOut;
-        var slices = KeySlices.Count(header.Source.EstimatedCandidates, Flow.Reliability.BatchRecords);
+        var fanOut = Flow.Parallelism.FanOut;
+        var slices = KeySlices.Count(header.Source.EstimatedCandidates, Flow.Parallelism.BatchRecords);
         var applies = fanOut > 0 && dispatcher.Available && RunId is not null && slices >= 2
-            && header.Source.EstimatedCandidates >= Flow.Reliability.FanOutMinRecords
+            && header.Source.EstimatedCandidates >= Flow.Parallelism.FanOutMinRecords
             && slices - 1 <= SubmissionIntake.MaxFanOutPartition;
         // The candidates are cut on the record table's identity primary key; when they sit so close together that fewer
         // than two ranges come out, the read is one run's. A submission planned again that was cut before keeps its cut:
@@ -2382,10 +2382,10 @@ public sealed partial class FlowRuntime : IDisposable
     private async Task<(WorkerSummary Work, int Members)> DrainWithFanOutAsync(SubmissionState submission, Action<FanOutHandle?> track, CancellationToken ct)
     {
         var dispatcher = _context.Dispatcher;
-        var fanOut = Flow.Reliability.FanOut;
+        var fanOut = Flow.Parallelism.FanOut;
         var members = 0;
         FanOutHandle? handle = null;
-        if (fanOut > 0 && dispatcher.Available && RunId is not null && submission.Planned >= Flow.Reliability.FanOutMinRecords)
+        if (fanOut > 0 && dispatcher.Available && RunId is not null && submission.Planned >= Flow.Parallelism.FanOutMinRecords)
         {
             var parameters = Enumerable.Range(0, fanOut)
                 .Select(_ => new RunParameters

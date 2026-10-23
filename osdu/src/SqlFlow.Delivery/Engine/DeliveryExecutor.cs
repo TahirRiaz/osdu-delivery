@@ -635,7 +635,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         var summary = new PlanSummary();
         var sample = new List<PlanSampleEntry>(PlanSampled);
         long shown = 0;
-        await foreach (var entry in planner.EntriesAsync(header, null, runtime.Flow.Reliability.EffectiveRenderParallelism, summary, ct).ConfigureAwait(false))
+        await foreach (var entry in planner.EntriesAsync(header, null, runtime.Flow.Parallelism.EffectiveRenderers, summary, ct).ConfigureAwait(false))
         {
             if (shown++ < PlanEntriesLogged)
             {

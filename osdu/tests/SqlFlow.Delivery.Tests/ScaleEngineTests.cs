@@ -38,7 +38,7 @@ public class ScaleEngineTests : IDisposable
         var ledger = _db.Ledger(_clock);
         var engine = Samples.Engine(ledger, _clock, sources: tables);
         var local = Samples.LocalFlow(_root);
-        var flow = local with { Reliability = local.Reliability with { BatchRecords = 2 } };
+        var flow = local with { Parallelism = local.Parallelism with { BatchRecords = 2 } };
         using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
         await ledger.RegisterAsync(runtime.Flow);
         var protocol = new FakeProtocol();
@@ -150,7 +150,7 @@ public class ScaleEngineTests : IDisposable
         var ledger = _db.Ledger(_clock);
         var protocol = new FakeProtocol();
         var local = Samples.LocalFlow(_root);
-        var flow = local with { Reliability = local.Reliability with { FanOut = 2, FanOutMinRecords = 1, BatchRecords = 1 } };
+        var flow = local with { Parallelism = local.Parallelism with { FanOut = 2, FanOutMinRecords = 1, BatchRecords = 1 } };
         var dispatcher = new InlineDispatcher(flow);
         var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = new FakeProtocolFactory(protocol), FanOut = dispatcher };
         dispatcher.Engine = engine;

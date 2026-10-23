@@ -253,7 +253,7 @@ public sealed class DeliveryWorker
             return summary with { Waiting = summary.Waiting + waited };
         }
 
-        var due = await _ledger.ClaimAsync(_flow.Id, submissionId, _workerId, _flow.Reliability.BatchSize, Lease, now, RunId, Waits, _flow.Reliability.Retry.Attempts, ct).ConfigureAwait(false);
+        var due = await _ledger.ClaimAsync(_flow.Id, submissionId, _workerId, _flow.Parallelism.BatchSize, Lease, now, RunId, Waits, _flow.Reliability.Retry.Attempts, ct).ConfigureAwait(false);
         var waitedDue = await ReportWaitingAsync(due.Waiting, submissionId, ct).ConfigureAwait(false);
         if (due.Lease is not { } lease)
         {
@@ -593,7 +593,7 @@ public sealed class DeliveryWorker
         }
 
         var groups = Group(loaded, Math.Max(1, _protocol.MaxBatch));
-        using var gate = new SemaphoreSlim(Math.Max(1, _flow.Reliability.Concurrency));
+        using var gate = new SemaphoreSlim(Math.Max(1, _flow.Parallelism.Concurrency));
         var tasks = groups.Select(async group =>
         {
             void NeverStarted()

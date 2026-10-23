@@ -138,7 +138,7 @@ and not forced, in which case nothing is done. A `drain` with `submissionId` sen
 ## Work batches
 
 The intake streams the rendered documents into JSON Lines files under the flow's work location (`source.work`),
-`reliability.batchRecords` documents a file (500 by default). `osdu.WorkBatch` holds one row per file: its submission and
+`parallelism.batchRecords` documents a file (500 by default). `osdu.WorkBatch` holds one row per file: its submission and
 index, location, record count, status (`queued`, `running`, `done`, `failed`), the lease draining it, and how its drain ended
 (delivered, held, failed, retrying, waiting). A record points at its batch and its `batch:offset:length` range; the document
 itself is never stored in the database. The work location needs write access from every node that runs the flow, and its
@@ -153,14 +153,14 @@ next one is full:
 | Stage | What it holds at a time |
 | --- | --- |
 | **The read.** The candidate keys are read a page at a time in key order (the identity primary key when the flow declares `source.record.primaryKey`, else the record key), `source.incremental.pageSize` keys a page (1,000 by default, at most 100,000). One command per page returns the page's rows with their child datasets, under `source.incremental.isolation` (snapshot by default); a page the database ends as a deadlock victim is read again, up to four reads in all. The records are cut into render batches of 200. | One page of records, and the render batch being filled |
-| **The renderers.** `reliability.renderParallelism` renderers (half the node's processors when 0, at least one, at most 256) each take a render batch, look its 200 records up in the ledger in one lookup, and decide and render each ([What is decided for each record read](change-detection.md#what-is-decided-for-each-record-read)). | Between the read and the renderers, at most twice the render parallelism of render batches; one batch per renderer in hand |
-| **The intake.** One consumer takes each batch of plan entries, writes every document to send into the open [work batch](#work-batches) file, and writes the ledger: skipped and held records 200 at a time, records to send when the work batch reaches `reliability.batchRecords`. | Between the renderers and the intake, at most twice the render parallelism of batches of plan entries; one work batch's ledger rows |
+| **The renderers.** `parallelism.renderers` renderers (half the node's processors when 0, at least one, at most 256) each take a render batch, look its 200 records up in the ledger in one lookup, and decide and render each ([What is decided for each record read](change-detection.md#what-is-decided-for-each-record-read)). | Between the read and the renderers, at most twice the render parallelism of render batches; one batch per renderer in hand |
+| **The intake.** One consumer takes each batch of plan entries, writes every document to send into the open [work batch](#work-batches) file, and writes the ledger: skipped and held records 200 at a time, records to send when the work batch reaches `parallelism.batchRecords`. | Between the renderers and the intake, at most twice the render parallelism of batches of plan entries; one work batch's ledger rows |
 
 **When a stage falls behind.** When the renderers fall behind the read, the channel between them fills and the read waits
 on its next batch, so no further page is read until a renderer takes one. When the intake falls behind (a slow work
 location, a busy ledger), the channel before it fills, the renderers wait to hand on their entries, and the read stops in
 turn. Nothing is dropped and nothing spills to disk: the slowest stage sets the pace. What a node holds for a plan is set
-by the page size, the render parallelism and `reliability.batchRecords`, whatever the size of the table.
+by the page size, the renderers and `parallelism.batchRecords`, whatever the size of the table.
 
 **Order and failure.** The renderers finish batches in any order, so entries reach the intake in no particular order; each
 record is decided on its own, and a whole-scope plan moves the watermark only when its planning has finished. A failure
@@ -178,7 +178,7 @@ flow, the submission, the batch, the owner, and an expiry.
 
 - **Claim.** A drain claims the oldest queued batch of the flow (or of one submission): the lease row and the batch's move
   to `running` commit together, so two workers never hold one batch. Records due for a retry outside a running batch are
-  claimed `reliability.batchSize` at a time (50 by default, at most 500). Either way a record moves from `pending` to
+  claimed `parallelism.batchSize` at a time (50 by default, at most 500). Either way a record moves from `pending` to
   `delivering` by a compare-and-swap that also adds one to its tries, so two leases never hold one record.
 - **Renew.** The worker renews its one lease row every half lease (at least a second apart). The lease lasts
   `reliability.leaseSeconds` (300 by default). A renewal that finds the lease taken over stops the worker.
@@ -211,8 +211,8 @@ own `reliability.leaseSeconds` belongs to a live worker and is left alone with a
 
 ## Many nodes
 
-`reliability.fanOut` spreads one submission over member runs across the fleet. When the read holds at least
-`reliability.fanOutMinRecords` candidates (1,000 by default), the coordinating run cuts the candidate keys into slices on the
+`parallelism.fanOut` spreads one submission over member runs across the fleet. When the read holds at least
+`parallelism.fanOutMinRecords` candidates (1,000 by default), the coordinating run cuts the candidate keys into slices on the
 record table's identity primary key (`source.record.primaryKey`), hands slices to up to `fanOut` intake members, plans its
 own share, and finalises the submission with every member's totals. A member that fails stops the coordinating run with
 `Intake member <slot> (run <id>) <status>: <error>. The submission stays planned as far as it got: re-run it to finish the intake now, or the flow's next deliver run takes it over, sends what it planned and closes it, and plans the rest in its own window.`
