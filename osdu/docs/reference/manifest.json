@@ -3950,6 +3950,7 @@
         "delivery-table-removed-key",
         "delivery-table-removal-run",
         "delivery-table-removal-key",
+        "delivery-wiki-0022-removal-flows",
         "flow-source",
         "flow-schedule"
       ],
@@ -7044,7 +7045,8 @@
         "soft delete"
       ],
       "related": [
-        "delivery-wiki-0013-inventory-flows"
+        "delivery-wiki-0013-inventory-flows",
+        "delivery-wiki-0022-removal-flows"
       ],
       "sourceRefs": []
     },
@@ -7263,6 +7265,37 @@
       ]
     },
     {
+      "id": "delivery-wiki-0022-removal-flows",
+      "corpus": "wiki",
+      "path": "decisions/0022-removal-flows.md",
+      "title": "Decision 0022: a removal flow reads the source's keys whole and keeps its deletions in the delivery ledger",
+      "type": "decision",
+      "summary": "Why records a source dropped are found by a flow kind of its own, read from the source, and kept as the delivery ledger's deletions, taken out once.",
+      "keywords": [
+        "removal flow",
+        "deletion detection",
+        "matchKeys",
+        "full key read",
+        "ledger deletions",
+        "guard",
+        "incremental removal"
+      ],
+      "related": [
+        "delivery-wiki-0013-inventory-flows",
+        "delivery-wiki-0014-inventory-removals",
+        "delivery-wiki-0002-client-supplied-ids"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Documents/RemovalFlowKind.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Removals/RemovalRunner.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Removals/RemovalKeySources.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.SourceRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Removal.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs",
+        "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs"
+      ]
+    },
+    {
       "id": "delivery-wiki-pattern-catalog",
       "corpus": "wiki",
       "path": "maps/pattern-catalog.md",
@@ -7286,7 +7319,8 @@
       ],
       "related": [
         "wiki-pattern-catalog",
-        "delivery-wiki-0018-template-folders"
+        "delivery-wiki-0018-template-folders",
+        "delivery-wiki-0022-removal-flows"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Documents/CacheDocumentMapper.cs",
@@ -7310,6 +7344,8 @@
         "osdu/docs/census/keys.mapping.json",
         "osdu/docs/census/keys.assertion.json",
         "osdu/docs/census/keys.inventory.json",
+        "osdu/docs/census/keys.removal.json",
+        "osdu/src/SqlFlow.Delivery/Documents/RemovalFlowKind.cs",
         "osdu/gui/src/module.tsx"
       ]
     }
