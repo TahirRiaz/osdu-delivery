@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
+using SqlFlow.Core.Engine;
 using SqlFlow.Core.Runs;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
@@ -414,6 +415,16 @@ public sealed partial class FlowRuntime : IDisposable
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(flow);
+
+        // A work location that names a reference (${env:LANDING_URL}/.work/...) is resolved once, as the run opens, with the
+        // run's own values, by the rule SQLFlow resolves a file flow's location with; every member of a fan-out resolves it
+        // the same way from the configuration it is handed, so all of them write and read the same batches.
+        if (SourceLocations.NamesReference(flow.Source.Work))
+        {
+            var work = await SourceLocations.ResolveAsync(flow.Source.Work, "source.work", context.Secrets, ct).ConfigureAwait(false);
+            flow = flow with { Source = flow.Source with { Work = work } };
+        }
+
         var values = FlowParameters.Resolve(flow, parameters);
         var layout = DeliveryLayout.Resolve(flow);
         var mappings = new MappingCatalog(layout.MappingsDirectory, context.Documents);
@@ -2456,7 +2467,7 @@ public sealed partial class FlowRuntime : IDisposable
         var declared = work.Trim();
         return declared.Contains("://", StringComparison.Ordinal) || Path.IsPathRooted(declared)
             ? null
-            : $"source.work '{declared}' is a folder in this node's copy of the repository, which no other node reads; put it on storage every node reaches (a storage URI) to fan out";
+            : $"source.work '{declared}' is a folder in this node's copy of the repository, which no other node reads; write it on storage every node reaches, such as the deployment's (${{env:LANDING_URL}}/.work/...), to fan out";
     }
 
     /// <summary>Why <paramref name="records"/> <paramref name="what"/> are too few to fan out, or null when they are enough.</summary>
