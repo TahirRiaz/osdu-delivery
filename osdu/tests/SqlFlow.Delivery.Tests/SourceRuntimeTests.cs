@@ -655,6 +655,10 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.All(members.Enqueued, member => Assert.Equal("welllogs", member.Payload.Interface));
         Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Intake);
         Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Drain);
+
+        // One member beside the coordinating run: each sends under half the flow's rate limit, taken from its payload by the
+        // executor that runs it.
+        Assert.All(members.Enqueued, member => Assert.Equal(2, member.Payload.RateShare));
         Assert.Equal(5, (await engine.Ledger!.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
     }
 

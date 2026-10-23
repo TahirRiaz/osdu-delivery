@@ -1824,13 +1824,6 @@ internal static partial class FlowMapper
             throw new FlowValidationException($"{source}: {paths.Shared("parallelism.fanOutMinRecords")} must be at least 1.");
         }
 
-        if (flow.Parallelism.FanOut > 0 && flow.Source.Record.PrimaryKey is null)
-        {
-            throw new FlowValidationException(
-                $"{source}: {paths.Shared("parallelism.fanOut")} spreads a submission over ranges of the record table's identity primary key, and {paths.Record}.primaryKey names none. "
-                + $"Name the column (the ingestion flow creates it with target.identityColumn, for example RecId), or set {paths.Shared("parallelism.fanOut")} to 0.");
-        }
-
         if (flow.Parallelism.Renderers is < 0 or > FlowParallelism.MaxRenderers)
         {
             throw new FlowValidationException($"{source}: {paths.Shared("parallelism.renderers")} must be between 0 and {FlowParallelism.MaxRenderers}.");

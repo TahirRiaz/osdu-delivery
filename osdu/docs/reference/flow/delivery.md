@@ -238,7 +238,7 @@ where each record's files are.
 | `connection` | string | required | The database holding the ingestion tables, as a `${env:NAME}` or `${keyvault:vault/secret}` reference, or a SQL Server connection string whose password is such a reference. Resolved on the node that runs the flow ([connections and secrets](../../../../sqlflow/docs/reference/concepts/connections-and-secrets.md)). |
 | `record.object` | string | required | The record table's three-part name, `[database].[schema].[table]` (`OsduData.silver.WellLog`). |
 | `record.key` | list | required | The key columns, in order: the ing flow's `load.keyColumns`. They must name the same columns, in the same order, as the mapping's `dataset.key`. |
-| `record.primaryKey` | string | none | The table's identity primary key (the ing flow's `target.identityColumn`, such as `RecId`). Required with `parallelism.fanOut` above 0. See [The identity primary key](#the-identity-primary-key). |
+| `record.primaryKey` | string | none | The table's identity primary key (the ing flow's `target.identityColumn`, such as `RecId`). A fan-out cuts the read on it; without it the read is planned on one run and only the sending fans out. See [The identity primary key](#the-identity-primary-key). |
 | `record.scope` | map | none | Column to parameter: each entry becomes a typed `[column] = @parameter` predicate, so a run reads only the rows of its parameter values. A parameter the run gives several values reads the rows holding any of them, `[column] IN (@p0, @p1, ...)` ([Several values of a scope parameter](#several-values-of-a-scope-parameter)). A value is bound, never substituted into SQL. |
 | `datasets.<name>.object` | string | required | A child table's three-part name. The mapping reads it under `<name>` (a `$forEach` over it, or `$dataset.<column>`). |
 | `datasets.<name>.join` | map | required | Child column to record key column. Every record key column must be joined. |
@@ -307,9 +307,9 @@ ingestion creates it when the ing flow sets `target.identityColumn`. The record 
 delivery key and OSDU id, and joins the child tables; the primary key is how rows are paged and dealt out:
 
 - **Paging.** A read pages by the primary key; without one it pages by the record key.
-- **Fan-out.** A flow with `parallelism.fanOut` above 0 must name it. The coordinating run counts the candidates per
-  range of primary key values and cuts them into contiguous slices, at most 1024, which its members plan
-  ([submissions](../concepts/submissions.md)).
+- **Fan-out.** The coordinating run counts the candidates per range of primary key values and cuts them into
+  contiguous slices, at most 1024, which it and its members plan ([submissions](../concepts/submissions.md#many-nodes)).
+  Without a primary key the read is planned on the coordinating run, and only the sending fans out.
 
 When a run opens the tables it refuses a declared column that is not an integer, not an identity column or not the
 table's single-column primary key, and a record key with no unique index without a filter (a record held by two rows
@@ -498,7 +498,7 @@ flow that names them, at the top level for one that serves the registry). A flow
 | `retry.recordBaseDelayMinutes`, `retry.recordMaxDelayMinutes` | integer | 1, 60 | The wait before a record that failed gets another try, doubling per attempt up to the maximum. |
 | `skipStatusCodes` | list | none | More statuses that hold a record instead of trying it again (`HTTP <status> is not retryable`). 400, 403, 404, 405, 409, 413, 415 and 422 hold it whatever the list says. |
 | `timeoutSeconds` | integer | 100 | The timeout of one request. |
-| `rateLimitRps` | number | 0 | Requests per second; 0 is unlimited. |
+| `rateLimitRps` | number | 0 | Requests per second; 0 is unlimited. A fan-out keeps to it as a whole: each of its runs sends under its share ([submissions](../concepts/submissions.md#many-nodes)). |
 | `verifyTls` | boolean | `true` | `false` accepts any certificate, and only on a node that sets `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true`; elsewhere the run is refused. |
 | `urlAllowlist` | list | none | Hosts requests may reach; `*.example.com` matches the domain and its subdomains. Checked on every redirect, and a redirect from https to http is refused. |
 | `maxResponseBytes` | integer | 67108864 | The largest response read. |
@@ -516,14 +516,16 @@ and an interface lays its own keys over it, except `interfaces`, which is the so
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `concurrency` | integer | 8 | Records a run sends at once; verify and reverse runs work this many at once too. At least 1. |
-| `fanOut` | integer | 0 | Member runs a large submission spreads over across the fleet, 0 to 64. Needs `source.record.primaryKey`. |
-| `fanOutMinRecords` | integer | 1000 | Below this many candidates a submission never fans out. At least 1. |
+| `fanOut` | integer | 8 | The most member runs a submission spreads over across the fleet, 0 to 64; never more than it has work batches for beyond the coordinating run's own. Planning fans out only when `source.record.primaryKey` is named. 0 keeps everything on the run that claimed the work. |
+| `fanOutMinRecords` | integer | 1000 | Below this many records a submission never fans out. At least 1. |
 | `renderers` | integer | 0 | Renderers on one node, 0 to 256; 0 is half the processors, at least one. |
 | `batchRecords` | integer | 500 | Rendered documents per work batch file, 1 to 100000: one claim of a drain, one unit of progress. |
 | `batchSize` | integer | 50 | Records claimed from the ledger in one round trip when records are retried outside a work batch. |
 | `interfaces` | integer | 4 | The interface form only: how many interfaces of one wave run at once, 1 to 32 ([interfaces](interfaces.md#order)). |
 
-How a submission is planned, cut, leased and drained across nodes is on [submissions](../concepts/submissions.md).
+A delivery fans out by default: a submission of 1,000 records or more spreads over member runs across the fleet, and an
+autoscaler brings up nodes for them. How a submission is planned, cut, leased and drained across nodes, and what a
+coordinating run does with members no node starts, is on [submissions](../concepts/submissions.md#many-nodes).
 
 These settings were written under `reliability` before. A document that still writes one there is refused, naming where
 it goes now:
@@ -647,7 +649,6 @@ Every message starts with the file. A sample of what `sqlflow validate` refuses:
 | A literal secret | `target.auth.secretRef holds a literal value, and it is the credential the flow authenticates with (the token, the API key, the password or the client secret). A flow document holds references only: ...` |
 | A literal credential header | `target.headers.Authorization holds a literal value, and the header carries a credential; it holds a reference, after its scheme when it has one (Bearer ${env:NAME}). ...` |
 | A pinned mapping that is not there | `render.mapping: Mapping 'Wellbore@1.0.0' was not found under '../mappings'. Expected one of: Wellbore@1.0.0.yaml, Wellbore@1.0.0.yml, 1.0.0.yaml, 1.0.0.yml.` |
-| A fan-out without a primary key | `parallelism.fanOut spreads a submission over ranges of the record table's identity primary key, and source.record.primaryKey names none. ...` |
 | A setting that moved to `parallelism` | `reliability.renderParallelism is now parallelism.renderers: what runs at once, and across the fleet, is the flow's parallelism, and reliability keeps what makes a request hold. Move it.` |
 | A header beside `partitions` | `target.headers names 'data-partition-id', and the flow names its partitions: every run sets the header to the partition it targets. Remove the header.` |
 | A pinned cache version whose records are pruned | `render.cacheVersion pins version 20261001T010000Z of the cache of partition 'dev', whose records the cache's retention pruned at <time>, so nothing can render against it. Pin a version the cache still holds ('sqlflow cache list dev' lists them), or remove render.cacheVersion to render against the current version. ...` |

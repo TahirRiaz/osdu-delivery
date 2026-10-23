@@ -163,9 +163,8 @@ In the folder mode each document is one line, and `--json` reports each document
 - `target.auth` is complete for its type: `oauth2ClientCredentials` needs a `token` block, `bearer`, `apiKeyHeader` and
   `basic` need `secretRef`, and `apiKeyHeader` needs `headerName`.
 - `change.detect`, `change.payloadDetect`, the `reliability` and `parallelism` settings, `failWhen` and
-  `target.protocolOptions` (media types, a manifest section, upload expiry, batch size up to 500) keep to their ranges;
-  `parallelism.fanOut` needs `source.record.primaryKey`, and a parallelism setting written under `reliability` is
-  refused, naming where it goes.
+  `target.protocolOptions` (media types, a manifest section, upload expiry, batch size up to 500) keep to their ranges,
+  and a parallelism setting written under `reliability` is refused, naming where it goes.
 - In the interface form: interface names are unique ignoring case, keys that belong to an interface are not written at
   the source level, `after:` names other interfaces of the document, and interfaces that wait for each other through
   `after:` are refused (`the interfaces wellbores -> welllogs -> wellbores wait for each other through after:, so none of them could run first.`).
