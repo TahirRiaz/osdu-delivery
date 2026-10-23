@@ -456,7 +456,7 @@ public sealed class SubmissionIntake
         var submission = prepared.Submission;
         var workRoot = prepared.WorkRoot;
         var summary = new PlanSummary();
-        var batchRecords = Math.Max(1, flow.Reliability.BatchRecords);
+        var batchRecords = Math.Max(1, flow.Parallelism.BatchRecords);
         var nextBatch = batchBase;
         var batches = 0;
         long staged = 0;
@@ -481,11 +481,11 @@ public sealed class SubmissionIntake
             range is null
                 ? string.Create(CultureInfo.InvariantCulture, $"{header.Source.EstimatedCandidates} candidate record(s) of {flow.Source.Record.Object}")
                 : string.Create(CultureInfo.InvariantCulture, $"key slice {range.Value.Slice} of {flow.Source.Record.Object}"),
-            flow.Reliability.EffectiveRenderParallelism, Planner.RenderBatch, batchRecords);
+            flow.Parallelism.EffectiveRenderers, Planner.RenderBatch, batchRecords);
 
         try
         {
-            await foreach (var entry in _planner.EntriesAsync(header, range, flow.Reliability.EffectiveRenderParallelism, summary, ct).ConfigureAwait(false))
+            await foreach (var entry in _planner.EntriesAsync(header, range, flow.Parallelism.EffectiveRenderers, summary, ct).ConfigureAwait(false))
             {
                 if (entry.Key is null)
                 {
