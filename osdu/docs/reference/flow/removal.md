@@ -36,6 +36,7 @@ related:
   - delivery-table-removed-key
   - delivery-table-removal-run
   - delivery-table-removal-key
+  - delivery-wiki-0022-removal-flows
   - flow-source
   - flow-schedule
 yamlPath: "(root, flowType: removal)"
@@ -77,7 +78,8 @@ It is a flow of its own because a full key read does not belong in the ingestion
 files incrementally sees only the new ones, so its `matchKeys` comparison (SQLFlow's
 [deleted-row detection](../../../../sqlflow/docs/reference/flow/ing-load.md)) cannot tell a key that was dropped from one
 that was simply not in this load. A removal flow reads the source itself, on a
-schedule of its own, and leaves the pre, ingestion and delivery flows exactly as they are.
+schedule of its own, and leaves the pre, ingestion and delivery flows exactly as they are
+([decision 0022](../../wiki/decisions/0022-removal-flows.md)).
 
 ## Example
 
