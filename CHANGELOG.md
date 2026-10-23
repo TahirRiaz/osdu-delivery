@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A delivery's work location can be the deployment's storage, so one run spreads over the workers.** `source.work`
+  may open with a reference, `work: ${env:LANDING_URL}/.work/welllog/{logSource}`, which each run resolves with the
+  values the control plane supplies; the work batches are then where every worker reaches them, and a delivery of
+  1,000 records or more fans out over member runs the autoscaler brings up nodes for. A flow whose work stays in
+  `../.work` keeps running on one node ([delivery flow, source](osdu/docs/reference/flow/delivery.md#source)).
+
 - **The workbench opens on a home page that asks the assistant.** Home greets you on the brand's navy with a question
   box: a question typed there, or one of the delivery questions it offers, opens the Assistant asking it. Under the
   headline counts, Delivery says how much of the title bar's partition is delivered, with Find a record and Open
