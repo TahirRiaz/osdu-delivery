@@ -304,6 +304,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filter matched, not just those the issue keeps blocked; the removal now carries the whole filter, and refuses one that
   matches more than 25,000 records when it runs as well as when it is asked
   ([Removing records from OSDU](osdu/docs/reference/concepts/removal-and-reversal.md#removing-records-from-osdu)).
+- **A run no longer fails when another stages records built from the same cached values at the same moment.** Two
+  runs, or two parts of a split delivery, could both record the same combination of cached values, and the second
+  failed on a duplicate key of `osdu.CacheSet`; it now uses the set the first recorded
+  ([osdu.CacheSet](osdu/docs/reference/tables/cache-set.md#written-and-read-by)).
 - **A split delivery never waits for ever on parts no worker starts, and survives one that fails.** A first run whose
   parts stay queued for three minutes on a pool with no place free stops them and delivers their rows itself, as it does
   the rows of a part that failed ([many nodes](osdu/docs/reference/concepts/submissions.md#many-nodes)).
