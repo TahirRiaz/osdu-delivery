@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **How long things take is shown at every level.** A schedule's last fire, a run group, a pipeline's last and usual
+  run, a submission and its work batches, the audit trail and a retrieval flow's runs say how long they took, and
+  anything still executing counts up
+  ([how long the last fire took](sqlflow/docs/reference/flow/schedule.md#how-long-the-last-fire-took),
+  [a submission's page](osdu/docs/reference/concepts/gui.md#a-submissions-page)).
+
 - **A delivery's work location may name the deployment's storage.** `source.work` may open with a reference,
   `work: ${env:LANDING_URL}/.work/welllog/{logSource}`, which each run resolves with the values the control plane
   supplies ([delivery flow, source](osdu/docs/reference/flow/delivery.md#source)).
@@ -299,6 +305,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Delivery, cache, dimension, assertion, inventory and ingestion runs say how long they took.** Their duration was
+  never recorded, so their runs showed when they ran but not for how long; the catalog migration gives the runs already
+  recorded theirs from their own start and end
+  ([how long a run took](sqlflow/docs/reference/concepts/shadow-catalog.md#how-long-a-run-took)).
 - **Removing every record of a listing narrowed to an issue removes only that issue's records.** **Select all N
   matching**, then **Remove**, on a Records tab opened from the Issues tab took out of OSDU every record the rest of the
   filter matched, not just those the issue keeps blocked; the removal now carries the whole filter, and refuses one that
