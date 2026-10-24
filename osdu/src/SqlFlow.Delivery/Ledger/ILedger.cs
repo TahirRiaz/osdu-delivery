@@ -928,6 +928,18 @@ public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refus
 public sealed record TargetIdConflict(
     DeliveryKey DeliveryKey, string TargetId, Guid OwnerFlowId, string? OwnerFlowName, DeliveryKey? OwnerDeliveryKey = null, string? OwnerSourceKey = null)
 {
+    /// <summary>
+    /// The name the owner's ledger is kept under, as a flow writes it in <c>ledger:</c> to keep that ledger
+    /// (<see cref="LedgerEntry.OwnName"/>); null when the directory does not name it.
+    /// </summary>
+    public string? OwnerLedger { get; init; }
+
+    /// <summary>
+    /// False when no pipeline a repository declares keeps the owner's ledger any more: the flow that claimed the id was
+    /// removed or renamed. True when one does, or when it is not known.
+    /// </summary>
+    public bool OwnerDeclared { get; init; } = true;
+
     /// <summary>What the held record says about the conflict: which id, whose it is, and how to resolve it.</summary>
     public string Describe()
     {
@@ -939,13 +951,23 @@ public sealed record TargetIdConflict(
             return $"OSDU id {TargetId} is already claimed by {owner} of this flow, and one OSDU record belongs to one record of the ledger. "
                 + "Two keys of this flow give the same id: keep one of them in the source. When the mapping's dataset.system or key changed "
                 + "since that record was delivered, the id stays that record's: put the mapping back, or remove the flow's records from OSDU "
-                + "(the record scope) and deliver them under a ledger of their own (the interface's ledger:), or delete them from the ledger "
+                + "(the record scope) and deliver them under a ledger of their own (ledger:, or interfaces.<name>.ledger), or delete them from the ledger "
                 + "with the removal.";
         }
 
         var flow = OwnerFlowName is null ? $"flow {OwnerFlowId:D}" : $"flow '{OwnerFlowName}' ({OwnerFlowId:D})";
-        return $"OSDU id {TargetId} is already claimed by {flow}, and one OSDU record belongs to one flow. Deliver this flow "
-            + "to another data partition, or give its mapping a dataset.system or key that yields other OSDU ids.";
+        const string Elsewhere = "this flow to another data partition, or give its mapping a dataset.system or key that yields other OSDU ids.";
+        if (OwnerDeclared || (OwnerLedger ?? OwnerFlowName) is not { } ledger)
+        {
+            return $"OSDU id {TargetId} is already claimed by {flow}, and one OSDU record belongs to one flow. Deliver {Elsewhere}";
+        }
+
+        // The flow that claimed it is gone from every repository: most often this flow under its old name, since a flow keeps
+        // its ledger under its name and a rename starts an empty one.
+        return $"OSDU id {TargetId} is already claimed by {flow}, which no repository declares any more, and one OSDU record belongs to one flow. "
+            + "A flow keeps its ledger under its name, so a renamed flow starts an empty one: when this flow is that one renamed, keep its ledger with "
+            + $"ledger: {ledger} in this flow's document (interfaces.<name>.ledger for an interface of a source), and its records carry on with their history "
+            + $"and their OSDU ids. Otherwise deliver {Elsewhere}";
     }
 }
 
@@ -1895,6 +1917,25 @@ public sealed record LedgerEntry
     public required string LedgerName { get; init; }
 
     public DateTime RegisteredUtc { get; init; }
+
+    /// <summary>
+    /// The name a flow writes as <c>ledger:</c> to keep the ledger named <paramref name="ledgerName"/> in
+    /// <paramref name="partition"/>: the name without the <c>@partition</c> a partition keeping a ledger of its own adds
+    /// (osdu/docs/reference/flow/interfaces.md, Ledger identity), which a flow bound to that partition adds again.
+    /// </summary>
+    public static string OwnName(string ledgerName, string? partition)
+    {
+        ArgumentNullException.ThrowIfNull(ledgerName);
+        if (string.IsNullOrEmpty(partition))
+        {
+            return ledgerName;
+        }
+
+        var suffix = "@" + partition;
+        return ledgerName.Length > suffix.Length && ledgerName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+            ? ledgerName[..^suffix.Length]
+            : ledgerName;
+    }
 }
 
 /// <summary>
