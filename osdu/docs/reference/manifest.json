@@ -3289,6 +3289,9 @@
         "waves",
         "parallelinterfaces",
         "ledger adoption",
+        "renamed flow",
+        "rename a flow",
+        "keep the ledger",
         "waiting record",
         "x-osdu-relationship",
         "failwhen",
@@ -3329,6 +3332,7 @@
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Waits.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryInterfaceCatalog.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs",
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery.Data/Migrations/20260916221306_DeliveryInterfaces.cs",
@@ -6037,7 +6041,8 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryInterfaceCatalog.cs",
         "osdu/src/SqlFlow.Delivery/Ordering/OrderCatalog.cs",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Background/InterfaceCatalogBackfillService.cs"
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Background/InterfaceCatalogBackfillService.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs"
       ]
     },
     {
@@ -6457,7 +6462,8 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Directory.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs",
-        "osdu/src/SqlFlow.Delivery/Engine/LedgerRegistration.cs"
+        "osdu/src/SqlFlow.Delivery/Engine/LedgerRegistration.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs"
       ]
     },
     {

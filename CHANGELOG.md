@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A renamed delivery flow keeps its records.** Write its old name as `ledger:` at the top of the renamed flow (an
+  interface of a renamed source writes `<old name>/<interface>`), and its records carry on with their history and their
+  OSDU ids; renamed without it, a flow starts an empty ledger, so the repository sync now warns of the rename and each
+  record held for an id the old name claimed says which `ledger:` to write
+  ([Renaming a flow](osdu/docs/reference/flow/interfaces.md#renaming-a-flow)).
+
 - **The assistant links every OSDU id it names to the explorer.** An OSDU id in an answer (a record's, its parent's, a
   cached record's, an id a document refers to) is a link that opens OSDU Delivery's explorer on that record, in its
   partition, from the GUI's chat, Slack or a desktop client
