@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([how long the last fire took](sqlflow/docs/reference/flow/schedule.md#how-long-the-last-fire-took),
   [a submission's page](osdu/docs/reference/concepts/gui.md#a-submissions-page)).
 
+- **An inventory finds the records OSDU holds more than once.** On an inventory's new **Duplicates** tab, build a key of
+  the properties the copies of one record hold alike (as many as you need, each compared exactly, ignoring case, or
+  loose) and **Find duplicates**: the copies are grouped, the one holding the most values is kept, and the others are
+  picked to remove, with the groups a rule cannot decide left for you to choose. Compare any two copies side by side,
+  keep another copy, then select the copies to remove and remove them from the Ids tab; a copy is removed only while the
+  copy its group keeps is still in OSDU ([finding duplicate records](osdu/docs/reference/flow/inventory-duplicates.md)).
+
 - **A delivery's work location may name the deployment's storage.** `source.work` may open with a reference,
   `work: ${env:LANDING_URL}/.work/welllog/{logSource}`, which each run resolves with the values the control plane
   supplies ([delivery flow, source](osdu/docs/reference/flow/delivery.md#source)).
@@ -129,7 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the records (a property, or a column of a source system): a match run of the inventory flow finds the ids that hold
   them, each tab counts its matching ids, the grid lists them with their values, and every matching orphan, stale or
   forgotten id can be removed at once, however many
-  ([Selecting ids by what OSDU holds](osdu/docs/reference/flow/inventory.md#selecting-ids-by-what-osdu-holds)).
+  ([Selecting ids by what OSDU holds](osdu/docs/reference/flow/inventory-selections.md)).
 - **The OSDU menu's sections fold, and the menu starts folded.** A click on Ledger, In OSDU, Build or Setup in the side
   bar folds its entries away or brings them back. A browser opening the workbench for the first time shows every group
   and section folded to its name; from then on each starts as it was left
