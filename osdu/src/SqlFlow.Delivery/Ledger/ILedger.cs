@@ -2313,16 +2313,17 @@ public interface ILedger
     Task<InventorySelectionSweep> SweepInventorySelectionsAsync(string partition, DateTime olderThanUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Opens a check of an inventory's ids for duplicate records (osdu/docs/reference/flow/inventory-duplicates.md, Finding duplicate
-    /// records), queued for the duplicates run of the inventory flow that fills it. Returns the check's number.
+    /// Opens a check of an inventory's ids for duplicate records (osdu/docs/reference/flow/inventory-duplicates.md), queued for the
+    /// duplicates run of the inventory flow that downloads its properties. Returns the check's number.
     /// </summary>
     Task<long> CreateInventoryDuplicateCheckAsync(string partition, InventoryDuplicateCheckStart start, CancellationToken ct = default);
 
     /// <summary>
-    /// The newest check of an inventory made of the same key (<paramref name="keyHash"/>) that still says what it finds: one under
-    /// way, or one that completed against the inventory's build <paramref name="buildRunId"/>; null when there is none.
+    /// The newest check of an inventory that still answers for it: one queued or running, or one whose download completed against
+    /// the inventory's build <paramref name="buildRunId"/>; null when there is none. A key of the properties it downloaded groups it
+    /// again rather than downloading them again.
     /// </summary>
-    Task<InventoryDuplicateCheckState?> FindInventoryDuplicateCheckAsync(string partition, int inventoryId, string keyHash, long? buildRunId, CancellationToken ct = default);
+    Task<InventoryDuplicateCheckState?> CurrentInventoryDuplicateCheckAsync(string partition, int inventoryId, long? buildRunId, CancellationToken ct = default);
 
     /// <summary>One duplicate check by its partition and number, or null.</summary>
     Task<InventoryDuplicateCheckState?> GetInventoryDuplicateCheckAsync(string partition, long checkId, CancellationToken ct = default);
@@ -2333,13 +2334,16 @@ public interface ILedger
     /// <summary>Names the run a check was queued as.</summary>
     Task SetInventoryDuplicateCheckRunAsync(string partition, long checkId, Guid runId, CancellationToken ct = default);
 
-    /// <summary>Ends a check whose run never came, or ended before it did, as failed with why (redacted); one that ended keeps how it ended.</summary>
+    /// <summary>
+    /// Ends a check whose run never came, or ended before it did, with why (redacted): a download failed, its groups and table
+    /// deleted; a pick stopped, the check completed still and its groups not read left to pick. One that ended keeps how it ended.
+    /// </summary>
     Task FailInventoryDuplicateCheckAsync(string partition, long checkId, string why, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
-    /// Starts a check as the run <paramref name="runId"/>, against the inventory's build <paramref name="buildRunId"/>: running,
-    /// reading the keys, with every group and count an earlier attempt left cleared. Null when the partition holds no such check of
-    /// the inventory, or it expired.
+    /// Starts a check's download as the run <paramref name="runId"/>, against the inventory's build <paramref name="buildRunId"/>:
+    /// running, downloading, with every group and count an earlier attempt left cleared. Null when the partition holds no such check
+    /// of the inventory, or it expired.
     /// </summary>
     Task<InventoryDuplicateCheckState?> StartInventoryDuplicateCheckAsync(
         Guid flowId, int inventoryId, long checkId, Guid runId, long? buildRunId, DateTime nowUtc, CancellationToken ct = default);
@@ -2348,18 +2352,40 @@ public interface ILedger
     Task PlanInventoryDuplicateCheckAsync(Guid flowId, long checkId, long candidates, long requests, CancellationToken ct = default);
 
     /// <summary>
-    /// Keeps the keys one page of a check read, in one transaction: each record the inventory serves a row of, once, with its key,
-    /// the version the index holds and what it holds at the key; how many rows hold no key, how many records the inventory holds no
-    /// row of, and how many rows are at another version than it listed; and the check's progress.
+    /// Makes a check's table afresh (osdu/docs/reference/flow/inventory-duplicates.md, The check's table) through SQLFlow's schema
+    /// evolution, with a column for each of <paramref name="attributes"/>' values and for each comparison's hash of them, and
+    /// records the table and the properties on the check.
     /// </summary>
-    Task<InventoryDuplicateKeyWrite> AddInventoryDuplicateKeysAsync(
-        Guid flowId, int inventoryId, long checkId, IReadOnlyList<InventoryDuplicateKeyHit> hits, long checkedCount, long requests, CancellationToken ct = default);
+    Task PrepareInventoryDuplicateTableAsync(Guid flowId, long checkId, IReadOnlyList<DuplicateColumn> attributes, CancellationToken ct = default);
 
     /// <summary>
-    /// Numbers the ids that share a key into groups, the largest first, and lets go of every id whose key no other holds; a group
-    /// too large to pick from is left for review. The check moves on to reading the copies.
+    /// Keeps a page of a check's download in its table, in one transaction: each record the inventory serves a row of, once, with
+    /// the version the index holds and what it holds at each property; how many records the inventory holds no row of, and how
+    /// many rows are at another version than it listed; and the check's progress.
     /// </summary>
-    Task<InventoryDuplicateGrouping> GroupInventoryDuplicatesAsync(Guid flowId, long checkId, CancellationToken ct = default);
+    Task<InventoryDuplicateRowsWrite> AddInventoryDuplicateRowsAsync(
+        Guid flowId, int inventoryId, long checkId, IReadOnlyList<DuplicateColumn> attributes, IReadOnlyList<InventoryDuplicateRow> rows, long checkedCount,
+        long requests, CancellationToken ct = default);
+
+    /// <summary>
+    /// Groups a check's table by a key of properties it downloaded, over whatever it was grouped by before, in SQL and without
+    /// asking OSDU: the ids holding equal values at the key numbered into groups, the largest first; a group too large to pick from
+    /// left for review; every other group waiting to be picked. The key is recorded with who set it and when.
+    /// </summary>
+    /// <exception cref="DeliveryException">The key names a property the check did not download, or the check holds no download, or it is picking.</exception>
+    Task<InventoryDuplicateGrouping> GroupInventoryDuplicatesAsync(string partition, long checkId, InventoryDuplicateKeying keying, CancellationToken ct = default);
+
+    /// <summary>
+    /// Asks for a pick of a completed check whose groups wait to be picked: queued, to read their copies. False when the check is
+    /// not completed, is stale against <paramref name="buildRunId"/>, or holds no group to pick.
+    /// </summary>
+    Task<bool> RequestInventoryDuplicatePickAsync(string partition, long checkId, long? buildRunId, CancellationToken ct = default);
+
+    /// <summary>Starts a check's pick as the run <paramref name="runId"/>: running, reading copies. Null when the partition holds no such check, or no pick was asked of it.</summary>
+    Task<InventoryDuplicateCheckState?> StartInventoryDuplicatePickAsync(Guid flowId, long checkId, Guid runId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Ends a pick: the check completed again, picked when no error stopped it, or holding why it stopped and the groups it did not read.</summary>
+    Task CompleteInventoryDuplicatePickAsync(Guid flowId, long checkId, InventoryDuplicatePickEnd ending, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>The next groups whose copies are not read yet, at most <paramref name="limit"/>, after <paramref name="after"/>, each copy with the finding the inventory gives it now.</summary>
     Task<IReadOnlyList<InventoryDuplicateGroupRow>> InventoryDuplicateGroupsToJudgeAsync(Guid flowId, long checkId, int after, int limit, CancellationToken ct = default);
@@ -2368,11 +2394,14 @@ public interface ILedger
     Task WriteInventoryDuplicateJudgementsAsync(
         Guid flowId, long checkId, IReadOnlyList<InventoryDuplicateJudgement> judgements, long requests, DateTime nowUtc, CancellationToken ct = default);
 
-    /// <summary>Ends a check: completed with its notes, or failed with why, its groups deleted.</summary>
+    /// <summary>Ends a check's download: completed with its notes, or failed with why, its groups and table deleted.</summary>
     Task CompleteInventoryDuplicateCheckAsync(Guid flowId, long checkId, InventoryDuplicateCheckEnd outcome, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>How many of a check's groups came out each way.</summary>
     Task<IReadOnlyDictionary<string, long>> InventoryDuplicateOutcomesAsync(string partition, long checkId, CancellationToken ct = default);
+
+    /// <summary>How a check's groups are sized, and the groups waiting to be picked with the copies a pick would read of them.</summary>
+    Task<InventoryDuplicateSizes> InventoryDuplicateSizesAsync(string partition, long checkId, CancellationToken ct = default);
 
     /// <summary>
     /// A page of a check's groups, of one outcome or every one, in order after <paramref name="after"/>; each with its copies when
@@ -2407,8 +2436,8 @@ public interface ILedger
     Task<IReadOnlyList<InventorySelectionKeeper>> InventorySelectionKeepersAsync(Guid flowId, long selectionId, IReadOnlyList<long> inventoryRecordIds, CancellationToken ct = default);
 
     /// <summary>
-    /// Retires a partition's checks made before <paramref name="olderThanUtc"/>: deleted whole, or, when a removal took the picks
-    /// of a selection made of them, kept as expired with their groups deleted.
+    /// Retires a partition's checks made before <paramref name="olderThanUtc"/>: deleted whole with their tables, or, when a removal
+    /// took the picks of a selection made of them, kept as expired with their groups and tables deleted.
     /// </summary>
     Task<InventoryDuplicateSweep> SweepInventoryDuplicateChecksAsync(string partition, DateTime olderThanUtc, CancellationToken ct = default);
 
