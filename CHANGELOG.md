@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The assistant links every OSDU id it names to the explorer.** An OSDU id in an answer (a record's, its parent's, a
+  cached record's, an id a document refers to) is a link that opens OSDU Delivery's explorer on that record, in its
+  partition, from the GUI's chat, Slack or a desktop client
+  ([links into the GUI](osdu/docs/reference/guides/mcp.md#links-into-the-gui)).
+
 - **How long things take is shown at every level.** A schedule's last fire, a run group, a pipeline's last and usual
   run, a submission and its work batches, the audit trail and a retrieval flow's runs say how long they took, and
   anything still executing counts up

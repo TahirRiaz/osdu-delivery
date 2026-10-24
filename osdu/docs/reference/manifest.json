@@ -4690,9 +4690,13 @@
         "streamable http",
         "chat assistant",
         "sqlflow_control_plane_url",
-        "operator action"
+        "operator action",
+        "gui links",
+        "osdu id link",
+        "explorer link"
       ],
       "related": [
+        "delivery-concept-explorer",
         "guide-chat-assistant",
         "guide-slack-assistant",
         "concept-authentication-and-identity",
