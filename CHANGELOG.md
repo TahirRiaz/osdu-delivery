@@ -476,7 +476,7 @@ configuration rather than code, with every record traceable in a ledger. The [RE
   none), the OSDU platform and its client, and a flow repository, writes `.sqlflow/env` from `dev.env.example`, creates
   the databases and registers the partition. Every start then reports each tool, setting and database with its fix,
   and stops only when a start would fail. The release carries the setup for Windows, macOS and Linux, so a machine
-  without .NET runs it too and is offered the install ([Run it locally](README.md#run-it-locally),
+  without .NET runs it too and is offered the install ([Run it locally](osdu/docs/reference/guides/run-locally.md),
   [osdu-delivery-setup](osdu/docs/reference/cli/dev.md)).
 - **An AI assistant.** `osdu-delivery-mcp` serves Claude, Cursor, VS Code, Codex, Slack and the GUI's chat from metadata
   and documentation, and answers questions over data only through AI contexts an admin approves
