@@ -9,10 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **A renamed delivery flow keeps its records.** A ledger belongs to its document: rename a flow, or its file, and sync,
-  and the repository sync moves the old name's ledger to the new one, so its records carry on with their history and their
-  OSDU ids and only what changed is sent. A file copied by mistake takes the ledger until the copy is deleted, and the sync
-  says so ([Renaming a pipeline](osdu/docs/reference/concepts/renaming-a-pipeline.md)).
+- **A renamed flow keeps its history.** Rename a delivery, retrieval, assertion, dimension or inventory flow, or its file,
+  changing nothing else, and the repository sync moves the old name's ledger to the new one and says so in its result: a
+  delivery flow's records carry on with their history and OSDU ids, and only what changed is sent. A file copied by mistake
+  takes the ledger until the copy is deleted, and the sync says so
+  ([Renaming a pipeline](osdu/docs/reference/concepts/renaming-a-pipeline.md)).
+
+- **Orphaned ledgers are taken over from the GUI.** The Orphaned ledgers page lists the flows no repository declares any
+  more whose ledgers still hold records or history, and hands a missing flow's ledgers to the declared flow you pick,
+  suggesting the one that pins the same mapping: for a flow renamed and changed at once, deleted and added back in separate
+  syncs, or renamed before this release
+  ([Missing documents](osdu/docs/reference/concepts/renaming-a-pipeline.md#missing-documents-and-taking-them-over)).
 
 - **The assistant links everything it names that the GUI can open.** In the GUI's chat, Slack or a desktop client, a
   record's label opens its page with its whole history, an OSDU id opens the explorer on that record in its partition,
