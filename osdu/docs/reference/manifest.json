@@ -1758,6 +1758,51 @@
       ]
     },
     {
+      "id": "delivery-concept-how-it-works",
+      "corpus": "reference",
+      "path": "concepts/how-it-works.md",
+      "title": "How OSDU Delivery works: a mapping connects your source data, the OSDU schema and a cache",
+      "type": "concept",
+      "summary": "Why configuration replaces a custom loader per OSDU type: the drop-off zone, the template, the cache, the mapping that connects them, and what you get.",
+      "keywords": [
+        "how it works",
+        "configured not coded",
+        "configuration instead of code",
+        "custom loader",
+        "drop-off zone",
+        "template cache mapping",
+        "why osdu delivery",
+        "what you get",
+        "features",
+        "load data into osdu"
+      ],
+      "related": [
+        "delivery-concept-overview",
+        "delivery-flow-mapping",
+        "delivery-concept-templates",
+        "delivery-concept-partition-cache",
+        "delivery-concept-change-detection",
+        "delivery-concept-ledger",
+        "delivery-flow-routes",
+        "delivery-guide-writing-a-mapping",
+        "delivery-guide-welldb-sample",
+        "delivery-guide-mcp"
+      ],
+      "sourceRefs": [
+        "osdu/samples/welldb/mappings/WellLog@1.4.0.yaml",
+        "osdu/samples/welldb/flows/welldb-welllog-03-header-delivery.yaml",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateFolders.cs",
+        "osdu/src/SqlFlow.Delivery/Snapshots/CacheDeclaration.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Validation/Preflight.cs",
+        "osdu/src/SqlFlow.Delivery/Planning/ChangeDetector.cs",
+        "osdu/src/SqlFlow.Delivery/Identity/DeliveryKey.cs",
+        "osdu/src/SqlFlow.Delivery/Protocols/DeliveryProtocol.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs"
+      ]
+    },
+    {
       "id": "delivery-concept-ledger",
       "corpus": "reference",
       "path": "concepts/ledger.md",
@@ -5250,6 +5295,92 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
         "sqlflow/src/SqlFlow.Sources/SourceFormatDetector.cs",
         "sqlflow/src/SqlFlow.ControlPlane/Background/ScheduleFire.cs"
+      ]
+    },
+    {
+      "id": "delivery-guide-run-locally",
+      "corpus": "reference",
+      "path": "guides/run-locally.md",
+      "title": "Run it locally: what to install, the first start, and the dev.bat and ./dev.sh commands",
+      "type": "guide",
+      "summary": "Run the control plane, its workers and the GUI on one Windows, macOS or Linux machine: what to install, what the first start asks, and how to sign in.",
+      "keywords": [
+        "run locally",
+        "local machine",
+        "local development",
+        "dev.bat",
+        "dev.sh",
+        "prerequisites",
+        "what to install",
+        "first start",
+        "sign in as admin",
+        "sql server in docker",
+        "apple silicon"
+      ],
+      "related": [
+        "delivery-cli-dev",
+        "delivery-guide-welldb-sample",
+        "delivery-guide-getting-started",
+        "delivery-guide-deployment",
+        "delivery-concept-environment-variables",
+        "concept-environment-variables"
+      ],
+      "sourceRefs": [
+        "dev.bat",
+        "dev.sh",
+        "dev.env.example",
+        "osdu/hosts/SqlFlow.Delivery.Setup.Host/Program.cs",
+        "osdu/src/SqlFlow.Delivery.Setup/DevSetupWizard.cs",
+        "osdu/src/SqlFlow.Delivery.Setup/DevReadiness.cs",
+        "osdu/src/SqlFlow.Delivery.Setup/LocalSqlServers.cs"
+      ]
+    },
+    {
+      "id": "delivery-guide-welldb-sample",
+      "corpus": "reference",
+      "path": "guides/welldb-sample.md",
+      "title": "The welldb sample: a complete package that fills an empty partition, from reference data to well logs",
+      "type": "guide",
+      "summary": "What the welldb sample package delivers, its drop-off zone, templates and cache flows, its schedules, what it reads back from OSDU, and how to try it.",
+      "keywords": [
+        "welldb sample",
+        "sample package",
+        "example estate",
+        "try it",
+        "demo",
+        "sample flows",
+        "sample schedules",
+        "fill an empty partition"
+      ],
+      "related": [
+        "delivery-concept-how-it-works",
+        "delivery-guide-run-locally",
+        "delivery-guide-getting-started",
+        "delivery-concept-lineage",
+        "delivery-guide-reference-data-cache",
+        "delivery-guide-lookup-table-cache",
+        "delivery-guide-bulk-data",
+        "delivery-cli-check",
+        "delivery-cli-preview",
+        "cli-lineage"
+      ],
+      "sourceRefs": [
+        "osdu/samples/welldb/schedules.yaml",
+        "osdu/samples/welldb/reference/welldb-ref-03-delivery.yaml",
+        "osdu/samples/welldb/flows/welldb-well-03-delivery.yaml",
+        "osdu/samples/welldb/flows/welldb-wellbore-03-delivery.yaml",
+        "osdu/samples/welldb/flows/welldb-welllog-03-header-delivery.yaml",
+        "osdu/samples/welldb/flows/welldb-survey-03-delivery.yaml",
+        "osdu/samples/welldb/flows/welldb-well-04-assertion.yaml",
+        "osdu/samples/welldb/flows/welldb-welllog-04-header-assertion.yaml",
+        "osdu/samples/welldb/flows/welldb-welllog-05-dimensions.yaml",
+        "osdu/samples/welldb/flows/welldb-wellbore-04-retrieval.yaml",
+        "osdu/samples/welldb/flows/welldb-wellbore-05-removal.yaml",
+        "osdu/samples/welldb/flows/welldb-osdu-06-inventory.yaml",
+        "osdu/samples/welldb/cache/osdu-reference-00-cache.yaml",
+        "osdu/samples/welldb/cache/welldb-lookups-00-cache.yaml",
+        "osdu/samples/welldb/dictionaries/curve-aliases.yaml",
+        "osdu/tests/SqlFlow.Delivery.Tests/SampleDataGeneratorTests.cs"
       ]
     },
     {
