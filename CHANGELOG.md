@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Explain any page or piece of code.** Explain at the end of the tab strip has the assistant tell someone new what the
+  page is for and what they do there, and Explain on a code window (or "Explain this" in its right-click menu) explains
+  the selected lines or the whole document; the conversation slides in from the left, can be widened, maximized and
+  followed up, and is kept on the Assistant page
+  ([Explain](sqlflow/docs/reference/guides/chat-assistant.md#explain)).
+
 - Settings > Maintenance shows what the whole database holds, the `osdu` schema included: every table in areas a person
   recognises, each marked keep, safe to remove or optional, with its size, how its data leaves and what removing it
   costs. Superseded delivery attempts, finished activities' logs and superseded assertion runs are optional: an admin
