@@ -44,6 +44,12 @@ any terminal that has it):
   CI runs it as **Full test suite** on a release tag, whose release waits for it, on a pull request labelled
   `full-tests`, and when the CI workflow is run by hand (Actions, CI, Run workflow).
 
+- **An on-demand suite** (`bash tools/test.sh --suite <name>`) runs one suite alone, against SQL Server as the full tier
+  runs the suites: the tests that carry `[Trait("Suite", "<name>")]`, which both tiers and CI leave out, for edge cases
+  too many to run on every change. `DimensionEdgeCases` holds every edge of the dimension engine: its attributes,
+  elements, lookups, incremental loads, grouped views and joins to views. Run it after a change to the engine. A new
+  suite is named in `on_demand_suites` in `tools/test.sh` and left out in CI's two test steps.
+
 A test that needs SQL Server, a host or another process carries `[Trait("Category", "Integration")]`, which puts it in
 the full tier. The OSDU module's SQL Server tests are the classes in `[Collection(SqlServerSuite.Name)]`, and a guard
 test fails one there without the trait. The unit tier points the suites at a server that does not exist, so any other
