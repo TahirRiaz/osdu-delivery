@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Settings > Maintenance shows what the whole database holds, the `osdu` schema included: every table in areas a person
   recognises, each marked keep, safe to remove or optional, with its size, how its data leaves and what removing it
-  costs. Superseded delivery attempts, finished activities' logs and superseded assertion runs are optional: an admin
-  previews a cleanup, runs it, or sets a limit the hourly automatic cleanup applies, and nothing is removed until then
-  ([What the osdu schema stores](osdu/docs/reference/concepts/storage-and-retention.md)).
+  costs. **Clean up** is the safe purge: what is safe to remove starts ticked, superseded delivery attempts, finished
+  activities' logs and superseded assertion runs are optional and never ticked for you, each area shows what would go at
+  the age chosen, and an admin cleans up or keeps the age as a limit the hourly automatic cleanup applies; nothing is
+  removed until then ([What the osdu schema stores](osdu/docs/reference/concepts/storage-and-retention.md)).
 
 - **A renamed flow keeps its history.** Rename a delivery, retrieval, assertion, dimension or inventory flow, or its file,
   changing nothing else, and the repository sync moves the old name's ledger to the new one and says so in its result: a

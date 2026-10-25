@@ -8177,6 +8177,7 @@
         "sqlflow/src/SqlFlow.Catalog/RunTraceStore.cs",
         "sqlflow/gui/src/features/maintenance/MaintenancePage.tsx",
         "sqlflow/gui/src/features/maintenance/StorageAreaSheet.tsx",
+        "sqlflow/gui/src/features/maintenance/CleanupSheet.tsx",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Maintenance/OsduStorageContributor.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Assertions.cs",

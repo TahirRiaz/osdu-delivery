@@ -436,3 +436,12 @@ and a cleanup log, with the alternatives rejected (a page of the module's own, a
 assertion detail, a limit for every growing history, contributors storing their own limits). Amended
 [0005](decisions/0005-ledger-retention.md): the route it proposed is gone and its cadence with it. The reference holds the
 areas themselves ([What the osdu schema stores](../reference/concepts/storage-and-retention.md)).
+
+## [2026-10-25] ingest | The safe purge as a panel of its own, decision 0029 amended
+
+Read the Maintenance page as the owner used it without the admin role: no way to purge in sight, and a Preview whose
+empty answer read as no answer. Ran the landed page against a control plane on the test catalog as an operator and as an
+admin, which reproduced both and showed the cleanup log recording no actor. Amended [0029](decisions/0029-storage-maintenance.md):
+Clean up is a panel of its own in the page's header, on each row and in each area's sheet; safe areas start ticked and
+optional ones never are; counts show as soon as an age is chosen; cleaning up stays an admin's, said rather than hidden;
+the log records the requester through `RequestActor`.
