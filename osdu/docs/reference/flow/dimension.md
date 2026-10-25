@@ -13,6 +13,8 @@ keywords:
   - label
   - attributes
   - collect
+  - "many: max"
+  - "decode: url"
   - clean steps
   - unlabelled
   - aggregationsize
@@ -320,7 +322,8 @@ attributes:
 - A build finds the records by id through the search service, 500 ids a search, in the kind of the entity type the id
   names. A label and attributes that start at the same records are read in the same searches.
 - Every reference a step reads is followed, at most 20 a key; the first record reached that holds a non-empty value at
-  the last path gives it. A label is cut at 1,024 characters, an attribute value at 256.
+  the last path gives it, unless the attribute says otherwise with `many` (below). A label is cut at 1,024 characters, an
+  attribute value at 256.
 - A segment holding objects can filter them: `[Property=text]` keeps those whose property equals the text,
   `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those whose property ends with it
   ignoring case. So the `Country` attribute above keeps, of every geopolitical entity a wellbore names, the one whose type
@@ -355,6 +358,24 @@ LEFT JOIN osdu.dim_RefSamplingDomainType AS s    -- keyed by id; l.SamplingDomai
 element's field too. A value longer than a dimension keeps (256 characters for an attribute, 4,000 for an element's
 field) is cut under `keep: value` and left out under `key` and `id`, since a key cut joins to nothing; the build's notes
 count them.
+
+**Choosing among several values, and decoding them.** Settings read through `path` take two more keys, as an element's
+field does:
+
+```yaml
+attributes:
+  FieldName: { path: [data.GeoContexts.FieldID, data.FieldName], many: max }   # the greatest name of the wellbore's fields
+  Fields: { path: [data.GeoContexts.FieldID, data.FieldName], many: join }     # Alpha; Bravo
+  UnitCode: { path: data.Code, decode: url }                                    # g%2Fcm3 is g/cm3
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `many` | `first` | Which of the values the last step reaches, over every record it reaches, the attribute keeps: `first`, the first record's that holds one; `join`, every one, each once, in the order reached, joined by `; ` (cut at 256 characters under `keep: value`, left out under `key` and `id`); `max`, the greatest, compared by Unicode code point, the order of their UTF-8 bytes, as `MAX` over a binary collation orders text. Each attribute takes its own greatest, as a `MAX` of each column does. |
+| `decode` | `none` | `url` decodes each value's percent-escapes before it is kept, their bytes read as UTF-8 (a sequence that is no UTF-8 becomes U+FFFD); a `+` stays a `+`, and a value holding a `%` that two hexadecimal digits do not follow is kept as it is. Only with `keep: value`, since a key or an id decoded is not the text the dimension it joins is keyed by. |
+
+The value is chosen after each value is decoded and kept, so `max` compares what the column holds. A collected attribute
+takes neither: each value it collects is a row of its own, and the text its search filter matches.
 
 **Collected attributes.** `{ collect: <path> }` collects the values of the dimension's own records instead of reading
 the record a key names: `LoggingService: { collect: data.LoggingService }` on a dimension keyed by the well logs'
@@ -414,7 +435,8 @@ together:
 | `fields` | required | The columns, each under its name: a path inside the element (`CurveUnit`, `Quantity.Code`, `Values[Type=Top].Depth`), `@` for the element itself (an array of plain values), or settings. |
 | `fields.<name>.keep` | `value` | As an attribute's `keep`. |
 | `fields.<name>.up` | 0 | How many objects up the element's path the field is read from: 1 the object holding the array, as many as the path has segments for the record. Not with `@`. |
-| `fields.<name>.many` | `first` | A path reaching several values in one element: `first`, the first that is not empty, or `join`, each once, in order, joined by `; `. |
+| `fields.<name>.many` | `first` | A path reaching several values in one element: `first`, the first that is not empty; `join`, each once, in order, joined by `; `; or `max`, the greatest, as an attribute's `many` says. |
+| `fields.<name>.decode` | `none` | `url` decodes each value's percent-escapes before it is kept, as an attribute's `decode` says. Only with `keep: value`. |
 
 The table gains an `element` column: each key's objects numbered from 1, in the order of the records' ids and then of
 the objects in each record, so the same records number the same way build after build and a row keeps its `id`. A key

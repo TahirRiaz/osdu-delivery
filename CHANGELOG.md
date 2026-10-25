@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes the ledger until the copy is deleted, and the sync says so
   ([Renaming a pipeline](osdu/docs/reference/concepts/renaming-a-pipeline.md)).
 
+- **A dimension's attribute keeps the greatest or every value it reaches, decoded.** `many: max` keeps the greatest of the
+  values an attribute reads over every record it reaches (a wellbore's greatest field name, as a `MAX` over its fields
+  would), `many: join` all of them, and `decode: url` decodes percent-escapes (`g%2Fcm3` is `g/cm3`); an element's field
+  takes both too
+  ([Choosing among several values](osdu/docs/reference/flow/dimension.md#labels-and-attributes)).
+
 - **Orphaned ledgers are taken over from the GUI.** The Orphaned ledgers page lists the flows no repository declares any
   more whose ledgers still hold records or history, and hands a missing flow's ledgers to the declared flow you pick,
   suggesting the one that pins the same mapping: for a flow renamed and changed at once, deleted and added back in separate
