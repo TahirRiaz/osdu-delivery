@@ -178,6 +178,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([The OSDU menu](osdu/docs/reference/concepts/gui.md#the-osdu-menu)).
 
 ### Changed
+- The Home page opens on the headline counts, without a heading, with the assistant's question box below them and then the delivery
+  section, so what the estate is doing now is the first thing read.
+
 - The automatic cleanup is configured as `ControlPlane:Maintenance:Enabled` and `ControlPlane:Maintenance:PollSeconds`;
   a control plane given `ControlPlane:RunTrace:*` refuses to start and names the new section, so move or remove those
   settings. Run events now take a limit like SQL statements, each pipeline's latest run and every failed run keeping
