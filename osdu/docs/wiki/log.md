@@ -455,3 +455,13 @@ with no convention changed. `CLAUDE.md` keeps the working rules and links the in
 points here too. No decision record was written for the vendored SQLFlow or the module's own schema: their rules are
 documented ([docs/sqlflow-changes.md](../../../docs/sqlflow-changes.md), [the osdu schema](../reference/concepts/architecture.md#the-osdu-schema)),
 but no source records why they were chosen, and a record would have to invent it.
+
+## [2026-10-25] ingest | Dimension tables keyed by dimension, decision 0030
+
+Read SQL Server's deadlock reports and cached plans for a flow of sixteen dimensions building four at once on a database
+whose dimension tables were still small, where three builds of four failed a dimension as a deadlock victim: two writes of
+different dimensions waited on each other's key locks, since every statement read the partition's whole clustered index,
+which interleaved every dimension's rows. Filed [0030](decisions/0030-dimension-rows-one-range.md): the dimension tables
+are keyed on partition, dimension and row, and every statement of the store names its dimension and forces its seek, which
+a test checks against the plans SQL Server made. The owner's direction: a deadlock that recurs is a missing index or faulty
+logic, not something to retry.
