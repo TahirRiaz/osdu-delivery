@@ -445,3 +445,13 @@ admin, which reproduced both and showed the cleanup log recording no actor. Amen
 Clean up is a panel of its own in the page's header, on each row and in each area's sheet; safe areas start ticked and
 optional ones never are; counts show as soon as an age is chosen; cleaning up stays an admin's, said rather than hidden;
 the log records the requester through `RequestActor`.
+
+## [2026-10-25] lint | The wiki's conventions move from CLAUDE.md into the index
+
+The human found CLAUDE.md too large to help and asked that what the wiki covers live in the wiki. The "OSDU Wiki"
+section of `CLAUDE.md`, which was this wiki's schema, is now [How this wiki is kept](index.md#how-this-wiki-is-kept):
+the same layers, page format, estate rule, operations, lint command and upkeep of the index, the log and the manifest,
+with no convention changed. `CLAUDE.md` keeps the working rules and links the index; the reference corpus's README
+points here too. No decision record was written for the vendored SQLFlow or the module's own schema: their rules are
+documented ([docs/sqlflow-changes.md](../../../docs/sqlflow-changes.md), [the osdu schema](../reference/concepts/architecture.md#the-osdu-schema)),
+but no source records why they were chosen, and a record would have to invent it.
