@@ -442,6 +442,8 @@ internal static class DeliveryDimensionVerbs
                                 ["name"] = a.Name,
                                 ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()),
                                 ["keep"] = DimensionKeeping.Named(a.Keep),
+                                ["many"] = DimensionKeeping.Named(a.Many),
+                                ["decode"] = DimensionKeeping.Named(a.Decode),
                             })).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
                         ["table"] = dimension?.TableName is { } table ? DimensionTables.Shown(table) : null,

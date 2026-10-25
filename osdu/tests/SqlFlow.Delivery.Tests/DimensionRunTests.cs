@@ -371,6 +371,87 @@ public sealed class DimensionRunTests : IDisposable
     }
 
     [Fact]
+    public async Task An_attribute_keeps_the_greatest_or_every_value_of_the_records_it_reaches_and_decodes_what_it_reads()
+    {
+        // A wellbore in two fields, a country and a block, and a basin; another in one field, its block context naming no
+        // entity the search holds. A unit whose code the record holds escaped.
+        JsonObject Context(string reference, string type)
+            => reference.Contains("--Field:", StringComparison.Ordinal) ? new() { ["FieldID"] = reference + ":", ["GeoTypeID"] = type }
+                : reference.Contains("--Basin:", StringComparison.Ordinal) ? new() { ["BasinID"] = reference + ":", ["GeoTypeID"] = type }
+                : new() { ["GeoPoliticalEntityID"] = reference + ":", ["GeoTypeID"] = type };
+        const string Country = "dev:reference-data--GeoPoliticalEntityType:Country:";
+        const string Block = "dev:reference-data--GeoPoliticalEntityType:Block:";
+        _platform.Add("dev:master-data--Field:ALPHA", "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "Alpha", ["FieldID"] = "f-2" });
+        _platform.Add("dev:master-data--Field:BRAVO", "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "Bravo", ["FieldID"] = "f-1" });
+        _platform.Add("dev:master-data--GeoPoliticalEntity:NO", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
+        _platform.Add("dev:master-data--GeoPoliticalEntity:B-15", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "15/9" });
+        _platform.Add("dev:master-data--Basin:NS", "osdu:wks:master-data--Basin:1.2.0", new JsonObject { ["BasinName"] = "North Sea" });
+        _platform.Add("dev:reference-data--BasinType:Rift", "osdu:wks:reference-data--BasinType:1.0.0", new JsonObject { ["Code"] = "Rift%2FSag" });
+        var first = _platform.Add("dev:master-data--Wellbore:W1", Wellbore, new JsonObject
+        {
+            ["GeoContexts"] = new JsonArray(
+                Context("dev:master-data--Field:ALPHA", "dev:reference-data--FieldType:Field:"),
+                Context("dev:master-data--GeoPoliticalEntity:B-15", Block),
+                Context("dev:master-data--Field:BRAVO", "dev:reference-data--FieldType:Field:"),
+                Context("dev:master-data--GeoPoliticalEntity:NO", Country),
+                Context("dev:master-data--Basin:NS", "dev:reference-data--BasinType:Rift:")),
+        });
+        first["createTime"] = "2024-03-01T10:15:00.123Z";
+        _platform.Add("dev:master-data--Wellbore:W2", Wellbore, new JsonObject
+        {
+            ["GeoContexts"] = new JsonArray(
+                Context("dev:master-data--Field:ALPHA", "dev:reference-data--FieldType:Field:"),
+                Context("dev:master-data--GeoPoliticalEntity:GONE", Block)),
+        });
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: SmdaWellbore
+                kind: "osdu:wks:master-data--Wellbore:*"
+                path: id
+                columns: { key: WellboreID, value: WellboreCode }
+                attributes:
+                  FieldName: { path: [data.GeoContexts.FieldID, data.FieldName], many: max }
+                  FieldUUID: { path: [data.GeoContexts.FieldID, data.FieldID], many: max }
+                  Fields: { path: [data.GeoContexts.FieldID, data.FieldName], many: join }
+                  FirstField: [data.GeoContexts.FieldID, data.FieldName]
+                  Country: { path: ['data.GeoContexts[GeoTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityID', data.GeoPoliticalEntityName], many: max }
+                  Block: { path: ['data.GeoContexts[GeoTypeID*=GeoPoliticalEntityType:Block:].GeoPoliticalEntityID', data.GeoPoliticalEntityName], many: max }
+                  Basin: { path: [data.GeoContexts.BasinID, data.BasinName], many: max }
+                  BasinTypeCode: { path: ['data.GeoContexts[GeoTypeID*=reference-data--BasinType:].GeoTypeID', data.Code], many: max, decode: url }
+                  BasinTypeCodeRaw: { path: ['data.GeoContexts[GeoTypeID*=reference-data--BasinType:].GeoTypeID', data.Code] }
+                  CreateTime: createTime
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        var dimension = (await ledger.FindDimensionAsync(flow.LedgerId, "SmdaWellbore"))!;
+        var keys = (await ledger.ListDimensionValuesAsync(dimension.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .ToDictionary(k => k.Original, StringComparer.Ordinal);
+
+        // max keeps the greatest of every record reached, each attribute on its own (the greatest name and the greatest
+        // uuid come from two fields, as a MAX of each column does); join keeps them all in the order reached; the bare form
+        // keeps the first. Filters pick the contexts of one type before the greatest is taken, and decode reads the code.
+        // A key's attributes come back by name.
+        Assert.Equal(
+            [
+                ("Basin", "North Sea", (string?)"dev:master-data--Basin:NS"), ("BasinTypeCode", "Rift/Sag", "dev:reference-data--BasinType:Rift"),
+                ("BasinTypeCodeRaw", "Rift%2FSag", "dev:reference-data--BasinType:Rift"), ("Block", "15/9", "dev:master-data--GeoPoliticalEntity:B-15"),
+                ("Country", "Norway", "dev:master-data--GeoPoliticalEntity:NO"), ("CreateTime", "2024-03-01T10:15:00.123Z", "dev:master-data--Wellbore:W1"),
+                ("FieldName", "Bravo", "dev:master-data--Field:BRAVO"), ("Fields", "Alpha; Bravo", "dev:master-data--Field:ALPHA"),
+                ("FieldUUID", "f-2", "dev:master-data--Field:ALPHA"), ("FirstField", "Alpha", "dev:master-data--Field:ALPHA"),
+            ],
+            keys["dev:master-data--Wellbore:W1"].Attributes.Select(x => (x.Name, x.Value, x.From)).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase));
+
+        // A wellbore whose records reached hold nothing of an attribute has none of it, whatever many says.
+        Assert.Equal(
+            [("FieldName", "Alpha"), ("Fields", "Alpha"), ("FieldUUID", "f-2"), ("FirstField", "Alpha")],
+            keys["dev:master-data--Wellbore:W2"].Attributes.Select(x => (x.Name, x.Value)).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
     public async Task A_wellbore_collects_its_logs_sources_and_its_table_feeds_cascading_selects()
     {
         // Two countries, two fields, and logs from two sources, one spelled with a trailing space; a log without a source,
@@ -1292,7 +1373,7 @@ public sealed class DimensionRunTests : IDisposable
         }
 
         _platform.Latency = TimeSpan.FromMilliseconds(3);
-        var (runner, ledger, flow) = await RunnerAsync(Head.Replace("concurrency: 2", "concurrency: 6", StringComparison.Ordinal) + """
+        var (runner, ledger, flow) = await RunnerAsync(Head.Replace("recordsAtOnce: 2", "recordsAtOnce: 6", StringComparison.Ordinal) + """
             dimensions:
               - name: Wellbore
                 kind: "osdu:wks:work-product-component--WellLog:*"

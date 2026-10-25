@@ -311,6 +311,63 @@ public class DimensionDocumentTests
     }
 
     [Fact]
+    public void An_attribute_says_how_the_values_it_reaches_are_kept_and_what_they_are_decoded_from()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: SmdaWellbore
+                kind: "osdu:wks:master-data--Wellbore:*"
+                path: id
+                columns: { key: WellboreID, value: WellboreCode }
+                attributes:
+                  FieldName: { path: [data.GeoContexts.FieldID, data.FieldName], many: max }
+                  Sources: { path: data.Sources, many: JOIN }
+                  Code: { path: data.Code, decode: url }
+                  First: { path: data.A, many: first, decode: none }
+                elements:
+                  path: data.Curves
+                  fields:
+                    Unit: { path: CurveUnit, decode: url, many: max }
+            """);
+
+        var dimension = flow.Dimensions[0];
+        Assert.Equal(
+            [("FieldName", DimensionValueMany.Max, DimensionValueDecode.None), ("Sources", DimensionValueMany.Join, DimensionValueDecode.None),
+             ("Code", DimensionValueMany.First, DimensionValueDecode.Url), ("First", DimensionValueMany.First, DimensionValueDecode.None)],
+            dimension.Attributes.Select(a => (a.Name, a.Many, a.Decode)));
+        Assert.Equal(["data.GeoContexts.FieldID", "data.FieldName"], dimension.Attribute("FieldName")!.Steps);
+        Assert.Equal((DimensionValueMany.Max, DimensionValueDecode.Url), (dimension.Elements!.Fields[0].Many, dimension.Elements.Fields[0].Decode));
+
+        // Either is another declaration, so a build knows the dimension changed; the defaults written out are none, so a
+        // dimension declared before they existed keeps the hash it was built with.
+        string Hash(string attributes) => Parse(Head + Curves + "\n    " + attributes).Dimensions[0].DefinitionHash;
+        var bare = Hash("attributes: { Source: data.Source }");
+        Assert.NotEqual(bare, Hash("attributes: { Source: { path: data.Source, many: max } }"));
+        Assert.NotEqual(bare, Hash("attributes: { Source: { path: data.Source, decode: url } }"));
+        Assert.Equal(bare, Hash("attributes: { Source: { path: data.Source, many: first, decode: none } }"));
+        var field = Hash("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, many: join } } }");
+        Assert.NotEqual(field, Hash("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, many: join, decode: url } } }"));
+        Assert.Equal(field, Hash("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, many: join, decode: none } } }"));
+        Assert.NotEqual(field, Hash("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, many: max } } }"));
+    }
+
+    [Theory]
+    [InlineData("attributes: { Source: { path: data.Source, many: all } }", "many is 'all'; it is first")]
+    [InlineData("attributes: { Source: { path: data.Source, decode: base64 } }", "decode is 'base64'; it is none")]
+    [InlineData("attributes: { Source: { path: data.Source, keep: id, decode: url } }", "keeps each value as id, the text the dimension it joins is keyed by")]
+    [InlineData("attributes: { Source: { path: data.Source, keep: key, decode: url } }", "keeps each value as key")]
+    [InlineData("attributes: { Source: { collect: data.Source, many: max } }", "collects its values, and many and decode")]
+    [InlineData("attributes: { Source: { collect: data.Source, decode: url } }", "collects its values, and many and decode")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, keep: id, decode: url } } }", "keeps each value as id")]
+    [InlineData("elements: { path: data.Curves, fields: { Unit: { path: CurveUnit, decode: utf8 } } }", "decode is 'utf8'")]
+    public void A_many_or_a_decode_that_breaks_a_rule_is_refused_naming_the_rule(string declared, string reason)
+    {
+        var refused = Refused(Head + Curves + "\n    " + declared);
+        Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);
+        Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_dimension_reads_the_objects_of_a_nested_array_as_rows_with_their_fields_together()
     {
         var flow = Parse(Head + """
@@ -403,8 +460,8 @@ public class DimensionDocumentTests
 
         var elements = flow.Dimensions[0].Elements!;
         Assert.Equal(
-            [("Column", "@", 0, DimensionElementMany.First), ("Mnemonic", "Mnemonic", 1, DimensionElementMany.First),
-             ("LogName", "data.Name", 3, DimensionElementMany.First), ("Aliases", "Aliases[Kind=Short].Text", 1, DimensionElementMany.Join)],
+            [("Column", "@", 0, DimensionValueMany.First), ("Mnemonic", "Mnemonic", 1, DimensionValueMany.First),
+             ("LogName", "data.Name", 3, DimensionValueMany.First), ("Aliases", "Aliases[Kind=Short].Text", 1, DimensionValueMany.Join)],
             elements.Fields.Select(f => (f.Name, f.Path, f.Up, f.Many)));
 
         // The filters' properties come back with what each field reads; the arrays themselves are never asked for whole

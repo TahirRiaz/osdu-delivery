@@ -42,7 +42,8 @@ public sealed record KeyLabels(
 /// record it names, and each path is read there (<c>data.FacilityName</c>); a label or an attribute of several steps
 /// follows every reference a step reads to the next records (<c>data.GeoContexts.GeoPoliticalEntityID</c>, then
 /// <c>data[GeoPoliticalEntityTypeID$=:Country:].GeoPoliticalEntityName</c>), and the first record reached that holds a value
-/// at the last path gives it, so a filter on the last records picks the one that matters among several.
+/// at the last path gives it, so a filter on the last records picks the one that matters among several; an attribute that
+/// says <c>many: join</c> or <c>many: max</c> is every value of every record reached, joined, or the greatest of them.
 /// Records are found by id through the search service, <see cref="IdsPerQuery"/> ids a search, in the kind of their entity
 /// type; every step reads all it needs of one entity type in the same searches, so a dimension's label and attributes that
 /// start at the same records read them once. A key that names no record, a record the search does not hold, and one whose
@@ -106,7 +107,7 @@ public sealed class DimensionLabeler
             chains.Add(new Chain(LabelChain, label, IsLabel: true));
         }
 
-        chains.AddRange(attributes.Where(a => a.Steps.Count > 0).Select(a => new Chain(a.Name, a.Steps, IsLabel: false, a.Keep)));
+        chains.AddRange(attributes.Where(a => a.Steps.Count > 0).Select(a => new Chain(a.Name, a.Steps, IsLabel: false, a.Keep, a.Many, a.Decode)));
         if (chains.Count == 0 || keys.Count == 0)
         {
             return KeyLabels.None;
@@ -186,26 +187,42 @@ public sealed class DimensionLabeler
 
                     if (last)
                     {
-                        // The first record reached that holds a value at the path gives it, kept as the chain keeps it.
                         var longest = chain.IsLabel ? MaxLabelLength : DimensionSpec.MaxAttributeValueLength;
                         string? text = null;
                         string? from = null;
                         var over = false;
-                        foreach (var id in held)
+                        if (chain.Many == DimensionValueMany.First)
                         {
-                            var read = path.Read(records[id]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-                            if (read is null)
+                            // The first record reached that holds a value at the path gives it, kept as the chain keeps it.
+                            foreach (var id in held)
                             {
-                                continue;
-                            }
+                                var read = path.Read(records[id]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+                                if (read is null)
+                                {
+                                    continue;
+                                }
 
-                            var (kept, wasCut, tooLong) = DimensionKeeping.Keep(read, chain.Keep, longest);
-                            over |= tooLong;
+                                var (kept, wasCut, tooLong) = DimensionKeeping.Keep(DimensionKeeping.Decoded(read, chain.Decode), chain.Keep, longest);
+                                over |= tooLong;
+                                if (kept is not null)
+                                {
+                                    (text, from) = (kept, id);
+                                    cut += wasCut ? 1 : 0;
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Every value of every record reached, in the order they were reached: joined, or the greatest.
+                            var values = held.SelectMany(id => path.Read(records[id]).Select(v => (Id: id, Text: v))).ToList();
+                            var (kept, place, wasCut, tooLong) = DimensionKeeping.KeepMany(
+                                values.Select(v => v.Text).ToList(), chain.Keep, chain.Many, chain.Decode, longest);
+                            over = tooLong;
                             if (kept is not null)
                             {
-                                (text, from) = (kept, id);
+                                (text, from) = (kept, values[place].Id);
                                 cut += wasCut ? 1 : 0;
-                                break;
                             }
                         }
 
@@ -384,8 +401,13 @@ public sealed class DimensionLabeler
 
     private static string Shown(string value) => value.Length > 60 ? value[..60] + "..." : value;
 
-    /// <summary>One label or attribute: its name, the paths it is read through, whether it is the label, and how its value is kept.</summary>
-    private sealed record Chain(string Name, IReadOnlyList<string> Steps, bool IsLabel, DimensionValueKeep Keep = DimensionValueKeep.Value)
+    /// <summary>
+    /// One label or attribute: its name, the paths it is read through, whether it is the label, and how its value is kept,
+    /// chosen among those the last step reaches, and decoded.
+    /// </summary>
+    private sealed record Chain(
+        string Name, IReadOnlyList<string> Steps, bool IsLabel, DimensionValueKeep Keep = DimensionValueKeep.Value,
+        DimensionValueMany Many = DimensionValueMany.First, DimensionValueDecode Decode = DimensionValueDecode.None)
     {
         /// <summary>
         /// Each step's path, parsed; a step the document mapper would have refused reads nothing, never the wrong thing.

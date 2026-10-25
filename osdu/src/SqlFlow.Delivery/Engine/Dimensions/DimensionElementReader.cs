@@ -240,8 +240,8 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
 
         /// <summary>
         /// The field's value in <paramref name="element"/>, or in the object <see cref="DimensionElementField.Up"/> objects up
-        /// its path: the first value it reaches, or every one joined, kept as the field keeps it; whether it was cut, and
-        /// whether it was left out for its length.
+        /// its path: the first value it reaches, every one joined, or the greatest, decoded and kept as the field says;
+        /// whether it was cut, and whether it was left out for its length.
         /// </summary>
         public (string? Value, bool Cut, bool TooLong) Read(JsonNode element, IReadOnlyList<JsonObject> ancestors)
         {
@@ -249,35 +249,8 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
             List<string> texts = _path is null
                 ? element is JsonValue value && Scalar(value) is { } self ? [self] : []
                 : from is null ? [] : _path.Read(from);
-            var kept = new List<string>();
-            var tooLong = false;
-            foreach (var text in texts.Where(t => !string.IsNullOrWhiteSpace(t)))
-            {
-                // Each value is kept whole before any are joined, so a key or an id kept is never cut part way.
-                var (one, _, over) = DimensionKeeping.Keep(text, _field.Keep, int.MaxValue);
-                tooLong |= over;
-                if (one is not null && !kept.Contains(one, StringComparer.Ordinal))
-                {
-                    kept.Add(one);
-                    if (_field.Many == DimensionElementMany.First)
-                    {
-                        break;
-                    }
-                }
-            }
-
-            if (kept.Count == 0)
-            {
-                return (null, false, tooLong);
-            }
-
-            var joined = string.Join(DimensionElementField.Separator, kept);
-            if (joined.Length <= DimensionSpec.MaxElementValueLength)
-            {
-                return (joined, false, false);
-            }
-
-            return _field.Keep == DimensionValueKeep.Value ? (joined[..DimensionSpec.MaxElementValueLength], true, false) : (null, false, true);
+            var (kept, _, cut, tooLong) = DimensionKeeping.KeepMany(texts, _field.Keep, _field.Many, _field.Decode, DimensionSpec.MaxElementValueLength);
+            return (kept, cut, tooLong);
         }
 
         private static string? Scalar(JsonValue value)

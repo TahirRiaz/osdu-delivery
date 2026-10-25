@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/dimension.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 125,
+  "keyCount": 128,
   "keys": [
     {
       "path": "batch",
@@ -42,14 +42,14 @@
       "path": "dimensions[].attributes.<name>",
       "type": "list",
       "required": false,
-      "description": "One attribute. A path of the record the key names, or a list of paths, each but the last reading the references the next records are found by, at most 3; every reference is followed, and the first record reached that holds a value at the last path gives the attribute's value. A path's segment holding objects can filter them: `[Property=text]` keeps those whose property equals the text, `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those whose property ends with it ignoring case (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`). Or settings naming one of `path` and `collect`, with `keep`: `{ path: data.WellboreID, keep: key }` reads it as the bare form does and keeps each value exactly as the record holds it, so the column joins to the dimension keyed by it; `{ collect: <path> }` collects it from the dimension's own records.",
+      "description": "One attribute. A path of the record the key names, or a list of paths, each but the last reading the references the next records are found by, at most 3; every reference is followed, and the first record reached that holds a value at the last path gives the attribute's value. A path's segment holding objects can filter them: `[Property=text]` keeps those whose property equals the text, `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those whose property ends with it ignoring case (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`). Or settings naming one of `path` and `collect`, with `keep`, and for `path` `many` and `decode`: `{ path: data.WellboreID, keep: key }` reads it as the bare form does and keeps each value exactly as the record holds it, so the column joins to the dimension keyed by it; `{ collect: <path> }` collects it from the dimension's own records.",
       "freeForm": true
     },
     {
       "path": "dimensions[].attributes.<name>.path",
       "type": "list",
       "required": false,
-      "description": "The path, or list of paths, the attribute is read through, exactly as the bare form gives them: `WellboreID: { path: data.WellboreID, keep: key }`. Write it to give the attribute a `keep` beside its paths; an attribute that keeps nothing needs no settings. One of `path` and `collect`, never both."
+      "description": "The path, or list of paths, the attribute is read through, exactly as the bare form gives them: `WellboreID: { path: data.WellboreID, keep: key }`. Write it to give the attribute a `keep`, a `many` or a `decode` beside its paths; an attribute that keeps nothing needs no settings. One of `path` and `collect`, never both."
     },
     {
       "path": "dimensions[].attributes.<name>.keep",
@@ -58,6 +58,22 @@
       "allowed": ["value", "key", "id"],
       "default": "value",
       "description": "How each value is kept. `value` (the default) shows it as a value: a record reference becomes the code its id ends with, its escapes decoded (`dev:master-data--Wellbore:WB-0001:` is `WB-0001`). `key` keeps the text exactly as the record holds it, the text the key column of a dimension keyed by the same path holds (`dim_WellLog.WellboreID = dim_Wellbore.WellboreID`). `id` keeps a reference as the id of the record it names (its version, or the trailing colon of the latest, taken off), the text the key column of a dimension keyed by `id` holds. `key` and `id` are what join dimension tables. A value longer than the 256 characters a dimension keeps is cut under `value` and left out under `key` and `id`, since a key cut joins to nothing."
+    },
+    {
+      "path": "dimensions[].attributes.<name>.many",
+      "type": "string",
+      "required": false,
+      "allowed": ["first", "join", "max"],
+      "default": "first",
+      "description": "How the values the attribute's last step reaches are kept, over every record it reaches: `first` (the default), the value of the first record reached that holds one; `join`, every value that is not empty, each once, in the order reached, joined by `; `; `max`, the greatest of them, compared by Unicode code point, which is the order of their UTF-8 bytes (`Field: { path: [data.GeoContexts.FieldID, data.FieldName], many: max }` keeps the greatest field name of a wellbore's fields, as SQL's `MAX` over them would). A joined value longer than the 256 characters an attribute keeps is cut under `keep: value` and left out under `key` and `id`. Not with `collect`, which keeps every value on a row of its own."
+    },
+    {
+      "path": "dimensions[].attributes.<name>.decode",
+      "type": "string",
+      "required": false,
+      "allowed": ["none", "url"],
+      "default": "none",
+      "description": "What each value read is decoded from before it is kept: `none` (the default), the value as the record holds it; `url`, its percent-escapes decoded and their bytes read as UTF-8 (`g%2Fcm3` is `g/cm3`), a `+` kept as a `+`, and a value holding a `%` that two hexadecimal digits do not follow kept as it is. Only with `keep: value`: a key or an id decoded would no longer be the text the dimension it joins is keyed by. Not with `collect`."
     },
     {
       "path": "dimensions[].elements",
@@ -75,13 +91,13 @@
       "path": "dimensions[].elements.fields",
       "type": "map",
       "required": true,
-      "description": "The columns read from each element, each under its name, named as an attribute is and unlike every attribute and the `element` column. Each is a path inside the element (`CurveUnit`, `Quantity.Code`, `Values[Type=Top].Depth`), `@` for the element itself, or settings `{ path, keep, up, many }`."
+      "description": "The columns read from each element, each under its name, named as an attribute is and unlike every attribute and the `element` column. Each is a path inside the element (`CurveUnit`, `Quantity.Code`, `Values[Type=Top].Depth`), `@` for the element itself, or settings `{ path, keep, up, many, decode }`."
     },
     {
       "path": "dimensions[].elements.fields.<name>",
       "type": "string",
       "required": false,
-      "description": "One field: a path inside the element, written as a label's path is, `@` for the element itself, or settings `{ path, keep, up, many }` (`CurveUnitID: { path: CurveUnit, keep: id }`).",
+      "description": "One field: a path inside the element, written as a label's path is, `@` for the element itself, or settings `{ path, keep, up, many, decode }` (`CurveUnitID: { path: CurveUnit, keep: id }`).",
       "freeForm": true
     },
     {
@@ -103,9 +119,17 @@
       "path": "dimensions[].elements.fields.<name>.many",
       "type": "string",
       "required": false,
-      "allowed": ["first", "join"],
+      "allowed": ["first", "join", "max"],
       "default": "first",
-      "description": "How a field whose path reaches several values in one element is kept: `first`, the first that is not empty; `join`, every one that is not empty, each once, in order, joined by `; `."
+      "description": "How a field whose path reaches several values in one element is kept: `first`, the first that is not empty; `join`, every one that is not empty, each once, in order, joined by `; `; `max`, the greatest of them, compared by Unicode code point."
+    },
+    {
+      "path": "dimensions[].elements.fields.<name>.decode",
+      "type": "string",
+      "required": false,
+      "allowed": ["none", "url"],
+      "default": "none",
+      "description": "What each value the field reads is decoded from before it is kept, as an attribute's `decode` says: `url` decodes its percent-escapes (`g%2Fcm3` is `g/cm3`). Only with `keep: value`."
     },
     {
       "path": "dimensions[].attributes.<name>.collect",
