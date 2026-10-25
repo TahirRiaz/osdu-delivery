@@ -427,7 +427,7 @@ internal static class DimensionMapper
 
             if (steps is IDictionary<object, object?> settings)
             {
-                var (collect, read, keep) = MapAttributeSettings(settings, $"attributes.{trimmed}", where, source);
+                var (collect, read, keep, many, decode) = MapAttributeSettings(settings, $"attributes.{trimmed}", where, source);
                 if (collect is not null)
                 {
                     // Two collected attributes would pair values no record holds together (one log's source with another's
@@ -442,7 +442,7 @@ internal static class DimensionMapper
                 }
                 else
                 {
-                    attributes.Add(new DimensionAttributeSpec(trimmed, read!, null, keep));
+                    attributes.Add(new DimensionAttributeSpec(trimmed, read!, null, keep, many, decode));
                 }
 
                 continue;
@@ -535,14 +535,16 @@ internal static class DimensionMapper
     /// <summary>
     /// An attribute written as settings: either <c>{ collect: data.Source }</c>, the path of the dimension's own records
     /// whose values each key collects, or <c>{ path: data.WellboreID }</c>, the paths it is read through as the bare form
-    /// gives them; either with a <c>keep</c> (<see cref="MapKeep"/>). A path is one a search matches exactly, as the
-    /// dimension's own path is.
+    /// gives them; either with a <c>keep</c> (<see cref="MapKeep"/>). One read through paths also takes <c>many</c>
+    /// (<see cref="MapMany"/>) and <c>decode</c> (<see cref="MapDecode"/>); a collected one takes neither, since each value
+    /// it collects is a row of its own and the text its search filter matches. A path is one a search matches exactly, as
+    /// the dimension's own path is.
     /// </summary>
-    private static (string? Collect, IReadOnlyList<string>? Steps, DimensionValueKeep Keep) MapAttributeSettings(
+    private static (string? Collect, IReadOnlyList<string>? Steps, DimensionValueKeep Keep, DimensionValueMany Many, DimensionValueDecode Decode) MapAttributeSettings(
         IDictionary<object, object?> settings, string at, string where, string source)
     {
         var name = at.Split('.')[1];
-        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k is not ("collect" or "path" or "keep")).ToList();
+        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k is not ("collect" or "path" or "keep" or "many" or "decode")).ToList();
         var collects = settings.TryGetValue("collect", out var declaredCollect);
         var reads = settings.TryGetValue("path", out var declaredPath);
         if (unknown.Count > 0 || collects == reads)
@@ -560,16 +562,58 @@ internal static class DimensionMapper
                 throw new FlowValidationException($"{source}: {where}: {at}.collect is the path of the dimension's own records whose values each key collects ({name}: {{ collect: data.Source }}).");
             }
 
+            if (settings.ContainsKey("many") || settings.ContainsKey("decode"))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: {at} collects its values, and many and decode choose and decode the value read from the record a key names; a collected attribute keeps each value its records hold on a row of its own, as the text its search filter matches. Read it through path instead ({name}: {{ path: ..., many: max }}).");
+            }
+
             var path = collect.Trim();
             CheckPath(path, $"{where}: {at}.collect", source);
-            return (path, null, keep);
+            return (path, null, keep, DimensionValueMany.First, DimensionValueDecode.None);
         }
 
         var steps = MapSteps(declaredPath, $"{at}.path", where, source);
         return steps.Count > 0
-            ? (null, steps, keep)
+            ? (null, steps, keep, MapMany(settings, at, where, source), MapDecode(settings, keep, at, where, source))
             : throw new FlowValidationException(
                 $"{source}: {where}: {at}.path reads nothing; give the path of the record the key names it is read from ({name}: {{ path: data.WellboreID }}).");
+    }
+
+    /// <summary>
+    /// How an attribute or an element's field keeps the values its path reaches several times: <c>first</c> (the default),
+    /// the first that is not empty; <c>join</c>, every one, each once, joined by <see cref="DimensionElementField.Separator"/>;
+    /// <c>max</c>, the greatest, by Unicode code point.
+    /// </summary>
+    private static DimensionValueMany MapMany(IDictionary<object, object?> settings, string at, string where, string source)
+    {
+        if (!settings.TryGetValue("many", out var declared))
+        {
+            return DimensionValueMany.First;
+        }
+
+        return DimensionKeeping.ParseMany(declared?.ToString()) ?? throw new FlowValidationException(
+            $"{source}: {where}: {at}.many is '{declared}'; it is first, the first value the path reaches; join, every value it reaches, each once, joined by '{DimensionElementField.Separator}'; or max, the greatest of them, by Unicode code point.");
+    }
+
+    /// <summary>
+    /// What an attribute's or an element field's values are decoded from before they are kept: <c>none</c> (the default),
+    /// or <c>url</c>, percent-encoding. Only a value kept as a value is decoded: a key or an id decoded would no longer be the
+    /// text the dimension it joins is keyed by.
+    /// </summary>
+    private static DimensionValueDecode MapDecode(IDictionary<object, object?> settings, DimensionValueKeep keep, string at, string where, string source)
+    {
+        if (!settings.TryGetValue("decode", out var declared))
+        {
+            return DimensionValueDecode.None;
+        }
+
+        var decode = DimensionKeeping.ParseDecode(declared?.ToString()) ?? throw new FlowValidationException(
+            $"{source}: {where}: {at}.decode is '{declared}'; it is none, the value as the record holds it, or url, its percent-escapes decoded (g%2Fcm3 is g/cm3).");
+        return decode == DimensionValueDecode.None || keep == DimensionValueKeep.Value
+            ? decode
+            : throw new FlowValidationException(
+                $"{source}: {where}: {at} keeps each value as {DimensionKeeping.Named(keep)}, the text the dimension it joins is keyed by, which a decoded value is not; decode a value kept as a value (keep: value).");
     }
 
     /// <summary>
@@ -653,9 +697,9 @@ internal static class DimensionMapper
                     $"{source}: {where}: {at} is named as another field or an attribute is, ignoring case; each is a column of the table, and a table has one column of a name.");
             }
 
-            var (fieldPath, keep, up, many) = declaredField switch
+            var (fieldPath, keep, up, many, decode) = declaredField switch
             {
-                string text => (text, DimensionValueKeep.Value, 0, DimensionElementMany.First),
+                string text => (text, DimensionValueKeep.Value, 0, DimensionValueMany.First, DimensionValueDecode.None),
                 IDictionary<object, object?> settings => MapFieldSettings(settings, at, where, source),
                 _ => throw new FlowValidationException(
                     $"{source}: {where}: {at} is the path inside each element it is read from ({trimmed}: CurveUnit), @ for the element itself, or settings ({trimmed}: {{ path: CurveUnit, keep: id }})."),
@@ -680,7 +724,7 @@ internal static class DimensionMapper
                     $"{source}: {where}: {at} reads @, the element itself, which up cannot move from; read the object up the path by its property's path instead.");
             }
 
-            fields.Add(new DimensionElementField(trimmed, fieldPath, keep, up, many));
+            fields.Add(new DimensionElementField(trimmed, fieldPath, keep, up, many, decode));
         }
 
         return new DimensionElementsSpec(path, fields);
@@ -688,16 +732,17 @@ internal static class DimensionMapper
 
     /// <summary>
     /// An element's field written as settings: <c>{ path: CurveUnit, keep: id }</c>, with <c>up</c>, how many objects up the
-    /// element's path it is read from, and <c>many</c>, <c>first</c> or <c>join</c> for a path that reaches several values.
+    /// element's path it is read from, <c>many</c>, how a path reaching several values keeps them (<see cref="MapMany"/>), and
+    /// <c>decode</c>, what each value is decoded from (<see cref="MapDecode"/>).
     /// </summary>
-    private static (string Path, DimensionValueKeep Keep, int Up, DimensionElementMany Many) MapFieldSettings(
+    private static (string Path, DimensionValueKeep Keep, int Up, DimensionValueMany Many, DimensionValueDecode Decode) MapFieldSettings(
         IDictionary<object, object?> settings, string at, string where, string source)
     {
-        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k is not ("path" or "keep" or "up" or "many")).ToList();
+        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k is not ("path" or "keep" or "up" or "many" or "decode")).ToList();
         if (unknown.Count > 0 || !settings.TryGetValue("path", out var declared) || declared is not string path || string.IsNullOrWhiteSpace(path))
         {
             throw new FlowValidationException(
-                $"{source}: {where}: {at} names the path inside each element it is read from, and how it is read and kept ({{ path: CurveUnit, keep: id, up: 1, many: join }})"
+                $"{source}: {where}: {at} names the path inside each element it is read from, and how it is read and kept ({{ path: CurveUnit, keep: id, up: 1, many: join, decode: url }})"
                 + (unknown.Count > 0 ? $"; it names {string.Join(", ", unknown)}" : "; it names no path") + ".");
         }
 
@@ -708,19 +753,8 @@ internal static class DimensionMapper
             throw new FlowValidationException($"{source}: {where}: {at}.up is '{declaredUp}'; it is a whole number from 0, how many objects up the element's path the field is read from.");
         }
 
-        var many = DimensionElementMany.First;
-        if (settings.TryGetValue("many", out var declaredMany))
-        {
-            many = declaredMany?.ToString()?.Trim().ToLowerInvariant() switch
-            {
-                "first" => DimensionElementMany.First,
-                "join" => DimensionElementMany.Join,
-                _ => throw new FlowValidationException(
-                    $"{source}: {where}: {at}.many is '{declaredMany}'; it is first, the first value the path reaches, or join, every value it reaches, each once, joined by '{DimensionElementField.Separator}'."),
-            };
-        }
-
-        return (path, MapKeep(settings, at, where, source), up, many);
+        var keep = MapKeep(settings, at, where, source);
+        return (path, keep, up, MapMany(settings, at, where, source), MapDecode(settings, keep, at, where, source));
     }
 
     /// <summary>
@@ -1000,6 +1034,19 @@ internal static class DimensionMapper
             }
         }
 
+        // How an attribute keeps several values and decodes them, and how a field decodes them, are left out where they are
+        // the default, so a dimension declared before either existed keeps its hash (and is not loaded in full for it).
+        foreach (var attribute in (node[nameof(DimensionSpec.Attributes)] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            RemoveDefault(attribute, nameof(DimensionAttributeSpec.Many), DimensionValueMany.First);
+            RemoveDefault(attribute, nameof(DimensionAttributeSpec.Decode), DimensionValueDecode.None);
+        }
+
+        foreach (var field in (node[nameof(DimensionSpec.Elements)]?[nameof(DimensionElementsSpec.Fields)] as JsonArray ?? []).OfType<JsonObject>())
+        {
+            RemoveDefault(field, nameof(DimensionElementField.Decode), DimensionValueDecode.None);
+        }
+
         if (string.Equals(dimension.KeyColumn, DimensionColumnNames.KeyOf(dimension.Path, dimension.ValueColumn), StringComparison.Ordinal))
         {
             node.Remove(nameof(DimensionSpec.KeyColumn));
@@ -1011,5 +1058,16 @@ internal static class DimensionMapper
         }
 
         return Hashing.ContentHash.Of(CanonicalJson.ToBytes(node))[..16];
+    }
+
+    /// <summary>Takes <paramref name="property"/> off <paramref name="item"/> where it holds <paramref name="byDefault"/>, as the hash writes enums.</summary>
+    private static void RemoveDefault<TEnum>(JsonObject item, string property, TEnum byDefault)
+        where TEnum : struct, Enum
+    {
+        if (item[property] is JsonValue value && value.TryGetValue<string>(out var text)
+            && string.Equals(text, JsonNamingPolicy.CamelCase.ConvertName(byDefault.ToString()), StringComparison.Ordinal))
+        {
+            item.Remove(property);
+        }
     }
 }

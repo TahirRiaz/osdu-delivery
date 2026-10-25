@@ -486,7 +486,14 @@ public sealed record DimensionSpec
 /// <param name="Steps">The paths read from the record a key names, one to <see cref="DimensionSpec.MaxLabelSteps"/>; empty for a collected attribute.</param>
 /// <param name="Collect">The path of the dimension's own records whose values the attribute collects; null for one read from a key's record.</param>
 /// <param name="Keep">How each value is kept: as a value shows it, or as a key another dimension's table is joined on.</param>
-public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null, DimensionValueKeep Keep = DimensionValueKeep.Value)
+/// <param name="Many">
+/// How the values the last step reaches are kept, over every record reached: the first that is not empty, every one joined,
+/// or the greatest. A collected attribute keeps every value on a row of its own, so it takes the first.
+/// </param>
+/// <param name="Decode">What each value read is decoded from before it is kept; a collected attribute decodes nothing.</param>
+public sealed record DimensionAttributeSpec(
+    string Name, IReadOnlyList<string> Steps, string? Collect = null, DimensionValueKeep Keep = DimensionValueKeep.Value,
+    DimensionValueMany Many = DimensionValueMany.First, DimensionValueDecode Decode = DimensionValueDecode.None)
 {
     /// <summary>Whether the attribute's values are collected from the dimension's own records rather than read from a key's record.</summary>
     public bool IsCollected => Collect is not null;
@@ -578,14 +585,36 @@ public sealed record DimensionElementsSpec(string Path, IReadOnlyList<DimensionE
     }
 }
 
-/// <summary>How a field reached several times inside one element is kept.</summary>
-public enum DimensionElementMany
+/// <summary>
+/// How the values a path reaches several times are kept: an element's field's inside one element, an attribute's over every
+/// record its last step reaches.
+/// </summary>
+public enum DimensionValueMany
 {
     /// <summary>The first value that is not empty.</summary>
     First,
 
     /// <summary>Every value that is not empty, each once, in order, joined by <see cref="DimensionElementField.Separator"/>.</summary>
     Join,
+
+    /// <summary>
+    /// The greatest value that is not empty, as kept, compared by Unicode code point (the order of their UTF-8 bytes), as
+    /// SQL's <c>MAX</c> over a binary collation and Spark's <c>max</c> order text.
+    /// </summary>
+    Max,
+}
+
+/// <summary>What a value read for an attribute or an element's field is decoded from before it is kept.</summary>
+public enum DimensionValueDecode
+{
+    /// <summary>Nothing: the value as the record holds it.</summary>
+    None,
+
+    /// <summary>
+    /// Percent-encoding (<c>g%2Fcm3</c> is <c>g/cm3</c>), its bytes read as UTF-8; a <c>+</c> stays a <c>+</c>, and a value
+    /// holding a <c>%</c> that starts no escape is kept as it is.
+    /// </summary>
+    Url,
 }
 
 /// <summary>One field of a dimension's elements: the column it is kept in, its path, and how it is read and kept.</summary>
@@ -594,8 +623,10 @@ public enum DimensionElementMany
 /// <param name="Keep">How each value is kept: as a value shows it, or as a key another dimension's table is joined on.</param>
 /// <param name="Up">How many objects up the element's path the field is read from: 0 the element, 1 the object holding its array.</param>
 /// <param name="Many">How a field the path reaches several times is kept.</param>
+/// <param name="Decode">What each value read is decoded from before it is kept.</param>
 public sealed record DimensionElementField(
-    string Name, string Path, DimensionValueKeep Keep = DimensionValueKeep.Value, int Up = 0, DimensionElementMany Many = DimensionElementMany.First)
+    string Name, string Path, DimensionValueKeep Keep = DimensionValueKeep.Value, int Up = 0, DimensionValueMany Many = DimensionValueMany.First,
+    DimensionValueDecode Decode = DimensionValueDecode.None)
 {
     /// <summary>What joins several values of one field.</summary>
     public const string Separator = "; ";
