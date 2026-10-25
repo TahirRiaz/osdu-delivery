@@ -200,6 +200,10 @@ other packages adopt the same contract.
   optional, why nothing is removed until an admin sets a limit (statistics read further back than 90 days), why the
   ledger's prune became three optional areas, and why purge-all, a page of the module's own and cleared assertion detail
   were rejected.
+- [0030: a dimension's rows are one range of every table, and a build's statements seek them](decisions/0030-dimension-rows-one-range.md) -
+  why the tables holding a dimension's rows are keyed on partition, dimension and row, why every statement of a write
+  names its dimension and forces its seek (plans made on empty tables scanned), and why retrying or serialising the
+  writes, a covering index per statement and row locks were rejected.
 
 ## Coverage
 
