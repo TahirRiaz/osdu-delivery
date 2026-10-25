@@ -11,7 +11,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// A dimension flow's build end to end (osdu/docs/reference/flow/dimension.md, What a build does): the field settled
+/// A dimension flow's build end to end (osdu/docs/reference/flow/dimension-build.md, What a build does): the field settled
 /// from the templates of the flow's template folders or the record's own mapping, every distinct value read from a platform whose aggregation
 /// returns few groups at a time, cleaned into members with their filters, and kept in the ledger on SQL Server; a
 /// dimension that cannot be built failing alone; and the plan. Every request the build makes is held to the pinned
@@ -406,7 +406,7 @@ public sealed class DimensionRunTests : IDisposable
 
         var (runner, ledger, flow) = await RunnerAsync(Head + """
             dimensions:
-              - name: SmdaWellbore
+              - name: WellboreContext
                 kind: "osdu:wks:master-data--Wellbore:*"
                 path: id
                 columns: { key: WellboreID, value: WellboreCode }
@@ -426,7 +426,7 @@ public sealed class DimensionRunTests : IDisposable
         var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
 
         Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
-        var dimension = (await ledger.FindDimensionAsync(flow.LedgerId, "SmdaWellbore"))!;
+        var dimension = (await ledger.FindDimensionAsync(flow.LedgerId, "WellboreContext"))!;
         var keys = (await ledger.ListDimensionValuesAsync(dimension.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
             .ToDictionary(k => k.Original, StringComparer.Ordinal);
 
@@ -1109,7 +1109,7 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal([("Country", false), ("Source", true)], table.Columns.Select(c => (c.Name, c.Collected)));
         var tooMany = Assert.Throws<DeliveryException>(() => DimensionTables.Of(
             "D", "Code", "Name", Enumerable.Range(0, DimensionSpec.MaxAttributes + 1).Select(i => new DimensionAttributeSpec($"A{i}", ["data.A"])).ToList()));
-        Assert.Contains("Dimension D declares 21 attributes, and a dimension's table holds 20", tooMany.Message, StringComparison.Ordinal);
+        Assert.Contains($"Dimension D declares {DimensionSpec.MaxAttributes + 1} attributes, and a dimension's table holds {DimensionSpec.MaxAttributes}", tooMany.Message, StringComparison.Ordinal);
     }
 
     [Fact]

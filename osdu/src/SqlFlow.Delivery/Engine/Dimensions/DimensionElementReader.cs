@@ -96,7 +96,7 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
                         }
 
                         var objects = new List<(JsonNode Element, IReadOnlyList<JsonObject> Ancestors)>();
-                        Walk(JsonObject.Create(hit), path, 0, [], objects);
+                        Walk(JsonObject.Create(hit), path, 0, [], objects, elements.KeepNulls);
                         for (var ordinal = 0; ordinal < objects.Count; ordinal++)
                         {
                             var (element, ancestors) = objects[ordinal];
@@ -172,18 +172,27 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
     /// <summary>
     /// Every element the path reaches, in the order the record holds them, with the objects passed on the way to it (the
     /// record first, the object holding the element's array last): an array on the way stepped into, a filter keeping the
-    /// objects it matches, and what the path ends at taken element by element, an object or a plain value.
+    /// objects it matches, and what the path ends at taken element by element, an object or a plain value. A null where an
+    /// element is is no element, unless <paramref name="keepNulls"/> makes it one holding nothing, so every field it reads
+    /// in the element is null and those read up the path are not.
     /// </summary>
-    internal static void Walk(JsonNode? node, DimensionPath path, int at, IReadOnlyList<JsonObject> passed, List<(JsonNode Element, IReadOnlyList<JsonObject> Ancestors)> into)
+    internal static void Walk(
+        JsonNode? node, DimensionPath path, int at, IReadOnlyList<JsonObject> passed, List<(JsonNode Element, IReadOnlyList<JsonObject> Ancestors)> into,
+        bool keepNulls = false)
     {
         switch (node)
         {
             case null:
+                if (keepNulls && at == path.Segments.Count && passed.Count > 0)
+                {
+                    into.Add((new JsonObject(), passed));
+                }
+
                 return;
             case JsonArray array:
                 foreach (var item in array)
                 {
-                    Walk(item, path, at, passed, into);
+                    Walk(item, path, at, passed, into, keepNulls);
                 }
 
                 return;
@@ -200,7 +209,7 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
                 IReadOnlyList<JsonObject> through = [.. passed, obj];
                 if (segment.FilterProperty is null)
                 {
-                    Walk(child, path, at + 1, through, into);
+                    Walk(child, path, at + 1, through, into, keepNulls);
                     return;
                 }
 
@@ -208,7 +217,7 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
                 {
                     if (segment.Keeps(item))
                     {
-                        Walk(item, path, at + 1, through, into);
+                        Walk(item, path, at + 1, through, into, keepNulls);
                     }
                 }
 
@@ -249,7 +258,8 @@ internal sealed class DimensionElementReader(OsduSearch search, ILogger log, int
             List<string> texts = _path is null
                 ? element is JsonValue value && Scalar(value) is { } self ? [self] : []
                 : from is null ? [] : _path.Read(from);
-            var (kept, _, cut, tooLong) = DimensionKeeping.KeepMany(texts, _field.Keep, _field.Many, _field.Decode, DimensionSpec.MaxElementValueLength);
+            var (kept, _, cut, tooLong) = DimensionKeeping.KeepMany(
+                texts, _field.Keep, _field.Many, _field.Decode, DimensionSpec.MaxElementValueLength, _field.Trim);
             return (kept, cut, tooLong);
         }
 

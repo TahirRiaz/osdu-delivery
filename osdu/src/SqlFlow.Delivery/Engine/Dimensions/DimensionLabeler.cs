@@ -37,7 +37,7 @@ public sealed record KeyLabels(
 }
 
 /// <summary>
-/// Reads the human-friendly label and the attributes of each key of a dimension (osdu/docs/reference/flow/dimension.md,
+/// Reads the human-friendly label and the attributes of each key of a dimension (osdu/docs/reference/flow/dimension-attributes.md,
 /// Labels and attributes): a key naming an OSDU record (<c>dev:master-data--Wellbore:WB-0001:</c>) is followed to the
 /// record it names, and each path is read there (<c>data.FacilityName</c>); a label or an attribute of several steps
 /// follows every reference a step reads to the next records (<c>data.GeoContexts.GeoPoliticalEntityID</c>, then
@@ -59,12 +59,6 @@ public sealed class DimensionLabeler
 
     /// <summary>The keys a note names as examples.</summary>
     private const int Examples = 3;
-
-    /// <summary>
-    /// The most records one step follows for one key: a wellbore names a handful of fields and political entities, and a
-    /// path reading more is bounded rather than read whole.
-    /// </summary>
-    private const int MaxReferencesPerStep = 20;
 
     /// <summary>The name the label's chain goes by among the attributes', which no attribute can take.</summary>
     private const string LabelChain = "label";
@@ -89,25 +83,29 @@ public sealed class DimensionLabeler
 
     /// <summary>The label of each of <paramref name="keys"/>, read through <paramref name="steps"/>.</summary>
     public Task<KeyLabels> LabelAsync(IReadOnlyCollection<string> keys, IReadOnlyList<string> steps, CancellationToken ct)
-        => ReadAsync(keys, steps, [], ct);
+        => ReadAsync(keys, steps, [], null, ct);
 
     /// <summary>
     /// The label of each of <paramref name="keys"/>, read through <paramref name="label"/> (none when it is empty), and each
-    /// of <paramref name="attributes"/>, read through its own steps.
+    /// of <paramref name="attributes"/>, read through its own steps, the records of an entity type looked up in the kind
+    /// <paramref name="lookupKinds"/> names for it (<see cref="DimensionSpec.LookupKinds"/>), else in any of its kinds.
     /// </summary>
     public async Task<KeyLabels> ReadAsync(
-        IReadOnlyCollection<string> keys, IReadOnlyList<string> label, IReadOnlyList<DimensionAttributeSpec> attributes, CancellationToken ct)
+        IReadOnlyCollection<string> keys, IReadOnlyList<string> label, IReadOnlyList<DimensionAttributeSpec> attributes,
+        IReadOnlyDictionary<string, string>? lookupKinds, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(keys);
         ArgumentNullException.ThrowIfNull(label);
         ArgumentNullException.ThrowIfNull(attributes);
+        var kinds = lookupKinds ?? new Dictionary<string, string>(StringComparer.Ordinal);
         var chains = new List<Chain>(attributes.Count + 1);
         if (label.Count > 0)
         {
             chains.Add(new Chain(LabelChain, label, IsLabel: true));
         }
 
-        chains.AddRange(attributes.Where(a => a.Steps.Count > 0).Select(a => new Chain(a.Name, a.Steps, IsLabel: false, a.Keep, a.Many, a.Decode)));
+        chains.AddRange(attributes.Where(a => a.Steps.Count > 0)
+            .Select(a => new Chain(a.Name, a.Steps, IsLabel: false, a.Keep, a.Many, a.Decode, a.MaxReferences, a.Trim)));
         if (chains.Count == 0 || keys.Count == 0)
         {
             return KeyLabels.None;
@@ -127,6 +125,7 @@ public sealed class DimensionLabeler
         var cut = 0;
         var uncut = 0;
         var queries = 0;
+        var bounded = chains.ToDictionary(c => c, _ => 0);
         for (var step = 0; step < chains.Max(c => c.Steps.Count); step++)
         {
             var at = step;
@@ -160,8 +159,51 @@ public sealed class DimensionLabeler
                 }
             }
 
-            var (records, asked) = await ReadAsync(wanted, ct).ConfigureAwait(false);
+            var (records, asked) = await ReadAsync(wanted, kinds, ct).ConfigureAwait(false);
             queries += asked;
+
+            // A filter through a reference compares what the record each reference names holds: those records are looked up
+            // after the records the step reads, with only what the filters read of them, and a key is read through them too.
+            var lookupWanted = new Dictionary<string, (HashSet<string> Ids, HashSet<string> Paths)>(StringComparer.Ordinal);
+            foreach (var chain in active.Where(c => c.Paths[at].HasLookups))
+            {
+                foreach (var (key, (references, _)) in reached[chain])
+                {
+                    var through = readThrough[key];
+                    foreach (var id in references.Where(records.ContainsKey))
+                    {
+                        foreach (var (referencesAt, readThere) in chain.Paths[at].Lookups)
+                        {
+                            foreach (var named in referencesAt.Read(records[id]).Select(v => v.Trim()).Where(TargetId.IsRecordReference).Select(TargetId.WithoutVersion))
+                            {
+                                if (!through.Contains(named, StringComparer.Ordinal))
+                                {
+                                    through.Add(named);
+                                }
+
+                                var type = EntityTypeOf(named);
+                                if (!lookupWanted.TryGetValue(type, out var need))
+                                {
+                                    need = (new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
+                                    lookupWanted[type] = need;
+                                }
+
+                                need.Ids.Add(named);
+                                need.Paths.UnionWith(readThere.ReturnedFields);
+                            }
+                        }
+                    }
+                }
+            }
+
+            var looked = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+            if (lookupWanted.Count > 0)
+            {
+                (looked, var lookedUp) = await ReadAsync(lookupWanted, kinds, ct).ConfigureAwait(false);
+                queries += lookedUp;
+            }
+
+            JsonObject? Lookup(string id) => looked.TryGetValue(id, out var record) ? record : null;
             foreach (var chain in active)
             {
                 var last = at == chain.Steps.Count - 1;
@@ -196,13 +238,13 @@ public sealed class DimensionLabeler
                             // The first record reached that holds a value at the path gives it, kept as the chain keeps it.
                             foreach (var id in held)
                             {
-                                var read = path.Read(records[id]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+                                var read = path.Read(records[id], Lookup).FirstOrDefault(v => DimensionKeeping.IsValue(v, chain.Keep, chain.Trim));
                                 if (read is null)
                                 {
                                     continue;
                                 }
 
-                                var (kept, wasCut, tooLong) = DimensionKeeping.Keep(DimensionKeeping.Decoded(read, chain.Decode), chain.Keep, longest);
+                                var (kept, wasCut, tooLong) = DimensionKeeping.Keep(DimensionKeeping.Decoded(read, chain.Decode), chain.Keep, longest, chain.Trim);
                                 over |= tooLong;
                                 if (kept is not null)
                                 {
@@ -215,9 +257,9 @@ public sealed class DimensionLabeler
                         else
                         {
                             // Every value of every record reached, in the order they were reached: joined, or the greatest.
-                            var values = held.SelectMany(id => path.Read(records[id]).Select(v => (Id: id, Text: v))).ToList();
+                            var values = held.SelectMany(id => path.Read(records[id], Lookup).Select(v => (Id: id, Text: v))).ToList();
                             var (kept, place, wasCut, tooLong) = DimensionKeeping.KeepMany(
-                                values.Select(v => v.Text).ToList(), chain.Keep, chain.Many, chain.Decode, longest);
+                                values.Select(v => v.Text).ToList(), chain.Keep, chain.Many, chain.Decode, longest, chain.Trim);
                             over = tooLong;
                             if (kept is not null)
                             {
@@ -240,15 +282,21 @@ public sealed class DimensionLabeler
                         continue;
                     }
 
-                    // Every reference the records reached hold at the path, in order, each once: the next step reads them all.
+                    // Every reference the records reached hold at the path, in order, each once: the next step reads them all,
+                    // up to as many as the chain follows, and a key naming more is counted for a note.
                     var next = held
-                        .SelectMany(id => path.Read(records[id]))
+                        .SelectMany(id => path.Read(records[id], Lookup))
                         .Select(v => v.Trim())
                         .Where(TargetId.IsRecordReference)
                         .Select(TargetId.WithoutVersion)
                         .Distinct(StringComparer.Ordinal)
-                        .Take(MaxReferencesPerStep)
                         .ToList();
+                    if (next.Count > chain.MaxReferences)
+                    {
+                        bounded[chain]++;
+                        next = next.Take(chain.MaxReferences).ToList();
+                    }
+
                     where[key] = next.Count == 0 ? ([], $"record {held[0]} holds no record reference at {path.Text}") : (next, null);
                 }
             }
@@ -285,6 +333,12 @@ public sealed class DimensionLabeler
             }
         }
 
+        foreach (var (chain, keysBounded) in bounded.Where(b => b.Value > 0))
+        {
+            notes.Add(string.Create(CultureInfo.InvariantCulture,
+                $"{keysBounded} key(s) name more than {chain.MaxReferences} record(s) at a step of {(chain.IsLabel ? "the label" : chain.Name)}, and only the first {chain.MaxReferences} were followed{(chain.IsLabel ? string.Empty : $"; raise maxReferences (at most {DimensionAttributeSpec.MaxReferencesCeiling}) to follow more")}."));
+        }
+
         if (cut > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
@@ -309,14 +363,15 @@ public sealed class DimensionLabeler
     /// the ids of one entity type searched in that type's kind, a chunk at a time.
     /// </summary>
     private async Task<(Dictionary<string, JsonObject> Records, int Queries)> ReadAsync(
-        Dictionary<string, (HashSet<string> Ids, HashSet<string> Paths)> wanted, CancellationToken ct)
+        Dictionary<string, (HashSet<string> Ids, HashSet<string> Paths)> wanted, IReadOnlyDictionary<string, string> kinds, CancellationToken ct)
     {
         var asks = new List<(string Kind, List<string> Fields, string[] Ids)>();
         foreach (var (type, need) in wanted)
         {
             var fields = new List<string>(need.Paths.Count + 1) { "id" };
             fields.AddRange(need.Paths.Order(StringComparer.Ordinal));
-            asks.AddRange(need.Ids.Order(StringComparer.Ordinal).Chunk(IdsPerQuery).Select(chunk => ($"*:*:{type}:*", fields, chunk)));
+            var kind = kinds.TryGetValue(type, out var pinned) ? pinned : $"*:*:{type}:*";
+            asks.AddRange(need.Ids.Order(StringComparer.Ordinal).Chunk(IdsPerQuery).Select(chunk => (kind, fields, chunk)));
         }
 
         // Each search asks for records of its own, so they are asked several at a time and gathered as they answer.
@@ -407,7 +462,8 @@ public sealed class DimensionLabeler
     /// </summary>
     private sealed record Chain(
         string Name, IReadOnlyList<string> Steps, bool IsLabel, DimensionValueKeep Keep = DimensionValueKeep.Value,
-        DimensionValueMany Many = DimensionValueMany.First, DimensionValueDecode Decode = DimensionValueDecode.None)
+        DimensionValueMany Many = DimensionValueMany.First, DimensionValueDecode Decode = DimensionValueDecode.None,
+        int MaxReferences = DimensionAttributeSpec.DefaultMaxReferences, bool Trim = true)
     {
         /// <summary>
         /// Each step's path, parsed; a step the document mapper would have refused reads nothing, never the wrong thing.

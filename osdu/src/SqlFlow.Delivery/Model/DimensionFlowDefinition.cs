@@ -66,7 +66,7 @@ public sealed record DimensionFlowDefinition
     public RunParallelism Parallelism { get; init; } = new();
 
     /// <summary>
-    /// How a build loads the flow's dimensions after their first full load (osdu/docs/reference/flow/dimension.md, Full
+    /// How a build loads the flow's dimensions after their first full load (osdu/docs/reference/flow/dimension-incremental.md, Full
     /// and incremental loads): null for a flow that loads every dimension in full on every build.
     /// </summary>
     public DimensionIncremental? Incremental { get; init; }
@@ -319,6 +319,13 @@ public sealed record DimensionIncremental
 
     /// <summary>Every build loads in full, as without the block, keeping the block's settings for when this is taken out.</summary>
     public bool FullLoad { get; init; }
+
+    /// <summary>
+    /// A build loads a dimension in full when at least one record its last full load read is gone from the index or no longer
+    /// matches its query, which no incremental load can see: so a soft delete leaves its keys and counts only until the next
+    /// build, not until the next full load.
+    /// </summary>
+    public bool FullLoadWhenRecordsLeave { get; init; }
 }
 
 public sealed record DimensionSource
@@ -419,8 +426,8 @@ public sealed record DimensionSpec
     /// </summary>
     public IReadOnlyList<DimensionAttributeSpec> Attributes { get; init; } = [];
 
-    /// <summary>The most attributes a dimension reads.</summary>
-    public const int MaxAttributes = 20;
+    /// <summary>The most attributes a dimension reads, and attributes and element fields together: each is a column of its table.</summary>
+    public const int MaxAttributes = 64;
 
     /// <summary>The longest attribute value kept; a longer one is cut, with a note.</summary>
     public const int MaxAttributeValueLength = 256;
@@ -434,6 +441,17 @@ public sealed record DimensionSpec
 
     /// <summary>The objects of a nested array of each record, a row each with its fields; null when the dimension reads none.</summary>
     public DimensionElementsSpec? Elements { get; init; }
+
+    /// <summary>
+    /// The kind the records of an entity type are looked up in when a label or an attribute reads through a reference to
+    /// one, by entity type (<c>master-data--Basin</c> to <c>osdu:wks:master-data--Basin:1.2.0</c>); an entity type it names
+    /// none for is looked up in every kind of it, <c>*:*:&lt;entityType&gt;:*</c>.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> LookupKinds { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>The kind the records of <paramref name="entityType"/> are looked up in: the one <see cref="LookupKinds"/> names, else any of the type.</summary>
+    public string LookupKind(string entityType)
+        => LookupKinds.TryGetValue(entityType, out var kind) ? kind : $"*:*:{entityType}:*";
 
     /// <summary>
     /// The column of the dimension's table that holds each key, exactly as the index holds it: named after the property
@@ -491,10 +509,19 @@ public sealed record DimensionSpec
 /// or the greatest. A collected attribute keeps every value on a row of its own, so it takes the first.
 /// </param>
 /// <param name="Decode">What each value read is decoded from before it is kept; a collected attribute decodes nothing.</param>
+/// <param name="MaxReferences">The most records each step but the last follows for one key, the rest left out with a note.</param>
+/// <param name="Trim">Whether a value is kept without the white space at its ends; a key kept as a key or an id is always trimmed.</param>
 public sealed record DimensionAttributeSpec(
     string Name, IReadOnlyList<string> Steps, string? Collect = null, DimensionValueKeep Keep = DimensionValueKeep.Value,
-    DimensionValueMany Many = DimensionValueMany.First, DimensionValueDecode Decode = DimensionValueDecode.None)
+    DimensionValueMany Many = DimensionValueMany.First, DimensionValueDecode Decode = DimensionValueDecode.None,
+    int MaxReferences = DimensionAttributeSpec.DefaultMaxReferences, bool Trim = true)
 {
+    /// <summary>The records a step follows for one key unless the attribute says otherwise: a wellbore names a handful of fields and political entities.</summary>
+    public const int DefaultMaxReferences = 20;
+
+    /// <summary>The most records an attribute may follow from one key at one step.</summary>
+    public const int MaxReferencesCeiling = 1000;
+
     /// <summary>Whether the attribute's values are collected from the dimension's own records rather than read from a key's record.</summary>
     public bool IsCollected => Collect is not null;
 
@@ -528,6 +555,13 @@ public enum DimensionValueKeep
     /// it is the text the key column of a dimension keyed by <c>id</c> holds; any other text as the record holds it.
     /// </summary>
     Id,
+
+    /// <summary>
+    /// A record reference with the trailing colon of the latest version taken off and any version it names kept, so a
+    /// reference to the latest is the id of the record it names and one to a version is not: what a pipeline that strips a
+    /// trailing colon alone joins by. It joins a dimension keyed by <c>id</c> as <see cref="Id"/> does.
+    /// </summary>
+    Reference,
 }
 
 /// <summary>
@@ -543,7 +577,8 @@ public enum DimensionValueKeep
 /// </remarks>
 /// <param name="Path">The array, as a path from the record's root, filters allowed.</param>
 /// <param name="Fields">The fields read from each element, in their order, each a column of the table.</param>
-public sealed record DimensionElementsSpec(string Path, IReadOnlyList<DimensionElementField> Fields)
+/// <param name="KeepNulls">Whether a null in the array is an element, every field of it null, as Spark's explode keeps one; else it is no element.</param>
+public sealed record DimensionElementsSpec(string Path, IReadOnlyList<DimensionElementField> Fields, bool KeepNulls = false)
 {
     /// <summary>
     /// The column of the table that tells the rows of one key apart: each object's place among the key's, from 1, in the order
@@ -597,6 +632,9 @@ public enum DimensionValueMany
     /// <summary>Every value that is not empty, each once, in order, joined by <see cref="DimensionElementField.Separator"/>.</summary>
     Join,
 
+    /// <summary>Every value that is not empty, a value held twice twice, in order, joined by <see cref="DimensionElementField.Separator"/>.</summary>
+    All,
+
     /// <summary>
     /// The greatest value that is not empty, as kept, compared by Unicode code point (the order of their UTF-8 bytes), as
     /// SQL's <c>MAX</c> over a binary collation and Spark's <c>max</c> order text.
@@ -624,9 +662,10 @@ public enum DimensionValueDecode
 /// <param name="Up">How many objects up the element's path the field is read from: 0 the element, 1 the object holding its array.</param>
 /// <param name="Many">How a field the path reaches several times is kept.</param>
 /// <param name="Decode">What each value read is decoded from before it is kept.</param>
+/// <param name="Trim">Whether a value is kept without the white space at its ends; a key kept as a key or an id is always trimmed.</param>
 public sealed record DimensionElementField(
     string Name, string Path, DimensionValueKeep Keep = DimensionValueKeep.Value, int Up = 0, DimensionValueMany Many = DimensionValueMany.First,
-    DimensionValueDecode Decode = DimensionValueDecode.None)
+    DimensionValueDecode Decode = DimensionValueDecode.None, bool Trim = true)
 {
     /// <summary>What joins several values of one field.</summary>
     public const string Separator = "; ";

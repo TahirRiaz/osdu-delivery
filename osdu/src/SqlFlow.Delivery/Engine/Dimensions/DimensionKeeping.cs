@@ -8,11 +8,12 @@ namespace SqlFlow.Delivery.Engine.Dimensions;
 public static class DimensionKeeping
 {
     /// <summary>
-    /// <paramref name="text"/> as it is kept, trimmed: as a value shows it, cut at <paramref name="longest"/>; or as a key or a
-    /// record's id, left out when longer, since a key cut joins to nothing. Null when nothing is kept.
+    /// <paramref name="text"/> as it is kept: as a value shows it, trimmed unless <paramref name="trim"/> says otherwise, cut
+    /// at <paramref name="longest"/>; or as a key, a record's id or a reference, always trimmed and left out when longer,
+    /// since a key cut joins to nothing. Null when nothing is kept.
     /// </summary>
     /// <returns>The value kept, whether it was cut, and whether it was left out for its length.</returns>
-    public static (string? Value, bool Cut, bool TooLong) Keep(string text, DimensionValueKeep keep, int longest)
+    public static (string? Value, bool Cut, bool TooLong) Keep(string text, DimensionValueKeep keep, int longest, bool trim = true)
     {
         ArgumentNullException.ThrowIfNull(text);
         var trimmed = text.Trim();
@@ -20,6 +21,8 @@ public static class DimensionKeeping
         {
             DimensionValueKeep.Key => trimmed,
             DimensionValueKeep.Id => TargetId.IsRecordReference(trimmed) ? TargetId.WithoutVersion(trimmed) : trimmed,
+            DimensionValueKeep.Reference => TargetId.IsRecordReference(trimmed) && trimmed.EndsWith(':') ? trimmed[..^1] : trimmed,
+            _ when !trim => TargetId.IsRecordReference(trimmed) ? DimensionLabeler.DisplayOf(trimmed) : text,
             _ => DimensionLabeler.DisplayOf(trimmed).Trim(),
         };
 
@@ -38,31 +41,32 @@ public static class DimensionKeeping
 
     /// <summary>
     /// The value <paramref name="texts"/> come to, in their order, each decoded by <paramref name="decode"/> and kept by
-    /// <paramref name="keep"/> whole: the first kept, every one kept joined (each once) by
-    /// <see cref="DimensionElementField.Separator"/>, or the greatest (<see cref="CompareCodePoints"/>), as
-    /// <paramref name="many"/> says. The value is then cut at <paramref name="longest"/> as <see cref="Keep"/> cuts one, or
-    /// left out for its length, so a key or an id kept is never cut part way.
+    /// <paramref name="keep"/> whole: the first kept, every one kept joined by <see cref="DimensionElementField.Separator"/>
+    /// (each once, or as often as it is held), or the greatest (<see cref="CompareCodePoints"/>), as <paramref name="many"/>
+    /// says. The value is then cut at <paramref name="longest"/> as <see cref="Keep"/> cuts one, or left out for its length,
+    /// so a key or an id kept is never cut part way. A value of white space alone is no value unless
+    /// <paramref name="trim"/> is false, when it is kept as it is held.
     /// </summary>
     /// <returns>
     /// The value kept; the place in <paramref name="texts"/> of the text it was read from (the first joined), -1 for none;
     /// whether it was cut; and whether a value was left out for its length.
     /// </returns>
     public static (string? Value, int From, bool Cut, bool TooLong) KeepMany(
-        IReadOnlyList<string> texts, DimensionValueKeep keep, DimensionValueMany many, DimensionValueDecode decode, int longest)
+        IReadOnlyList<string> texts, DimensionValueKeep keep, DimensionValueMany many, DimensionValueDecode decode, int longest, bool trim = true)
     {
         ArgumentNullException.ThrowIfNull(texts);
         var kept = new List<(string Text, int At)>();
         var tooLong = false;
         for (var at = 0; at < texts.Count; at++)
         {
-            if (string.IsNullOrWhiteSpace(texts[at]))
+            if (!IsValue(texts[at], keep, trim))
             {
                 continue;
             }
 
-            var (one, _, over) = Keep(Decoded(texts[at], decode), keep, int.MaxValue);
+            var (one, _, over) = Keep(Decoded(texts[at], decode), keep, int.MaxValue, trim);
             tooLong |= over;
-            if (one is null || kept.Exists(k => string.Equals(k.Text, one, StringComparison.Ordinal)))
+            if (one is null || (many != DimensionValueMany.All && kept.Exists(k => string.Equals(k.Text, one, StringComparison.Ordinal))))
             {
                 continue;
             }
@@ -81,7 +85,7 @@ public static class DimensionKeeping
 
         var (value, from) = many switch
         {
-            DimensionValueMany.Join => (string.Join(DimensionElementField.Separator, kept.Select(k => k.Text)), kept[0].At),
+            DimensionValueMany.Join or DimensionValueMany.All => (string.Join(DimensionElementField.Separator, kept.Select(k => k.Text)), kept[0].At),
             DimensionValueMany.Max => kept.Aggregate((best, next) => CompareCodePoints(next.Text, best.Text) > 0 ? next : best),
             _ => kept[0],
         };
@@ -118,6 +122,13 @@ public static class DimensionKeeping
 
         return a.Length.CompareTo(b.Length);
     }
+
+    /// <summary>
+    /// Whether <paramref name="text"/> is a value a path reached: not empty, and not white space alone unless it is kept as a
+    /// value untrimmed.
+    /// </summary>
+    public static bool IsValue(string? text, DimensionValueKeep keep, bool trim)
+        => trim || keep != DimensionValueKeep.Value ? !string.IsNullOrWhiteSpace(text) : !string.IsNullOrEmpty(text);
 
     /// <summary><paramref name="text"/> decoded by <paramref name="decode"/>.</summary>
     public static string Decoded(string text, DimensionValueDecode decode)
@@ -171,6 +182,7 @@ public static class DimensionKeeping
     {
         DimensionValueKeep.Key => "key",
         DimensionValueKeep.Id => "id",
+        DimensionValueKeep.Reference => "reference",
         _ => "value",
     };
 
@@ -180,6 +192,7 @@ public static class DimensionKeeping
         "value" => DimensionValueKeep.Value,
         "key" => DimensionValueKeep.Key,
         "id" => DimensionValueKeep.Id,
+        "reference" => DimensionValueKeep.Reference,
         _ => null,
     };
 
@@ -187,6 +200,7 @@ public static class DimensionKeeping
     public static string Named(DimensionValueMany many) => many switch
     {
         DimensionValueMany.Join => "join",
+        DimensionValueMany.All => "all",
         DimensionValueMany.Max => "max",
         _ => "first",
     };
@@ -196,6 +210,7 @@ public static class DimensionKeeping
     {
         "first" => DimensionValueMany.First,
         "join" => DimensionValueMany.Join,
+        "all" => DimensionValueMany.All,
         "max" => DimensionValueMany.Max,
         _ => null,
     };
