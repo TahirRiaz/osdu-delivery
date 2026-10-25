@@ -3232,6 +3232,8 @@
         "label",
         "attributes",
         "collect",
+        "many: max",
+        "decode: url",
         "clean steps",
         "unlabelled",
         "aggregationsize",
