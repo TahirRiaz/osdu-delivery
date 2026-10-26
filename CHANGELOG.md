@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A repository's files open as code.** On a repo's page, a click on a flow, a mapping, a template or any other file
+  shows its code in a window that slides in from the left over the page, syntax-coloured, resized by dragging its edge
+  and maximized to read it alone, where a click used to open only a flow's page and other files did nothing. A flow's
+  file offers Open pipeline. Files holding credentials (an environment file, a private key) and, in a repo synced from a
+  local folder, files git ignores are not shown
+  ([What a repository holds, and its page](sqlflow/docs/reference/concepts/control-plane.md#what-a-repository-holds-and-its-page)).
 - **Run a flow with the parameters its document declares.** The trigger dialog of every OSDU flow kind lists the flow's
   parameters with their descriptions and defaults, a list to pick from for a parameter's new `choices` (a run given
   another value is refused) or, for a delivery flow, the values the column it is looked up in holds, with how many rows
