@@ -707,9 +707,19 @@ public sealed partial class DimensionRunner
         var together = reads && collects && concurrency > 1;
         var forLabels = together ? concurrency / 2 : concurrency;
         var forCollected = together ? concurrency - forLabels : concurrency;
-        Task<KeyLabels> Labelling() => reads
-            ? new DimensionLabeler(search, _log, forLabels).ReadAsync(keys, dimension.Label, throughKeys, dimension.LookupKinds, ct)
-            : Task.FromResult(KeyLabels.None);
+        async Task<KeyLabels> Labelling()
+        {
+            if (!reads)
+            {
+                return KeyLabels.None;
+            }
+
+            var read = await new DimensionLabeler(search, forLabels).ReadAsync(keys, dimension.Label, throughKeys, dimension.LookupKinds, ct).ConfigureAwait(false);
+            _log.LogInformation(
+                "labels and attributes: {Labelled} of {Keys} key(s) labelled, {Attributes} attribute(s) read through {Chains} chain(s) in {Queries} search(es)",
+                read.Labelled, keys.Count, read.Attributes.Values.Sum(a => a.Count), (dimension.Label.Count > 0 ? 1 : 0) + throughKeys.Count(a => a.Steps.Count > 0), read.Queries);
+            return read;
+        }
         Task<CollectedRead> Collecting() => ReadCollectedAsync(search, templates, dimension, query, field, resolved, scopes, forCollected, ct);
         KeyLabels labels;
         CollectedRead collected;
