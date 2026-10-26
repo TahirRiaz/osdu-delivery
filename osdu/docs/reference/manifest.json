@@ -8698,7 +8698,8 @@
         "plan cache"
       ],
       "related": [
-        "delivery-wiki-0011-dimension-flows"
+        "delivery-wiki-0011-dimension-flows",
+        "delivery-wiki-0032-dimension-builds-stage-in-the-database"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
@@ -8740,6 +8741,40 @@
         "osdu/src/SqlFlow.Delivery/Engine/ScopeReads.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryRunParameterLookup.cs",
         "osdu/tests/SqlFlow.Delivery.Tests/RunInputsTests.cs"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0032-dimension-builds-stage-in-the-database",
+      "corpus": "wiki",
+      "path": "decisions/0032-dimension-builds-stage-in-the-database.md",
+      "title": "Decision 0032: a dimension build stages what it reads in the database and holds one batch in memory",
+      "type": "decision",
+      "summary": "Why a dimension build stages its reads in tables of the osdu schema, reads labels in bounded batches, and why more memory, temp tables and files were rejected.",
+      "keywords": [
+        "out of memory",
+        "OutOfMemoryException",
+        "dimension build memory",
+        "staging tables",
+        "bounded batches",
+        "parity suite",
+        "incremental load caps"
+      ],
+      "related": [
+        "delivery-wiki-0011-dimension-flows",
+        "delivery-wiki-0030-dimension-rows-one-range"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Ledger/DimensionStage.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Dimensions.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRunner.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionRunner.Incremental.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionLabeler.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/BoundedCache.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Dimensions/DistinctValues.cs",
+        "osdu/src/SqlFlow.Delivery.Data/Migrations/20261026103651_DimensionBuildStaging.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/DimensionBuildParityTests.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/DimensionStageTests.cs"
       ]
     },
     {
