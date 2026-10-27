@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Records built in steps.** A delivery flow's `enrich:` steps extend each record its mapping renders: each step
+  renders a fragment (a mapping with `fragment: true`) from rows of its own, a table joined to the record on its key,
+  and can read what the mapping and the steps before it added with `$base`. The record is rendered as one chain and
+  sent once, so a change to the record's row, to a step's rows, to a fragment or to the cache values they read writes
+  it once, and a change that renders the same record sends nothing. `sqlflow check` lists the steps and
+  `sqlflow preview` shows what each added ([enrich](osdu/docs/reference/flow/enrich.md),
+  [fragments](osdu/docs/reference/flow/mapping-fragment.md)). A flow without steps renders and hashes as before.
+
 - **Export records to Excel.** A delivery flow's Records tab has **Export**, which downloads every record its filter
   matches (up to 25,000) as an Excel workbook to work through where the records come from: a row for each record with its
   status, issue and problem, the file and row it came from, its key's parts and where it landed in OSDU, and an About sheet
