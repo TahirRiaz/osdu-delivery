@@ -21,6 +21,27 @@ public sealed record ResolvedMapping(
 {
     /// <summary>Where the template was read from: the template folder file on the mapping's path.</summary>
     public string? TemplateOrigin { get; init; }
+
+    /// <summary>
+    /// The flow's <c>enrich:</c> steps over <see cref="Renderer"/> (osdu/docs/reference/flow/enrich.md), or null for a flow that
+    /// declares none, whose records <see cref="Renderer"/> renders whole.
+    /// </summary>
+    public RecordChain? Chain { get; init; }
+
+    /// <summary>The flow's steps, in the order they render; empty for a flow that declares none.</summary>
+    public IReadOnlyList<ResolvedStep> Steps => Chain?.Steps ?? [];
+
+    /// <summary>
+    /// Renders one record as a delivery sends it: through the flow's mapping, then every step of its chain over it. This is
+    /// the one render a plan, a preview and an intake make, so what a preview shows is what a delivery sends.
+    /// </summary>
+    public RenderResult Render(SourceRecord record) => Chain is { } chain ? chain.Render(record) : Renderer.Render(record);
+
+    /// <summary>
+    /// How many rounds of questions a batch of the flow's records can need: the mapping's, then each step's after it, since a
+    /// step renders over the record once everything before it has been answered.
+    /// </summary>
+    public int SearchRounds => Planning.Planner.SearchRounds(Mapping) + Steps.Sum(s => Planning.Planner.SearchRounds(s.Mapping));
 }
 
 /// <summary>
@@ -66,12 +87,91 @@ public sealed class RenderResolver
         ArgumentNullException.ThrowIfNull(flow);
         var where = KeyPaths.Where(flow);
         var mapping = _mappings.Load(flow.Render.Mapping);
+        if (mapping.Fragment)
+        {
+            throw new FlowValidationException(
+                $"{where}: {KeyPaths.Of(flow).Mapping} names {mapping.Reference}, a fragment (fragment: true): the paths a step of enrich: adds to a record, never a record of its own. Pin the mapping of the whole record, and name the fragment under enrich.<step>.mapping.");
+        }
+
         var template = await _templates.ResolveAsync(mapping.TemplateDocument, mapping.Template.Kind, mapping.Template.Version, ct).ConfigureAwait(false);
         var schema = template.Schema
             ?? throw new FlowValidationException($"{where}: mapping {mapping.Reference} cannot render: {template.Problem}");
 
-        var (references, scope, systemProperties) = await CacheAsync(flow, mapping, where, ct).ConfigureAwait(false);
+        // The fragments of the flow's enrich: steps render into the record the mapping renders, so they read the one cache
+        // version and system properties the record is rendered under: a flow reads the cache when any part of its chain does.
+        var fragments = LoadFragments(flow, mapping, where);
+        var (references, scope, systemProperties) = await CacheAsync(flow, [mapping, .. fragments.Select(f => f.Mapping)], where, ct).ConfigureAwait(false);
 
+        var context = new RenderContext
+        {
+            MappingReference = mapping.Reference,
+            MappingFingerprint = mapping.Fingerprint,
+            CacheScope = scope,
+            CacheVersion = references.Version,
+            SchemaSnapshotVersion = schema.Version,
+            Parameters = await ParametersAsync(flow, mapping, ct).ConfigureAwait(false),
+            SystemProperties = systemProperties,
+        };
+
+        var searches = await SearchesAsync(_templates, mapping, schema, ct).ConfigureAwait(false);
+        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches).ToList();
+        var steps = new List<ResolvedStep>(fragments.Count);
+        var renderSteps = new List<RenderStep>(fragments.Count);
+        foreach (var (step, fragment) in fragments)
+        {
+            var resolved = await StepAsync(flow, step, fragment, mapping, schema, references, context, where, issues, ct).ConfigureAwait(false);
+            if (resolved is not null)
+            {
+                steps.Add(resolved.Value.Step);
+                renderSteps.Add(resolved.Value.Context);
+            }
+        }
+
+        if (flow.Enrich is { Count: > 0 })
+        {
+            issues.AddRange(Preflight.CheckChain(flow, mapping, schema, steps, where));
+        }
+
+        Preflight.ThrowIfFailed(issues, where);
+        context = context with { Steps = renderSteps };
+        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search);
+        return new ResolvedMapping(mapping, schema, references, context, renderer)
+        {
+            TemplateOrigin = template.Template?.File,
+            Chain = steps.Count == 0 ? null : new RecordChain(renderer, steps),
+        };
+    }
+
+    /// <summary>
+    /// The fragment each step of the flow's <c>enrich:</c> pins, in the order the steps render, read from the flow's mappings
+    /// the way its own mapping is. A step pinning a mapping of a whole record is refused: it would render a record of its own.
+    /// </summary>
+    private List<(EnrichStep Step, MappingDefinition Mapping)> LoadFragments(FlowDefinition flow, MappingDefinition mapping, string where)
+    {
+        var fragments = new List<(EnrichStep, MappingDefinition)>();
+        foreach (var step in flow.Enrich ?? [])
+        {
+            var fragment = _mappings.Load(step.Mapping);
+            if (!fragment.Fragment)
+            {
+                throw new FlowValidationException(
+                    $"{where}: enrich.{step.Name}.mapping names {fragment.Reference}, a mapping of a whole record; a step renders a fragment, the paths it adds to the record {mapping.Reference} renders, declared with fragment: true and no dataset.");
+            }
+
+            fragments.Add((step, fragment));
+        }
+
+        return fragments;
+    }
+
+    /// <summary>
+    /// The values <paramref name="mapping"/> renders with: its own defaults, under what the flow supplies and the kind owns,
+    /// every reference resolved. A flow without <c>enrich:</c> steps hands its mapping every value it supplies, and the
+    /// preflight refuses one the mapping does not declare. A flow with steps supplies one <c>render.parameters</c> block to the
+    /// whole chain, so each mapping of it takes the values it declares, and the chain's check refuses a value none declares.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>> ParametersAsync(FlowDefinition flow, MappingDefinition mapping, CancellationToken ct)
+    {
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (name, declared) in mapping.Parameters)
         {
@@ -86,6 +186,7 @@ public sealed class RenderResolver
         // bound to (its partitions' or its header's, the one its requests carry and its cache is read in) or the reference
         // the kind names. A flow that names its own value still wins, so a document can pin a destination when it has to.
         var supplied = DeliveryDestination.Supplied(flow, mapping.Parameters.Keys);
+        var chained = flow.Enrich is { Count: > 0 };
 
         // What reaches a mapping from outside it is deployment configuration, not mapping content: the partition, the
         // legal tag and the access groups of an estate all differ between test and production while the mapping stays the
@@ -95,25 +196,68 @@ public sealed class RenderResolver
         // record, never the reference that produced it. A mapping's own default is mapping content and stays literal.
         foreach (var (name, value) in supplied)
         {
+            if (chained && !mapping.Parameters.ContainsKey(name))
+            {
+                continue;
+            }
+
             parameters[name] = await _secrets.ResolveAsync(value, ct).ConfigureAwait(false);
         }
 
-        var context = new RenderContext
-        {
-            MappingReference = mapping.Reference,
-            MappingFingerprint = mapping.Fingerprint,
-            CacheScope = scope,
-            CacheVersion = references.Version,
-            SchemaSnapshotVersion = schema.Version,
-            Parameters = parameters,
-            SystemProperties = systemProperties,
-        };
+        return parameters;
+    }
 
-        var searches = await SearchesAsync(_templates, mapping, schema, ct).ConfigureAwait(false);
-        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches);
-        Preflight.ThrowIfFailed(issues, where);
-        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search);
-        return new ResolvedMapping(mapping, schema, references, context, renderer) { TemplateOrigin = template.Template?.File };
+    /// <summary>
+    /// One step resolved: its fragment's template, which has to be the very template the flow's mapping fills, its parameters,
+    /// its searches and its preflight, and a renderer over it under the record's cache version. What is wrong is added to
+    /// <paramref name="issues"/>, every problem of every step at once, and the step is left out (null).
+    /// </summary>
+    private async Task<(ResolvedStep Step, RenderStep Context)?> StepAsync(
+        FlowDefinition flow,
+        EnrichStep step,
+        MappingDefinition fragment,
+        MappingDefinition mapping,
+        SchemaSnapshot schema,
+        ReferenceSnapshot references,
+        RenderContext context,
+        string where,
+        List<ValidationIssue> issues,
+        CancellationToken ct)
+    {
+        var at = $"{where}: enrich.{step.Name}";
+        if (!string.Equals(fragment.Template.Kind, mapping.Template.Kind, StringComparison.Ordinal))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{at}: fragment {fragment.Reference} fills {fragment.Template.Kind}, and the flow's mapping {mapping.Reference} renders {mapping.Template.Kind} records; a step adds paths to the records the flow renders, so its fragment names the same kind."));
+            return null;
+        }
+
+        var template = await _templates.ResolveAsync(fragment.TemplateDocument, fragment.Template.Kind, fragment.Template.Version, ct).ConfigureAwait(false);
+        if (template.Schema is not { } filled)
+        {
+            issues.Add(ValidationIssue.Error($"{at}: fragment {fragment.Reference} cannot render: {template.Problem}"));
+            return null;
+        }
+
+        if (!string.Equals(filled.Version, schema.Version, StringComparison.Ordinal))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{at}: fragment {fragment.Reference} fills {filled.Kind} version {filled.Version}, and the flow's mapping {mapping.Reference} fills version {schema.Version}; a step adds to the record the flow's mapping renders, so both fill one version of the template. Pin the same template.version in both, or leave both to the template folder."));
+            return null;
+        }
+
+        var renderStep = new RenderStep(step.Name, fragment.Reference, fragment.Fingerprint, filled.Version, await ParametersAsync(flow, fragment, ct).ConfigureAwait(false));
+        var stepContext = context.ForStep(renderStep);
+        var searches = await SearchesAsync(_templates, fragment, filled, ct).ConfigureAwait(false);
+        var found = Preflight.Check(fragment, filled, references, stepContext, sourceColumns: null, searches);
+        issues.AddRange(found.Select(issue => issue with { Message = $"enrich.{step.Name}: {issue.Message}" }));
+        if (found.Any(issue => issue.Severity == IssueSeverity.Error))
+        {
+            return null;
+        }
+
+        var renderer = new MappingRenderer(fragment, filled, references, stepContext, searches, _search);
+        return (new ResolvedStep(step, fragment, filled, renderer), renderStep);
     }
 
     /// <summary>
@@ -208,16 +352,21 @@ public sealed class RenderResolver
     /// against no version and is pinned to the properties alone: those of the version the flow names, read without its
     /// records. Pinning it to the version would render every one of its records again, and ask the platform every one of
     /// their questions again, whenever a capture changed reference data it never reads.
+    /// A flow with <c>enrich:</c> steps renders each record with its mapping and every step's fragment, so the record reads
+    /// what any of them reads: <paramref name="chain"/> is the mapping, then the fragments.
     /// </remarks>
     private async Task<(ReferenceSnapshot References, string? Scope, IReadOnlyList<SystemProperty> SystemProperties)> CacheAsync(
-        FlowDefinition flow, MappingDefinition mapping, string where, CancellationToken ct)
+        FlowDefinition flow, IReadOnlyList<MappingDefinition> chain, string where, CancellationToken ct)
     {
-        var readsCache = mapping.CacheTypesRead().Count > 0;
-        var searches = mapping.Searches.Count > 0;
+        var readsCache = chain.Any(m => m.CacheTypesRead().Count > 0);
+        var searches = chain.Any(m => m.Searches.Count > 0);
         if (!readsCache && !searches)
         {
             return (ReferenceSnapshot.Empty, null, []);
         }
+
+        // The mapping a message names: the first of the chain that reads the cache.
+        var mapping = chain.FirstOrDefault(m => m.CacheTypesRead().Count > 0) ?? chain[0];
 
         // The cache holds one partition's reference data, so it is keyed by the partition the flow actually reaches, not
         // by the text the document spells it with. An estate that names its partition ${env:...} would otherwise key its

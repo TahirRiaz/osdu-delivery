@@ -198,6 +198,28 @@ internal static class DeliveryVerbs
             result["read"] = await ReadAsync(engine, runtime, ct).ConfigureAwait(false);
         }
 
+        // The steps of enrich: in the order they render, each with the fragment it pins and what it reads and follows
+        // (osdu/docs/reference/flow/enrich.md).
+        var steps = runtime.Mapping.Steps
+            .Select(s => (
+                Line: $"    enrich      {s.Step.Name}: {s.Mapping.Reference}"
+                    + (s.Step.ReadsRows ? $", {(s.Step.Rows == Model.EnrichRows.Many ? "many rows" : "one row")} of {flow.Source.Datasets[s.Step.Name].Object}" : ", no rows of its own")
+                    + (s.Step.After.Count == 0 ? string.Empty : $", after {string.Join(", ", s.Step.After)}"),
+                Json: (JsonNode)new JsonObject
+                {
+                    ["name"] = s.Step.Name,
+                    ["mapping"] = s.Mapping.Reference,
+                    ["dataset"] = s.Step.ReadsRows ? flow.Source.Datasets[s.Step.Name].Object : null,
+                    ["rows"] = s.Step.ReadsRows ? (s.Step.Rows == Model.EnrichRows.Many ? "many" : "one") : null,
+                    ["after"] = new JsonArray(s.Step.After.Select(a => (JsonNode)JsonValue.Create(a)).ToArray()),
+                    ["reads"] = new JsonArray(s.Mapping.BasePaths().Select(p => (JsonNode)JsonValue.Create(p)).ToArray()),
+                }))
+            .ToList();
+        if (steps.Count > 0)
+        {
+            result["enrich"] = new JsonArray(steps.Select(s => s.Json).ToArray());
+        }
+
         // What the text form needs is captured now: the runtime is gone by the time it writes.
         var reference = runtime.Mapping.Mapping.Reference;
         var template = runtime.Mapping.Mapping.Template.ToString();
@@ -242,6 +264,11 @@ internal static class DeliveryVerbs
             }
 
             context.Out.WriteLine($"    mapping     {reference}");
+            foreach (var step in steps)
+            {
+                context.Out.WriteLine(step.Line);
+            }
+
             context.Out.WriteLine($"    template    {template} ({templateFrom})");
             context.Out.WriteLine(cacheLine);
             if (searchLine is not null)
