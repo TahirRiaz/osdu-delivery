@@ -1112,6 +1112,11 @@ public sealed record FlowParallelism
     public int RetryClaim => Math.Max(RetryClaimFloor, RecordsAtOnce);
 
     /// <summary>The render threads on this node.</summary>
+    /// <remarks>
+    /// Derived from the processor count of the machine that reads the definition, so it is no part of the document as
+    /// written: the definition the catalog keeps as JSON leaves it out, and the document's hash is the same on every machine.
+    /// </remarks>
+    [JsonIgnore]
     public int EffectiveRenderThreads => RenderThreads > 0 ? RenderThreads : Math.Max(1, Environment.ProcessorCount / 2);
 
     /// <summary>

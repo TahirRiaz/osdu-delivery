@@ -460,6 +460,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- A delivery flow's document hash, which pairs a renamed flow with its ledger, took in the render threads of the machine
+  that synced it, so control planes on machines with different processor counts hashed one document differently; it now
+  takes in the document alone, and each delivery flow's stored hash changes once, at the first sync after the upgrade
+  ([Renaming a pipeline](osdu/docs/reference/concepts/renaming-a-pipeline.md#the-same-document-under-a-new-name)).
 - East of UTC, a record's page said a lease its worker still renewed had run out, at a time still to come, and west of
   UTC it showed a stopped worker as still delivering; an assertion run's, a retrieval's and a release's times were off by
   the same offset. The GUI read the UTC times the control plane sends without a zone as local time, and now reads them
