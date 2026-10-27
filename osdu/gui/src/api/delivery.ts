@@ -1317,6 +1317,35 @@ export interface DeliveryPreviewDocument {
    * failure leaves out is already out of the rendered document.
    */
   assertions?: AssertionFindings | null;
+  /**
+   * What each step of the flow's enrich: added to the document, in the order the steps render
+   * (osdu/docs/reference/flow/enrich.md); empty, or absent from an older control plane, for a flow that declares none.
+   */
+  enrichment?: DeliveryPreviewEnrichStep[];
+}
+
+/** What one step of the flow's enrich: did to the previewed record. */
+export interface DeliveryPreviewEnrichStep {
+  /** The step's name, as enrich: declares it. */
+  step: string;
+  /** The fragment it rendered, Name@version. */
+  mapping: string;
+  /** How many rows of its dataset the record had; absent for a step that reads no rows. */
+  rows?: number;
+  /** Each path it set and each list it added items to, in the order it did them. */
+  effects: DeliveryPreviewEnrichEffect[];
+  /** Why it holds the record, each prefixed with the step. */
+  holds: string[];
+  /** True when it did not render: a step before it holds the record, or waits for the platform. */
+  notRendered?: boolean;
+}
+
+/** One thing a step did to the record: set a path the record held nothing at, or add items to the list there. */
+export interface DeliveryPreviewEnrichEffect {
+  kind: "set" | "add";
+  path: string;
+  /** The value it set or the items it added; absent when the preview is too large to show its document. */
+  value?: unknown;
 }
 
 /** The alternative of a $coalesce node that gave the value it wrote. */

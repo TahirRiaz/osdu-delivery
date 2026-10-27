@@ -35,9 +35,18 @@ internal static class CompanionFiles
                 continue;
             }
 
-            if (Read(() => new MappingCatalog(directory, documents).Load(reference, full => Shown(full, folder))) is { } problem)
+            if (Read(() => Whole(new MappingCatalog(directory, documents).Load(reference, full => Shown(full, folder)))) is { } problem)
             {
                 problems.Add($"{KeyPaths.Of(flow).Mapping}: {problem}");
+            }
+
+            // Each step of enrich: pins a fragment, found the way the flow's mapping is.
+            foreach (var step in flow.Enrich ?? [])
+            {
+                if (Read(() => Fragment(new MappingCatalog(directory, documents).Load(step.Mapping, full => Shown(full, folder)))) is { } refused)
+                {
+                    problems.Add($"{KeyPaths.Of(flow).Enrich}.{step.Name}.mapping: {refused}");
+                }
             }
         }
 
@@ -85,6 +94,26 @@ internal static class CompanionFiles
         }
 
         return problems;
+    }
+
+    /// <summary>A flow pins the mapping of a whole record; a fragment renders only the paths a step adds.</summary>
+    private static void Whole(MappingDefinition mapping)
+    {
+        if (mapping.Fragment)
+        {
+            throw new FlowValidationException(
+                $"{mapping.Reference} is a fragment (fragment: true), the paths a step of enrich: adds to a record; pin the mapping of the whole record, and name the fragment under enrich.<step>.mapping.");
+        }
+    }
+
+    /// <summary>A step pins a fragment; the mapping of a whole record would render a record of its own.</summary>
+    private static void Fragment(MappingDefinition mapping)
+    {
+        if (!mapping.Fragment)
+        {
+            throw new FlowValidationException(
+                $"{mapping.Reference} is a mapping of a whole record; a step renders a fragment, the paths it adds, declared with fragment: true and no dataset.");
+        }
     }
 
     /// <summary>Why <paramref name="read"/> could not find or read its file, or null when it did.</summary>
