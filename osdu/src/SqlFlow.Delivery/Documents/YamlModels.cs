@@ -62,6 +62,25 @@ internal sealed class FlowYaml
 
     // For the single form: the earlier flow whose ledger this one keeps instead of its own (ledger: <old name>), as a renamed flow does.
     public string? Ledger { get; set; }
+
+    /// <summary>The steps that extend each record after the mapping renders it, by name, in document order; null when none.</summary>
+    public OrderedDictionary<string, EnrichStepYaml?>? Enrich { get; set; }
+}
+
+/// <summary>One step of <c>enrich:</c> (osdu/docs/reference/flow/enrich.md): its rows, its fragment and the steps it follows.</summary>
+internal sealed class EnrichStepYaml
+{
+    public string? Description { get; set; }
+
+    /// <summary>The step's rows: a child table joined to the record table by its key, as a child dataset is.</summary>
+    public FlowSourceDatasetYaml? Dataset { get; set; }
+
+    /// <summary>How many of those rows one record takes: <c>one</c> (the default) or <c>many</c>.</summary>
+    public string? Rows { get; set; }
+
+    public string? Mapping { get; set; }
+
+    public List<string>? After { get; set; }
 }
 
 /// <summary>
@@ -116,6 +135,9 @@ internal sealed class InterfaceYaml
 
     /// <summary>The source's <c>target.validation</c>, with this interface's keys laid over it.</summary>
     public ValidationYaml? Validation { get; set; }
+
+    /// <summary>The steps that extend each of the interface's records after its mapping renders it; null when none.</summary>
+    public OrderedDictionary<string, EnrichStepYaml?>? Enrich { get; set; }
 }
 
 /// <summary>
@@ -924,6 +946,12 @@ internal sealed class MappingYaml
     public MappingTemplateYaml? Template { get; set; }
 
     public string? Description { get; set; }
+
+    /// <summary>
+    /// True for a fragment (osdu/docs/reference/flow/enrich.md): the paths a step of <c>enrich:</c> adds to a record the
+    /// flow's own mapping renders, never a record of its own, so it declares no <c>dataset</c> and no access or legal block.
+    /// </summary>
+    public bool? Fragment { get; set; }
 
     public MappingDatasetYaml? Dataset { get; set; }
 

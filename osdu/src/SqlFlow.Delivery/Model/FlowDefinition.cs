@@ -206,6 +206,15 @@ public sealed record FlowDefinition
     public FlowVerify Verify { get; init; } = new();
 
     /// <summary>
+    /// The steps that extend each record once the flow's own mapping has rendered it (<c>enrich:</c>,
+    /// osdu/docs/reference/flow/enrich.md), in the order they render: each renders a fragment of the record from rows of its
+    /// own, read beside the record's row as a child dataset under the step's name, over the record as the mapping and the steps
+    /// before it left it, and the record is sent once with all of them. Null for a flow that declares none, which renders,
+    /// hashes and delivers as it always did.
+    /// </summary>
+    public IReadOnlyList<EnrichStep>? Enrich { get; init; }
+
+    /// <summary>
     /// The secret references the target declares (auth secrets, header values, token body values, the endpoint),
     /// keyed by their document path: what the platform lists as the flow's credential references. Only references
     /// (<c>${env:...}</c>, <c>${keyvault:...}</c>) are listed, never resolved values.
@@ -381,6 +390,56 @@ public sealed record FlowSourceDataset
 
     /// <summary>The most child rows one record may carry; a record above it is held rather than rendered.</summary>
     public int MaxRowsPerRecord { get; init; } = DefaultMaxRowsPerRecord;
+}
+
+/// <summary>
+/// One step of a flow's <c>enrich:</c> chain (osdu/docs/reference/flow/enrich.md): a fragment mapping that adds paths to
+/// every record the flow renders, from the rows of its own dataset, after the flow's mapping and the steps it comes after.
+/// </summary>
+public sealed record EnrichStep
+{
+    /// <summary>The most steps one flow or interface declares.</summary>
+    public const int MaxSteps = 16;
+
+    /// <summary>The longest name a step takes.</summary>
+    public const int MaxNameLength = 32;
+
+    /// <summary>The step's name: what its dataset is read as, and what a message and the record's composition name it by.</summary>
+    public required string Name { get; init; }
+
+    public string? Description { get; init; }
+
+    /// <summary>The fragment the step renders, pinned as <c>Name@version</c>: a mapping whose header says <c>fragment: true</c>.</summary>
+    public required string Mapping { get; init; }
+
+    /// <summary>
+    /// The steps this one renders after, beside the order the document lists them in: those whose paths it reads with
+    /// <c>$base</c>, and any other it has to follow.
+    /// </summary>
+    public IReadOnlyList<string> After { get; init; } = [];
+
+    /// <summary>
+    /// Whether the step reads rows of its own (<c>enrich.&lt;name&gt;.dataset</c>), the child dataset of the flow's source
+    /// named after it. A step without one renders the same fragment for every record, from what the record holds and the
+    /// mapping's parameters.
+    /// </summary>
+    public bool ReadsRows { get; init; }
+
+    /// <summary>How many rows of its dataset one record takes: one, read as the fragment's row, or many, read with <c>$forEach</c>.</summary>
+    public EnrichRows Rows { get; init; } = EnrichRows.One;
+}
+
+/// <summary>How many rows of its dataset a step of <c>enrich:</c> takes for one record.</summary>
+public enum EnrichRows
+{
+    /// <summary>
+    /// At most one: the fragment reads it as its own row, as a mapping reads the record table's. A record without one gets
+    /// nothing from the step; one with two or more is held, since the step would have to pick one.
+    /// </summary>
+    One,
+
+    /// <summary>Any number: the fragment reads them with <c>$forEach</c> over the step's name, as a mapping reads a child dataset.</summary>
+    Many,
 }
 
 /// <summary>One payload set: where a record's files sit and what says whether they changed.</summary>

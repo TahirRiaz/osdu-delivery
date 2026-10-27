@@ -215,6 +215,7 @@ public sealed class RecordPreviewer
             {
                 Rendered = null,
                 Sent = null,
+                Enrichment = PreviewEnrichStep.WithoutValues(document.Enrichment),
                 Omitted = string.Create(
                     CultureInfo.InvariantCulture,
                     $"The rendered document is {document.Characters:N0} characters, more than the {maxDocumentChars:N0} a preview shows. Its hash is {document.MetadataHash}; {whole}."),
@@ -259,6 +260,7 @@ public sealed class RecordPreviewer
                 {
                     Rendered = null,
                     Sent = null,
+                    Enrichment = PreviewEnrichStep.WithoutValues(document.Enrichment),
                     Omitted = $"The document was left out: with it the preview is over the {limit} characters it may answer with. 'sqlflow preview' writes it whole with --out.",
                 },
             };
@@ -530,6 +532,7 @@ public sealed class RecordPreviewer
                 .Order(StringComparer.Ordinal)
                 .ToList(),
             Assertions = render.Assertions,
+            Enrichment = render.Enrichment.Select(PreviewEnrichStep.Of).ToList(),
         };
 
     /// <summary>

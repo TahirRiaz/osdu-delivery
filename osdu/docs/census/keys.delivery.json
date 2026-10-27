@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/delivery.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 529,
+  "keyCount": 557,
   "keys": [
     {
       "path": "batch",
@@ -125,6 +125,97 @@
       "enumValues": [
         "delivery"
       ]
+    },
+    {
+      "path": "enrich",
+      "type": "map",
+      "required": false,
+      "description": "The steps that extend each record once the mapping has rendered it, by name, in the order they render unless after says otherwise. Each step renders a fragment (a mapping with fragment: true) from rows of its own, read beside the record's row as a child dataset under the step's name, over the record as the mapping and the steps before it left it; the record is hashed and sent once with every step in it, so a change to any part of the chain writes it once. At most 16 steps. See osdu/docs/reference/flow/enrich.md.",
+      "appliesWhen": "Single form. Refused at the source level when the document declares interfaces: each interface declares its own `enrich`."
+    },
+    {
+      "path": "enrich.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One step, named by the key: letters, digits and `_`, not starting with a digit, at most 32 characters, not `record`, and not the name of a child dataset, since its rows are read as a child dataset of that name. Names are compared ignoring case."
+    },
+    {
+      "path": "enrich.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "What the step adds to each record, shown with the record's composition."
+    },
+    {
+      "path": "enrich.<name>.mapping",
+      "type": "string",
+      "required": true,
+      "description": "The fragment the step renders, pinned as Name@version and found the way the flow's mapping is. It must be a fragment (fragment: true), fill the same template version as the flow's mapping, and write only under data and tags."
+    },
+    {
+      "path": "enrich.<name>.dataset",
+      "type": "object",
+      "required": false,
+      "description": "The step's rows: a child table joined to the record table on the record key, as a child dataset is. Its rows are part of the record's ingestion fingerprint, so a change to them plans the record again. Left out, the step reads no rows and renders the same fragment for every record, from what the record holds ($base) and its parameters."
+    },
+    {
+      "path": "enrich.<name>.dataset.object",
+      "type": "string",
+      "required": true,
+      "description": "The step table's three-part name, `[database].[schema].[table]`."
+    },
+    {
+      "path": "enrich.<name>.dataset.join",
+      "type": "map",
+      "required": true,
+      "description": "How a row of the step joins its record: step column to record key column. It must cover every key column of the record table, or a row could belong to several records."
+    },
+    {
+      "path": "enrich.<name>.dataset.join.<name>",
+      "type": "string",
+      "required": false,
+      "description": "The key is a column of the step's table; the value is the record table's key column it joins."
+    },
+    {
+      "path": "enrich.<name>.dataset.orderBy",
+      "type": "list",
+      "required": false,
+      "description": "The columns the step's rows are ordered by within a record, which orders the items a $forEach over them adds."
+    },
+    {
+      "path": "enrich.<name>.dataset.orderBy[]",
+      "type": "string",
+      "required": false,
+      "description": "A column of the step's table."
+    },
+    {
+      "path": "enrich.<name>.dataset.maxRowsPerRecord",
+      "type": "integer",
+      "required": false,
+      "description": "The most rows of the step one record may carry, 1 to 1000000. A record with more is held rather than rendered.",
+      "default": "100000"
+    },
+    {
+      "path": "enrich.<name>.rows",
+      "type": "string",
+      "required": false,
+      "enumValues": [
+        "one",
+        "many"
+      ],
+      "description": "How many of the step's rows one record takes. one: at most one, read as the fragment's own row; a record with none gets nothing from the step, and one with two or more is held. many: any number, read with $forEach: <step name>; the fragment reads no row outside it. Only with dataset.",
+      "default": "one"
+    },
+    {
+      "path": "enrich.<name>.after",
+      "type": "list",
+      "required": false,
+      "description": "The steps this one renders after, beside the order the document lists them in: the steps whose paths it reads with $base, and any other it has to follow. A step naming an unknown step, itself or one step twice, and steps waiting for each other, are refused."
+    },
+    {
+      "path": "enrich.<name>.after[]",
+      "type": "string",
+      "required": false,
+      "description": "The name of another step of the same enrich block."
     },
     {
       "path": "interfaces",
@@ -1602,6 +1693,96 @@
       "type": "string",
       "required": true,
       "description": "The workflow as the partition registers it (letters, digits, `_`, `-` and `.`). The run's preflight asks the Workflow service for it."
+    },
+    {
+      "path": "interfaces.<name>.enrich",
+      "type": "map",
+      "required": false,
+      "description": "The interface's own steps that extend each of its records once its mapping has rendered them, as `enrich` declares them in the single form."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One step, named by the key: letters, digits and `_`, not starting with a digit, at most 32 characters, not `record`, and not the name of a child dataset, since its rows are read as a child dataset of that name. Names are compared ignoring case."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "What the step adds to each record, shown with the record's composition."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.mapping",
+      "type": "string",
+      "required": true,
+      "description": "The fragment the step renders, pinned as Name@version and found the way the flow's mapping is. It must be a fragment (fragment: true), fill the same template version as the flow's mapping, and write only under data and tags."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset",
+      "type": "object",
+      "required": false,
+      "description": "The step's rows: a child table joined to the record table on the record key, as a child dataset is. Its rows are part of the record's ingestion fingerprint, so a change to them plans the record again. Left out, the step reads no rows and renders the same fragment for every record, from what the record holds ($base) and its parameters."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset.object",
+      "type": "string",
+      "required": true,
+      "description": "The step table's three-part name, `[database].[schema].[table]`."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset.join",
+      "type": "map",
+      "required": true,
+      "description": "How a row of the step joins its record: step column to record key column. It must cover every key column of the record table, or a row could belong to several records."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset.join.<name>",
+      "type": "string",
+      "required": false,
+      "description": "The key is a column of the step's table; the value is the record table's key column it joins."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset.orderBy",
+      "type": "list",
+      "required": false,
+      "description": "The columns the step's rows are ordered by within a record, which orders the items a $forEach over them adds."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset.orderBy[]",
+      "type": "string",
+      "required": false,
+      "description": "A column of the step's table."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.dataset.maxRowsPerRecord",
+      "type": "integer",
+      "required": false,
+      "description": "The most rows of the step one record may carry, 1 to 1000000. A record with more is held rather than rendered.",
+      "default": "100000"
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.rows",
+      "type": "string",
+      "required": false,
+      "enumValues": [
+        "one",
+        "many"
+      ],
+      "description": "How many of the step's rows one record takes. one: at most one, read as the fragment's own row; a record with none gets nothing from the step, and one with two or more is held. many: any number, read with $forEach: <step name>; the fragment reads no row outside it. Only with dataset.",
+      "default": "one"
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.after",
+      "type": "list",
+      "required": false,
+      "description": "The steps this one renders after, beside the order the document lists them in: the steps whose paths it reads with $base, and any other it has to follow. A step naming an unknown step, itself or one step twice, and steps waiting for each other, are refused."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.after[]",
+      "type": "string",
+      "required": false,
+      "description": "The name of another step of the same enrich block."
     },
     {
       "path": "keepLedger",

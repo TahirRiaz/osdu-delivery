@@ -43,6 +43,14 @@ public sealed partial record RenderContext
     public IReadOnlyList<SystemProperty> SystemProperties { get; init; } = [];
 
     /// <summary>
+    /// The steps of the flow's <c>enrich:</c> the record is rendered with (osdu/docs/reference/flow/enrich.md), in the order they
+    /// render: each fragment's reference, fingerprint, template version and parameters, so editing a step, adding one, removing
+    /// one or reordering them renders the flow's records again. Empty for a flow that declares none, which leaves its context as
+    /// it always was.
+    /// </summary>
+    public IReadOnlyList<RenderStep> Steps { get; init; } = [];
+
+    /// <summary>
     /// Whether a search that finds nothing exactly asks again regardless of case: the pinned properties say the
     /// partition's indexer keeps a lowercased keyword of text (<see cref="Snapshots.SystemProperties.KeywordLowerOn"/>).
     /// </summary>
@@ -134,6 +142,11 @@ public sealed partial record RenderContext
             node["systemProperties"] = services;
         }
 
+        if (Steps.Count > 0)
+        {
+            node["enrich"] = new JsonArray(Steps.Select(step => (JsonNode?)step.Node()).ToArray());
+        }
+
         return node;
     }
 
@@ -158,7 +171,24 @@ public sealed partial record RenderContext
             SchemaSnapshotVersion = node["schema"]?.GetValue<string>() ?? string.Empty,
             Parameters = parameters,
             SystemProperties = ParseSystemProperties(node["systemProperties"]),
+            Steps = ParseSteps(node["enrich"]),
         };
+    }
+
+    /// <summary>The steps of a canonical context, in the order they render; a step that cannot be read is refused rather than guessed.</summary>
+    private static IReadOnlyList<RenderStep> ParseSteps(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return [];
+        }
+
+        if (node is not JsonArray steps)
+        {
+            throw new DeliveryException("Render context enrich is not a JSON array of steps.");
+        }
+
+        return steps.Select((step, i) => RenderStep.Parse(step, i)).ToList();
     }
 
     /// <summary>The pinned system properties of a canonical context; a state the context does not name is refused rather than guessed.</summary>
@@ -198,4 +228,79 @@ public sealed partial record RenderContext
     }
 
     public override string ToString() => Canonical();
+
+    /// <summary>
+    /// The context a step's fragment renders under: the flow's cache, system properties and partition, with the fragment's own
+    /// reference, fingerprint, template version and parameters. It is the fragment's renderer's; the record's context names
+    /// every step (<see cref="Steps"/>).
+    /// </summary>
+    public RenderContext ForStep(RenderStep step)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        return this with
+        {
+            MappingReference = step.MappingReference,
+            MappingFingerprint = step.MappingFingerprint,
+            SchemaSnapshotVersion = step.SchemaSnapshotVersion,
+            Parameters = step.Parameters,
+            Steps = [],
+        };
+    }
+}
+
+/// <summary>
+/// One step of the flow's <c>enrich:</c> as a record's render context names it (osdu/docs/reference/flow/enrich.md): what
+/// rendered the step's fragment, so the ledger says what rendered every part of a record's document.
+/// </summary>
+/// <param name="Name">The step's name.</param>
+/// <param name="MappingReference">The fragment, <c>Name@version</c>.</param>
+/// <param name="MappingFingerprint">The fragment document's fingerprint; null for one built in code.</param>
+/// <param name="SchemaSnapshotVersion">The version of the template the fragment fills.</param>
+/// <param name="Parameters">The fragment's parameters as they resolved.</param>
+public sealed record RenderStep(
+    string Name, string MappingReference, string? MappingFingerprint, string SchemaSnapshotVersion, IReadOnlyDictionary<string, string> Parameters)
+{
+    internal JsonObject Node()
+    {
+        var parameters = new JsonObject();
+        foreach (var kv in Parameters.OrderBy(k => k.Key, StringComparer.Ordinal))
+        {
+            parameters[kv.Key] = kv.Value;
+        }
+
+        var node = new JsonObject
+        {
+            ["name"] = Name,
+            ["mapping"] = MappingReference,
+            ["schema"] = SchemaSnapshotVersion,
+            ["parameters"] = parameters,
+        };
+        if (MappingFingerprint is not null)
+        {
+            node["mappingFingerprint"] = MappingFingerprint;
+        }
+
+        return node;
+    }
+
+    internal static RenderStep Parse(JsonNode? node, int index)
+    {
+        if (node is not JsonObject step
+            || step["name"]?.GetValue<string>() is not { Length: > 0 } name
+            || step["mapping"]?.GetValue<string>() is not { Length: > 0 } mapping)
+        {
+            throw new DeliveryException($"Render context enrich[{index}] is not a step with a name and a mapping.");
+        }
+
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (step["parameters"] is JsonObject declared)
+        {
+            foreach (var kv in declared)
+            {
+                parameters[kv.Key] = kv.Value?.GetValue<string>() ?? string.Empty;
+            }
+        }
+
+        return new RenderStep(name, mapping, step["mappingFingerprint"]?.GetValue<string>(), step["schema"]?.GetValue<string>() ?? string.Empty, parameters);
+    }
 }

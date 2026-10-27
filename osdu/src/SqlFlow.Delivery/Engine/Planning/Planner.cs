@@ -837,8 +837,9 @@ public sealed class Planner
         // The batch's questions are asked in one round, however many records asked them, and the waiting records render
         // again. A record whose next findBy line now needs asking goes round again; every round answers at least one
         // line of every record still waiting, so the rounds are bounded by the longest findBy list, and the last one
-        // holds whatever is still unanswered rather than loop.
-        var rounds = SearchRounds(resolved.Mapping);
+        // holds whatever is still unanswered rather than loop. A flow with enrich: steps renders each step once everything
+        // before it is answered, so its rounds are its mapping's and every step's, one after another.
+        var rounds = resolved.SearchRounds;
         for (var round = 1; deferred.Count > 0; round++)
         {
             await renderer.Search.AnswerAsync(unanswered.Asked, ct).ConfigureAwait(false);
@@ -943,9 +944,10 @@ public sealed class Planner
         var carriedComposite = pending.CarriedComposite;
         var flow = header.Flow;
         var payloadName = header.PayloadName;
-        var renderer = header.Mapping.Renderer;
 
-        var render = renderer.Render(record);
+        // The record as it is sent: the flow's mapping and, for a flow with enrich: steps, every step over it, so the document
+        // hashed and compared below is the whole record whichever part of its chain changed.
+        var render = header.Mapping.Render(record);
         if (render.IsIncomplete)
         {
             if (!final)
