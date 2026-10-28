@@ -3739,6 +3739,8 @@
       "related": [
         "delivery-flow-enrich-files",
         "delivery-flow-enrich-holds",
+        "delivery-flow-enrich-bulk",
+        "delivery-flow-enrich-workflow",
         "delivery-flow-mapping-fragment",
         "delivery-flow-delivery",
         "delivery-flow-interfaces",
@@ -3763,6 +3765,39 @@
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryPreviewVerbs.cs",
         "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/EnrichDeliveryTests.cs",
+        "osdu/docs/census/keys.delivery.json"
+      ]
+    },
+    {
+      "id": "delivery-flow-enrich-bulk",
+      "corpus": "reference",
+      "path": "flow/enrich-bulk.md",
+      "title": "A step's bulk data (enrich.<name>.bulk): the record's DDMS bulk data, named by the step's row",
+      "type": "flow-reference",
+      "summary": "enrich.<name>.bulk: a well log's curves named by a table of their own, sent by the ddms route as the record's bulk data, only when they move.",
+      "keywords": [
+        "enrich bulk",
+        "step bulk data",
+        "curves from another table",
+        "well log curves arrive later",
+        "DDMS bulk data of a step",
+        "bulk payload from a child table"
+      ],
+      "yamlPath": "enrich.<name>.bulk, interfaces.<name>.enrich.<name>.bulk",
+      "related": [
+        "delivery-flow-enrich",
+        "delivery-flow-ddms",
+        "delivery-flow-routes",
+        "delivery-guide-bulk-data",
+        "delivery-concept-change-detection"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs",
+        "osdu/src/SqlFlow.Delivery/Source/SourceBindings.cs",
+        "osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepBulkDeliveryTests.cs",
         "osdu/docs/census/keys.delivery.json"
       ]
     },
@@ -3856,6 +3891,41 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs",
         "osdu/docs/census/keys.delivery.json"
+      ]
+    },
+    {
+      "id": "delivery-flow-enrich-workflow",
+      "corpus": "reference",
+      "path": "flow/enrich-workflow.md",
+      "title": "A step's workflow (enrich.<name>.workflow): an OSDU workflow run over the record once it landed",
+      "type": "flow-reference",
+      "summary": "enrich.<name>.workflow: stages run through the Workflow service over the record and its step's dataset, run again only when the step's files move.",
+      "keywords": [
+        "enrich workflow",
+        "step workflow",
+        "run a workflow on a dataset of a record",
+        "parse a file after it is registered",
+        "csv parser on a step's file",
+        "runWhen",
+        "dataset placeholder"
+      ],
+      "yamlPath": "enrich.<name>.workflow, interfaces.<name>.enrich.<name>.workflow",
+      "related": [
+        "delivery-flow-enrich",
+        "delivery-flow-enrich-files",
+        "delivery-flow-routes",
+        "delivery-concept-artifacts-and-undo"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduWorkflowProtocol.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/ProtocolFactory.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepWorkflowTests.cs",
+        "osdu/docs/census/keys.delivery.json",
+        "osdu/specs/core/workflow/openapi.yaml"
       ]
     },
     {
@@ -8959,7 +9029,9 @@
         "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
         "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs",
         "osdu/src/SqlFlow.Delivery/Rendering/KeptSteps.cs",
-        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs"
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepBulkDeliveryTests.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepWorkflowTests.cs"
       ]
     },
     {

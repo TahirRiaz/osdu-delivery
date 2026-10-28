@@ -540,3 +540,10 @@ A step with `onHold: step` that holds is set aside, the record going ahead with 
 delivery; [0035](decisions/0035-enrich-chains.md) says why it is an option kept in the record's target state rather
 than the default or a table of its own, and [a step set aside on its hold](../reference/flow/enrich-holds.md) documents
 it.
+
+## [2026-10-28] ingest | A step's bulk data and workflow, decision 0035
+
+A step supplies the record's DDMS bulk data from its row, and runs an OSDU workflow over the record once it landed;
+[0035](decisions/0035-enrich-chains.md) records how each stays inside the record's one delivery, and
+[a step's bulk data](../reference/flow/enrich-bulk.md) and [a step's workflow](../reference/flow/enrich-workflow.md)
+document them.
