@@ -527,3 +527,9 @@ block of the delivery document, filed [0035](decisions/0035-enrich-chains.md): `
 (`fragment: true`, `$base`) as one chain with the flow's mapping, the record sent once, a fragment only adding, and the
 preflight refusing what could never render; and wrote [enrich](../reference/flow/enrich.md) and
 [fragments](../reference/flow/mapping-fragment.md) as their reference.
+
+## [2026-10-28] ingest | A step's files, decision 0035
+
+A step of `enrich:` registers the files its rows name as datasets of the record, under ids derived from the record's, as
+parts of the record's own delivery; [0035](decisions/0035-enrich-chains.md) says why they are not sub-deliveries or File
+service registrations, and [files a step registers](../reference/flow/enrich-files.md) documents them.

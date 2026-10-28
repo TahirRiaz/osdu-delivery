@@ -21,19 +21,24 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs
   - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/EnrichDeliveryTests.cs
   - osdu/tests/SqlFlow.Delivery.Tests/EnrichmentGuardTests.cs
+  - osdu/src/SqlFlow.Delivery/Rendering/EnrichParts.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs
+  - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs
 referenceRefs:
   - delivery-flow-enrich
+  - delivery-flow-enrich-files
   - delivery-flow-mapping-fragment
   - delivery-concept-change-detection
 related:
   - delivery-wiki-0004-preserved-keys
   - delivery-wiki-0019-linked-templates
   - delivery-wiki-0023-child-links
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 # 0035: A record built in steps is rendered as one chain by its own flow, and sent once for any change
 
-Status: accepted. Documented in [enrich](../../reference/flow/enrich.md) and [fragments](../../reference/flow/mapping-fragment.md).
+Status: accepted. Documented in [enrich](../../reference/flow/enrich.md), [files a step registers](../../reference/flow/enrich-files.md)
+and [fragments](../../reference/flow/mapping-fragment.md).
 
 ## Context
 
@@ -74,6 +79,13 @@ What OSDU and the module already have shaped the choice:
 - **The preflight refuses what could never render**: a step writing what another writes, writing under a preserved key,
   reading what nothing before it writes, or reading rows it does not have.
 - **A step that holds holds the record.** OSDU keeps the version it has until the record renders whole.
+- **A step's files are parts of the same delivery**, not deliveries of their own (2026-10-28). Each of the step's rows is
+  registered through the Dataset service as a dataset under an id derived from the record's and the step
+  (`<record>-enrich.<step>`, and a hash of the row's key under `rows: many`), so the id is known when the record renders and
+  never changes: the record links it from its first write, and new files land as a new version of the same dataset. The
+  record's hash takes in each dataset's, and the plan, which holds what the last delivery kept, decides whether the
+  document itself moved; a delivery registers the datasets whose hash moved and writes the record only when its document
+  did. One change therefore writes the record at most once, and a change to the files alone writes no record version.
 
 ## Alternatives considered
 
@@ -91,6 +103,13 @@ What OSDU and the module already have shaped the choice:
 - **Keeping a held step's last fragment while the rest goes ahead.** Not taken in this release: it needs each step's
   delivered fragment kept in the ledger, which the steps that register files and records need too; until then a held step
   holds the record and nothing is lost.
+- **A step's files as a sub-delivery** with a ledger of its own (`<flow>/<step>`), each dataset a record of it. Not taken:
+  the record and its datasets would land in two units of work, a failure between them leaving a record linking a dataset
+  that is not there or the other way round; two ledgers would claim ids of one record's family; and the record's write
+  would wait for another ledger's landing. As parts of the record's own delivery, the datasets go first and the record
+  after, in one unit of work that undoes what it left.
+- **The File service's ids for a step's files.** Not taken: it mints a new id for every registration, so new files would
+  need the record written again to link them, a version per change of the files.
 
 ## Consequences
 
@@ -100,9 +119,10 @@ What OSDU and the module already have shaped the choice:
   the tiers on every pull request (`EnrichmentGuardTests`, the document hash taken from the code before steps existed).
 - Steps share the flow's source connection, its key, its runs and its schedule; a step owned elsewhere is added by editing
   the flow's document.
-- A step adds paths in this release; registering files, datasets or records of its own, and running a workflow or writing
-  bulk data, are what a step does not do yet. They go as parts of the same one delivery, so the rule of one write per
-  change holds for them, with an id a service mints kept in the record's target state and reused while its file is
-  unchanged.
+- A step adds paths and registers files; running a workflow or writing bulk data are what a step does not do yet. They go
+  as parts of the same one delivery, so the rule of one write per change holds for them.
+- A step's dataset ids hold a dot, which neither the dataset route's own `files` dataset nor a workflow input's name can, so
+  no route derives the same id for something else. A dataset the record stops linking stays live and is marked superseded,
+  since the record's earlier versions name it; removing everything purges it with the record.
 - Adding steps to a flow moves its rules, so its scope is read whole once; records the steps add nothing to render the
   same and are not sent.

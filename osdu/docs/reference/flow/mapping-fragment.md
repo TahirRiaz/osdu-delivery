@@ -143,6 +143,14 @@ renders is. The chain as a whole is checked on [enrich](enrich.md#what-the-prefl
 | `$base` in a mapping of a whole record | `... $base reads the record a fragment adds to, as the flow's mapping and the steps before it rendered it, and this mapping renders a record of its own; only a fragment (fragment: true), which a step of enrich: renders, reads one.` |
 | A fragment pinned as a flow's `render.mapping` | `render.mapping names <Name@version>, a fragment (fragment: true): the paths a step of enrich: adds to a record, never a record of its own.` |
 
+## A fragment of a step's datasets
+
+A step registering files ([files a step registers](enrich-files.md)) may name a fragment under `files.mapping`, which fills
+the dataset kind rather than the record's template and renders once for each of the step's rows into that row's dataset
+record: its name, description and tags. It reads the row with `$from` and the record as the chain left it with `$base`;
+the file properties (`data.DatasetProperties.FileSourceInfo`, or a collection's) are set when the dataset is registered, and
+what the fragment renders elsewhere under `data.DatasetProperties` is kept, as on the dataset route.
+
 ## Related
 
 - [Enrich](enrich.md): the steps that render fragments, their rows and their order.
