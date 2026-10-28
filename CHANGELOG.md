@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sqlflow preview` shows what each added ([enrich](osdu/docs/reference/flow/enrich.md),
   [fragments](osdu/docs/reference/flow/mapping-fragment.md)). A flow without steps renders and hashes as before.
 
+- **A step registers files as datasets of the record.** A step of `enrich:` with `files:` uploads the files each of its
+  rows names through the Dataset service and registers them as a dataset of the record, under an id made from the
+  record's own and kept for good, which the record lists in `data.Datasets` (or the step's `link`). New files register a
+  new version of the same dataset and leave the record as OSDU holds it; a change to the record writes it once and
+  registers nothing that did not change ([files a step registers](osdu/docs/reference/flow/enrich-files.md)).
+
 - **Export records to Excel.** A delivery flow's Records tab has **Export**, which downloads every record its filter
   matches (up to 25,000) as an Excel workbook to work through where the records come from: a row for each record with its
   status, issue and problem, the file and row it came from, its key's parts and where it landed in OSDU, and an About sheet

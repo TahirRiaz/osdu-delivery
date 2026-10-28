@@ -3737,6 +3737,7 @@
       ],
       "yamlPath": "enrich (flowType: delivery), interfaces.<name>.enrich",
       "related": [
+        "delivery-flow-enrich-files",
         "delivery-flow-mapping-fragment",
         "delivery-flow-delivery",
         "delivery-flow-interfaces",
@@ -3762,6 +3763,56 @@
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryPreviewVerbs.cs",
         "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/EnrichDeliveryTests.cs",
         "osdu/docs/census/keys.delivery.json"
+      ]
+    },
+    {
+      "id": "delivery-flow-enrich-files",
+      "corpus": "reference",
+      "path": "flow/enrich-files.md",
+      "title": "Files a step registers (enrich.<name>.files): datasets a step adds to each record, under ids kept for good",
+      "type": "flow-reference",
+      "summary": "A step's files: one dataset per row, registered under an id made from the record's, linked from the record, sent again only when its files move.",
+      "keywords": [
+        "enrich files",
+        "step files",
+        "add a dataset to a record",
+        "add a file to an existing record",
+        "LAS file of a well log",
+        "dataset of a well log",
+        "derived dataset id",
+        "preserved ids",
+        "files.link",
+        "files.key",
+        "files.mapping",
+        "data.Datasets",
+        "registerDataset",
+        "one change one write"
+      ],
+      "yamlPath": "enrich.<name>.files, interfaces.<name>.enrich.<name>.files",
+      "related": [
+        "delivery-flow-enrich",
+        "delivery-flow-mapping-fragment",
+        "delivery-flow-routes",
+        "delivery-concept-artifacts-and-undo",
+        "delivery-concept-change-detection",
+        "delivery-concept-protocols"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/RecordComposition.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/EnrichParts.cs",
+        "osdu/src/SqlFlow.Delivery/Validation/PayloadLocations.cs",
+        "osdu/src/SqlFlow.Delivery/Validation/Preflight.Chain.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/ProtocolFactory.cs",
+        "osdu/src/SqlFlow.Delivery/Storage/WorkBatchFile.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/EnrichPartsProtocolTests.cs",
+        "osdu/docs/census/keys.delivery.json",
+        "osdu/specs/core/dataset/openapi.yaml"
       ]
     },
     {
@@ -8859,7 +8910,10 @@
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
         "osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs",
         "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/EnrichDeliveryTests.cs",
-        "osdu/tests/SqlFlow.Delivery.Tests/EnrichmentGuardTests.cs"
+        "osdu/tests/SqlFlow.Delivery.Tests/EnrichmentGuardTests.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/EnrichParts.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs"
       ]
     },
     {

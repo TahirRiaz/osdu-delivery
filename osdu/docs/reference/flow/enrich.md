@@ -22,6 +22,7 @@ keywords:
   - steps of a record
 yamlPath: "enrich (flowType: delivery), interfaces.<name>.enrich"
 related:
+  - delivery-flow-enrich-files
   - delivery-flow-mapping-fragment
   - delivery-flow-delivery
   - delivery-flow-interfaces
@@ -54,7 +55,8 @@ A record often holds more than one source knows. A well log's header and curves 
 name from another, a quality grade from a third, each kept by someone else and changed at its own time. The record is
 still one OSDU record, with one id and one writer. `enrich:` is how a delivery flow builds it: the flow's own mapping
 renders the record, then each **step**, in order, renders a **fragment** of it from rows of its own and adds the fragment
-to the record. The record that goes to OSDU is the record with every step in it, hashed and sent once.
+to the record. The record that goes to OSDU is the record with every step in it, hashed and sent once. A step may also
+register the files its rows name as datasets of the record, under ids kept for good ([files a step registers](enrich-files.md)).
 
 A flow without `enrich:` renders, hashes and delivers exactly as it always did: its render context, its document hash and
 its records are unchanged.
@@ -127,7 +129,8 @@ document with interfaces it is refused.
 | --- | --- | --- | --- |
 | `enrich.<name>` | map | | One step. The name is letters, digits and `_`, not starting with a digit, at most 32 characters, not `record` and not the name of a child dataset, compared ignoring case. At most 16 steps. |
 | `enrich.<name>.description` | string | no | What the step adds, shown with the record's composition. |
-| `enrich.<name>.mapping` | string | yes | The fragment the step renders, pinned as `Name@version` and found the way the flow's mapping is. |
+| `enrich.<name>.mapping` | string | one of `mapping` and `files` | The fragment the step renders, pinned as `Name@version` and found the way the flow's mapping is. |
+| `enrich.<name>.files` | map | one of `mapping` and `files` | The files each of the step's rows names, registered as a dataset of the record and linked from it ([files a step registers](enrich-files.md)). Needs `dataset`. |
 | `enrich.<name>.dataset` | map | no | The step's rows: `object`, `join`, `orderBy` and `maxRowsPerRecord`, as a child dataset declares them ([delivery flow](delivery.md#source)). `join` covers every key column of the record table. Left out, the step reads no rows and renders from what the record holds and its parameters. |
 | `enrich.<name>.rows` | string | no | `one` (the default) or `many`: how many of the step's rows one record takes. Only with `dataset`. |
 | `enrich.<name>.after` | list | no | The steps this one renders after, beside the order the document lists them in. |
@@ -206,6 +209,7 @@ Before anything renders, every run and `sqlflow check` refuse a chain when:
 
 ## Related
 
+- [Files a step registers](enrich-files.md): datasets a step adds to each record, their ids, and what a change sends.
 - [Fragments](mapping-fragment.md): the mapping a step renders, `$base`, and how a fragment adds to the record.
 - [Delivery flow](delivery.md): the source, its child datasets and the target the record goes to.
 - [A source with interfaces](interfaces.md): an interface's own `enrich`.
