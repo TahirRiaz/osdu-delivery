@@ -8,12 +8,17 @@ export interface EnrichStepOutcome {
   effects: readonly unknown[];
   holds: readonly string[];
   notRendered?: boolean;
+  setAside?: boolean;
 }
 
 /** What the step came to for the record, as one phrase: not rendered, holding it, adding nothing, or how many changes. */
 export function enrichOutcomeText(step: EnrichStepOutcome): string {
   if (step.notRendered) {
     return "not rendered: a step before it holds the record or waits for the platform";
+  }
+
+  if (step.setAside) {
+    return "held, set aside: keeps what it last added";
   }
 
   if (step.holds.length > 0) {

@@ -311,6 +311,15 @@ public sealed record PreviewEnrichStep
     /// <summary>True when the step did not render: a step before it held the record, or waits for the platform.</summary>
     public bool NotRendered { get; init; }
 
+    /// <summary>
+    /// True when the step held and was set aside (<c>onHold: step</c>, osdu/docs/reference/flow/enrich-holds.md): the record goes
+    /// ahead with what the step added to its last delivery, which <see cref="Effects"/> lists, and <see cref="Holds"/> says why.
+    /// </summary>
+    public bool SetAside { get; init; }
+
+    /// <summary>For a step set aside, the datasets its last delivery registered, which the record keeps linking.</summary>
+    public IReadOnlyList<string> KeptDatasets { get; init; } = [];
+
     /// <summary>The preview of what <paramref name="contribution"/> says.</summary>
     public static PreviewEnrichStep Of(Rendering.StepContribution contribution)
     {
@@ -326,6 +335,8 @@ public sealed record PreviewEnrichStep
             Datasets = contribution.Datasets.Select(d => new PreviewEnrichDataset(d.Id, d.Kind, d.Row, d.Record.DeepClone())).ToList(),
             Holds = contribution.Holds,
             NotRendered = contribution.NotRendered,
+            SetAside = contribution.SetAside,
+            KeptDatasets = contribution.KeptDatasets,
         };
     }
 

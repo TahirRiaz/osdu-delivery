@@ -61,6 +61,11 @@ export interface DeliveryFlowStats {
    */
   adoptable?: number;
   drifted: number;
+  /**
+   * Records whose last render set a step of enrich: aside on its hold, each going ahead with what the step added to its last
+   * delivery. Absent from an older control plane.
+   */
+  stepsHeld?: number;
   deliveredLast24h: number;
   lastDeliveredUtc: string | null;
   lastVerifiedUtc: string | null;
@@ -1009,6 +1014,8 @@ export interface DeliveryRecordListQuery extends PageQuery {
   drifted?: boolean;
   /** Only the blocked records one issue keeps blocked, by its id. */
   issue?: string;
+  /** Only records whose last render set a step of enrich: aside on its hold. */
+  stepHeld?: boolean;
 }
 
 /**
@@ -1340,6 +1347,10 @@ export interface DeliveryPreviewEnrichStep {
   holds: string[];
   /** True when it did not render: a step before it holds the record, or waits for the platform. */
   notRendered?: boolean;
+  /** True when it held and was set aside: the record goes ahead with what it added to its last delivery, which `effects` lists. */
+  setAside?: boolean;
+  /** For a step set aside, the datasets its last delivery registered, which the record keeps linking. */
+  keptDatasets?: string[];
 }
 
 /** One dataset a step registers for the record: its id, made from the record's id and the step, its kind and its row. */
@@ -1648,6 +1659,8 @@ export interface DeliveryRecordFilter {
   drifted?: boolean;
   /** The blocked records one issue keeps blocked, by its id. */
   issue?: string;
+  /** The records whose last render set a step of enrich: aside on its hold. */
+  stepHeld?: boolean;
 }
 
 /**
