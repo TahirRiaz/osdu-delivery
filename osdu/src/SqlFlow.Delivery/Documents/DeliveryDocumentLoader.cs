@@ -861,6 +861,12 @@ internal static partial class FlowMapper
     /// <inheritdoc cref="RowsOne"/>
     internal const string RowsMany = "many";
 
+    /// <summary>The words <c>enrich.&lt;name&gt;.onHold</c> takes.</summary>
+    internal const string HoldRecord = "record";
+
+    /// <inheritdoc cref="HoldRecord"/>
+    internal const string HoldStep = "step";
+
     /// <summary>
     /// The flow's <c>enrich:</c> steps (osdu/docs/reference/flow/enrich.md), in the order they render, and the dataset of each
     /// step that reads rows, by the step's name: null and none for a flow that declares no step. The order is the order the
@@ -961,6 +967,15 @@ internal static partial class FlowMapper
                 files = MapStepFiles(declaredFiles, rows, step + ".files", source);
             }
 
+            var onHold = y.OnHold?.Trim() switch
+            {
+                null => EnrichHold.Record,
+                HoldRecord => EnrichHold.Record,
+                HoldStep => EnrichHold.Step,
+                var other => throw new FlowValidationException(
+                    $"{source}: {step}.onHold is '{other}'; write {HoldRecord} for a step whose hold holds the record (the default), or {HoldStep} for one set aside while the record goes ahead with what the step added to its last delivery."),
+            };
+
             steps.Add(new EnrichStep
             {
                 Name = name,
@@ -970,6 +985,7 @@ internal static partial class FlowMapper
                 After = (y.After ?? []).Select(a => a?.Trim() ?? string.Empty).ToList(),
                 ReadsRows = y.Dataset is not null,
                 Rows = rows,
+                OnHold = onHold,
             });
         }
 

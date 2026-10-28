@@ -145,7 +145,10 @@ public sealed class RecordPreviewer
             : await OnlyEntryAsync(_runtime.Planner.EntriesOfAsync(header, Once(row), 1, new PlanSummary(), ct), ct).ConfigureAwait(false);
 
         var payload = await PayloadAsync(header, rendered, ct).ConfigureAwait(false);
-        var render = rendered.Render;
+
+        // A flow whose steps keep what they added shows the record as the ledger's plan renders it, with what its last delivery
+        // kept of a step set aside (osdu/docs/reference/flow/enrich-holds.md); any other shows the render from the row alone.
+        var render = header.Mapping.HasStepWork && decided.Render is { } planned ? planned : rendered.Render;
         var references = new List<PreviewReference>();
         var referenceCount = 0;
         PreviewDocument? document = null;

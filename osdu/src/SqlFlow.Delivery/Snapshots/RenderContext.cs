@@ -266,6 +266,12 @@ public sealed record RenderStep(
     /// </summary>
     public string? Files { get; init; }
 
+    /// <summary>
+    /// True for a step set aside when it holds (<c>onHold: step</c>), whose last delivered contribution a record keeps; a step
+    /// whose hold holds the record is written as it always was.
+    /// </summary>
+    public bool SetAsideOnHold { get; init; }
+
     internal JsonObject Node()
     {
         var parameters = new JsonObject();
@@ -295,6 +301,11 @@ public sealed record RenderStep(
             node["files"] = JsonNode.Parse(Files);
         }
 
+        if (SetAsideOnHold)
+        {
+            node["onHold"] = "step";
+        }
+
         return node;
     }
 
@@ -321,6 +332,7 @@ public sealed record RenderStep(
         return new RenderStep(name, mapping, step["mappingFingerprint"]?.GetValue<string>(), step["schema"]?.GetValue<string>() ?? string.Empty, parameters)
         {
             Files = step["files"] is JsonObject files ? CanonicalJson.ToString(files) : null,
+            SetAsideOnHold = step["onHold"]?.GetValue<string>() == "step",
         };
     }
 }

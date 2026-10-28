@@ -218,10 +218,16 @@ const enrichColumns: Column<DeliveryPreviewEnrichStep>[] = [
     id: "effects",
     header: "What it added",
     fill: true,
-    render: (row) => (row.effects.length === 0 && (row.datasets ?? []).length === 0
+    render: (row) => (row.effects.length === 0 && (row.datasets ?? []).length === 0 && (row.keptDatasets ?? []).length === 0
       ? <span className="text-muted-foreground">-</span>
       : (
         <ul className="flex flex-col gap-0.5 text-[12px]">
+          {(row.keptDatasets ?? []).map((id) => (
+            <li key={`kept|${id}`} className="flex min-w-0 items-baseline gap-1.5" data-testid="preview-enrich-kept-dataset">
+              <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]" title="Registered by the record's last delivery, and still linked while the step is set aside">kept</Badge>
+              <RecordName id={id} copy className="min-w-0 max-w-[420px] text-[12px]" copyTestId="copy-preview-enrich-kept-dataset" />
+            </li>
+          ))}
           {(row.datasets ?? []).map((dataset) => (
             <li key={dataset.id} className="flex min-w-0 items-baseline gap-1.5" data-testid="preview-enrich-dataset">
               <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]" title={`Registered as ${dataset.kind} from row ${dataset.row + 1} of the step's dataset, under the id the record links`}>dataset</Badge>

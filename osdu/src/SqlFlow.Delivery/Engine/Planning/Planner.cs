@@ -946,68 +946,84 @@ public sealed class Planner
         var payloadName = header.PayloadName;
 
         // The record as it is sent: the flow's mapping and, for a flow with enrich: steps, every step over it, so the document
-        // hashed and compared below is the whole record whichever part of its chain changed.
-        var render = header.Mapping.Render(record);
-        if (render.IsIncomplete)
+        // hashed and compared below is the whole record whichever part of its chain changed. A flow whose steps leave work for
+        // the delivery reads what the record's last delivery kept of its steps set aside on their holds; and a step set aside
+        // whose files cannot be found where its row says is held, the record rendered again without it, once for each step.
+        var inputs = header.Mapping.HasStepWork ? new ChainInputs { Kept = KeptSteps.From(state) } : ChainInputs.None;
+        RenderResult render;
+        while (true)
         {
-            if (!final)
+            render = header.Mapping.Render(record, inputs);
+            if (render.IsIncomplete)
             {
-                return render.Unanswered;
+                if (!final)
+                {
+                    return render.Unanswered;
+                }
+
+                // Every question was put to the platform and some came back without an answer, which a search that answers
+                // all it is given never does. The references that depend on them are unknown, so the record is held rather
+                // than sent without them.
+                render = render with
+                {
+                    Holds = [.. render.Holds, .. render.Unanswered.Select(MappingRenderer.Unanswerable)],
+                    Unanswered = [],
+                };
             }
 
-            // Every question was put to the platform and some came back without an answer, which a search that answers
-            // all it is given never does. The references that depend on them are unknown, so the record is held rather
-            // than sent without them.
-            render = render with
+            if (!render.IsHeld && EdsRecordRules.Hold(flow.Target.Eds, render.Document) is { } unusable)
             {
-                Holds = [.. render.Holds, .. render.Unanswered.Select(MappingRenderer.Unanswerable)],
-                Unanswered = [],
-            };
-        }
+                // A record External Data Services could not use is held before anything is sent, whichever route writes it.
+                render = render with { Holds = [unusable] };
+            }
 
-        if (!render.IsHeld && EdsRecordRules.Hold(flow.Target.Eds, render.Document) is { } unusable)
-        {
-            // A record External Data Services could not use is held before anything is sent, whichever route writes it.
-            render = render with { Holds = [unusable] };
-        }
-
-        // A record an operator gave a new OSDU id, because OSDU lost the one it claimed, is written under that id whatever
-        // its mapping makes from its key: the assigned id is the record's own from then on.
-        if (state is { TargetIdAssignedUtc: not null, ClaimedTargetId: { } assigned } && !render.IsHeld && render.TargetId is { } made
-            && !string.Equals(made, assigned, StringComparison.Ordinal))
-        {
-            render = render.Under(assigned);
-        }
-
-        // A record keeps the OSDU id it claimed when it first queued a document. A render that gives it another one (its
-        // mapping's dataset.idFrom or the entity type of its kind changed, or the partition the flow mints ids in) is never
-        // sent: the document would land on a second OSDU record while the ledger, and every removal and read back, still
-        // names the first. A changed dataset.system or key makes another delivery key, so another record, and never this. An
-        // assigned id is not the mapping's to give, so a record that has one is never held for the id its mapping makes.
-        if (state is { TargetIdAssignedUtc: null, ClaimedTargetId: { } claimed } && render.TargetId is { } rendered && !string.Equals(claimed, rendered, StringComparison.Ordinal))
-        {
-            render = render with { Holds = [.. render.Holds, ChangedTargetId(claimed, rendered)] };
-        }
-
-        if (render.IsHeld)
-        {
-            entries.Add(basis with
+            // A record an operator gave a new OSDU id, because OSDU lost the one it claimed, is written under that id whatever
+            // its mapping makes from its key: the assigned id is the record's own from then on.
+            if (state is { TargetIdAssignedUtc: not null, ClaimedTargetId: { } assigned } && !render.IsHeld && render.TargetId is { } made
+                && !string.Equals(made, assigned, StringComparison.Ordinal))
             {
-                // A record that claimed an id is held under it, whatever this render gives.
-                TargetId = state?.ClaimedTargetId ?? render.TargetId,
-                Reason = string.Join("; ", render.Holds),
-                Render = render,
-                PayloadHash = payloadHash,
-                PayloadModifiedUtc = payloadModified,
-            });
-            return null;
-        }
+                render = render.Under(assigned);
+            }
 
-        // The datasets the record's steps register: each one's files, found where its row says, and their content hash, which
-        // the record's document hash takes in, so new files plan the record again though the document is the same.
-        if (render.Enrichment.Any(c => c.Datasets.Count > 0))
-        {
-            var (withParts, problem) = EnrichParts.Resolve(flow, header.Parameters, record, render, header.Mapping.Steps, state, hasPayload);
+            // A record keeps the OSDU id it claimed when it first queued a document. A render that gives it another one (its
+            // mapping's dataset.idFrom or the entity type of its kind changed, or the partition the flow mints ids in) is never
+            // sent: the document would land on a second OSDU record while the ledger, and every removal and read back, still
+            // names the first. A changed dataset.system or key makes another delivery key, so another record, and never this. An
+            // assigned id is not the mapping's to give, so a record that has one is never held for the id its mapping makes.
+            if (state is { TargetIdAssignedUtc: null, ClaimedTargetId: { } claimed } && render.TargetId is { } rendered && !string.Equals(claimed, rendered, StringComparison.Ordinal))
+            {
+                render = render with { Holds = [.. render.Holds, ChangedTargetId(claimed, rendered)] };
+            }
+
+            if (render.IsHeld)
+            {
+                entries.Add(basis with
+                {
+                    // A record that claimed an id is held under it, whatever this render gives.
+                    TargetId = state?.ClaimedTargetId ?? render.TargetId,
+                    Reason = string.Join("; ", render.Holds),
+                    Render = render,
+                    PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
+                });
+                return null;
+            }
+
+            if (!header.Mapping.HasStepWork)
+            {
+                break;
+            }
+
+            // The datasets the record's steps register: each one's files, found where its row says, and their content hash,
+            // which the record's document hash takes in, so new files plan the record again though the document is the same.
+            var (withParts, problem, aside) = EnrichParts.Resolve(flow, header.Parameters, record, render, header.Mapping.Steps, state, hasPayload);
+            if (aside is not null && !inputs.Holding.ContainsKey(aside.Step))
+            {
+                inputs = inputs.Hold(aside.Step, aside.Reason);
+                continue;
+            }
+
+            problem ??= aside is null ? null : $"enrich.{aside.Step}: {aside.Reason}";
             if (problem is not null)
             {
                 entries.Add(basis with
@@ -1022,6 +1038,7 @@ public sealed class Planner
             }
 
             render = withParts;
+            break;
         }
 
         var decision = ChangeDetector.DecideWithQueue(state, render.MetadataHash, payloadHash, hasPayload, flow.Change);

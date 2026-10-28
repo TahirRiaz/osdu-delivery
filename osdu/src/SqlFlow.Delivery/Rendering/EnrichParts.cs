@@ -47,7 +47,22 @@ public sealed record EnrichWork(IReadOnlyList<EnrichPart> Parts, bool DocumentUn
 {
     /// <summary>A record whose steps register no datasets.</summary>
     public static EnrichWork None { get; } = new([], false, false);
+
+    /// <summary>
+    /// What each step set aside on its holds (<c>onHold: step</c>) composed into this document, as its kept contribution
+    /// (<see cref="KeptStep"/>), by the step's name: what the record goes ahead with on a later render the step holds in.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Keep { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>The datasets the steps set aside on this render registered on an earlier one, which the record keeps linking.</summary>
+    public IReadOnlyList<string> KeptDatasets { get; init; } = [];
+
+    /// <summary>Whether a delivery has anything of the steps to do: datasets to register or keep linking, or contributions to keep.</summary>
+    public bool IsEmpty => Parts.Count == 0 && Keep.Count == 0 && KeptDatasets.Count == 0;
 }
+
+/// <summary>A step set aside on its holds whose files could not be found where its row says, with why: the plan renders the record again with it held.</summary>
+public sealed record StepAside(string Step, string Reason);
 
 /// <summary>
 /// The step parts of a record (osdu/docs/reference/flow/enrich-files.md): resolved by the plan from the rows
@@ -70,9 +85,11 @@ public static class EnrichParts
     /// (<paramref name="state"/>'s target state), it hashes as the record was delivered; and every part goes when the record
     /// was never delivered or was asked to be sent again (its document's hash, or its payload's on a flow with
     /// <paramref name="hasPayload"/>, cleared; or a redelivery naming files). Or why the record is held: a row naming no
-    /// folder, or no content hash.
+    /// folder, or no content hash; or, for a step set aside on its holds (<c>onHold: step</c>), the step and that reason, which
+    /// the plan renders the record again with the step held for. What each step set aside on its holds composed is kept with
+    /// the work, and the datasets of one set aside go on being linked at the hash their last delivery kept.
     /// </summary>
-    public static (RenderResult Render, string? Hold) Resolve(
+    public static (RenderResult Render, string? Hold, StepAside? Aside) Resolve(
         FlowDefinition flow, IReadOnlyDictionary<string, string> values, SourceRecord record, RenderResult render, IReadOnlyList<ResolvedStep> steps,
         RecordState? state, bool hasPayload)
     {
@@ -82,37 +99,52 @@ public static class EnrichParts
         ArgumentNullException.ThrowIfNull(render);
         ArgumentNullException.ThrowIfNull(steps);
         var parts = new List<EnrichPart>();
-        foreach (var contribution in render.Enrichment.Where(c => c.Datasets.Count > 0))
+        var keep = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var contribution in render.Enrichment)
         {
             var step = steps.First(s => string.Equals(s.Step.Name, contribution.Step, StringComparison.Ordinal)).Step;
-            var files = step.Files!;
-            var rows = record.ScopeRows(step.Name);
+            if (contribution.SetAside || contribution.NotRendered)
+            {
+                continue;
+            }
+
             foreach (var dataset in contribution.Datasets)
             {
-                var row = rows[dataset.Row];
+                var row = record.ScopeRows(step.Name)[dataset.Row];
+                var files = step.Files!;
                 var location = PayloadLocations.ResolveStepFiles(flow, values, row, step);
-                if (location.Refusal is { } refusal)
-                {
-                    return (render, $"enrich.{step.Name}: {refusal}");
-                }
-
                 var hash = row.GetString(files.Payload.HashColumn!)?.Trim();
-                if (string.IsNullOrEmpty(hash))
+                var refusal = location.Refusal ?? (string.IsNullOrEmpty(hash)
+                    ? $"files take their content hash from column '{files.Payload.HashColumn}', which row {dataset.Row + 1} of the step's dataset leaves empty"
+                    : null);
+                if (refusal is not null)
                 {
-                    return (render, $"enrich.{step.Name}: files take their content hash from column '{files.Payload.HashColumn}', which row {dataset.Row + 1} of the step's dataset leaves empty");
+                    return step.OnHold == EnrichHold.Step
+                        ? (render, null, new StepAside(step.Name, refusal))
+                        : (render, $"enrich.{step.Name}: {refusal}", null);
                 }
 
-                parts.Add(new EnrichPart(step.Name, dataset.Id, dataset.Kind, location.Location!.Value.ToString(), hash, CanonicalJson.ToString(dataset.Record), files.ContentType));
+                parts.Add(new EnrichPart(step.Name, dataset.Id, dataset.Kind, location.Location!.Value.ToString(), hash!, CanonicalJson.ToString(dataset.Record), files.ContentType));
+            }
+
+            if (step.OnHold == EnrichHold.Step)
+            {
+                keep[step.Name] = new KeptStep(contribution.Composed, contribution.Datasets.Select(d => d.Id).ToList()).ToText();
             }
         }
 
-        if (parts.Count == 0)
+        var kept = JsonMerge.ToValues(state?.TargetStateJson);
+        var keptDatasets = render.Enrichment.Where(c => c.SetAside).SelectMany(c => c.KeptDatasets).Distinct(StringComparer.Ordinal).ToList();
+        var work = new EnrichWork(parts, false, false) { Keep = keep, KeptDatasets = keptDatasets };
+        if (work.IsEmpty)
         {
-            return (render, null);
+            return (render, null, null);
         }
 
+        // The document's hash takes in every dataset the record links: those registered now at their new hash, those of a step
+        // set aside at the hash their last delivery kept.
+        var linked = parts.Select(p => (p.DatasetId, p.Hash)).Concat(keptDatasets.Select(id => (id, kept.GetValueOrDefault(StateKey(id)) ?? string.Empty))).ToList();
         var delivered = state?.MetadataHash;
-        var kept = JsonMerge.ToValues(state?.TargetStateJson);
         var previous = Datasets(kept).Select(id => (id, kept.GetValueOrDefault(StateKey(id)))).Where(p => p.Item2 is not null).Select(p => (p.id, p.Item2!));
         var unchanged = delivered is not null && string.Equals(Fold(render.Canonical, previous), delivered, StringComparison.Ordinal);
         var forced = delivered is null
@@ -120,9 +152,9 @@ public static class EnrichParts
             || PayloadParts.RedeliverRoles(state!.PayloadHash)?.Contains(EnrichPart.Role) == true;
         return (render with
         {
-            MetadataHash = Fold(render.Canonical, parts.Select(p => (p.DatasetId, p.Hash))),
-            StepWork = new EnrichWork(parts, unchanged, forced),
-        }, null);
+            MetadataHash = linked.Count == 0 ? render.MetadataHash : Fold(render.Canonical, linked),
+            StepWork = work with { DocumentUnchanged = unchanged, Forced = forced },
+        }, null, null);
     }
 
     /// <summary>
@@ -145,7 +177,7 @@ public static class EnrichParts
     /// <summary>What a delivery does with the parts, as the work batch line carries it: compact JSON, or null for a record without parts.</summary>
     public static string? Encode(EnrichWork? work)
     {
-        return work is null || work.Parts.Count == 0 ? null : JsonSerializer.Serialize(work, Json);
+        return work is null || work.IsEmpty ? null : JsonSerializer.Serialize(work, Json);
     }
 
     /// <summary>What a work batch line says a delivery does with the parts; none for a line without them.</summary>

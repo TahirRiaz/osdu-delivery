@@ -1207,6 +1207,12 @@ public sealed record RenderResult
 
     /// <summary>The datasets the record's steps register; empty for a record whose steps register no files.</summary>
     public IReadOnlyList<EnrichPart> StepParts => StepWork?.Parts ?? [];
+
+    /// <summary>
+    /// The steps that held and were set aside (<c>onHold: step</c>, osdu/docs/reference/flow/enrich-holds.md), in the order they
+    /// render: the record goes ahead with what each added to its last delivery, and the ledger lists it with them held.
+    /// </summary>
+    public IReadOnlyList<string> StepsSetAside => Enrichment.Where(c => c.SetAside).Select(c => c.Step).ToList();
 }
 
 /// <summary>

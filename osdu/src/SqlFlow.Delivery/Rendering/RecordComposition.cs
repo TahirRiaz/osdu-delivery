@@ -75,6 +75,19 @@ public sealed record StepContribution
     /// row, each under the id the record's own id and the step make; empty for a step that registers no files.
     /// </summary>
     public IReadOnlyList<StepDataset> Datasets { get; init; } = [];
+
+    /// <summary>
+    /// True when the step held and was set aside (<c>onHold: step</c>, osdu/docs/reference/flow/enrich-holds.md): the record
+    /// goes ahead with what the step added to its last delivery, which <see cref="Effects"/> lists, and <see cref="Holds"/>
+    /// says why the step held, without holding the record.
+    /// </summary>
+    public bool SetAside { get; init; }
+
+    /// <summary>What the step composed into the record, in order: its fragment, then the links to its datasets. Kept for a step set aside on its hold.</summary>
+    public IReadOnlyList<JsonObject> Composed { get; init; } = [];
+
+    /// <summary>For a step set aside, the datasets its last delivery registered, which the record keeps linking.</summary>
+    public IReadOnlyList<string> KeptDatasets { get; init; } = [];
 }
 
 /// <summary>
@@ -231,16 +244,23 @@ public sealed class RecordChain
     /// <summary>The flow's steps, in the order they render.</summary>
     public IReadOnlyList<ResolvedStep> Steps => _steps;
 
+    /// <summary>The record rendered from its rows alone, as a record OSDU holds no version of.</summary>
+    public RenderResult Render(SourceRecord record) => Render(record, ChainInputs.None);
+
     /// <summary>
     /// Renders the record and every step over it. A record the flow's mapping holds, or renders unfinished, is returned as it
     /// rendered: the steps render once it is whole. A step that renders unfinished stops the chain there, with its questions,
     /// and the whole chain renders again once they are answered, since a later step reads what this one adds. A step that holds,
-    /// or that conflicts with what the record holds, holds the record and stops the chain, so every reason given is a true one.
-    /// A step whose dataset holds no row for the record adds nothing; one that reads one row and finds several holds the record.
+    /// or that conflicts with what the record holds, holds the record and stops the chain, so every reason given is a true one;
+    /// unless it is set aside on its hold (<c>onHold: step</c>, osdu/docs/reference/flow/enrich-holds.md): then what it added to
+    /// the record's last delivery (<paramref name="inputs"/>) takes its place, nothing for a record never delivered, and the
+    /// steps after it render. A step whose dataset holds no row for the record adds nothing; one that reads one row and finds
+    /// several holds.
     /// </summary>
-    public RenderResult Render(SourceRecord record)
+    public RenderResult Render(SourceRecord record, ChainInputs inputs)
     {
         ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(inputs);
         var owner = _owner.Render(record);
         if (_steps.Count == 0 || owner.IsIncomplete || owner.IsHeld)
         {
@@ -281,37 +301,44 @@ public sealed class RecordChain
                 continue;
             }
 
-            if (step.Rows == EnrichRows.One && rows is { Count: > 1 })
-            {
-                var several = Prefixed(step,
-                    $"the step reads one row per record (rows: one), and its dataset holds {rows.Count} for this record; join it on more columns, or declare rows: many and read them with $forEach: {step.Name}");
-                holds.Add(several);
-                contributions.Add(named with { Holds = [several] });
-                stopped = true;
-                continue;
-            }
-
+            // The step composes into a copy of the record, which becomes the record once it composed whole: a step that holds
+            // leaves the record as the steps before it left it, whether it holds the record or is set aside.
+            var working = (JsonObject)document.DeepClone();
             var effects = new List<CompositionEffect>();
             var reasons = new List<string>();
             var datasets = new List<StepDataset>();
+            var composed = new List<JsonObject>();
             var waiting = false;
-            if (resolved.Renderer is { } renderer)
+            if (inputs.Holding.TryGetValue(step.Name, out var holding))
             {
-                var fragment = renderer.RenderFragment(StepRecord(record, step, rows), document);
-                waiting = trail.Gather(fragment);
-                if (!waiting && fragment.Holds.Count > 0)
-                {
-                    reasons.AddRange(fragment.Holds);
-                }
-                else if (!waiting)
-                {
-                    RecordComposer.Compose(document, fragment.Document, effects, reasons);
-                }
+                reasons.Add(holding);
             }
-
-            if (!waiting && reasons.Count == 0 && resolved.Files is { } files)
+            else if (step.Rows == EnrichRows.One && rows is { Count: > 1 })
             {
-                waiting = AddFiles(record, step, files, rows!, owner.TargetId!, document, datasets, effects, reasons, trail);
+                reasons.Add(
+                    $"the step reads one row per record (rows: one), and its dataset holds {rows.Count} for this record; join it on more columns, or declare rows: many and read them with $forEach: {step.Name}");
+            }
+            else
+            {
+                if (resolved.Renderer is { } renderer)
+                {
+                    var fragment = renderer.RenderFragment(StepRecord(record, step, rows), document);
+                    waiting = trail.Gather(fragment);
+                    if (!waiting && fragment.Holds.Count > 0)
+                    {
+                        reasons.AddRange(fragment.Holds);
+                    }
+                    else if (!waiting)
+                    {
+                        RecordComposer.Compose(working, fragment.Document, effects, reasons);
+                        composed.Add(fragment.Document);
+                    }
+                }
+
+                if (!waiting && reasons.Count == 0 && resolved.Files is { } files)
+                {
+                    waiting = AddFiles(record, step, files, rows!, owner.TargetId!, working, datasets, effects, reasons, composed, trail);
+                }
             }
 
             if (waiting)
@@ -325,13 +352,26 @@ public sealed class RecordChain
             if (reasons.Count > 0)
             {
                 var held = reasons.Select(r => Prefixed(step, r)).ToList();
+                if (step.OnHold == EnrichHold.Step)
+                {
+                    if (SetAside(step, inputs.Kept, document, out var kept) is not { } refusal)
+                    {
+                        // Set aside: the record goes ahead with what the step added to its last delivery, and the steps after it render.
+                        contributions.Add(named with { Effects = kept.Effects, Holds = held, SetAside = true, KeptDatasets = kept.Datasets });
+                        continue;
+                    }
+
+                    held.Add(Prefixed(step, refusal));
+                }
+
                 holds.AddRange(held);
                 contributions.Add(named with { Effects = effects, Holds = held, Datasets = datasets });
                 stopped = true;
                 continue;
             }
 
-            contributions.Add(named with { Effects = effects, Datasets = datasets });
+            document = working;
+            contributions.Add(named with { Effects = effects, Datasets = datasets, Composed = composed });
         }
 
         var assertions = Validation.AssertionFindings.Combine(findings);
@@ -396,6 +436,44 @@ public sealed class RecordChain
     private static string Prefixed(EnrichStep step, string reason) => $"enrich.{step.Name}: {reason}";
 
     /// <summary>
+    /// Sets a held step aside (osdu/docs/reference/flow/enrich-holds.md): what it added to the record's last delivery is composed
+    /// into <paramref name="document"/> in its place, nothing for a record OSDU holds no version of. Null when it is set aside,
+    /// with what it added in <paramref name="kept"/>; otherwise why the step holds the record after all: OSDU holds a version
+    /// whose contribution of the step was not kept, or what it kept no longer fits the record.
+    /// </summary>
+    private static string? SetAside(EnrichStep step, KeptSteps last, JsonObject document, out (IReadOnlyList<CompositionEffect> Effects, IReadOnlyList<string> Datasets) kept)
+    {
+        kept = ([], []);
+        if (!last.Steps.TryGetValue(step.Name, out var previous))
+        {
+            return last.Delivered
+                ? "the step is set aside on its holds, and what it added to the version OSDU holds was not kept (that version was delivered before the step was set aside), so the record is held until the step renders"
+                : null;
+        }
+
+        var aside = (JsonObject)document.DeepClone();
+        var effects = new List<CompositionEffect>();
+        var conflicts = new List<string>();
+        foreach (var fragment in previous.Fragments)
+        {
+            RecordComposer.Compose(aside, (JsonObject)fragment.DeepClone(), effects, conflicts);
+        }
+
+        if (conflicts.Count > 0)
+        {
+            return $"the step is set aside on its holds, and what it added to the version OSDU holds no longer fits the record ({string.Join("; ", conflicts)}), so the record is held until the step renders";
+        }
+
+        foreach (var (name, value) in aside.ToList())
+        {
+            document[name] = value?.DeepClone();
+        }
+
+        kept = (effects, previous.Datasets);
+        return null;
+    }
+
+    /// <summary>
     /// The datasets a step's files are registered as, one per row it takes (osdu/docs/reference/flow/enrich-files.md),
     /// and the links to them added to the record at the step's link path. Each id is the record's own with the
     /// dataset's entity type and a suffix of <c>enrich.</c>, the step's name and, for a step taking many rows, a hash of the row's key, so the
@@ -412,6 +490,7 @@ public sealed class RecordChain
         List<StepDataset> datasets,
         List<CompositionEffect> effects,
         List<string> reasons,
+        List<JsonObject> composed,
         ChainTrail trail)
     {
         var taken = step.Rows == EnrichRows.One ? rows.Take(1).ToList() : rows;
@@ -487,6 +566,7 @@ public sealed class RecordChain
 
             holder[segments[^1]] = new JsonArray(datasets.Select(d => (JsonNode?)JsonValue.Create(d.Id + ":")).ToArray());
             RecordComposer.Compose(document, link, effects, reasons);
+            composed.Add(link);
         }
 
         return false;
