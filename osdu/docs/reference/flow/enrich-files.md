@@ -20,6 +20,7 @@ keywords:
   - one change one write
   - preserveDataKeys
   - preserved Datasets merge
+  - cache after step datasets
 yamlPath: "enrich.<name>.files, interfaces.<name>.enrich.<name>.files"
 related:
   - delivery-flow-enrich
@@ -39,6 +40,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/StepLinks.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheSteps.cs
+  - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheKeeper.cs
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/ProtocolFactory.cs
   - osdu/src/SqlFlow.Delivery/Storage/WorkBatchFile.cs
   - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs
@@ -188,6 +191,20 @@ and a list the steps link nothing in, now or before, is copied whole as before. 
 preserved list besides the steps' links reaches the record only when it is created, as before. Links are compared as the
 record holds them, the dataset's id and a colon. A verify leaves preserved keys out of the content it compares
 (`ownedContent.excluded`, [routes](routes.md#storage)), so it does not report a link another system took off.
+
+## The cache
+
+A pipeline's cache steps ([cache](delivery.md#cache)) take a step's datasets as they take its records. `cache.after` may
+name a type holding the kind the step registers (`dataset--File.Generic`), and `after: auto` takes such a type when a cache
+flow declares it without a query. As the run ends, the datasets the records it changed link (`enrich.datasets` in their
+target state) are read back from storage with the records, and each goes into the types holding its own kind: the logs
+into a type of logs, their datasets into a type of datasets. A dataset a record stopped linking keeps its place, since OSDU
+still holds it. A flow later in the schedule can then find the datasets in the cache before the next refresh.
+
+A run has one before step and one after step, never a refresh between two steps of `enrich:`: every step renders in one
+pass before anything is sent, and the ids a step registers are made from the record's, so the chain needs nothing from the
+cache that it does not render itself. `cache.before: auto` takes what every fragment reads, a step's own and its dataset
+fragment's, as it takes what the flow's mapping reads.
 
 ## What the preflight checks
 

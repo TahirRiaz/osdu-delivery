@@ -184,7 +184,8 @@ The steps' rows are child datasets of the flow's source. A change to any of them
   its fingerprint, its template version and its parameters, so the rules moved: the scope is read whole once and every
   record renders again.
 - **A cache value a fragment read changed.** The record's cache usages are its mapping's and every fragment's, so the
-  cache rollout reaches it.
+  cache rollout reaches it. A pipeline's `cache.before: auto` brings up to date what every fragment reads as well as what
+  the mapping reads ([cache](delivery.md#cache)).
 - **The rows changed but the record renders the same** (a row written again with the same values). Nothing is sent.
 
 So a record is written at most once for each change, however many steps it has and whichever part of its chain moved.
