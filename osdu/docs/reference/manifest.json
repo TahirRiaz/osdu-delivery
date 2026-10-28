@@ -3738,6 +3738,7 @@
       "yamlPath": "enrich (flowType: delivery), interfaces.<name>.enrich",
       "related": [
         "delivery-flow-enrich-files",
+        "delivery-flow-enrich-holds",
         "delivery-flow-mapping-fragment",
         "delivery-flow-delivery",
         "delivery-flow-interfaces",
@@ -3813,6 +3814,48 @@
         "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/EnrichPartsProtocolTests.cs",
         "osdu/docs/census/keys.delivery.json",
         "osdu/specs/core/dataset/openapi.yaml"
+      ]
+    },
+    {
+      "id": "delivery-flow-enrich-holds",
+      "corpus": "reference",
+      "path": "flow/enrich-holds.md",
+      "title": "A step set aside on its hold (enrich.<name>.onHold): the record goes ahead with what the step last added",
+      "type": "flow-reference",
+      "summary": "onHold: step sets a held step aside: the record goes ahead with what the step added to its last delivery, and the ledger lists it with the step held.",
+      "keywords": [
+        "onHold",
+        "step held",
+        "set aside",
+        "hold isolation",
+        "a step holds",
+        "keep what a step last added",
+        "HeldSteps",
+        "steps held filter",
+        "enrich.step"
+      ],
+      "yamlPath": "enrich.<name>.onHold, interfaces.<name>.enrich.<name>.onHold",
+      "related": [
+        "delivery-flow-enrich",
+        "delivery-flow-enrich-files",
+        "delivery-flow-mapping-fragment",
+        "delivery-table-record",
+        "delivery-concept-record-lifecycle"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/RecordComposition.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/KeptSteps.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/EnrichParts.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
+        "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs",
+        "osdu/docs/census/keys.delivery.json"
       ]
     },
     {
@@ -7386,7 +7429,8 @@
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Adoptions.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs",
         "osdu/src/SqlFlow.Delivery/Identity/DeliveryKey.cs",
-        "osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs"
+        "osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs"
       ]
     },
     {
@@ -8913,7 +8957,9 @@
         "osdu/tests/SqlFlow.Delivery.Tests/EnrichmentGuardTests.cs",
         "osdu/src/SqlFlow.Delivery/Rendering/EnrichParts.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
-        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs"
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/KeptSteps.cs",
+        "osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs"
       ]
     },
     {

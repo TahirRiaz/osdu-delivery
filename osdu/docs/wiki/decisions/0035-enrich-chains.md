@@ -24,9 +24,12 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Rendering/EnrichParts.cs
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs
   - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs
+  - osdu/src/SqlFlow.Delivery/Rendering/KeptSteps.cs
+  - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs
 referenceRefs:
   - delivery-flow-enrich
   - delivery-flow-enrich-files
+  - delivery-flow-enrich-holds
   - delivery-flow-mapping-fragment
   - delivery-concept-change-detection
 related:
@@ -78,7 +81,11 @@ What OSDU and the module already have shaped the choice:
   renders the records again, and the ledger says what rendered every part of a document.
 - **The preflight refuses what could never render**: a step writing what another writes, writing under a preserved key,
   reading what nothing before it writes, or reading rows it does not have.
-- **A step that holds holds the record.** OSDU keeps the version it has until the record renders whole.
+- **A step that holds holds the record**, unless it is set aside on its holds (`onHold: step`, 2026-10-28). OSDU keeps the
+  version it has until the record renders whole. A step set aside lets the record go ahead with what it added to the
+  record's last delivery, which every delivery keeps in the record's target state; a record whose kept contribution no
+  longer fits, or that OSDU holds a version of that kept none, is held, so going ahead never takes anything away. The
+  record's `HeldSteps` lists the steps set aside, through an index of its own, for the Records tab's filter and the count.
 - **A step's files are parts of the same delivery**, not deliveries of their own (2026-10-28). Each of the step's rows is
   registered through the Dataset service as a dataset under an id derived from the record's and the step
   (`<record>-enrich.<step>`, and a hash of the row's key under `rows: many`), so the id is known when the record renders and
@@ -100,9 +107,14 @@ What OSDU and the module already have shaped the choice:
   be stale when the record changed, which is the case rendering the chain again answers.
 - **`preserveDataKeys` for each step's keys.** Not taken: it shares no key between writers and keeps a value only from the
   record OSDU holds, never from what the step would render now.
-- **Keeping a held step's last fragment while the rest goes ahead.** Not taken in this release: it needs each step's
-  delivered fragment kept in the ledger, which the steps that register files and records need too; until then a held step
-  holds the record and nothing is lost.
+- **Keeping a held step's last fragment while the rest goes ahead.** Taken as an option of the step (`onHold: step`), not
+  the default: a record that goes ahead carries a part rendered from rows the source no longer holds, which is right for a
+  side matter and wrong for what the record is.
+- **Leaving a held step's paths out while the rest goes ahead.** Not taken: the record would lose what the step added and
+  gain it back when the step renders again, a version each way.
+- **A table of each record's step contributions** beside the record. Not taken: every path that moves, purges or retires
+  records would need it too, while the record's target state already goes where the record goes; the step's contribution
+  is small and read only when the step holds.
 - **A step's files as a sub-delivery** with a ledger of its own (`<flow>/<step>`), each dataset a record of it. Not taken:
   the record and its datasets would land in two units of work, a failure between them leaving a record linking a dataset
   that is not there or the other way round; two ledgers would claim ids of one record's family; and the record's write
