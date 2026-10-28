@@ -26,10 +26,14 @@ sourceRefs:
   - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepFilesDeliveryTests.cs
   - osdu/src/SqlFlow.Delivery/Rendering/KeptSteps.cs
   - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepHoldsDeliveryTests.cs
+  - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepBulkDeliveryTests.cs
+  - osdu/tests/SqlFlow.Delivery.Tests/Enrichment/StepWorkflowTests.cs
 referenceRefs:
   - delivery-flow-enrich
   - delivery-flow-enrich-files
   - delivery-flow-enrich-holds
+  - delivery-flow-enrich-bulk
+  - delivery-flow-enrich-workflow
   - delivery-flow-mapping-fragment
   - delivery-concept-change-detection
 related:
@@ -131,8 +135,11 @@ What OSDU and the module already have shaped the choice:
   the tiers on every pull request (`EnrichmentGuardTests`, the document hash taken from the code before steps existed).
 - Steps share the flow's source connection, its key, its runs and its schedule; a step owned elsewhere is added by editing
   the flow's document.
-- A step adds paths and registers files; running a workflow or writing bulk data are what a step does not do yet. They go
-  as parts of the same one delivery, so the rule of one write per change holds for them.
+- A step adds paths, registers files, supplies the record's DDMS bulk data and runs a workflow, each as part of the record's
+  one delivery, so the rule of one write per change holds for them (2026-10-28). A step's bulk data is the record's payload
+  read from the step's row, not a part of its own, so the ddms route sends it as it always sent bulk data and only that
+  route takes it; a step's workflow runs through the workflow route itself over the record its flow wrote, kept under the
+  step's name, and what it creates is not linked into the record, which stays what the mapping and the steps render.
 - A step's dataset ids hold a dot, which neither the dataset route's own `files` dataset nor a workflow input's name can, so
   no route derives the same id for something else. A dataset the record stops linking stays live and is marked superseded,
   since the record's earlier versions name it; removing everything purges it with the record.

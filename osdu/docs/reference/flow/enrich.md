@@ -24,6 +24,8 @@ yamlPath: "enrich (flowType: delivery), interfaces.<name>.enrich"
 related:
   - delivery-flow-enrich-files
   - delivery-flow-enrich-holds
+  - delivery-flow-enrich-bulk
+  - delivery-flow-enrich-workflow
   - delivery-flow-mapping-fragment
   - delivery-flow-delivery
   - delivery-flow-interfaces
@@ -57,7 +59,9 @@ name from another, a quality grade from a third, each kept by someone else and c
 still one OSDU record, with one id and one writer. `enrich:` is how a delivery flow builds it: the flow's own mapping
 renders the record, then each **step**, in order, renders a **fragment** of it from rows of its own and adds the fragment
 to the record. The record that goes to OSDU is the record with every step in it, hashed and sent once. A step may also
-register the files its rows name as datasets of the record, under ids kept for good ([files a step registers](enrich-files.md)).
+register the files its rows name as datasets of the record, under ids kept for good ([files a step registers](enrich-files.md)),
+supply the record's DDMS bulk data ([a step's bulk data](enrich-bulk.md)), and run an OSDU workflow over the record once it
+landed ([a step's workflow](enrich-workflow.md)).
 
 A flow without `enrich:` renders, hashes and delivers exactly as it always did: its render context, its document hash and
 its records are unchanged.
@@ -130,11 +134,13 @@ document with interfaces it is refused.
 | --- | --- | --- | --- |
 | `enrich.<name>` | map | | One step. The name is letters, digits and `_`, not starting with a digit, at most 32 characters, not `record` and not the name of a child dataset, compared ignoring case. At most 16 steps. |
 | `enrich.<name>.description` | string | no | What the step adds, shown with the record's composition. |
-| `enrich.<name>.mapping` | string | one of `mapping` and `files` | The fragment the step renders, pinned as `Name@version` and found the way the flow's mapping is. |
-| `enrich.<name>.files` | map | one of `mapping` and `files` | The files each of the step's rows names, registered as a dataset of the record and linked from it ([files a step registers](enrich-files.md)). Needs `dataset`. |
+| `enrich.<name>.mapping` | string | one of `mapping`, `files`, `bulk` and `workflow` | The fragment the step renders, pinned as `Name@version` and found the way the flow's mapping is. |
+| `enrich.<name>.files` | map | one of `mapping`, `files`, `bulk` and `workflow` | The files each of the step's rows names, registered as a dataset of the record and linked from it ([files a step registers](enrich-files.md)). Needs `dataset`. |
 | `enrich.<name>.dataset` | map | no | The step's rows: `object`, `join`, `orderBy` and `maxRowsPerRecord`, as a child dataset declares them ([delivery flow](delivery.md#source)). `join` covers every key column of the record table. Left out, the step reads no rows and renders from what the record holds and its parameters. |
 | `enrich.<name>.rows` | string | no | `one` (the default) or `many`: how many of the step's rows one record takes. Only with `dataset`. |
 | `enrich.<name>.after` | list | no | The steps this one renders after, beside the order the document lists them in. |
+| `enrich.<name>.bulk` | map | no | The record's DDMS bulk data, named by the step's one row: the payload the `ddms` route sends after the record ([a step's bulk data](enrich-bulk.md)). |
+| `enrich.<name>.workflow` | map | no | An OSDU workflow the step runs over the record once it and the step's datasets landed, declared as `target.workflow` is ([a step's workflow](enrich-workflow.md)). |
 | `enrich.<name>.onHold` | string | no | `record` (the default) holds the record when the step holds; `step` sets the step aside, the record going ahead with what the step added to its last delivery ([a step set aside on its hold](enrich-holds.md)). |
 
 `render.parameters` supplies every mapping of the chain: each mapping, the flow's and every fragment, takes the values it
@@ -214,6 +220,8 @@ Before anything renders, every run and `sqlflow check` refuse a chain when:
 
 - [Files a step registers](enrich-files.md): datasets a step adds to each record, their ids, and what a change sends.
 - [A step set aside on its hold](enrich-holds.md): a step that holds without holding the record.
+- [A step's bulk data](enrich-bulk.md): a well log's curves named by a table of their own.
+- [A step's workflow](enrich-workflow.md): an OSDU workflow run over the record and the step's dataset.
 - [Fragments](mapping-fragment.md): the mapping a step renders, `$base`, and how a fragment adds to the record.
 - [Delivery flow](delivery.md): the source, its child datasets and the target the record goes to.
 - [A source with interfaces](interfaces.md): an interface's own `enrich`.

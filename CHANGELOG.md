@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (**Step held**), its counts and the Delivery page list the records a step holds in until it renders again
   ([a step set aside on its hold](osdu/docs/reference/flow/enrich-holds.md)).
 
+- **A step supplies the record's bulk data, or runs a workflow over it.** On the ddms route, a step's `bulk:` names the
+  record's DDMS bulk data by the step's row, so a well log's curves can come from a table of their own and go only when
+  they move ([a step's bulk data](osdu/docs/reference/flow/enrich-bulk.md)); a step's `workflow:` runs OSDU workflows
+  over the record and the step's dataset once they landed, declared as `target.workflow` is
+  ([a step's workflow](osdu/docs/reference/flow/enrich-workflow.md)).
+
 - **Export records to Excel.** A delivery flow's Records tab has **Export**, which downloads every record its filter
   matches (up to 25,000) as an Excel workbook to work through where the records come from: a row for each record with its
   status, issue and problem, the file and row it came from, its key's parts and where it landed in OSDU, and an About sheet
