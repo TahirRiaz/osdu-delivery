@@ -111,7 +111,11 @@ public sealed record ResolvedStep(EnrichStep Step, MappingDefinition? Mapping, S
 /// The files a step registers, as a run renders them: the step's settings, the entity type of the dataset kind, and the fragment
 /// over that kind rendered into each dataset record with its renderer, or null for a dataset record of its file properties alone.
 /// </summary>
-public sealed record ResolvedFiles(EnrichFiles Files, string EntityType, MappingDefinition? Mapping, MappingRenderer? Renderer);
+public sealed record ResolvedFiles(EnrichFiles Files, string EntityType, MappingDefinition? Mapping, MappingRenderer? Renderer)
+{
+    /// <summary>The template of the dataset kind <see cref="Mapping"/> fills, which says what its references name; null without a fragment.</summary>
+    public SchemaSnapshot? Schema { get; init; }
+}
 
 /// <summary>
 /// How a fragment is added to the record (osdu/docs/reference/flow/enrich.md, How a fragment adds to the record). Two things

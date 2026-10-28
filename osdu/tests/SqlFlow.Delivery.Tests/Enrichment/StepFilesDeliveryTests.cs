@@ -1,14 +1,18 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Engine.Workflows;
 using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 using Xunit;
 
@@ -22,7 +26,8 @@ namespace SqlFlow.Delivery.Tests;
 /// OSDU holds it; a change to the log writes it once and registers nothing; nothing changed sends nothing; and a log whose LAS
 /// file row goes is written once without the link, the dataset left live. On a Wellbore DDMS flow that carries the log's
 /// dataset list over from the record OSDU holds, an update keeps what another system listed there and adds or takes off the
-/// step's link alone.
+/// step's link alone; and the pipeline's cache after step reads the datasets a run's steps registered back into a type of
+/// their kind.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 [Trait("Category", "Integration")]
@@ -113,9 +118,7 @@ public sealed class StepFilesDeliveryTests : IDisposable
     {
         _clock.Advance(TimeSpan.FromSeconds(1));
         var ledger = _db.Ledger(_clock);
-        var client = new OsduHttpClient(
-            _http, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
+        var client = Client();
         var options = new ProtocolOptions { UploadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["x-ms-blob-type"] = "BlockBlob" } };
         var route = new EnrichPartsProtocol(inner(client), client, options);
         var templates = new MemoryTemplates(Samples.TemplateKinds().Select(Samples.SampleTemplate));
@@ -132,6 +135,14 @@ public sealed class StepFilesDeliveryTests : IDisposable
         _readThrough = Now;
         return (ledger, runtime.Flow.Id, run);
     }
+
+    /// <summary>The platform as the flow reaches it, in partition dev.</summary>
+    private OsduHttpClient Client() => new(
+        _http, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
+
+    /// <summary>The flow's own route over the Wellbore DDMS, carrying the log's dataset lists over.</summary>
+    private static IDeliveryProtocol Ddms(OsduHttpClient client) => new OsduDdmsProtocol(client, PreservingDdms, NullLogger.Instance);
 
     /// <summary>Gives a log its LAS file, in a folder of its own with the content given, or takes its row away (null).</summary>
     private void LasFile(MemoryRecord record, string? content)
@@ -234,7 +245,6 @@ public sealed class StepFilesDeliveryTests : IDisposable
     {
         var tables = await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
         LasFile(tables.Records[0], "~Version Information A");
-        IDeliveryProtocol Ddms(OsduHttpClient client) => new OsduDdmsProtocol(client, PreservingDdms, NullLogger.Instance);
 
         // 1. The log is created through the DDMS naming its dataset: OSDU holds no list of it to carry over yet.
         var (ledger, flowId, run) = await RunAsync(tables, PreservingDdmsFlow(), Ddms);
@@ -266,6 +276,57 @@ public sealed class StepFilesDeliveryTests : IDisposable
         Assert.Equal(1, run.Work.Delivered);
         Assert.Equal([foreign], Links(_platform.Records[logId]));
         Assert.DoesNotContain(DatasetOf(logId), _platform.Removed);
+    }
+
+    [Fact]
+    public async Task The_cache_after_step_reads_the_datasets_a_runs_steps_registered_back_into_a_type_of_their_kind()
+    {
+        var tables = await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
+        LasFile(tables.Records[0], "~Version Information A");
+        var started = Now;
+        var flow = PreservingDdmsFlow();
+        var (ledger, flowId, _) = await RunAsync(tables, flow, Ddms);
+        var logId = TargetId.WithoutVersion((await ledger.GetRecordAsync(flowId, SampleEstate.Key(0)))!.TargetId!).TrimEnd(':');
+        var dataset = DatasetOf(logId);
+
+        // The ledger names the dataset beside the logs the run changed when asked for what their target state lists.
+        Assert.Contains(dataset, await ledger.ChangedSinceAsync(flowId, started, 1_000, EnrichParts.DatasetsValue));
+        Assert.DoesNotContain(dataset, await ledger.ChangedSinceAsync(flowId, started, 1_000));
+
+        await _db.DeclareCacheAsync("dev", "welldb-logs-cache", new ReferenceTypeSpec
+        {
+            Name = "WellLog",
+            EntityType = "work-product-component--WellLog",
+            Kind = "osdu:wks:work-product-component--WellLog:*",
+            Fields = [new ReferenceFieldSpec("data.Name")],
+        });
+        await _db.DeclareCacheAsync("dev", "welldb-datasets-cache", new ReferenceTypeSpec
+        {
+            Name = "LasFile",
+            EntityType = "dataset--File.Generic",
+            Kind = "osdu:wks:dataset--File.Generic:*",
+            Fields = [new ReferenceFieldSpec("data.Name")],
+        });
+        var caches = _db.Caches();
+        var plan = CacheStepPlan.Resolve(
+            flow.Label, new FlowCacheSteps { After = new CacheStepEntries { Auto = true } }, await caches.DeclarationAsync("dev"),
+            Samples.WellLogKind, new MappingCacheReads([], [], []), EnrichFiles.KindsOf(flow));
+        Assert.Equal(["LasFile", "WellLog"], plan.After.Select(t => t.TypeName).Order(StringComparer.Ordinal));
+        Assert.True(plan.TakesStepDatasets);
+
+        var keeper = new CacheKeeper(Samples.Engine(ledger, _clock) with { Cache = caches }, NullLogger.Instance);
+        var after = await keeper.AfterAsync(
+            "dev", plan.After, flowId, flow.LedgerName, started, _ => Task.FromResult(Client()),
+            OsduRecordProtocol.DefaultVerifyBatchPath, Guid.NewGuid(), "tests", null, plan.TakesStepDatasets, CancellationToken.None);
+
+        // Each record went into the type of its own kind: the LAS file's dataset among the datasets, the logs among the logs.
+        var cached = (await caches.LoadAsync("dev", after!.Version!))!;
+        var las = Assert.Single(cached.Type("LasFile")!.Items);
+        Assert.Equal((dataset, "log.las"), (las.Id, las.Fields["Name"].Text));
+        var logs = cached.Type("WellLog")!.Items.Select(i => i.Id).ToList();
+        Assert.Equal(tables.Records.Count, logs.Count);
+        Assert.Contains(logId, logs);
+        Assert.DoesNotContain(dataset, logs);
     }
 
     [Fact]
