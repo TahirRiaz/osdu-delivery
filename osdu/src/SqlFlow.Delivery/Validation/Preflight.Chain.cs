@@ -33,7 +33,11 @@ public static partial class Preflight
 
         // A flow supplies one render.parameters block to the whole chain: a value none of its mappings declares would be an
         // override, which no mapping allows (osdu/docs/reference/flow/mapping.md, parameters).
-        var declared = new HashSet<string>(mapping.Parameters.Keys.Concat(steps.SelectMany(s => s.Mapping.Parameters.Keys)), StringComparer.Ordinal);
+        var declared = new HashSet<string>(
+            mapping.Parameters.Keys
+                .Concat(steps.SelectMany(s => s.Mapping?.Parameters.Keys ?? []))
+                .Concat(steps.SelectMany(s => s.Files?.Mapping?.Parameters.Keys ?? [])),
+            StringComparer.Ordinal);
         foreach (var name in flow.Render.Parameters.Keys.Where(name => !declared.Contains(name)).Order(StringComparer.Ordinal))
         {
             issues.Add(ValidationIssue.Error(
@@ -47,34 +51,35 @@ public static partial class Preflight
             written.Add(($"the flow's mapping {mapping.Reference}", write));
         }
 
-        var stepWrites = steps.ToDictionary(s => s.Step.Name, s => Writes(s.Mapping, schema), StringComparer.Ordinal);
+        var stepWrites = steps.ToDictionary(s => s.Step.Name, s => StepWrites(s, schema), StringComparer.Ordinal);
         for (var i = 0; i < steps.Count; i++)
         {
             var step = steps[i];
             var at = $"{where}: enrich.{step.Step.Name}";
             CheckRows(step, at, issues);
             CheckReads(step, i, steps, stepWrites, mapping, schema, at, issues);
+            CheckLink(step, schema, at, issues);
 
             foreach (var write in stepWrites[step.Step.Name])
             {
                 if (write.Path.Count > 1 && write.Path[0] == "data" && preserved.Contains(write.Path[1], StringComparer.Ordinal))
                 {
                     issues.Add(ValidationIssue.Error(
-                        $"{at}: fragment {step.Mapping.Reference} writes {write.Text}, and {KeyPaths.Of(flow).Shared("target.protocolOptions.preserveDataKeys")} carries data.{write.Path[1]} over from the record OSDU holds into every update, in place of what is rendered: what the step adds there would reach a record only when it is created. Take {write.Path[1]} out of preserveDataKeys, or write somewhere else.",
+                        $"{at}: {Writer(step)} writes {write.Text}, and {KeyPaths.Of(flow).Shared("target.protocolOptions.preserveDataKeys")} carries data.{write.Path[1]} over from the record OSDU holds into every update, in place of what is rendered: what the step adds there would reach a record only when it is created. Take {write.Path[1]} out of preserveDataKeys, or write somewhere else.",
                         write.Text));
                 }
 
                 if (written.FirstOrDefault(w => Overlaps(w.Write, write)) is { Writer: not null } earlier)
                 {
                     issues.Add(ValidationIssue.Error(
-                        $"{at}: fragment {step.Mapping.Reference} writes {write.Text}, {Conflict(earlier.Write, write)} {earlier.Writer} writes; a step adds to the record without taking back what the flow's mapping or another step wrote, so two writers share a path only when both add items to one list (osdu/docs/reference/flow/enrich.md, How a fragment adds to the record).",
+                        $"{at}: {Writer(step)} writes {write.Text}, {Conflict(earlier.Write, write)} {earlier.Writer} writes; a step adds to the record without taking back what the flow's mapping or another step wrote, so two writers share a path only when both add items to one list (osdu/docs/reference/flow/enrich.md, How a fragment adds to the record).",
                         write.Text));
                 }
             }
 
             foreach (var write in stepWrites[step.Step.Name])
             {
-                written.Add(($"step '{step.Step.Name}' ({step.Mapping.Reference})", write));
+                written.Add(($"step '{step.Step.Name}' ({step.Mapping?.Reference ?? "its files"})", write));
             }
         }
 
@@ -86,6 +91,52 @@ public static partial class Preflight
     /// a list there (a <c>$forEach</c>, a list of values, or a property the template makes a list), and how a message names it.
     /// </summary>
     private sealed record Write(IReadOnlyList<string> Path, bool List, string Text);
+
+    /// <summary>What a message names a step's writes by: its fragment, or its files for a step that registers files alone.</summary>
+    private static string Writer(ResolvedStep step) => step.Mapping is { } fragment ? $"fragment {fragment.Reference}" : "the step's files";
+
+    /// <summary>
+    /// The paths a step writes into the record: its fragment's, and, for a step that registers files, the list its datasets are
+    /// linked from, which it adds items to.
+    /// </summary>
+    private static List<Write> StepWrites(ResolvedStep step, SchemaSnapshot schema)
+    {
+        var writes = step.Mapping is { } fragment ? Writes(fragment, schema) : [];
+        if (step.Files is { } files && !writes.Any(w => string.Equals(w.Text, files.Files.Link, StringComparison.Ordinal)))
+        {
+            writes.Add(new Write(files.Files.Link.Split('.'), true, files.Files.Link));
+        }
+
+        return writes;
+    }
+
+    /// <summary>
+    /// The path a step's datasets are linked from is a list of the template that takes their ids, or lies in an object the
+    /// template leaves open: the links are added to it as items, <c>{id}:</c>.
+    /// </summary>
+    private static void CheckLink(ResolvedStep step, SchemaSnapshot schema, string at, List<ValidationIssue> issues)
+    {
+        if (step.Files is not { } files)
+        {
+            return;
+        }
+
+        var link = files.Files.Link;
+        if (ParentProperty(schema, link) is not { } property)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{at}: files.link names {link}, and template {schema.Kind} version {schema.Version} declares no {link}; name the list the record keeps its datasets in, such as {EnrichFiles.DefaultLink}.",
+                link));
+            return;
+        }
+
+        if (property.Type is not (SchemaType.Array or SchemaType.Any) || (property.Type == SchemaType.Array && property.ItemScalarType is SchemaType.Object))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{at}: files.link names {link}, which template {schema.Kind} declares as {ShapeOf(property)}; the datasets are listed by their ids, so the link is a list of values, such as {EnrichFiles.DefaultLink}.",
+                link));
+        }
+    }
 
     /// <summary>
     /// The paths <paramref name="mapping"/> writes into the record, each once: every entry of the record's own, and every
@@ -142,6 +193,11 @@ public static partial class Preflight
     /// </summary>
     private static void CheckRows(ResolvedStep step, string at, List<ValidationIssue> issues)
     {
+        if (step.Mapping is null)
+        {
+            return;
+        }
+
         foreach (var repeater in step.Mapping.Entries.Where(e => e.IsRepeater))
         {
             var repeated = repeater.Source!.Child!;
@@ -193,7 +249,8 @@ public static partial class Preflight
         List<ValidationIssue> issues)
     {
         var before = Writes(mapping, schema).Concat(steps.Take(index).SelectMany(s => stepWrites[s.Step.Name])).ToList();
-        foreach (var node in step.Mapping.Entries.SelectMany(e => e.ValueNodes).Where(n => n.Source is { Kind: MappingSourceKind.Base }))
+        var reads = (step.Mapping?.Entries ?? []).Concat(step.Files?.Mapping?.Entries ?? []).SelectMany(e => e.ValueNodes);
+        foreach (var node in reads.Where(n => n.Source is { Kind: MappingSourceKind.Base }))
         {
             var path = node.Source!.BasePath!;
             if (ParentProperty(schema, path) is null)

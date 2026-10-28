@@ -1003,6 +1003,27 @@ public sealed class Planner
             return null;
         }
 
+        // The datasets the record's steps register: each one's files, found where its row says, and their content hash, which
+        // the record's document hash takes in, so new files plan the record again though the document is the same.
+        if (render.Enrichment.Any(c => c.Datasets.Count > 0))
+        {
+            var (withParts, problem) = EnrichParts.Resolve(flow, header.Parameters, record, render, header.Mapping.Steps, state, hasPayload);
+            if (problem is not null)
+            {
+                entries.Add(basis with
+                {
+                    TargetId = state?.ClaimedTargetId ?? render.TargetId,
+                    Reason = problem,
+                    Render = render,
+                    PayloadHash = payloadHash,
+                    PayloadModifiedUtc = payloadModified,
+                });
+                return null;
+            }
+
+            render = withParts;
+        }
+
         var decision = ChangeDetector.DecideWithQueue(state, render.MetadataHash, payloadHash, hasPayload, flow.Change);
         var carriedPayload = false;
         if (decision.DeliverPayload && payloadModified is { } filesModified && ChangeDetector.NewestPayloadModified(state) is { } newestPayload && filesModified < newestPayload)

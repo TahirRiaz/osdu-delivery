@@ -115,6 +115,23 @@ internal static class DeliveryVerbs
 
     private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>What a step renders, as the check lists it: its fragment, and the dataset kind its files are registered as.</summary>
+    private static string StepRenders(Rendering.ResolvedStep step)
+    {
+        var parts = new List<string>();
+        if (step.Mapping is { } fragment)
+        {
+            parts.Add(fragment.Reference);
+        }
+
+        if (step.Files is { } files)
+        {
+            parts.Add($"files as {files.Files.Kind}{(files.Mapping is { } dataset ? $" ({dataset.Reference})" : string.Empty)}, linked from {files.Files.Link}");
+        }
+
+        return string.Join(", ", parts);
+    }
+
     private static JsonArray Dependencies(IReadOnlyList<Model.InterfaceDependency> dependencies, Func<Model.InterfaceDependency, string> other)
         => new(dependencies
             .Select(d => (JsonNode)new JsonObject
@@ -202,17 +219,21 @@ internal static class DeliveryVerbs
         // (osdu/docs/reference/flow/enrich.md).
         var steps = runtime.Mapping.Steps
             .Select(s => (
-                Line: $"    enrich      {s.Step.Name}: {s.Mapping.Reference}"
+                Line: $"    enrich      {s.Step.Name}: {StepRenders(s)}"
                     + (s.Step.ReadsRows ? $", {(s.Step.Rows == Model.EnrichRows.Many ? "many rows" : "one row")} of {flow.Source.Datasets[s.Step.Name].Object}" : ", no rows of its own")
                     + (s.Step.After.Count == 0 ? string.Empty : $", after {string.Join(", ", s.Step.After)}"),
                 Json: (JsonNode)new JsonObject
                 {
                     ["name"] = s.Step.Name,
-                    ["mapping"] = s.Mapping.Reference,
+                    ["mapping"] = s.Mapping?.Reference,
+                    ["files"] = s.Files is { } files
+                        ? new JsonObject { ["kind"] = files.Files.Kind, ["link"] = files.Files.Link, ["mapping"] = files.Mapping?.Reference }
+                        : null,
                     ["dataset"] = s.Step.ReadsRows ? flow.Source.Datasets[s.Step.Name].Object : null,
                     ["rows"] = s.Step.ReadsRows ? (s.Step.Rows == Model.EnrichRows.Many ? "many" : "one") : null,
                     ["after"] = new JsonArray(s.Step.After.Select(a => (JsonNode)JsonValue.Create(a)).ToArray()),
-                    ["reads"] = new JsonArray(s.Mapping.BasePaths().Select(p => (JsonNode)JsonValue.Create(p)).ToArray()),
+                    ["reads"] = new JsonArray((s.Mapping?.BasePaths() ?? []).Concat(s.Files?.Mapping?.BasePaths() ?? []).Distinct(StringComparer.Ordinal)
+                        .Select(p => (JsonNode)JsonValue.Create(p)).ToArray()),
                 }))
             .ToList();
         if (steps.Count > 0)

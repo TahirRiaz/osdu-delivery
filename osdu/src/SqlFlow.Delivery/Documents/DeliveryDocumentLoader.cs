@@ -770,6 +770,13 @@ internal static partial class FlowMapper
         }
 
         var options = MapOptions(target.ProtocolOptions, source);
+        if (y.Enrich is not null && y.Enrich.Values.Any(s => s?.Files is not null)
+            && DeliveryProtocols.ReachesDdms(protocol) && paths.Interface is null && string.IsNullOrWhiteSpace(options.DdmsRoot) && target.Ddms is null)
+        {
+            throw new FlowValidationException(
+                $"{source}: {paths.Enrich} registers files through the Dataset service, which a flow reaches under its endpoint, and this flow's endpoint is the DDMS itself (no target.protocolOptions.ddmsRoot, no target.ddms). Make the endpoint the platform and name the DDMS under it with ddmsRoot, or register the files elsewhere.");
+        }
+
         var mapping = Require(render.Mapping, paths.Mapping, source);
         if (!mapping.Contains('@', StringComparison.Ordinal))
         {
@@ -905,8 +912,14 @@ internal static partial class FlowMapper
             }
 
             var y = written ?? throw Missing(step + ".mapping", source);
-            var mapping = Require(y.Mapping, step + ".mapping", source);
-            if (!mapping.Contains('@', StringComparison.Ordinal))
+            var mapping = Optional(y.Mapping);
+            if (mapping is null && y.Files is null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {step} declares neither a mapping nor files, so it adds nothing to the record; pin the fragment it renders under {step}.mapping, or declare the files it registers under {step}.files.");
+            }
+
+            if (mapping is not null && !mapping.Contains('@', StringComparison.Ordinal))
             {
                 throw new FlowValidationException($"{source}: {step}.mapping '{mapping}' must be pinned as 'Name@version'; floating references are not allowed.");
             }
@@ -936,11 +949,24 @@ internal static partial class FlowMapper
                     $"{source}: {step}.rows says how many rows of the step's dataset one record takes, and the step declares no dataset; declare {step}.dataset, or remove rows.");
             }
 
+            EnrichFiles? files = null;
+            if (y.Files is { } declaredFiles)
+            {
+                if (y.Dataset is null)
+                {
+                    throw new FlowValidationException(
+                        $"{source}: {step}.files registers the files each of the step's rows names, and the step declares no dataset, so it has no row to name any; declare {step}.dataset.");
+                }
+
+                files = MapStepFiles(declaredFiles, rows, step + ".files", source);
+            }
+
             steps.Add(new EnrichStep
             {
                 Name = name,
                 Description = string.IsNullOrWhiteSpace(y.Description) ? null : y.Description.Trim(),
                 Mapping = mapping,
+                Files = files,
                 After = (y.After ?? []).Select(a => a?.Trim() ?? string.Empty).ToList(),
                 ReadsRows = y.Dataset is not null,
                 Rows = rows,
@@ -948,6 +974,94 @@ internal static partial class FlowMapper
         }
 
         return (OrderSteps(steps, at, source), datasets);
+    }
+
+    /// <summary>
+    /// The files a step registers (osdu/docs/reference/flow/enrich-files.md): where each row's files are and
+    /// the column holding their content hash, which decides when they go again; the dataset kind they become, one the Dataset
+    /// service registers; the columns telling a row's dataset from the step's others', which a step taking many rows needs and
+    /// one taking one row does not; the fragment rendered into each dataset record; and the record's path the datasets are
+    /// listed at.
+    /// </summary>
+    private static EnrichFiles MapStepFiles(EnrichFilesYaml declared, EnrichRows rows, string at, string source)
+    {
+        var root = Require(declared.Root, at + ".root", source);
+        var location = Require(declared.LocationColumn, at + ".locationColumn", source);
+        var hash = Optional(declared.HashColumn) ?? throw new FlowValidationException(
+            $"{source}: {at}.hashColumn names the column holding the content hash of each row's files, which says when they are sent again; a step's files go again only when it moves.");
+        CheckColumn(location, at + ".locationColumn", source);
+        CheckColumn(hash, at + ".hashColumn", source);
+
+        var kind = Optional(declared.Kind) ?? EnrichFiles.DefaultKind;
+        if (!IsRecordKind(kind))
+        {
+            throw new FlowValidationException($"{source}: {at}.kind '{kind}' must be 'authority:source:entityType:major.minor.patch', as the storage service requires of every record it accepts.");
+        }
+
+        var entityType = Identity.TargetId.EntityTypeFromKind(kind);
+        if (!Engine.Protocols.DatasetService.IsDatasetType(entityType))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.kind '{kind}' is not a dataset kind; a step's files are registered as a dataset record, such as {EnrichFiles.DefaultKind}, or osdu:wks:dataset--FileCollection.Generic:1.0.0 for a row naming several files.");
+        }
+
+        if (Engine.EdsRecordRules.IsProxyDataset(entityType))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.kind '{kind}' is an External Data Services proxy dataset, which points at data held elsewhere and registers no file of its own.");
+        }
+
+        var key = (declared.Key ?? []).Select(c => c?.Trim() ?? string.Empty).ToList();
+        foreach (var column in key)
+        {
+            CheckColumn(column, at + ".key", source);
+        }
+
+        if (key.Distinct(StringComparer.OrdinalIgnoreCase).Count() != key.Count)
+        {
+            throw new FlowValidationException($"{source}: {at}.key names a column more than once.");
+        }
+
+        if (rows == EnrichRows.Many && key.Count == 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.key names the columns telling each row's dataset from the step's other rows' (such as key: [file_name]), and a step taking many rows needs them, since every row registers a dataset of its own under an id they make.");
+        }
+
+        if (rows == EnrichRows.One && key.Count > 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.key tells the datasets of a step's rows apart, and the step takes one row per record (rows: one), whose one dataset the step's name names; remove {at}.key, or declare rows: many.");
+        }
+
+        var mapping = Optional(declared.Mapping);
+        if (mapping is not null && !mapping.Contains('@', StringComparison.Ordinal))
+        {
+            throw new FlowValidationException($"{source}: {at}.mapping '{mapping}' must be pinned as 'Name@version'; floating references are not allowed.");
+        }
+
+        var link = Optional(declared.Link) ?? EnrichFiles.DefaultLink;
+        if (!link.StartsWith("data.", StringComparison.Ordinal) || !MappingMapper.ParentPathPattern().IsMatch(link))
+        {
+            throw new FlowValidationException(
+                $"{source}: {at}.link is the path of the record's data the datasets are listed at, its property names joined by dots, such as {EnrichFiles.DefaultLink}; '{link}' is not one.");
+        }
+
+        return new EnrichFiles
+        {
+            Payload = new FlowPayload
+            {
+                Root = root,
+                LocationColumn = location,
+                Pattern = Optional(declared.Pattern) ?? FlowPayload.DefaultPattern,
+                HashColumn = hash,
+            },
+            Kind = kind,
+            Key = key,
+            Mapping = mapping,
+            Link = link,
+            ContentType = Optional(declared.ContentType),
+        };
     }
 
     /// <summary>

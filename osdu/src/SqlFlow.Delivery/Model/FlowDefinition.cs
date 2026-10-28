@@ -409,8 +409,17 @@ public sealed record EnrichStep
 
     public string? Description { get; init; }
 
-    /// <summary>The fragment the step renders, pinned as <c>Name@version</c>: a mapping whose header says <c>fragment: true</c>.</summary>
-    public required string Mapping { get; init; }
+    /// <summary>
+    /// The fragment the step renders, pinned as <c>Name@version</c>: a mapping whose header says <c>fragment: true</c>. Null
+    /// for a step that registers files alone (<see cref="Files"/>), which adds only the links to them.
+    /// </summary>
+    public string? Mapping { get; init; }
+
+    /// <summary>
+    /// The files each of the step's rows names, registered as a dataset record of their own and linked from the record
+    /// (<c>enrich.&lt;name&gt;.files</c>); null for a step that registers none.
+    /// </summary>
+    public EnrichFiles? Files { get; init; }
 
     /// <summary>
     /// The steps this one renders after, beside the order the document lists them in: those whose paths it reads with
@@ -427,6 +436,51 @@ public sealed record EnrichStep
 
     /// <summary>How many rows of its dataset one record takes: one, read as the fragment's row, or many, read with <c>$forEach</c>.</summary>
     public EnrichRows Rows { get; init; } = EnrichRows.One;
+}
+
+/// <summary>
+/// The files a step of <c>enrich:</c> registers (osdu/docs/reference/flow/enrich-files.md): for each of the
+/// step's rows, the files its row names are uploaded through the Dataset service and registered as one dataset record, under
+/// an id made from the record's own id and the step (and, for a step taking many rows, the row's key), so the same row lands
+/// on the same dataset on every delivery and the record names it before anything is sent.
+/// </summary>
+public sealed record EnrichFiles
+{
+    /// <summary>The kind every dataset is registered as, unless the step names another.</summary>
+    public const string DefaultKind = "osdu:wks:dataset--File.Generic:1.0.0";
+
+    /// <summary>Where the record lists its datasets, unless the step names another path.</summary>
+    public const string DefaultLink = "data.Datasets";
+
+    /// <summary>
+    /// What every dataset id a step derives starts its suffix with, before the step's name: a dot, which neither the dataset a
+    /// record's own files go in (<c>files</c>) nor a workflow input's name holds, so no other route derives the same id.
+    /// </summary>
+    public const string SuffixPrefix = "enrich.";
+
+    /// <summary>Where each row's files are: the root, the row's column naming its folder, the pattern, and the column holding their content hash.</summary>
+    public required FlowPayload Payload { get; init; }
+
+    /// <summary>The dataset kind each row's files are registered as: one file for a <c>dataset--File.*</c> kind, several for a <c>dataset--FileCollection.*</c>.</summary>
+    public string Kind { get; init; } = DefaultKind;
+
+    /// <summary>
+    /// The columns of a row that tell its dataset from the step's other rows' (<c>files.key</c>): required when the step takes
+    /// many rows, and none when it takes one, whose one dataset the step's name alone names.
+    /// </summary>
+    public IReadOnlyList<string> Key { get; init; } = [];
+
+    /// <summary>
+    /// A fragment over the dataset kind (<c>files.mapping</c>, <c>Name@version</c>) rendered from the row into each dataset
+    /// record's data, beside the file properties the registration writes; null for a dataset record of those alone.
+    /// </summary>
+    public string? Mapping { get; init; }
+
+    /// <summary>The path of the record the datasets are listed at, as <c>{id}:</c>; <c>data.Datasets</c> unless named.</summary>
+    public string Link { get; init; } = DefaultLink;
+
+    /// <summary>The media type the files are uploaded as; the flow's <c>filesContentType</c>, else <c>application/octet-stream</c>, unless named.</summary>
+    public string? ContentType { get; init; }
 }
 
 /// <summary>How many rows of its dataset a step of <c>enrich:</c> takes for one record.</summary>
