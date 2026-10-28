@@ -648,7 +648,7 @@
       "path": "enrich.<name>.files.link",
       "type": "string",
       "required": false,
-      "description": "The record's list the datasets are linked from, each as its id with a trailing colon, added after the items the record holds: a list of values the template declares, or a path under an object it leaves open.",
+      "description": "The record's list the datasets are linked from, each as its id with a trailing colon, added after the items the record holds: a list of values the template declares, or a path under an object it leaves open. It may be a list the flow preserves (preserveDataKeys), which an update merges: OSDU's items stay, the step's links are added and those it no longer renders are taken off; a path inside a preserved key is refused.",
       "default": "data.Datasets"
     },
     {
@@ -1258,7 +1258,7 @@
       "path": "interfaces.<name>.protocolOptions.preserveDataKeys",
       "type": "list",
       "required": false,
-      "description": "Data keys other systems write (`Datasets`, `DDMSDatasets`, `ExtensionProperties`), read from the stored record and carried into every update. Empty, the rendered document replaces the whole data block. Set here, it replaces the source's list whole for this interface."
+      "description": "Data keys other systems write (`Datasets`, `DDMSDatasets`, `ExtensionProperties`), read from the stored record and carried into every update. A list a step of enrich: links its datasets in (files.link) is merged instead: OSDU's items stay, the step's links are added and those it no longer renders are taken off. Empty, the rendered document replaces the whole data block. Set here, it replaces the source's list whole for this interface."
     },
     {
       "path": "interfaces.<name>.protocolOptions.preserveDataKeys[]",
@@ -2656,7 +2656,7 @@
       "path": "interfaces.<name>.enrich.<name>.files.link",
       "type": "string",
       "required": false,
-      "description": "The record's list the datasets are linked from, each as its id with a trailing colon, added after the items the record holds: a list of values the template declares, or a path under an object it leaves open.",
+      "description": "The record's list the datasets are linked from, each as its id with a trailing colon, added after the items the record holds: a list of values the template declares, or a path under an object it leaves open. It may be a list the flow preserves (preserveDataKeys), which an update merges: OSDU's items stay, the step's links are added and those it no longer renders are taken off; a path inside a preserved key is refused.",
       "default": "data.Datasets"
     },
     {
@@ -4141,7 +4141,7 @@
       "path": "target.protocolOptions.preserveDataKeys",
       "type": "list",
       "required": false,
-      "description": "Data keys other systems write (`Datasets`, `DDMSDatasets`, `ExtensionProperties`), read from the stored record and carried into every update. Empty, the rendered document replaces the whole data block."
+      "description": "Data keys other systems write (`Datasets`, `DDMSDatasets`, `ExtensionProperties`), read from the stored record and carried into every update. A list a step of enrich: links its datasets in (files.link) is merged instead: OSDU's items stay, the step's links are added and those it no longer renders are taken off. Empty, the rendered document replaces the whole data block."
     },
     {
       "path": "target.protocolOptions.preserveDataKeys[]",
