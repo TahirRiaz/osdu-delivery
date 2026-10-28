@@ -38,7 +38,19 @@ public sealed record ResolvedMapping(
     /// Renders one record as a delivery sends it: through the flow's mapping, then every step of its chain over it. This is
     /// the one render a plan, a preview and an intake make, so what a preview shows is what a delivery sends.
     /// </summary>
-    public RenderResult Render(SourceRecord record) => Chain is { } chain ? chain.Render(record) : Renderer.Render(record);
+    public RenderResult Render(SourceRecord record) => Render(record, ChainInputs.None);
+
+    /// <summary>
+    /// The record as it is sent, with what its last delivery kept of the steps set aside on their holds and the steps the plan
+    /// holds whatever they render (<paramref name="inputs"/>), which only a flow with steps reads.
+    /// </summary>
+    public RenderResult Render(SourceRecord record, ChainInputs inputs) => Chain is { } chain ? chain.Render(record, inputs) : Renderer.Render(record);
+
+    /// <summary>
+    /// True when a record's steps leave work for its delivery beyond the document (osdu/docs/reference/flow/enrich-files.md,
+    /// osdu/docs/reference/flow/enrich-holds.md): datasets to register, or contributions to keep for a step set aside on its holds.
+    /// </summary>
+    public bool HasStepWork => Steps.Any(s => s.Step.Files is not null || s.Step.OnHold == EnrichHold.Step);
 
     /// <summary>
     /// How many rounds of questions a batch of the flow's records can need: the mapping's, then each step's after it, since a
@@ -241,7 +253,7 @@ public sealed class RenderResolver
     {
         var step = fragments.Step;
         var at = $"{where}: enrich.{step.Name}";
-        RenderStep renderStep = new(step.Name, null, null, schema.Version, new Dictionary<string, string>(StringComparer.Ordinal));
+        RenderStep renderStep = new(step.Name, null, null, schema.Version, new Dictionary<string, string>(StringComparer.Ordinal)) { SetAsideOnHold = step.OnHold == EnrichHold.Step };
         MappingRenderer? renderer = null;
         if (fragments.Fragment is { } fragment)
         {
@@ -266,7 +278,10 @@ public sealed class RenderResolver
                 return null;
             }
 
-            renderStep = new RenderStep(step.Name, fragment.Reference, fragment.Fingerprint, filled.Version, await ParametersAsync(flow, fragment, ct).ConfigureAwait(false));
+            renderStep = new RenderStep(step.Name, fragment.Reference, fragment.Fingerprint, filled.Version, await ParametersAsync(flow, fragment, ct).ConfigureAwait(false))
+            {
+                SetAsideOnHold = step.OnHold == EnrichHold.Step,
+            };
             renderer = await FragmentRendererAsync(fragment, filled, references, context.ForStep(renderStep), $"enrich.{step.Name}", issues, ct).ConfigureAwait(false);
             if (renderer is null)
             {

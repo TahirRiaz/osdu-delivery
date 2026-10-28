@@ -420,7 +420,7 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
         /// written yet, OSDU lost it, or it was asked to be sent again.
         /// </summary>
         public bool WritesRecord
-            => Work.StepParts.Count == 0
+            => (Work.StepParts.Count == 0 && Work.StepKeptDatasets.Count == 0)
                 || !Work.StepDocumentUnchanged
                 || Work.DeliverPayload
                 || Work.ExistingVersion is null
@@ -429,11 +429,11 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
 
         public DeliveryOutcome Outcome()
         {
-            if (Work.StepParts.Count == 0)
+            if (Work.StepParts.Count == 0 && Work.StepKeptDatasets.Count == 0)
             {
                 var outcome = Written ?? DeliveryOutcome.Failed(Failure ?? new DeliveryException("the record was not written"));
-                var linked = EnrichParts.Datasets(Work.TargetState);
-                if (!outcome.Succeeded || linked.Count == 0)
+                var dropped = EnrichParts.Datasets(Work.TargetState);
+                if (!outcome.Succeeded || dropped.Count == 0)
                 {
                     return outcome;
                 }
@@ -442,7 +442,7 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
                 return outcome with
                 {
                     Returned = new Dictionary<string, string>(outcome.Returned, StringComparer.Ordinal) { [EnrichParts.DatasetsValue] = EnrichParts.DatasetsText([]) },
-                    Superseded = [.. outcome.Superseded, .. linked],
+                    Superseded = [.. outcome.Superseded, .. dropped],
                 };
             }
 
@@ -457,9 +457,11 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
                 return DeliveryOutcome.Failed(writeFailure, steps);
             }
 
+            // The record links the datasets registered now and those of the steps set aside, which an earlier delivery registered.
+            var linked = Work.StepParts.Select(p => p.Part.DatasetId).Concat(Work.StepKeptDatasets).ToList();
             var returned = new Dictionary<string, string>(Written?.Returned ?? new Dictionary<string, string>(), StringComparer.Ordinal)
             {
-                [EnrichParts.DatasetsValue] = EnrichParts.DatasetsText(Work.StepParts.Select(p => p.Part.DatasetId)),
+                [EnrichParts.DatasetsValue] = EnrichParts.DatasetsText(linked),
                 [EnrichParts.DocumentValue] = DocumentHash,
             };
             foreach (var part in Work.StepParts.Select(p => p.Part))
@@ -469,7 +471,7 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
             }
 
             // A dataset the record no longer links stays live, since earlier versions of the record name it: superseded, not removed.
-            var current = Work.StepParts.Select(p => p.Part.DatasetId).ToHashSet(StringComparer.Ordinal);
+            var current = linked.ToHashSet(StringComparer.Ordinal);
             var superseded = EnrichParts.Datasets(Work.TargetState).Where(id => !current.Contains(id)).ToList();
             var registered = Registered.Count;
             if (Written is { } written)

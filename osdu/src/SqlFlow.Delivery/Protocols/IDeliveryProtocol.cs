@@ -109,6 +109,18 @@ public sealed record DeliveryWork
     public bool StepPartsForced { get; init; }
 
     /// <summary>
+    /// The datasets of the steps set aside on their holds (osdu/docs/reference/flow/enrich-holds.md), which an earlier delivery
+    /// registered and the document still links: the route keeps them listed as the record's, neither sent nor superseded.
+    /// </summary>
+    public IReadOnlyList<string> StepKeptDatasets { get; init; } = [];
+
+    /// <summary>
+    /// What each step set aside on its holds composed into this document, by target state key (<c>enrich.step.&lt;name&gt;</c>):
+    /// the worker keeps it with the record once the delivery succeeds, for a later render the step holds in.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> StepKeep { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
     /// Whether this delivery sends <paramref name="part"/>: the payload is due, and the part is forced or its content
     /// hash differs from the one the record last delivered it with.
     /// </summary>

@@ -22,6 +22,10 @@ describe("a step's outcome", () => {
     assert.equal(enrichOutcomeText({ effects: [], holds: ["a", "b"] }), "holds the record (2 reasons)");
     assert.equal(enrichOutcomeText({ effects: [], holds: [], notRendered: true }), "not rendered: a step before it holds the record or waits for the platform");
   });
+
+  it("says a step set aside on its hold keeps what it last added, and does not hold the record", () => {
+    assert.equal(enrichOutcomeText({ rows: 1, effects: [{}], holds: ["enrich.a: no file"], setAside: true }), "held, set aside: keeps what it last added");
+  });
 });
 
 describe("a value a step wrote", () => {

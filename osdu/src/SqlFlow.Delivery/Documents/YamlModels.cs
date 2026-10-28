@@ -84,6 +84,9 @@ internal sealed class EnrichStepYaml
 
     /// <summary>The files each of the step's rows names, registered as a dataset record of their own and linked from the record.</summary>
     public EnrichFilesYaml? Files { get; set; }
+
+    /// <summary>What the step's hold does: <c>record</c> (the default) holds the record, <c>step</c> sets the step aside.</summary>
+    public string? OnHold { get; set; }
 }
 
 /// <summary>The files a step registers (osdu/docs/reference/flow/enrich-files.md): where each row's files are, and what they become.</summary>
