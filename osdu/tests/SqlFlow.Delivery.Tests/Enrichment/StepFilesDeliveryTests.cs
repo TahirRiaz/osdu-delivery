@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
@@ -19,7 +20,9 @@ namespace SqlFlow.Delivery.Tests;
 /// flow's own route counting the records it writes, and a fake platform serving the Dataset service. The first run registers
 /// each log's dataset and writes the log naming it; new files register a new version of the same dataset and leave the log as
 /// OSDU holds it; a change to the log writes it once and registers nothing; nothing changed sends nothing; and a log whose LAS
-/// file row goes is written once without the link, the dataset left live.
+/// file row goes is written once without the link, the dataset left live. On a Wellbore DDMS flow that carries the log's
+/// dataset list over from the record OSDU holds, an update keeps what another system listed there and adds or takes off the
+/// step's link alone.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 [Trait("Category", "Integration")]
@@ -27,6 +30,9 @@ namespace SqlFlow.Delivery.Tests;
 public sealed class StepFilesDeliveryTests : IDisposable
 {
     private const string Register = "/api/dataset/v1/registerDataset";
+
+    /// <summary>A Wellbore DDMS flow's options carrying the log's dataset lists over from the record OSDU holds, as the well log estate's delivery does.</summary>
+    private static readonly ProtocolOptions PreservingDdms = new() { DdmsRoot = FakeOsduPlatform.DdmsRoot, PreserveDataKeys = ["Datasets", "DDMSDatasets"] };
 
     private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
@@ -84,20 +90,37 @@ public sealed class StepFilesDeliveryTests : IDisposable
         };
     }
 
+    /// <summary>The flow over the Wellbore DDMS, carrying the log's dataset lists over from the record OSDU holds.</summary>
+    private FlowDefinition PreservingDdmsFlow()
+    {
+        var flow = Flow();
+        return flow with { Target = flow.Target with { Protocol = DeliveryProtocol.Ddms, ProtocolOptions = PreservingDdms } };
+    }
+
     /// <summary>One deliver run as the executor makes it: the flow's own route counting what it writes, wrapped as a flow with step files is.</summary>
     private async Task<(FakeProtocol Written, OsduLedger Ledger, Guid FlowId, RunResult Run)> DeliverAsync(MemoryIngestionTables tables)
     {
+        var written = new FakeProtocol();
+        var (ledger, flowId, run) = await RunAsync(tables, Flow(), _ => written);
+        return (written, ledger, flowId, run);
+    }
+
+    /// <summary>
+    /// One deliver run of <paramref name="flow"/> as the executor makes it, the flow's own route made by <paramref name="inner"/>
+    /// over the platform and wrapped as a flow with step files is.
+    /// </summary>
+    private async Task<(OsduLedger Ledger, Guid FlowId, RunResult Run)> RunAsync(MemoryIngestionTables tables, FlowDefinition flow, Func<OsduHttpClient, IDeliveryProtocol> inner)
+    {
         _clock.Advance(TimeSpan.FromSeconds(1));
         var ledger = _db.Ledger(_clock);
-        var written = new FakeProtocol();
         var client = new OsduHttpClient(
             _http, FakeOsduPlatform.Endpoint, new TargetAuth { Type = TargetAuthType.None },
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
         var options = new ProtocolOptions { UploadHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["x-ms-blob-type"] = "BlockBlob" } };
-        var route = new EnrichPartsProtocol(written, client, options);
+        var route = new EnrichPartsProtocol(inner(client), client, options);
         var templates = new MemoryTemplates(Samples.TemplateKinds().Select(Samples.SampleTemplate));
         var engine = Samples.Engine(ledger, _clock, templates: templates, sources: tables) with { Protocols = new FakeProtocolFactory(route) };
-        var runtime = await FlowRuntime.CreateAsync(engine, Flow(), SampleEstate.Values);
+        var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
         await ledger.RegisterAsync(runtime.Flow);
 
         var selection = SourceSelection.Incremental(_readThrough);
@@ -107,7 +130,7 @@ public sealed class StepFilesDeliveryTests : IDisposable
         runtime.Selection = selection;
         var run = await runtime.RunAsync(force: false);
         _readThrough = Now;
-        return (written, ledger, runtime.Flow.Id, run);
+        return (ledger, runtime.Flow.Id, run);
     }
 
     /// <summary>Gives a log its LAS file, in a folder of its own with the content given, or takes its row away (null).</summary>
@@ -204,6 +227,45 @@ public sealed class StepFilesDeliveryTests : IDisposable
         Assert.DoesNotContain(dataset, _platform.Removed);
         record = (await ledger.GetRecordAsync(flowId, SampleEstate.Key(0)))!;
         Assert.Empty(EnrichParts.Datasets(JsonMerge.ToValues(record.TargetStateJson)));
+    }
+
+    [Fact]
+    public async Task On_a_DDMS_flow_preserving_its_dataset_list_an_update_keeps_what_OSDU_lists_and_adds_or_takes_off_the_steps_link_alone()
+    {
+        var tables = await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
+        LasFile(tables.Records[0], "~Version Information A");
+        IDeliveryProtocol Ddms(OsduHttpClient client) => new OsduDdmsProtocol(client, PreservingDdms, NullLogger.Instance);
+
+        // 1. The log is created through the DDMS naming its dataset: OSDU holds no list of it to carry over yet.
+        var (ledger, flowId, run) = await RunAsync(tables, PreservingDdmsFlow(), Ddms);
+        Assert.Equal(tables.Records.Count, run.Work.Delivered);
+        var logId = (await ledger.GetRecordAsync(flowId, SampleEstate.Key(0)))!.TargetId!;
+        var link = EnrichParts.Link(DatasetOf(logId));
+        Assert.Equal([link], Links(_platform.Records[logId]));
+
+        // 2. Another system lists a dataset of its own on the log, ahead of the step's, and on a log the step links nothing in.
+        const string foreign = "dev:dataset--File.Generic:from-elsewhere:";
+        _platform.Records[logId]["data"]!["Datasets"] = new JsonArray(foreign, link);
+        var otherId = (await ledger.GetRecordAsync(flowId, SampleEstate.Key(1)))!.TargetId!;
+        _platform.Records[otherId]["data"]!["Datasets"] = new JsonArray(foreign);
+
+        // 3. Both logs change: each update keeps the list as OSDU holds it, the step's link once.
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        SampleEstate.Change(tables.Records[0], "log_run", "RUN-CHANGED", Now);
+        SampleEstate.Change(tables.Records[1], "log_run", "RUN-CHANGED", Now);
+        var mark = _platform.Calls.Count;
+        (_, _, run) = await RunAsync(tables, PreservingDdmsFlow(), Ddms);
+        Assert.Equal(2, run.Work.Delivered);
+        Assert.Equal(0, Registrations(mark));
+        Assert.Equal([foreign, link], Links(_platform.Records[logId]));
+        Assert.Equal([foreign], Links(_platform.Records[otherId]));
+
+        // 4. The log's LAS file row goes: the update takes the step's link off and keeps the other system's, the dataset left live.
+        LasFile(tables.Records[0], null);
+        (_, _, run) = await RunAsync(tables, PreservingDdmsFlow(), Ddms);
+        Assert.Equal(1, run.Work.Delivered);
+        Assert.Equal([foreign], Links(_platform.Records[logId]));
+        Assert.DoesNotContain(DatasetOf(logId), _platform.Removed);
     }
 
     [Fact]
