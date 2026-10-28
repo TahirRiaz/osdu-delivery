@@ -23,6 +23,7 @@ keywords:
 yamlPath: "enrich (flowType: delivery), interfaces.<name>.enrich"
 related:
   - delivery-flow-enrich-files
+  - delivery-flow-enrich-holds
   - delivery-flow-mapping-fragment
   - delivery-flow-delivery
   - delivery-flow-interfaces
@@ -134,6 +135,7 @@ document with interfaces it is refused.
 | `enrich.<name>.dataset` | map | no | The step's rows: `object`, `join`, `orderBy` and `maxRowsPerRecord`, as a child dataset declares them ([delivery flow](delivery.md#source)). `join` covers every key column of the record table. Left out, the step reads no rows and renders from what the record holds and its parameters. |
 | `enrich.<name>.rows` | string | no | `one` (the default) or `many`: how many of the step's rows one record takes. Only with `dataset`. |
 | `enrich.<name>.after` | list | no | The steps this one renders after, beside the order the document lists them in. |
+| `enrich.<name>.onHold` | string | no | `record` (the default) holds the record when the step holds; `step` sets the step aside, the record going ahead with what the step added to its last delivery ([a step set aside on its hold](enrich-holds.md)). |
 
 `render.parameters` supplies every mapping of the chain: each mapping, the flow's and every fragment, takes the values it
 declares, and a value none of them declares is refused.
@@ -161,7 +163,8 @@ twice, and steps waiting for each other are refused when the document loads.
 A record the flow's mapping holds is held as it always was, and its steps do not render. A step that holds (a required
 value empty, a value its template refuses, several rows under `rows: one`) or that would change what the record holds
 holds the record, its reasons named `enrich.<step>: ...`, and the steps after it do not render, so every reason given is a
-true one. OSDU keeps the version it has until the record renders whole.
+true one. OSDU keeps the version it has until the record renders whole. A step with `onHold: step` is set aside instead,
+and the record goes ahead with what the step added to its last delivery ([a step set aside on its hold](enrich-holds.md)).
 
 ## One change, one write
 
@@ -210,6 +213,7 @@ Before anything renders, every run and `sqlflow check` refuse a chain when:
 ## Related
 
 - [Files a step registers](enrich-files.md): datasets a step adds to each record, their ids, and what a change sends.
+- [A step set aside on its hold](enrich-holds.md): a step that holds without holding the record.
 - [Fragments](mapping-fragment.md): the mapping a step renders, `$base`, and how a fragment adds to the record.
 - [Delivery flow](delivery.md): the source, its child datasets and the target the record goes to.
 - [A source with interfaces](interfaces.md): an interface's own `enrich`.
