@@ -198,7 +198,8 @@ Before anything renders, every run and `sqlflow check` refuse a chain when:
 - a step writes what the flow's mapping or another step writes, unless both add items to one list, or writes inside what
   another writes whole;
 - a step writes under a key the flow preserves (`target.protocolOptions.preserveDataKeys`), which every update carries over
-  from the record OSDU holds;
+  from the record OSDU holds, unless it is a step's files linked from the preserved list itself, which an update merges
+  ([preserved keys](enrich-files.md#preserved-keys));
 - a step reads with `$base` what neither the flow's mapping nor a step before it writes, what the step itself writes, or what
   a later step writes (`... which step 'inner' writes after this one renders; name it under enrich.copy.after ...`);
 - a fragment reads a column its step does not have: any column when the step declares no dataset, a column outside its
