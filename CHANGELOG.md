@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new version of the same dataset and leave the record as OSDU holds it; a change to the record writes it once and
   registers nothing that did not change ([files a step registers](osdu/docs/reference/flow/enrich-files.md)).
 
+- **A step that holds can be set aside.** A step of `enrich:` with `onHold: step` that cannot render for a record no
+  longer holds it: the record goes ahead with what the step added to its last delivery, and the flow's Records tab
+  (**Step held**), its counts and the Delivery page list the records a step holds in until it renders again
+  ([a step set aside on its hold](osdu/docs/reference/flow/enrich-holds.md)).
+
 - **Export records to Excel.** A delivery flow's Records tab has **Export**, which downloads every record its filter
   matches (up to 25,000) as an Excel workbook to work through where the records come from: a row for each record with its
   status, issue and problem, the file and row it came from, its key's parts and where it landed in OSDU, and an About sheet
