@@ -253,7 +253,12 @@ public sealed class RenderResolver
     {
         var step = fragments.Step;
         var at = $"{where}: enrich.{step.Name}";
-        RenderStep renderStep = new(step.Name, null, null, schema.Version, new Dictionary<string, string>(StringComparer.Ordinal)) { SetAsideOnHold = step.OnHold == EnrichHold.Step };
+        RenderStep renderStep = new(step.Name, null, null, schema.Version, new Dictionary<string, string>(StringComparer.Ordinal))
+        {
+            SetAsideOnHold = step.OnHold == EnrichHold.Step,
+            SuppliesBulk = step.Bulk is not null,
+            RunsWorkflow = step.Workflow is not null,
+        };
         MappingRenderer? renderer = null;
         if (fragments.Fragment is { } fragment)
         {
@@ -281,6 +286,8 @@ public sealed class RenderResolver
             renderStep = new RenderStep(step.Name, fragment.Reference, fragment.Fingerprint, filled.Version, await ParametersAsync(flow, fragment, ct).ConfigureAwait(false))
             {
                 SetAsideOnHold = step.OnHold == EnrichHold.Step,
+                SuppliesBulk = step.Bulk is not null,
+                RunsWorkflow = step.Workflow is not null,
             };
             renderer = await FragmentRendererAsync(fragment, filled, references, context.ForStep(renderStep), $"enrich.{step.Name}", issues, ct).ConfigureAwait(false);
             if (renderer is null)

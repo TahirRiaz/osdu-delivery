@@ -1351,6 +1351,8 @@ export interface DeliveryPreviewEnrichStep {
   setAside?: boolean;
   /** For a step set aside, the datasets its last delivery registered, which the record keeps linking. */
   keptDatasets?: string[];
+  /** What the step does beside a fragment: files it registers, the record's bulk data, a workflow it runs. Absent from an older control plane. */
+  supplies?: ("files" | "bulk" | "workflow")[];
 }
 
 /** One dataset a step registers for the record: its id, made from the record's id and the step, its kind and its row. */

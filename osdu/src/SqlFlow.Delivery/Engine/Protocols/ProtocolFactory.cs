@@ -63,9 +63,25 @@ public static class ProtocolFactory
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
 
-        // A flow whose enrich: steps register files registers each record's step datasets before its own route writes the record.
-        return flow.Enrich?.Any(s => s.Files is not null) == true
-            ? new EnrichPartsProtocol(route, client, options, ceiling)
+        // A flow whose enrich: steps register files registers each record's step datasets before its own route writes the record,
+        // and one whose steps run workflows runs them over each record once it landed, each through the workflow route itself.
+        var workflows = (flow.Enrich ?? [])
+            .Where(s => s.Workflow is not null)
+            .Select(s => new StepWorkflow(
+                s.Name,
+                s.Workflow!.RunWhen,
+                s.Files is not null,
+                new OsduWorkflowProtocol(
+                    client,
+                    options,
+                    s.Workflow,
+                    loggers.CreateLogger<OsduWorkflowProtocol>(),
+                    secrets,
+                    flow.Target.Airflow is { } stepAirflow ? new Workflows.AirflowXCom(http, stepAirflow, secrets) : new Workflows.LatestInfoXCom(client),
+                    ceiling)))
+            .ToList();
+        return flow.Enrich?.Any(s => s.Files is not null) == true || workflows.Count > 0
+            ? new EnrichPartsProtocol(route, client, options, ceiling, workflows: workflows)
             : route;
     }
 

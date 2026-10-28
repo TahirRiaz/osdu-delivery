@@ -29,7 +29,7 @@ import {
   type DeliveryRecordPreview,
 } from "../../api/delivery";
 import { AssertionFindingsView } from "./AssertionFindingsView";
-import { effectValueText, enrichOutcomeText } from "./enrichSteps";
+import { effectValueText, enrichOutcomeText, suppliesText } from "./enrichSteps";
 import { RecordStatusBadge } from "./DeliveryBadges";
 import { RecordName } from "./RecordName";
 import { downloadJson, envelopeFirst, fileNameOf, formatBytes } from "./osduDocument";
@@ -201,9 +201,21 @@ const enrichColumns: Column<DeliveryPreviewEnrichStep>[] = [
   {
     id: "mapping",
     header: "Fragment",
-    render: (row) => (row.mapping
-      ? <TruncatedText text={row.mapping} mono maxWidth={220} />
-      : <span className="text-[12px] text-muted-foreground" title="The step registers files and renders no fragment into the record">its files</span>),
+    render: (row) => {
+      const supplies = suppliesText(row.supplies);
+      return (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          {row.mapping
+            ? <TruncatedText text={row.mapping} mono maxWidth={220} />
+            : <span className="text-[12px] text-muted-foreground" title="The step renders no fragment into the record">no fragment</span>}
+          {supplies !== null && (
+            <span className="text-[11px] text-muted-foreground" title="What the step does beside its fragment: the files it registers as datasets, the record's bulk data, the workflow it runs" data-testid="preview-enrich-supplies">
+              {`with ${supplies}`}
+            </span>
+          )}
+        </span>
+      );
+    },
   },
   {
     id: "outcome",

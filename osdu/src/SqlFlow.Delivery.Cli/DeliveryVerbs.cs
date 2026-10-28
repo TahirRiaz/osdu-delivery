@@ -129,6 +129,16 @@ internal static class DeliveryVerbs
             parts.Add($"files as {files.Files.Kind}{(files.Mapping is { } dataset ? $" ({dataset.Reference})" : string.Empty)}, linked from {files.Files.Link}");
         }
 
+        if (step.Step.Bulk is { } bulk)
+        {
+            parts.Add($"the record's bulk data from {bulk.Root}");
+        }
+
+        if (step.Step.Workflow is { } workflow)
+        {
+            parts.Add($"runs {string.Join(" then ", workflow.Stages.Select(s => s.Workflow))} when {workflow.RunWhen.ToString().ToLowerInvariant()}");
+        }
+
         return string.Join(", ", parts);
     }
 
@@ -228,6 +238,14 @@ internal static class DeliveryVerbs
                     ["mapping"] = s.Mapping?.Reference,
                     ["files"] = s.Files is { } files
                         ? new JsonObject { ["kind"] = files.Files.Kind, ["link"] = files.Files.Link, ["mapping"] = files.Mapping?.Reference }
+                        : null,
+                    ["bulk"] = s.Step.Bulk is { } bulk ? new JsonObject { ["root"] = bulk.Root, ["locationColumn"] = bulk.LocationColumn, ["pattern"] = bulk.Pattern } : null,
+                    ["workflow"] = s.Step.Workflow is { } workflow
+                        ? new JsonObject
+                        {
+                            ["runWhen"] = workflow.RunWhen.ToString().ToLowerInvariant(),
+                            ["stages"] = new JsonArray(workflow.Stages.Select(st => (JsonNode)JsonValue.Create(st.Workflow)).ToArray()),
+                        }
                         : null,
                     ["dataset"] = s.Step.ReadsRows ? flow.Source.Datasets[s.Step.Name].Object : null,
                     ["rows"] = s.Step.ReadsRows ? (s.Step.Rows == Model.EnrichRows.Many ? "many" : "one") : null,
