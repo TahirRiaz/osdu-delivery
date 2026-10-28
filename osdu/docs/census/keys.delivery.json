@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/delivery.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 557,
+  "keyCount": 579,
   "keys": [
     {
       "path": "batch",
@@ -148,8 +148,8 @@
     {
       "path": "enrich.<name>.mapping",
       "type": "string",
-      "required": true,
-      "description": "The fragment the step renders, pinned as Name@version and found the way the flow's mapping is. It must be a fragment (fragment: true), fill the same template version as the flow's mapping, and write only under data and tags."
+      "required": false,
+      "description": "The fragment the step renders, pinned as Name@version and found the way the flow's mapping is. It must be a fragment (fragment: true), fill the same template version as the flow's mapping, and write only under data and tags. A step declares a mapping, files, or both."
     },
     {
       "path": "enrich.<name>.dataset",
@@ -216,6 +216,76 @@
       "type": "string",
       "required": false,
       "description": "The name of another step of the same enrich block."
+    },
+    {
+      "path": "enrich.<name>.files",
+      "type": "object",
+      "required": false,
+      "description": "The files each of the step's rows names, registered through the Dataset service as a dataset record of their own under an id made from the record's id and the step, and listed in the record (link), so the record names them already when it is written. A dataset goes again only when its files' hash or what its fragment renders into it moves, and then under the same id, so new files never write the record. Needs dataset, and an endpoint that is the platform. See osdu/docs/reference/flow/enrich.md."
+    },
+    {
+      "path": "enrich.<name>.files.root",
+      "type": "string",
+      "required": true,
+      "description": "The folder the rows' file folders are under, relative to the flow's file or a storage location, as a payload set's root is."
+    },
+    {
+      "path": "enrich.<name>.files.locationColumn",
+      "type": "string",
+      "required": true,
+      "description": "The column of the step's table naming each row's folder under root. A row that names none holds its record."
+    },
+    {
+      "path": "enrich.<name>.files.pattern",
+      "type": "string",
+      "required": false,
+      "description": "The files of a row's folder that are its files, as a payload set's pattern is.",
+      "default": "*"
+    },
+    {
+      "path": "enrich.<name>.files.hashColumn",
+      "type": "string",
+      "required": true,
+      "description": "The column holding the content hash of each row's files, which says when they go again. A row that leaves it empty holds its record."
+    },
+    {
+      "path": "enrich.<name>.files.kind",
+      "type": "string",
+      "required": false,
+      "description": "The dataset kind the files are registered as: a dataset kind the Dataset service registers, a dataset--FileCollection kind for a row naming several files. An External Data Services proxy dataset is refused.",
+      "default": "osdu:wks:dataset--File.Generic:1.0.0"
+    },
+    {
+      "path": "enrich.<name>.files.key",
+      "type": "list",
+      "required": false,
+      "description": "The columns telling each row's dataset from the step's other rows', which make its id with the record's: required with rows: many, refused with rows: one, whose one dataset the step's name names."
+    },
+    {
+      "path": "enrich.<name>.files.key[]",
+      "type": "string",
+      "required": false,
+      "description": "A column of the step's table."
+    },
+    {
+      "path": "enrich.<name>.files.mapping",
+      "type": "string",
+      "required": false,
+      "description": "A fragment over the dataset kind, pinned as Name@version, rendered from the row into each dataset record (its name, description, tags); its file properties are the Dataset service's. Left out, a dataset record holds its file properties and the name of its first file."
+    },
+    {
+      "path": "enrich.<name>.files.link",
+      "type": "string",
+      "required": false,
+      "description": "The record's list the datasets are linked from, each as its id with a trailing colon, added after the items the record holds: a list of values the template declares, or a path under an object it leaves open.",
+      "default": "data.Datasets"
+    },
+    {
+      "path": "enrich.<name>.files.contentType",
+      "type": "string",
+      "required": false,
+      "description": "The media type the files are uploaded as.",
+      "default": "target.protocolOptions.filesContentType, else application/octet-stream"
     },
     {
       "path": "interfaces",
@@ -1715,8 +1785,8 @@
     {
       "path": "interfaces.<name>.enrich.<name>.mapping",
       "type": "string",
-      "required": true,
-      "description": "The fragment the step renders, pinned as Name@version and found the way the flow's mapping is. It must be a fragment (fragment: true), fill the same template version as the flow's mapping, and write only under data and tags."
+      "required": false,
+      "description": "The fragment the step renders, pinned as Name@version and found the way the flow's mapping is. It must be a fragment (fragment: true), fill the same template version as the flow's mapping, and write only under data and tags. A step declares a mapping, files, or both."
     },
     {
       "path": "interfaces.<name>.enrich.<name>.dataset",
@@ -1783,6 +1853,76 @@
       "type": "string",
       "required": false,
       "description": "The name of another step of the same enrich block."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files",
+      "type": "object",
+      "required": false,
+      "description": "The files each of the step's rows names, registered through the Dataset service as a dataset record of their own under an id made from the record's id and the step, and listed in the record (link), so the record names them already when it is written. A dataset goes again only when its files' hash or what its fragment renders into it moves, and then under the same id, so new files never write the record. Needs dataset, and an endpoint that is the platform. See osdu/docs/reference/flow/enrich.md."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.root",
+      "type": "string",
+      "required": true,
+      "description": "The folder the rows' file folders are under, relative to the flow's file or a storage location, as a payload set's root is."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.locationColumn",
+      "type": "string",
+      "required": true,
+      "description": "The column of the step's table naming each row's folder under root. A row that names none holds its record."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.pattern",
+      "type": "string",
+      "required": false,
+      "description": "The files of a row's folder that are its files, as a payload set's pattern is.",
+      "default": "*"
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.hashColumn",
+      "type": "string",
+      "required": true,
+      "description": "The column holding the content hash of each row's files, which says when they go again. A row that leaves it empty holds its record."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.kind",
+      "type": "string",
+      "required": false,
+      "description": "The dataset kind the files are registered as: a dataset kind the Dataset service registers, a dataset--FileCollection kind for a row naming several files. An External Data Services proxy dataset is refused.",
+      "default": "osdu:wks:dataset--File.Generic:1.0.0"
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.key",
+      "type": "list",
+      "required": false,
+      "description": "The columns telling each row's dataset from the step's other rows', which make its id with the record's: required with rows: many, refused with rows: one, whose one dataset the step's name names."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.key[]",
+      "type": "string",
+      "required": false,
+      "description": "A column of the step's table."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.mapping",
+      "type": "string",
+      "required": false,
+      "description": "A fragment over the dataset kind, pinned as Name@version, rendered from the row into each dataset record (its name, description, tags); its file properties are the Dataset service's. Left out, a dataset record holds its file properties and the name of its first file."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.link",
+      "type": "string",
+      "required": false,
+      "description": "The record's list the datasets are linked from, each as its id with a trailing colon, added after the items the record holds: a list of values the template declares, or a path under an object it leaves open.",
+      "default": "data.Datasets"
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.files.contentType",
+      "type": "string",
+      "required": false,
+      "description": "The media type the files are uploaded as.",
+      "default": "target.protocolOptions.filesContentType, else application/octet-stream"
     },
     {
       "path": "keepLedger",

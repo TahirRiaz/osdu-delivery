@@ -40,12 +40,19 @@ internal static class CompanionFiles
                 problems.Add($"{KeyPaths.Of(flow).Mapping}: {problem}");
             }
 
-            // Each step of enrich: pins a fragment, found the way the flow's mapping is.
+            // Each step of enrich: pins a fragment, and its files the fragment of their dataset, found the way the flow's mapping is.
             foreach (var step in flow.Enrich ?? [])
             {
-                if (Read(() => Fragment(new MappingCatalog(directory, documents).Load(step.Mapping, full => Shown(full, folder)))) is { } refused)
+                if (step.Mapping is { } fragment
+                    && Read(() => Fragment(new MappingCatalog(directory, documents).Load(fragment, full => Shown(full, folder)))) is { } refused)
                 {
                     problems.Add($"{KeyPaths.Of(flow).Enrich}.{step.Name}.mapping: {refused}");
+                }
+
+                if (step.Files?.Mapping is { } files
+                    && Read(() => Fragment(new MappingCatalog(directory, documents).Load(files, full => Shown(full, folder)))) is { } filesRefused)
+                {
+                    problems.Add($"{KeyPaths.Of(flow).Enrich}.{step.Name}.files.mapping: {filesRefused}");
                 }
             }
         }

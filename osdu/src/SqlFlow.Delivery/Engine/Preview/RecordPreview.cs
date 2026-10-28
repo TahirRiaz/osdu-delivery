@@ -286,18 +286,25 @@ public sealed record PreviewDocument
 
 /// <summary>
 /// What one step of the flow's <c>enrich:</c> added to the previewed record: the fragment it rendered, how many rows of its
-/// dataset the record had, each path it set or added items to, and what it holds the record for.
+/// dataset the record had, each path it set or added items to, the datasets it registers, and what it holds the record for.
 /// </summary>
 public sealed record PreviewEnrichStep
 {
     public required string Step { get; init; }
 
-    public required string Mapping { get; init; }
+    /// <summary>The fragment the step rendered, as pinned; null for a step that registers files alone.</summary>
+    public string? Mapping { get; init; }
 
     /// <summary>How many rows of its dataset the record had; null for a step that reads no rows.</summary>
     public int? Rows { get; init; }
 
     public IReadOnlyList<PreviewEnrichEffect> Effects { get; init; } = [];
+
+    /// <summary>
+    /// The datasets the step registers for the record (osdu/docs/reference/flow/enrich-files.md), each under
+    /// the id the record keeps linking; empty for a step that registers no files.
+    /// </summary>
+    public IReadOnlyList<PreviewEnrichDataset> Datasets { get; init; } = [];
 
     public IReadOnlyList<string> Holds { get; init; } = [];
 
@@ -316,6 +323,7 @@ public sealed record PreviewEnrichStep
             Effects = contribution.Effects
                 .Select(e => new PreviewEnrichEffect(e.Kind == Rendering.CompositionEffectKind.Add ? "add" : "set", e.Path, e.Value.DeepClone()))
                 .ToList(),
+            Datasets = contribution.Datasets.Select(d => new PreviewEnrichDataset(d.Id, d.Kind, d.Row, d.Record.DeepClone())).ToList(),
             Holds = contribution.Holds,
             NotRendered = contribution.NotRendered,
         };
@@ -325,9 +333,20 @@ public sealed record PreviewEnrichStep
     public static IReadOnlyList<PreviewEnrichStep> WithoutValues(IReadOnlyList<PreviewEnrichStep> steps)
     {
         ArgumentNullException.ThrowIfNull(steps);
-        return steps.Select(s => s with { Effects = s.Effects.Select(e => e with { Value = null }).ToList() }).ToList();
+        return steps.Select(s => s with
+        {
+            Effects = s.Effects.Select(e => e with { Value = null }).ToList(),
+            Datasets = s.Datasets.Select(d => d with { Record = null }).ToList(),
+        }).ToList();
     }
 }
+
+/// <summary>
+/// One dataset a step registers for the previewed record: its id, made from the record's id and the step, its kind, the row of
+/// the step's dataset it is registered from, and what the step's dataset fragment rendered into it, left out (null) when the
+/// preview is too large to show its document. Its file properties are the Dataset service's, set when it is registered.
+/// </summary>
+public sealed record PreviewEnrichDataset(string Id, string Kind, int Row, JsonNode? Record);
 
 /// <summary>
 /// One thing a step did to the previewed record: <c>set</c> a path the record held nothing at, or <c>add</c> items to the list

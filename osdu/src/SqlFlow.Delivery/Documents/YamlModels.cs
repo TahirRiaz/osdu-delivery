@@ -81,6 +81,35 @@ internal sealed class EnrichStepYaml
     public string? Mapping { get; set; }
 
     public List<string>? After { get; set; }
+
+    /// <summary>The files each of the step's rows names, registered as a dataset record of their own and linked from the record.</summary>
+    public EnrichFilesYaml? Files { get; set; }
+}
+
+/// <summary>The files a step registers (osdu/docs/reference/flow/enrich-files.md): where each row's files are, and what they become.</summary>
+internal sealed class EnrichFilesYaml
+{
+    public string? Root { get; set; }
+
+    public string? LocationColumn { get; set; }
+
+    public string? Pattern { get; set; }
+
+    public string? HashColumn { get; set; }
+
+    /// <summary>The dataset kind the files are registered as.</summary>
+    public string? Kind { get; set; }
+
+    /// <summary>The columns of a row that tell its dataset from the step's other rows'.</summary>
+    public List<string>? Key { get; set; }
+
+    /// <summary>A fragment over the dataset kind, rendered from the row into each dataset record.</summary>
+    public string? Mapping { get; set; }
+
+    /// <summary>The path of the record the datasets are listed at.</summary>
+    public string? Link { get; set; }
+
+    public string? ContentType { get; set; }
 }
 
 /// <summary>

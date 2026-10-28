@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
@@ -51,8 +52,8 @@ public sealed record StepContribution
     /// <summary>The step's name, as <c>enrich:</c> declares it.</summary>
     public required string Step { get; init; }
 
-    /// <summary>The fragment the step rendered, as pinned (<c>Name@version</c>).</summary>
-    public required string Mapping { get; init; }
+    /// <summary>The fragment the step rendered, as pinned (<c>Name@version</c>); null for a step that registers files alone.</summary>
+    public string? Mapping { get; init; }
 
     /// <summary>How many rows of its dataset the record had; null for a step that reads no rows.</summary>
     public int? Rows { get; init; }
@@ -68,13 +69,36 @@ public sealed record StepContribution
     /// one before it asked yet.
     /// </summary>
     public bool NotRendered { get; init; }
+
+    /// <summary>
+    /// The datasets the step's files are registered as (osdu/docs/reference/flow/enrich-files.md), one per
+    /// row, each under the id the record's own id and the step make; empty for a step that registers no files.
+    /// </summary>
+    public IReadOnlyList<StepDataset> Datasets { get; init; } = [];
 }
 
 /// <summary>
-/// One step of a flow's <c>enrich:</c> as a run renders it: the step, the fragment it pins and the renderer over that fragment,
-/// which shares the flow's cache version, parameters and platform search.
+/// One dataset a step's files are registered as: its id, made from the record's id, the step and the row's key; its kind; the
+/// row of the step's dataset it registers the files of, counting from zero; and what the step's dataset fragment rendered into
+/// it, beside the file properties the registration writes.
 /// </summary>
-public sealed record ResolvedStep(EnrichStep Step, MappingDefinition Mapping, SchemaSnapshot Schema, MappingRenderer Renderer);
+public sealed record StepDataset(string Id, string Kind, int Row, JsonObject Record);
+
+/// <summary>
+/// One step of a flow's <c>enrich:</c> as a run renders it: the step, the fragment it pins and the renderer over that fragment,
+/// which shares the flow's cache version, parameters and platform search; both null for a step that registers files alone.
+/// </summary>
+public sealed record ResolvedStep(EnrichStep Step, MappingDefinition? Mapping, SchemaSnapshot Schema, MappingRenderer? Renderer)
+{
+    /// <summary>The files the step registers, resolved; null for a step that registers none.</summary>
+    public ResolvedFiles? Files { get; init; }
+}
+
+/// <summary>
+/// The files a step registers, as a run renders them: the step's settings, the entity type of the dataset kind, and the fragment
+/// over that kind rendered into each dataset record with its renderer, or null for a dataset record of its file properties alone.
+/// </summary>
+public sealed record ResolvedFiles(EnrichFiles Files, string EntityType, MappingDefinition? Mapping, MappingRenderer? Renderer);
 
 /// <summary>
 /// How a fragment is added to the record (osdu/docs/reference/flow/enrich.md, How a fragment adds to the record). Two things
@@ -236,11 +260,12 @@ public sealed class RecordChain
         }
 
         var contributions = new List<StepContribution>(_steps.Count);
+        var trail = new ChainTrail(usages, searches, choices, findings, unanswered);
         var stopped = false;
         foreach (var resolved in _steps)
         {
             var step = resolved.Step;
-            var named = new StepContribution { Step = step.Name, Mapping = resolved.Mapping.Reference };
+            var named = new StepContribution { Step = step.Name, Mapping = resolved.Mapping?.Reference };
             if (stopped)
             {
                 contributions.Add(named with { NotRendered = true });
@@ -266,45 +291,47 @@ public sealed class RecordChain
                 continue;
             }
 
-            var fragment = resolved.Renderer.RenderFragment(StepRecord(record, step, rows), document);
-            usages.AddRange(fragment.CacheUsages);
-            searches.AddRange(fragment.SearchUsages);
-            choices.AddRange(fragment.Choices);
-            if (fragment.Assertions is { } asserted)
-            {
-                findings.Add(asserted);
-            }
-
-            if (fragment.Unanswered.Count > 0)
-            {
-                unanswered.AddRange(fragment.Unanswered);
-                contributions.Add(named);
-                stopped = true;
-                continue;
-            }
-
-            if (fragment.Holds.Count > 0)
-            {
-                var held = fragment.Holds.Select(h => Prefixed(step, h)).ToList();
-                holds.AddRange(held);
-                contributions.Add(named with { Holds = held });
-                stopped = true;
-                continue;
-            }
-
             var effects = new List<CompositionEffect>();
-            var conflicts = new List<string>();
-            RecordComposer.Compose(document, fragment.Document, effects, conflicts);
-            if (conflicts.Count > 0)
+            var reasons = new List<string>();
+            var datasets = new List<StepDataset>();
+            var waiting = false;
+            if (resolved.Renderer is { } renderer)
             {
-                var held = conflicts.Select(c => Prefixed(step, c)).ToList();
-                holds.AddRange(held);
-                contributions.Add(named with { Effects = effects, Holds = held });
+                var fragment = renderer.RenderFragment(StepRecord(record, step, rows), document);
+                waiting = trail.Gather(fragment);
+                if (!waiting && fragment.Holds.Count > 0)
+                {
+                    reasons.AddRange(fragment.Holds);
+                }
+                else if (!waiting)
+                {
+                    RecordComposer.Compose(document, fragment.Document, effects, reasons);
+                }
+            }
+
+            if (!waiting && reasons.Count == 0 && resolved.Files is { } files)
+            {
+                waiting = AddFiles(record, step, files, rows!, owner.TargetId!, document, datasets, effects, reasons, trail);
+            }
+
+            if (waiting)
+            {
+                // The platform has not answered what the step asked: the whole chain renders again once it has.
+                contributions.Add(named with { Effects = effects });
                 stopped = true;
                 continue;
             }
 
-            contributions.Add(named with { Effects = effects });
+            if (reasons.Count > 0)
+            {
+                var held = reasons.Select(r => Prefixed(step, r)).ToList();
+                holds.AddRange(held);
+                contributions.Add(named with { Effects = effects, Holds = held, Datasets = datasets });
+                stopped = true;
+                continue;
+            }
+
+            contributions.Add(named with { Effects = effects, Datasets = datasets });
         }
 
         var assertions = Validation.AssertionFindings.Combine(findings);
@@ -367,6 +394,123 @@ public sealed class RecordChain
     }
 
     private static string Prefixed(EnrichStep step, string reason) => $"enrich.{step.Name}: {reason}";
+
+    /// <summary>
+    /// The datasets a step's files are registered as, one per row it takes (osdu/docs/reference/flow/enrich-files.md),
+    /// and the links to them added to the record at the step's link path. Each id is the record's own with the
+    /// dataset's entity type and a suffix of <c>enrich.</c>, the step's name and, for a step taking many rows, a hash of the row's key, so the
+    /// same row names the same dataset on every render and the record names it before anything is sent. What the step's dataset
+    /// fragment renders from the row goes into the dataset record. True when that fragment waits for the platform.
+    /// </summary>
+    private static bool AddFiles(
+        SourceRecord record,
+        EnrichStep step,
+        ResolvedFiles files,
+        IReadOnlyList<SourceRow> rows,
+        string ownerId,
+        JsonObject document,
+        List<StepDataset> datasets,
+        List<CompositionEffect> effects,
+        List<string> reasons,
+        ChainTrail trail)
+    {
+        var taken = step.Rows == EnrichRows.One ? rows.Take(1).ToList() : rows;
+        for (var i = 0; i < taken.Count; i++)
+        {
+            // The suffix holds a dot, which neither the dataset a record's own files go in (files) nor a workflow input's name can,
+            // so a step's dataset never takes the id another route derives from the record's.
+            var row = taken[i];
+            var suffix = EnrichFiles.SuffixPrefix + step.Name;
+            if (files.Files.Key.Count > 0)
+            {
+                var values = files.Files.Key.Select(column => row.GetString(column)?.Trim()).ToList();
+                if (values.FindIndex(string.IsNullOrEmpty) is var empty and >= 0)
+                {
+                    reasons.Add($"files.key column '{files.Files.Key[empty]}' is empty in row {i + 1} of the step's dataset, and each row's dataset is named by its key");
+                    return false;
+                }
+
+                suffix = $"{EnrichFiles.SuffixPrefix}{step.Name}.{DeliveryKey.Derive(step.Name, values).Value:N}";
+            }
+
+            string id;
+            try
+            {
+                id = Engine.Workflows.WorkflowValues.DerivedDatasetId(ownerId, files.EntityType, suffix);
+            }
+            catch (DeliveryException ex)
+            {
+                reasons.Add(ex.Message);
+                return false;
+            }
+
+            if (datasets.FirstOrDefault(d => string.Equals(d.Id, id, StringComparison.Ordinal)) is { } same)
+            {
+                reasons.Add($"rows {same.Row + 1} and {i + 1} of the step's dataset name the same dataset {id}: their files.key values are the same");
+                return false;
+            }
+
+            var dataset = new JsonObject();
+            if (files.Renderer is { } renderer)
+            {
+                var scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase) { [step.Name] = rows };
+                var fragment = renderer.RenderFragment(record with { Row = row, Scopes = scopes }, document);
+                if (trail.Gather(fragment))
+                {
+                    return true;
+                }
+
+                if (fragment.Holds.Count > 0)
+                {
+                    reasons.AddRange(fragment.Holds.Select(h => $"the dataset of row {i + 1}: {h}"));
+                    return false;
+                }
+
+                dataset = fragment.Document;
+            }
+
+            datasets.Add(new StepDataset(id, files.Files.Kind, i, dataset));
+        }
+
+        if (datasets.Count > 0)
+        {
+            // The links, as the work product component schemas take a dataset: its id with the version separator and no version.
+            var link = new JsonObject();
+            var holder = link;
+            var segments = files.Files.Link.Split('.');
+            for (var i = 0; i < segments.Length - 1; i++)
+            {
+                var next = new JsonObject();
+                holder[segments[i]] = next;
+                holder = next;
+            }
+
+            holder[segments[^1]] = new JsonArray(datasets.Select(d => (JsonNode?)JsonValue.Create(d.Id + ":")).ToArray());
+            RecordComposer.Compose(document, link, effects, reasons);
+        }
+
+        return false;
+    }
+
+    /// <summary>What every fragment of one record's chain read and asked, gathered into the record's render.</summary>
+    private sealed class ChainTrail(
+        List<CacheUsage> usages, List<SearchUsage> searches, List<CoalesceChoice> choices, List<Validation.AssertionFindings> findings, List<PlatformQuestion> unanswered)
+    {
+        /// <summary>Takes what <paramref name="fragment"/> read and found; true when it waits for the platform.</summary>
+        public bool Gather(FragmentRender fragment)
+        {
+            usages.AddRange(fragment.CacheUsages);
+            searches.AddRange(fragment.SearchUsages);
+            choices.AddRange(fragment.Choices);
+            if (fragment.Assertions is { } asserted)
+            {
+                findings.Add(asserted);
+            }
+
+            unanswered.AddRange(fragment.Unanswered);
+            return fragment.Unanswered.Count > 0;
+        }
+    }
 
     /// <summary>One cache usage per cached path the record and its steps consumed.</summary>
     private static IReadOnlyList<CacheUsage> Distinct(List<CacheUsage> usages)

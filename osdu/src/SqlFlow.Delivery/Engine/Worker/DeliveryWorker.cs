@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Validation;
 
@@ -817,6 +818,25 @@ public sealed class DeliveryWorker
                 }
             }
 
+            // The datasets the record's steps register, each streaming from where its row said its files are, and what the plan
+            // decided a delivery does with them.
+            EnrichWork stepWork;
+            IReadOnlyList<WorkStepPart> stepParts;
+            try
+            {
+                stepWork = EnrichParts.Decode(item.Enrich);
+                stepParts = stepWork.Parts
+                    .Select(p => new WorkStepPart(p, new StoragePayloadSource(_payloads, PayloadLocation.Parse(p.Location))))
+                    .ToList();
+            }
+            catch (DeliveryException ex)
+            {
+                var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, ex.Message, null, null);
+                await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                settledEarly.Add(state);
+                continue;
+            }
+
             // The unit of work this try belongs to: the one an earlier try of the same work began, kept with its steps, or a new
             // one. The route is given the steps without it.
             var kept = ParseSteps(state.PendingStepJson);
@@ -834,6 +854,9 @@ public sealed class DeliveryWorker
                 Payload = single,
                 Parts = parts,
                 ForcedParts = forced,
+                StepParts = stepParts,
+                StepDocumentUnchanged = stepWork.DocumentUnchanged,
+                StepPartsForced = stepWork.Forced,
                 ExistingVersion = state.TargetVersion,
                 // A record OSDU no longer held when it was last looked for (a verify, or an inventory's repair) is brought back
                 // under its id by a route that can, before it is written; the mark goes with the first write that lands.

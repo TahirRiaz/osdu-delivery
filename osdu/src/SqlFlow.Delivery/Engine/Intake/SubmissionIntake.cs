@@ -552,7 +552,7 @@ public sealed class SubmissionIntake
                         }
 
                         writer ??= await WorkBatchWriter.OpenAsync(_stores, workRoot, submission.SubmissionId, nextBatch, ct).ConfigureAwait(false);
-                        var reference = await writer.WriteAsync(new WorkItem(entry.Key.Value.Value, entry.TargetId!, entry.Render!.Canonical, entry.Render.Assertions?.ToText()), ct).ConfigureAwait(false);
+                        var reference = await writer.WriteAsync(new WorkItem(entry.Key.Value.Value, entry.TargetId!, entry.Render!.Canonical, entry.Render.Assertions?.ToText(), EnrichParts.Encode(entry.Render.StepWork)), ct).ConfigureAwait(false);
                         // The values this document was built from become one set id on the record: no row per
                         // dependency, and the id is resolved once per distinct combination for the whole run.
                         var cacheSet = entry.Render!.CacheUsages.Count == 0

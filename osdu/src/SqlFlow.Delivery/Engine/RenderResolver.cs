@@ -1,8 +1,11 @@
 using System.Globalization;
+using System.Text.Json.Nodes;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Hosting;
+using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
@@ -41,7 +44,9 @@ public sealed record ResolvedMapping(
     /// How many rounds of questions a batch of the flow's records can need: the mapping's, then each step's after it, since a
     /// step renders over the record once everything before it has been answered.
     /// </summary>
-    public int SearchRounds => Planning.Planner.SearchRounds(Mapping) + Steps.Sum(s => Planning.Planner.SearchRounds(s.Mapping));
+    public int SearchRounds => Planning.Planner.SearchRounds(Mapping)
+        + Steps.Sum(s => (s.Mapping is { } fragment ? Planning.Planner.SearchRounds(fragment) : 0)
+            + (s.Files?.Mapping is { } files ? Planning.Planner.SearchRounds(files) : 0));
 }
 
 /// <summary>
@@ -100,7 +105,9 @@ public sealed class RenderResolver
         // The fragments of the flow's enrich: steps render into the record the mapping renders, so they read the one cache
         // version and system properties the record is rendered under: a flow reads the cache when any part of its chain does.
         var fragments = LoadFragments(flow, mapping, where);
-        var (references, scope, systemProperties) = await CacheAsync(flow, [mapping, .. fragments.Select(f => f.Mapping)], where, ct).ConfigureAwait(false);
+        var chain = new List<MappingDefinition> { mapping };
+        chain.AddRange(fragments.SelectMany(f => new[] { f.Fragment, f.FilesFragment }).OfType<MappingDefinition>());
+        var (references, scope, systemProperties) = await CacheAsync(flow, chain, where, ct).ConfigureAwait(false);
 
         var context = new RenderContext
         {
@@ -117,9 +124,9 @@ public sealed class RenderResolver
         var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches).ToList();
         var steps = new List<ResolvedStep>(fragments.Count);
         var renderSteps = new List<RenderStep>(fragments.Count);
-        foreach (var (step, fragment) in fragments)
+        foreach (var fragment in fragments)
         {
-            var resolved = await StepAsync(flow, step, fragment, mapping, schema, references, context, where, issues, ct).ConfigureAwait(false);
+            var resolved = await StepAsync(flow, fragment, mapping, schema, references, context, where, issues, ct).ConfigureAwait(false);
             if (resolved is not null)
             {
                 steps.Add(resolved.Value.Step);
@@ -142,26 +149,35 @@ public sealed class RenderResolver
         };
     }
 
+    /// <summary>One step of the flow's <c>enrich:</c> with the fragments it pins: its own, and the one its files' datasets render; each null when it pins none.</summary>
+    private sealed record StepFragments(EnrichStep Step, MappingDefinition? Fragment, MappingDefinition? FilesFragment);
+
     /// <summary>
-    /// The fragment each step of the flow's <c>enrich:</c> pins, in the order the steps render, read from the flow's mappings
-    /// the way its own mapping is. A step pinning a mapping of a whole record is refused: it would render a record of its own.
+    /// The fragments each step of the flow's <c>enrich:</c> pins, in the order the steps render, read from the flow's mappings
+    /// the way its own mapping is: the step's own, and the one its files' datasets render. A step pinning a mapping of a whole
+    /// record is refused: it would render a record of its own.
     /// </summary>
-    private List<(EnrichStep Step, MappingDefinition Mapping)> LoadFragments(FlowDefinition flow, MappingDefinition mapping, string where)
+    private List<StepFragments> LoadFragments(FlowDefinition flow, MappingDefinition mapping, string where)
     {
-        var fragments = new List<(EnrichStep, MappingDefinition)>();
+        var fragments = new List<StepFragments>();
         foreach (var step in flow.Enrich ?? [])
         {
-            var fragment = _mappings.Load(step.Mapping);
-            if (!fragment.Fragment)
-            {
-                throw new FlowValidationException(
-                    $"{where}: enrich.{step.Name}.mapping names {fragment.Reference}, a mapping of a whole record; a step renders a fragment, the paths it adds to the record {mapping.Reference} renders, declared with fragment: true and no dataset.");
-            }
-
-            fragments.Add((step, fragment));
+            fragments.Add(new StepFragments(
+                step,
+                step.Mapping is { } own ? Fragment(own, $"enrich.{step.Name}.mapping") : null,
+                step.Files?.Mapping is { } files ? Fragment(files, $"enrich.{step.Name}.files.mapping") : null));
         }
 
         return fragments;
+
+        MappingDefinition Fragment(string reference, string key)
+        {
+            var fragment = _mappings.Load(reference);
+            return fragment.Fragment
+                ? fragment
+                : throw new FlowValidationException(
+                    $"{where}: {key} names {fragment.Reference}, a mapping of a whole record; a step renders a fragment, the paths it adds to the record {mapping.Reference} renders, declared with fragment: true and no dataset.");
+        }
     }
 
     /// <summary>
@@ -214,8 +230,7 @@ public sealed class RenderResolver
     /// </summary>
     private async Task<(ResolvedStep Step, RenderStep Context)?> StepAsync(
         FlowDefinition flow,
-        EnrichStep step,
-        MappingDefinition fragment,
+        StepFragments fragments,
         MappingDefinition mapping,
         SchemaSnapshot schema,
         ReferenceSnapshot references,
@@ -224,40 +239,116 @@ public sealed class RenderResolver
         List<ValidationIssue> issues,
         CancellationToken ct)
     {
+        var step = fragments.Step;
         var at = $"{where}: enrich.{step.Name}";
-        if (!string.Equals(fragment.Template.Kind, mapping.Template.Kind, StringComparison.Ordinal))
+        RenderStep renderStep = new(step.Name, null, null, schema.Version, new Dictionary<string, string>(StringComparer.Ordinal));
+        MappingRenderer? renderer = null;
+        if (fragments.Fragment is { } fragment)
         {
-            issues.Add(ValidationIssue.Error(
-                $"{at}: fragment {fragment.Reference} fills {fragment.Template.Kind}, and the flow's mapping {mapping.Reference} renders {mapping.Template.Kind} records; a step adds paths to the records the flow renders, so its fragment names the same kind."));
-            return null;
+            if (!string.Equals(fragment.Template.Kind, mapping.Template.Kind, StringComparison.Ordinal))
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{at}: fragment {fragment.Reference} fills {fragment.Template.Kind}, and the flow's mapping {mapping.Reference} renders {mapping.Template.Kind} records; a step adds paths to the records the flow renders, so its fragment names the same kind."));
+                return null;
+            }
+
+            var template = await _templates.ResolveAsync(fragment.TemplateDocument, fragment.Template.Kind, fragment.Template.Version, ct).ConfigureAwait(false);
+            if (template.Schema is not { } filled)
+            {
+                issues.Add(ValidationIssue.Error($"{at}: fragment {fragment.Reference} cannot render: {template.Problem}"));
+                return null;
+            }
+
+            if (!string.Equals(filled.Version, schema.Version, StringComparison.Ordinal))
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{at}: fragment {fragment.Reference} fills {filled.Kind} version {filled.Version}, and the flow's mapping {mapping.Reference} fills version {schema.Version}; a step adds to the record the flow's mapping renders, so both fill one version of the template. Pin the same template.version in both, or leave both to the template folder."));
+                return null;
+            }
+
+            renderStep = new RenderStep(step.Name, fragment.Reference, fragment.Fingerprint, filled.Version, await ParametersAsync(flow, fragment, ct).ConfigureAwait(false));
+            renderer = await FragmentRendererAsync(fragment, filled, references, context.ForStep(renderStep), $"enrich.{step.Name}", issues, ct).ConfigureAwait(false);
+            if (renderer is null)
+            {
+                return null;
+            }
         }
 
-        var template = await _templates.ResolveAsync(fragment.TemplateDocument, fragment.Template.Kind, fragment.Template.Version, ct).ConfigureAwait(false);
-        if (template.Schema is not { } filled)
+        ResolvedFiles? files = null;
+        if (step.Files is { } declared)
         {
-            issues.Add(ValidationIssue.Error($"{at}: fragment {fragment.Reference} cannot render: {template.Problem}"));
-            return null;
+            // What decides the datasets' ids and where the record lists them enters the context: a new kind, key or link moves
+            // them, and the records render again.
+            var rules = new JsonObject
+            {
+                ["kind"] = declared.Kind,
+                ["key"] = new JsonArray(declared.Key.Select(k => (JsonNode?)JsonValue.Create(k)).ToArray()),
+                ["link"] = declared.Link,
+            };
+            MappingRenderer? filesRenderer = null;
+            if (fragments.FilesFragment is { } filesFragment)
+            {
+                if (!string.Equals(filesFragment.Template.Kind, declared.Kind, StringComparison.Ordinal))
+                {
+                    issues.Add(ValidationIssue.Error(
+                        $"{at}: files.mapping names fragment {filesFragment.Reference}, which fills {filesFragment.Template.Kind}, and the step registers its files as {declared.Kind}; the fragment renders into those dataset records, so it names their kind."));
+                    return null;
+                }
+
+                var template = await _templates.ResolveAsync(filesFragment.TemplateDocument, filesFragment.Template.Kind, filesFragment.Template.Version, ct).ConfigureAwait(false);
+                if (template.Schema is not { } datasetSchema)
+                {
+                    issues.Add(ValidationIssue.Error($"{at}: files.mapping fragment {filesFragment.Reference} cannot render: {template.Problem}"));
+                    return null;
+                }
+
+                var parameters = await ParametersAsync(flow, filesFragment, ct).ConfigureAwait(false);
+                var filesContext = context with
+                {
+                    MappingReference = filesFragment.Reference,
+                    MappingFingerprint = filesFragment.Fingerprint,
+                    SchemaSnapshotVersion = datasetSchema.Version,
+                    Parameters = parameters,
+                    Steps = [],
+                };
+                filesRenderer = await FragmentRendererAsync(filesFragment, datasetSchema, references, filesContext, $"enrich.{step.Name}.files", issues, ct).ConfigureAwait(false);
+                if (filesRenderer is null)
+                {
+                    return null;
+                }
+
+                var given = new JsonObject();
+                foreach (var (name, value) in parameters.OrderBy(p => p.Key, StringComparer.Ordinal))
+                {
+                    given[name] = value;
+                }
+
+                rules["mapping"] = filesFragment.Reference;
+                rules["mappingFingerprint"] = filesFragment.Fingerprint;
+                rules["schema"] = datasetSchema.Version;
+                rules["parameters"] = given;
+            }
+
+            files = new ResolvedFiles(declared, TargetId.EntityTypeFromKind(declared.Kind), fragments.FilesFragment, filesRenderer);
+            renderStep = renderStep with { Files = CanonicalJson.ToString(rules) };
         }
 
-        if (!string.Equals(filled.Version, schema.Version, StringComparison.Ordinal))
-        {
-            issues.Add(ValidationIssue.Error(
-                $"{at}: fragment {fragment.Reference} fills {filled.Kind} version {filled.Version}, and the flow's mapping {mapping.Reference} fills version {schema.Version}; a step adds to the record the flow's mapping renders, so both fill one version of the template. Pin the same template.version in both, or leave both to the template folder."));
-            return null;
-        }
+        return (new ResolvedStep(step, fragments.Fragment, schema, renderer) { Files = files }, renderStep);
+    }
 
-        var renderStep = new RenderStep(step.Name, fragment.Reference, fragment.Fingerprint, filled.Version, await ParametersAsync(flow, fragment, ct).ConfigureAwait(false));
-        var stepContext = context.ForStep(renderStep);
-        var searches = await SearchesAsync(_templates, fragment, filled, ct).ConfigureAwait(false);
-        var found = Preflight.Check(fragment, filled, references, stepContext, sourceColumns: null, searches);
-        issues.AddRange(found.Select(issue => issue with { Message = $"enrich.{step.Name}: {issue.Message}" }));
-        if (found.Any(issue => issue.Severity == IssueSeverity.Error))
-        {
-            return null;
-        }
-
-        var renderer = new MappingRenderer(fragment, filled, references, stepContext, searches, _search);
-        return (new ResolvedStep(step, fragment, filled, renderer), renderStep);
+    /// <summary>
+    /// A renderer over a fragment of a step, under <paramref name="context"/>, once its searches resolved and its preflight
+    /// passed; null, with every problem added to <paramref name="issues"/> under <paramref name="key"/>, when it did not.
+    /// </summary>
+    private async Task<MappingRenderer?> FragmentRendererAsync(
+        MappingDefinition fragment, SchemaSnapshot schema, ReferenceSnapshot references, RenderContext context, string key, List<ValidationIssue> issues, CancellationToken ct)
+    {
+        var searches = await SearchesAsync(_templates, fragment, schema, ct).ConfigureAwait(false);
+        var found = Preflight.Check(fragment, schema, references, context, sourceColumns: null, searches);
+        issues.AddRange(found.Select(issue => issue with { Message = $"{key}: {issue.Message}" }));
+        return found.Any(issue => issue.Severity == IssueSeverity.Error)
+            ? null
+            : new MappingRenderer(fragment, schema, references, context, searches, _search);
     }
 
     /// <summary>

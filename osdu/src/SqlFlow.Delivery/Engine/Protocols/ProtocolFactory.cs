@@ -20,7 +20,7 @@ public static class ProtocolFactory
         var client = await ClientAsync(http, flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, secrets, ct).ConfigureAwait(false);
         var options = flow.Target.ProtocolOptions;
         var ceiling = flow.Reliability.MaxRequestBodyBytes;
-        return flow.Target.Protocol switch
+        IDeliveryProtocol route = flow.Target.Protocol switch
         {
             DeliveryProtocol.Storage => new OsduRecordProtocol(client, options),
             // The DDMSs the flow names by registration are read here, so every operation routes by what they registered.
@@ -62,6 +62,11 @@ public static class ProtocolFactory
                 loggers.CreateLogger<OsduEtpProtocol>()),
             _ => throw new FlowValidationException($"{flow.SourcePath ?? flow.Name}: target.protocol '{flow.Target.Protocol}' is not a known protocol."),
         };
+
+        // A flow whose enrich: steps register files registers each record's step datasets before its own route writes the record.
+        return flow.Enrich?.Any(s => s.Files is not null) == true
+            ? new EnrichPartsProtocol(route, client, options, ceiling)
+            : route;
     }
 
     /// <summary>Where a route that reaches a DDMS sends each record, with the registrations the flow names read.</summary>
