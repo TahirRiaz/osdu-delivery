@@ -198,7 +198,13 @@ const EFFECTS_SHOWN = 8;
 
 const enrichColumns: Column<DeliveryPreviewEnrichStep>[] = [
   { id: "step", header: "Step", render: (row) => <span className="font-mono text-[12px]">{row.step}</span> },
-  { id: "mapping", header: "Fragment", render: (row) => <TruncatedText text={row.mapping} mono maxWidth={220} /> },
+  {
+    id: "mapping",
+    header: "Fragment",
+    render: (row) => (row.mapping
+      ? <TruncatedText text={row.mapping} mono maxWidth={220} />
+      : <span className="text-[12px] text-muted-foreground" title="The step registers files and renders no fragment into the record">its files</span>),
+  },
   {
     id: "outcome",
     header: "Outcome",
@@ -212,10 +218,16 @@ const enrichColumns: Column<DeliveryPreviewEnrichStep>[] = [
     id: "effects",
     header: "What it added",
     fill: true,
-    render: (row) => (row.effects.length === 0
+    render: (row) => (row.effects.length === 0 && (row.datasets ?? []).length === 0
       ? <span className="text-muted-foreground">-</span>
       : (
         <ul className="flex flex-col gap-0.5 text-[12px]">
+          {(row.datasets ?? []).map((dataset) => (
+            <li key={dataset.id} className="flex min-w-0 items-baseline gap-1.5" data-testid="preview-enrich-dataset">
+              <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]" title={`Registered as ${dataset.kind} from row ${dataset.row + 1} of the step's dataset, under the id the record links`}>dataset</Badge>
+              <RecordName id={dataset.id} copy className="min-w-0 max-w-[420px] text-[12px]" copyTestId="copy-preview-enrich-dataset" />
+            </li>
+          ))}
           {row.effects.slice(0, EFFECTS_SHOWN).map((effect) => {
             const value = effectValueText(effect.value);
             return (

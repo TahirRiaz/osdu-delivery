@@ -43,7 +43,11 @@ public static class DeliveryDocumentHash
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(mappings);
         var fragments = source.Interfaces.Any(f => f.Enrich is { Count: > 0 })
-            ? source.Interfaces.Select(f => (f.Enrich ?? []).Select(s => mappings.GetValueOrDefault(s.Mapping)).ToList()).ToList()
+            ? source.Interfaces.Select(f => (f.Enrich ?? [])
+                .SelectMany(s => new[] { s.Mapping, s.Files?.Mapping })
+                .OfType<string>()
+                .Select(reference => mappings.GetValueOrDefault(reference))
+                .ToList()).ToList()
             : null;
         return Hash(new
         {

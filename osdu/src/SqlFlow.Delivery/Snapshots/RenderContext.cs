@@ -239,7 +239,7 @@ public sealed partial record RenderContext
         ArgumentNullException.ThrowIfNull(step);
         return this with
         {
-            MappingReference = step.MappingReference,
+            MappingReference = step.MappingReference ?? throw new ArgumentException($"Step '{step.Name}' renders no fragment of its own, so it has no context of its own.", nameof(step)),
             MappingFingerprint = step.MappingFingerprint,
             SchemaSnapshotVersion = step.SchemaSnapshotVersion,
             Parameters = step.Parameters,
@@ -253,13 +253,19 @@ public sealed partial record RenderContext
 /// rendered the step's fragment, so the ledger says what rendered every part of a record's document.
 /// </summary>
 /// <param name="Name">The step's name.</param>
-/// <param name="MappingReference">The fragment, <c>Name@version</c>.</param>
+/// <param name="MappingReference">The fragment, <c>Name@version</c>; null for a step that registers files alone.</param>
 /// <param name="MappingFingerprint">The fragment document's fingerprint; null for one built in code.</param>
 /// <param name="SchemaSnapshotVersion">The version of the template the fragment fills.</param>
 /// <param name="Parameters">The fragment's parameters as they resolved.</param>
 public sealed record RenderStep(
-    string Name, string MappingReference, string? MappingFingerprint, string SchemaSnapshotVersion, IReadOnlyDictionary<string, string> Parameters)
+    string Name, string? MappingReference, string? MappingFingerprint, string SchemaSnapshotVersion, IReadOnlyDictionary<string, string> Parameters)
 {
+    /// <summary>
+    /// For a step that registers files, what decides its datasets as canonical JSON: their kind, key and link, and the fragment
+    /// rendered into them with its fingerprint, template version and parameters; null for a step that registers none.
+    /// </summary>
+    public string? Files { get; init; }
+
     internal JsonObject Node()
     {
         var parameters = new JsonObject();
@@ -271,13 +277,22 @@ public sealed record RenderStep(
         var node = new JsonObject
         {
             ["name"] = Name,
-            ["mapping"] = MappingReference,
             ["schema"] = SchemaSnapshotVersion,
             ["parameters"] = parameters,
         };
+        if (MappingReference is not null)
+        {
+            node["mapping"] = MappingReference;
+        }
+
         if (MappingFingerprint is not null)
         {
             node["mappingFingerprint"] = MappingFingerprint;
+        }
+
+        if (Files is not null)
+        {
+            node["files"] = JsonNode.Parse(Files);
         }
 
         return node;
@@ -287,10 +302,12 @@ public sealed record RenderStep(
     {
         if (node is not JsonObject step
             || step["name"]?.GetValue<string>() is not { Length: > 0 } name
-            || step["mapping"]?.GetValue<string>() is not { Length: > 0 } mapping)
+            || (step["mapping"] is null && step["files"] is null))
         {
-            throw new DeliveryException($"Render context enrich[{index}] is not a step with a name and a mapping.");
+            throw new DeliveryException($"Render context enrich[{index}] is not a step with a name and a mapping or files.");
         }
+
+        var mapping = step["mapping"]?.GetValue<string>();
 
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal);
         if (step["parameters"] is JsonObject declared)
@@ -301,6 +318,9 @@ public sealed record RenderStep(
             }
         }
 
-        return new RenderStep(name, mapping, step["mappingFingerprint"]?.GetValue<string>(), step["schema"]?.GetValue<string>() ?? string.Empty, parameters);
+        return new RenderStep(name, mapping, step["mappingFingerprint"]?.GetValue<string>(), step["schema"]?.GetValue<string>() ?? string.Empty, parameters)
+        {
+            Files = step["files"] is JsonObject files ? CanonicalJson.ToString(files) : null,
+        };
     }
 }

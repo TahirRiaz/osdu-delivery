@@ -1197,6 +1197,16 @@ public sealed record RenderResult
     /// hash beyond what it put into the document: rendering the record again from what the ledger records tells it again.
     /// </summary>
     public IReadOnlyList<StepContribution> Enrichment { get; init; } = [];
+
+    /// <summary>
+    /// The datasets the record's steps register (osdu/docs/reference/flow/enrich-files.md), each with where its
+    /// files are and their hash, and what the delivery does with them, which the plan resolves after the render
+    /// (<see cref="EnrichParts.Resolve"/>) and the delivery follows; null for a record whose steps register no files.
+    /// </summary>
+    public EnrichWork? StepWork { get; init; }
+
+    /// <summary>The datasets the record's steps register; empty for a record whose steps register no files.</summary>
+    public IReadOnlyList<EnrichPart> StepParts => StepWork?.Parts ?? [];
 }
 
 /// <summary>

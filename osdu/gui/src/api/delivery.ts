@@ -1328,16 +1328,28 @@ export interface DeliveryPreviewDocument {
 export interface DeliveryPreviewEnrichStep {
   /** The step's name, as enrich: declares it. */
   step: string;
-  /** The fragment it rendered, Name@version. */
-  mapping: string;
+  /** The fragment it rendered, Name@version; absent for a step that registers files alone. */
+  mapping?: string;
   /** How many rows of its dataset the record had; absent for a step that reads no rows. */
   rows?: number;
   /** Each path it set and each list it added items to, in the order it did them. */
   effects: DeliveryPreviewEnrichEffect[];
+  /** The datasets it registers for the record, each under the id the record links; absent or empty for a step without files. */
+  datasets?: DeliveryPreviewEnrichDataset[];
   /** Why it holds the record, each prefixed with the step. */
   holds: string[];
   /** True when it did not render: a step before it holds the record, or waits for the platform. */
   notRendered?: boolean;
+}
+
+/** One dataset a step registers for the record: its id, made from the record's id and the step, its kind and its row. */
+export interface DeliveryPreviewEnrichDataset {
+  id: string;
+  kind: string;
+  /** The row of the step's dataset it is registered from, counting from zero. */
+  row: number;
+  /** What the step's dataset fragment rendered into it; absent when the preview is too large to show its document. */
+  record?: unknown;
 }
 
 /** One thing a step did to the record: set a path the record held nothing at, or add items to the list there. */

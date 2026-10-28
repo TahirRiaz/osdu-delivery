@@ -204,11 +204,16 @@ internal static class DeliveryPreviewVerbs
             // What each step of enrich: added, in the order the steps render (osdu/docs/reference/flow/enrich.md).
             foreach (var step in document.Enrichment)
             {
-                writer.WriteLine($"    enrich      {step.Step} ({step.Mapping}): {EnrichOutcome(step)}");
+                writer.WriteLine($"    enrich      {step.Step} ({step.Mapping ?? "its files"}): {EnrichOutcome(step)}");
                 foreach (var effect in step.Effects)
                 {
                     var value = effect.Value is null ? string.Empty : $" {Clip(effect.Value.ToJsonString(), 120)}";
                     writer.WriteLine($"                {effect.Kind} {effect.Path}{value}");
+                }
+
+                foreach (var dataset in step.Datasets)
+                {
+                    writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"                registers {dataset.Id} ({dataset.Kind}) from row {dataset.Row + 1}"));
                 }
             }
         }
