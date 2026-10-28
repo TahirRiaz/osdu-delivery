@@ -436,6 +436,25 @@ public sealed record EnrichStep
 
     /// <summary>How many rows of its dataset one record takes: one, read as the fragment's row, or many, read with <c>$forEach</c>.</summary>
     public EnrichRows Rows { get; init; } = EnrichRows.One;
+
+    /// <summary>
+    /// What the step's hold does (<c>enrich.&lt;name&gt;.onHold</c>, osdu/docs/reference/flow/enrich-holds.md): hold the
+    /// record, or set the step aside, the record going ahead with what the step added to its last delivery.
+    /// </summary>
+    public EnrichHold OnHold { get; init; } = EnrichHold.Record;
+}
+
+/// <summary>What a step of <c>enrich:</c> that holds does to its record (osdu/docs/reference/flow/enrich-holds.md).</summary>
+public enum EnrichHold
+{
+    /// <summary>The record is held with the step's reasons, and OSDU keeps the version it has until the record renders whole.</summary>
+    Record,
+
+    /// <summary>
+    /// The step is set aside: the record goes ahead with what the step added to the version the last delivery wrote (nothing
+    /// for a record never delivered), the other steps render as they do, and the ledger lists the record with the step held.
+    /// </summary>
+    Step,
 }
 
 /// <summary>

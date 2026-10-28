@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/reference/flow/delivery.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 579,
+  "keyCount": 581,
   "keys": [
     {
       "path": "batch",
@@ -216,6 +216,17 @@
       "type": "string",
       "required": false,
       "description": "The name of another step of the same enrich block."
+    },
+    {
+      "path": "enrich.<name>.onHold",
+      "type": "string",
+      "required": false,
+      "enumValues": [
+        "record",
+        "step"
+      ],
+      "description": "What the step's hold does. record: the record is held with the step's reasons and OSDU keeps the version it has. step: the step is set aside, the record goes ahead with what the step added to its last delivery (nothing for a record never delivered), the steps after it render, and the ledger lists the record with the step held. A record delivered before the step was set aside, or whose kept contribution no longer fits it, is held. See osdu/docs/reference/flow/enrich-holds.md.",
+      "default": "record"
     },
     {
       "path": "enrich.<name>.files",
@@ -1853,6 +1864,17 @@
       "type": "string",
       "required": false,
       "description": "The name of another step of the same enrich block."
+    },
+    {
+      "path": "interfaces.<name>.enrich.<name>.onHold",
+      "type": "string",
+      "required": false,
+      "enumValues": [
+        "record",
+        "step"
+      ],
+      "description": "What the step's hold does. record: the record is held with the step's reasons and OSDU keeps the version it has. step: the step is set aside, the record goes ahead with what the step added to its last delivery (nothing for a record never delivered), the steps after it render, and the ledger lists the record with the step held. A record delivered before the step was set aside, or whose kept contribution no longer fits it, is held. See osdu/docs/reference/flow/enrich-holds.md.",
+      "default": "record"
     },
     {
       "path": "interfaces.<name>.enrich.<name>.files",

@@ -215,6 +215,11 @@ internal static class DeliveryPreviewVerbs
                 {
                     writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"                registers {dataset.Id} ({dataset.Kind}) from row {dataset.Row + 1}"));
                 }
+
+                foreach (var kept in step.KeptDatasets)
+                {
+                    writer.WriteLine($"                keeps linking {kept}, registered by its last delivery");
+                }
             }
         }
 
@@ -289,6 +294,11 @@ internal static class DeliveryPreviewVerbs
         if (step.NotRendered)
         {
             return "not rendered, since a step before it holds the record or waits for the platform";
+        }
+
+        if (step.SetAside)
+        {
+            return $"held and set aside, the record going ahead with what it added to its last delivery: {string.Join("; ", step.Holds)}";
         }
 
         if (step.Holds.Count > 0)

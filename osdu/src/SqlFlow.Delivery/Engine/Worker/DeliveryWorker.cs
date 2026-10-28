@@ -857,6 +857,8 @@ public sealed class DeliveryWorker
                 StepParts = stepParts,
                 StepDocumentUnchanged = stepWork.DocumentUnchanged,
                 StepPartsForced = stepWork.Forced,
+                StepKeptDatasets = stepWork.KeptDatasets,
+                StepKeep = stepWork.Keep.ToDictionary(k => KeptStep.StateKey(k.Key), k => k.Value, StringComparer.Ordinal),
                 ExistingVersion = state.TargetVersion,
                 // A record OSDU no longer held when it was last looked for (a verify, or an inventory's repair) is brought back
                 // under its id by a route that can, before it is written; the mark goes with the first write that lands.
@@ -939,6 +941,19 @@ public sealed class DeliveryWorker
             var (index, state, work) = works[i];
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
             var outcome = outcomes[i]!;
+            if (outcome.Succeeded && work.StepKeep.Count > 0)
+            {
+                // What the steps set aside on their holds composed into the document that landed: kept with the record, so a
+                // later render one of them holds in goes ahead with it (osdu/docs/reference/flow/enrich-holds.md).
+                var returned = new Dictionary<string, string>(outcome.Returned, StringComparer.Ordinal);
+                foreach (var (key, value) in work.StepKeep)
+                {
+                    returned[key] = value;
+                }
+
+                outcome = outcome with { Returned = returned };
+            }
+
             var (completion, evt, summary) = Classify(state, batch, started, work, outcome, latestSteps, correlation.Id, verdicts[i]);
             completion = completion with { UnitId = work.Unit?.Id, Superseded = outcome.Succeeded ? outcome.Superseded : [] };
             settled.Add((index, state, work, outcome, completion, evt, summary));

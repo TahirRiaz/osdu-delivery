@@ -218,7 +218,8 @@ public sealed class StepFilesChainTests
         var flow = Flow(folder);
         var step = FilesStep(files: flow.Enrich![0].Files) with { Step = flow.Enrich[0] };
         var record = Record("a", 1, ("lasfile", rows));
-        return EnrichParts.Resolve(flow, new Dictionary<string, string>(StringComparer.Ordinal), record, Chain(step).Render(record), [step], state, hasPayload);
+        var (render, hold, _) = EnrichParts.Resolve(flow, new Dictionary<string, string>(StringComparer.Ordinal), record, Chain(step).Render(record), [step], state, hasPayload);
+        return (render, hold);
     }
 
     /// <summary>The record as the ledger holds it once <paramref name="delivered"/> landed: its hash, and the parts its delivery kept.</summary>
