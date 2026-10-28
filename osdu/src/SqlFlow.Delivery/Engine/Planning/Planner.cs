@@ -758,9 +758,22 @@ public sealed class Planner
                 payloadHash = CompositePayload.HashOf(resolution.Parts.Select(r => r.Part));
                 payloadModified = resolution.Parts.Select(r => r.Modified).Where(m => m is not null).Max();
             }
+            else if (payload is not null && PayloadRow(record, payload) is var (payloadRow, rowProblem) && (rowProblem is not null || payloadRow is null))
+            {
+                // A payload a step supplies (osdu/docs/reference/flow/enrich-bulk.md) is named by the step's one row: a record with
+                // none has no payload, and one with several is held, since it has one set of bulk data.
+                if (rowProblem is not null)
+                {
+                    entries.Add(basis with { Reason = rowProblem });
+                    continue;
+                }
+
+                hasPayload = false;
+            }
             else if (payload is not null)
             {
-                var resolution = PayloadLocations.Resolve(flow, header.Parameters, record.Row, payloadName!);
+                var row = PayloadRow(record, payload).Row!;
+                var resolution = PayloadLocations.Resolve(flow, header.Parameters, row, payloadName!);
                 if (resolution.Refusal is { } problem)
                 {
                     entries.Add(basis with { Reason = problem });
@@ -781,11 +794,11 @@ public sealed class Planner
                     chunkCount = files.Count;
                     payloadModified = files.ModifiedUtc;
                     // A declared content hash stays the final check; without one the files' names, sizes and times are the payload's identity.
-                    payloadHash = payload.HashColumn is { } hashColumn ? record.Row.GetString(hashColumn) : files.Signature;
+                    payloadHash = payload.HashColumn is { } hashColumn ? row.GetString(hashColumn) : files.Signature;
                 }
                 else
                 {
-                    payloadHash = record.Row.GetString(payload.HashColumn!);
+                    payloadHash = row.GetString(payload.HashColumn!);
                 }
 
                 if (string.IsNullOrWhiteSpace(payloadHash))
@@ -1131,7 +1144,7 @@ public sealed class Planner
             // The record row can declare how many files the payload has, which spares a storage listing per
             // record here (the drain lists them when it streams them anyway); without it they are listed. A
             // payload carried over from the queue was prepared by an earlier read, so its count is listed too.
-            chunkCount ??= carriedPayload ? null : DeclaredChunkCount(payload!, record.Row);
+            chunkCount ??= carriedPayload ? null : DeclaredChunkCount(payload!, PayloadRow(record, payload!).Row ?? record.Row);
             if (chunkCount is null)
             {
                 var files = await _payloads.ListAsync(payloadLocation!.Value.Folder, payloadLocation.Value.Pattern, ct).ConfigureAwait(false);
@@ -1315,6 +1328,28 @@ public sealed class Planner
         }
 
         return (total, null);
+    }
+
+    /// <summary>
+    /// The row that names <paramref name="payload"/>'s files for <paramref name="record"/>: the record's own, or for a payload a
+    /// step supplies (osdu/docs/reference/flow/enrich-bulk.md) the step's one row, none when the record has no row of it; or why
+    /// the record is held, for a record with several rows of the step.
+    /// </summary>
+    private static (SourceRow? Row, string? Problem) PayloadRow(SourceRecord record, FlowPayload payload)
+    {
+        if (payload.Step is not { } step)
+        {
+            return (record.Row, null);
+        }
+
+        var rows = record.ScopeRows(step);
+        return rows.Count switch
+        {
+            0 => (null, null),
+            1 => (rows[0], null),
+            _ => (null, string.Create(CultureInfo.InvariantCulture,
+                $"enrich.{step}: the step names the record's bulk data by its one row, and its dataset holds {rows.Count} rows for this record; join it on more columns, so each record has one")),
+        };
     }
 
     private static int? DeclaredChunkCount(FlowPayload payload, SourceRow row)

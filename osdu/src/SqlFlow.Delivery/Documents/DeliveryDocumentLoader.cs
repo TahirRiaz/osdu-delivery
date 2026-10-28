@@ -800,6 +800,41 @@ internal static partial class FlowMapper
             mappedSource = mappedSource with { Datasets = datasets };
         }
 
+        // A step's bulk data is the record's payload set bulk, read from the step's row (osdu/docs/reference/flow/enrich-bulk.md).
+        if (enrich?.Where(s => s.Bulk is not null).ToList() is { Count: > 0 } suppliers)
+        {
+            var names = string.Join(", ", suppliers.Select(s => s.Name));
+            if (suppliers.Count > 1)
+            {
+                throw new FlowValidationException($"{source}: {paths.Enrich} steps {names} each supply bulk data, and a record has one set of it; let one step supply it.");
+            }
+
+            var supplier = suppliers[0];
+            if (protocol != DeliveryProtocol.Ddms)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {paths.Enrich}.{supplier.Name}.bulk is the record's DDMS bulk data, which the ddms route sends as the record's payload, and this flow's route is {DeliveryProtocols.Name(protocol)}. "
+                    + "A route that sends files and bulk data as parts (fileAndDdms, manifestAndDdms) reads both from the record's row under source.payloads; another route sends no bulk data.");
+            }
+
+            if (mappedSource.Payloads.Count > 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {paths.Enrich}.{supplier.Name}.bulk is the record's bulk data, and {string.Join(", ", mappedSource.Payloads.Keys.Select(paths.Payload))} names its payload already; the record's payload comes from one place, so declare it once.");
+            }
+
+            if (options.Payload is { } named && !string.Equals(named, PayloadParts.Bulk, StringComparison.Ordinal))
+            {
+                throw new FlowValidationException(
+                    $"{source}: target.protocolOptions.payload names '{named}', and the step {supplier.Name} supplies the payload set {PayloadParts.Bulk}; remove target.protocolOptions.payload, or name {PayloadParts.Bulk}.");
+            }
+
+            mappedSource = mappedSource with
+            {
+                Payloads = new Dictionary<string, FlowPayload>(StringComparer.Ordinal) { [PayloadParts.Bulk] = supplier.Bulk! },
+            };
+        }
+
         var flow = new FlowDefinition
         {
             SourcePath = source == "<inline>" ? null : source,
@@ -919,10 +954,10 @@ internal static partial class FlowMapper
 
             var y = written ?? throw Missing(step + ".mapping", source);
             var mapping = Optional(y.Mapping);
-            if (mapping is null && y.Files is null)
+            if (mapping is null && y.Files is null && y.Bulk is null && y.Workflow is null)
             {
                 throw new FlowValidationException(
-                    $"{source}: {step} declares neither a mapping nor files, so it adds nothing to the record; pin the fragment it renders under {step}.mapping, or declare the files it registers under {step}.files.");
+                    $"{source}: {step} declares neither a mapping nor files nor bulk data nor a workflow, so it does nothing for the record; pin the fragment it renders under {step}.mapping, declare the files it registers under {step}.files, the record's bulk data under {step}.bulk, or the workflow it runs under {step}.workflow.");
             }
 
             if (mapping is not null && !mapping.Contains('@', StringComparison.Ordinal))
@@ -967,6 +1002,14 @@ internal static partial class FlowMapper
                 files = MapStepFiles(declaredFiles, rows, step + ".files", source);
             }
 
+            FlowPayload? bulk = null;
+            if (y.Bulk is { } declaredBulk)
+            {
+                bulk = MapStepBulk(declaredBulk, y.Dataset is not null, rows, name, step + ".bulk", source);
+            }
+
+            var workflow = y.Workflow is { } declaredWorkflow ? MapStepWorkflow(declaredWorkflow, step + ".workflow", source) : null;
+
             var onHold = y.OnHold?.Trim() switch
             {
                 null => EnrichHold.Record,
@@ -986,6 +1029,8 @@ internal static partial class FlowMapper
                 ReadsRows = y.Dataset is not null,
                 Rows = rows,
                 OnHold = onHold,
+                Bulk = bulk,
+                Workflow = workflow,
             });
         }
 
@@ -1078,6 +1123,41 @@ internal static partial class FlowMapper
             Link = link,
             ContentType = Optional(declared.ContentType),
         };
+    }
+
+    /// <summary>
+    /// The bulk data a step supplies (osdu/docs/reference/flow/enrich-bulk.md): a payload set read from the step's one row, so
+    /// the step declares a dataset and takes one row per record. Its columns are the step table's.
+    /// </summary>
+    private static FlowPayload MapStepBulk(FlowPayloadYaml declared, bool readsRows, EnrichRows rows, string name, string at, string source)
+    {
+        if (!readsRows)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at} names the files of the record's bulk data by the step's row, and the step declares no dataset, so it has no row to name them; declare its dataset.");
+        }
+
+        if (rows == EnrichRows.Many)
+        {
+            throw new FlowValidationException(
+                $"{source}: {at} is the record's bulk data, of which a record has one, and the step takes many rows (rows: many); a step supplying bulk data takes one row per record.");
+        }
+
+        var payload = new FlowPayload
+        {
+            Root = Require(declared.Root, at + ".root", source),
+            LocationColumn = Require(declared.LocationColumn, at + ".locationColumn", source),
+            Pattern = Optional(declared.Pattern) ?? FlowPayload.DefaultPattern,
+            HashColumn = Optional(declared.HashColumn),
+            ChunkCountColumn = Optional(declared.ChunkCountColumn),
+            Step = name,
+        };
+        foreach (var column in new[] { payload.LocationColumn, payload.HashColumn, payload.ChunkCountColumn }.OfType<string>())
+        {
+            CheckColumn(column, at, source);
+        }
+
+        return payload;
     }
 
     /// <summary>

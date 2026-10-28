@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { effectValueText, enrichOutcomeText } from "../src/features/delivery/enrichSteps.ts";
+import { effectValueText, enrichOutcomeText, suppliesText } from "../src/features/delivery/enrichSteps.ts";
 
 describe("a step's outcome", () => {
   it("says how many rows the record had and how many changes the step made", () => {
@@ -39,5 +39,14 @@ describe("a value a step wrote", () => {
   it("is cut to a line, and nothing when the preview left the values out", () => {
     assert.equal(effectValueText("x".repeat(200), 10), `${"x".repeat(9)}…`);
     assert.equal(effectValueText(undefined), null);
+  });
+});
+
+describe("what a step does beside its fragment", () => {
+  it("names its files, the record's bulk data and its workflow, and nothing for a fragment alone", () => {
+    assert.equal(suppliesText(["files", "workflow"]), "files, workflow");
+    assert.equal(suppliesText(["bulk"]), "bulk data");
+    assert.equal(suppliesText([]), null);
+    assert.equal(suppliesText(undefined), null);
   });
 });
