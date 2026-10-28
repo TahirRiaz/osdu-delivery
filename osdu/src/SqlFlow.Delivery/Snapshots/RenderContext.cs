@@ -272,6 +272,12 @@ public sealed record RenderStep(
     /// </summary>
     public bool SetAsideOnHold { get; init; }
 
+    /// <summary>True for a step that supplies the record's bulk data (osdu/docs/reference/flow/enrich-bulk.md), named by its one row.</summary>
+    public bool SuppliesBulk { get; init; }
+
+    /// <summary>True for a step that runs a workflow over the record (osdu/docs/reference/flow/enrich-workflow.md).</summary>
+    public bool RunsWorkflow { get; init; }
+
     internal JsonObject Node()
     {
         var parameters = new JsonObject();
@@ -306,6 +312,16 @@ public sealed record RenderStep(
             node["onHold"] = "step";
         }
 
+        if (SuppliesBulk)
+        {
+            node["bulk"] = true;
+        }
+
+        if (RunsWorkflow)
+        {
+            node["workflow"] = true;
+        }
+
         return node;
     }
 
@@ -313,9 +329,9 @@ public sealed record RenderStep(
     {
         if (node is not JsonObject step
             || step["name"]?.GetValue<string>() is not { Length: > 0 } name
-            || (step["mapping"] is null && step["files"] is null))
+            || (step["mapping"] is null && step["files"] is null && step["bulk"] is null && step["workflow"] is null))
         {
-            throw new DeliveryException($"Render context enrich[{index}] is not a step with a name and a mapping or files.");
+            throw new DeliveryException($"Render context enrich[{index}] is not a step with a name and a mapping, files, bulk data or a workflow.");
         }
 
         var mapping = step["mapping"]?.GetValue<string>();
@@ -333,6 +349,8 @@ public sealed record RenderStep(
         {
             Files = step["files"] is JsonObject files ? CanonicalJson.ToString(files) : null,
             SetAsideOnHold = step["onHold"]?.GetValue<string>() == "step",
+            SuppliesBulk = step["bulk"]?.GetValue<bool>() == true,
+            RunsWorkflow = step["workflow"]?.GetValue<bool>() == true,
         };
     }
 }

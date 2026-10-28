@@ -42,3 +42,9 @@ export function effectValueText(value: unknown, max = 120): string | null {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
+
+/** What a step does beside a fragment, as the steps table names it: its files, the record's bulk data, its workflow. */
+export function suppliesText(supplies: readonly string[] | undefined): string | null {
+  const names = (supplies ?? []).map((supply) => (supply === "files" ? "files" : supply === "bulk" ? "bulk data" : supply === "workflow" ? "workflow" : supply));
+  return names.length === 0 ? null : names.join(", ");
+}

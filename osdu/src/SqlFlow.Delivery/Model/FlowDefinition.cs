@@ -438,6 +438,20 @@ public sealed record EnrichStep
     public EnrichRows Rows { get; init; } = EnrichRows.One;
 
     /// <summary>
+    /// The record's DDMS bulk data, from the step's one row (<c>enrich.&lt;name&gt;.bulk</c>, osdu/docs/reference/flow/enrich-bulk.md):
+    /// the flow's route sends it as the record's payload, which is the flow's payload set <c>bulk</c>, read from the step's row;
+    /// null for a step that supplies none.
+    /// </summary>
+    public FlowPayload? Bulk { get; init; }
+
+    /// <summary>
+    /// The workflow the step runs over the record once the record and the step's datasets landed (<c>enrich.&lt;name&gt;.workflow</c>,
+    /// osdu/docs/reference/flow/enrich-workflow.md): stages, results, secrets and when it runs, as the workflow route declares
+    /// them, over the record the flow's route wrote; null for a step that runs none.
+    /// </summary>
+    public WorkflowRoute? Workflow { get; init; }
+
+    /// <summary>
     /// What the step's hold does (<c>enrich.&lt;name&gt;.onHold</c>, osdu/docs/reference/flow/enrich-holds.md): hold the
     /// record, or set the step aside, the record going ahead with what the step added to its last delivery.
     /// </summary>
@@ -537,6 +551,13 @@ public sealed record FlowPayload
 
     /// <summary>The record column holding how many files the payload has, which spares a listing when planning.</summary>
     public string? ChunkCountColumn { get; init; }
+
+    /// <summary>
+    /// The step of <c>enrich:</c> whose one row names the files, for the bulk data a step supplies
+    /// (<c>enrich.&lt;name&gt;.bulk</c>, osdu/docs/reference/flow/enrich-bulk.md): its columns are the step table's, and a record
+    /// without a row of the step has no payload. Null for a payload set the record's own row names.
+    /// </summary>
+    public string? Step { get; init; }
 }
 
 /// <summary>The names of SQLFlow's system columns an ingestion table carries.</summary>

@@ -87,6 +87,12 @@ internal sealed class EnrichStepYaml
 
     /// <summary>What the step's hold does: <c>record</c> (the default) holds the record, <c>step</c> sets the step aside.</summary>
     public string? OnHold { get; set; }
+
+    /// <summary>The record's DDMS bulk data, named by the step's one row, as a payload set declares files.</summary>
+    public FlowPayloadYaml? Bulk { get; set; }
+
+    /// <summary>The workflow the step runs over the record once it and the step's datasets landed, as target.workflow declares one.</summary>
+    public WorkflowYaml? Workflow { get; set; }
 }
 
 /// <summary>The files a step registers (osdu/docs/reference/flow/enrich-files.md): where each row's files are, and what they become.</summary>

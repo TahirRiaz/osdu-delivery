@@ -164,7 +164,7 @@ public sealed class RecordPreviewer
 
             var targetState = decided.Existing?.TargetStateJson is { } state ? JsonMerge.ToValues(state) : null;
             rehearsal = RouteRehearsal.Rehearse(flow, render.Document, render.TargetId, payload, targetState);
-            document = Document(render, resolved.Mapping.Kind, rehearsal);
+            document = Document(render, resolved.Mapping.Kind, rehearsal, flow.Enrich ?? []);
         }
 
         var preview = new RecordPreview
@@ -509,7 +509,7 @@ public sealed class RecordPreviewer
         };
 
     /// <summary>The record's document whole, as rendered and as the route sends it; <see cref="Bound"/> decides what is shown of it.</summary>
-    private static PreviewDocument Document(RenderResult render, string kind, RehearsedRoute rehearsal)
+    private static PreviewDocument Document(RenderResult render, string kind, RehearsedRoute rehearsal, IReadOnlyList<EnrichStep> steps)
         => new()
         {
             TargetId = render.TargetId,
@@ -535,7 +535,9 @@ public sealed class RecordPreviewer
                 .Order(StringComparer.Ordinal)
                 .ToList(),
             Assertions = render.Assertions,
-            Enrichment = render.Enrichment.Select(PreviewEnrichStep.Of).ToList(),
+            Enrichment = render.Enrichment
+                .Select(c => PreviewEnrichStep.Of(c) with { Supplies = PreviewEnrichStep.SuppliesOf(steps.FirstOrDefault(s => s.Name == c.Step)) })
+                .ToList(),
         };
 
     /// <summary>

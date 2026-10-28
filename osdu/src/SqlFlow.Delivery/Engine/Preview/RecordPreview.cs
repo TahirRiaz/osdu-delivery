@@ -320,6 +320,40 @@ public sealed record PreviewEnrichStep
     /// <summary>For a step set aside, the datasets its last delivery registered, which the record keeps linking.</summary>
     public IReadOnlyList<string> KeptDatasets { get; init; } = [];
 
+    /// <summary>
+    /// What the step does beside rendering a fragment, in the order it does it: <c>files</c> it registers as datasets
+    /// (osdu/docs/reference/flow/enrich-files.md), the record's <c>bulk</c> data (enrich-bulk.md), a <c>workflow</c> it runs
+    /// (enrich-workflow.md); empty for a step that renders a fragment alone.
+    /// </summary>
+    public IReadOnlyList<string> Supplies { get; init; } = [];
+
+    /// <summary>What <paramref name="step"/> does beside its fragment, as <see cref="Supplies"/> names it; none for a step not found.</summary>
+    public static IReadOnlyList<string> SuppliesOf(Model.EnrichStep? step)
+    {
+        if (step is null)
+        {
+            return [];
+        }
+
+        var supplies = new List<string>(3);
+        if (step.Files is not null)
+        {
+            supplies.Add("files");
+        }
+
+        if (step.Bulk is not null)
+        {
+            supplies.Add("bulk");
+        }
+
+        if (step.Workflow is not null)
+        {
+            supplies.Add("workflow");
+        }
+
+        return supplies;
+    }
+
     /// <summary>The preview of what <paramref name="contribution"/> says.</summary>
     public static PreviewEnrichStep Of(Rendering.StepContribution contribution)
     {

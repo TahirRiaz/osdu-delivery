@@ -79,7 +79,7 @@ public sealed class StepFilesDocumentTests
     public void A_step_declaring_neither_a_mapping_nor_files_adds_nothing_and_is_refused()
     {
         var refused = Refused("  lasfile:\n" + Dataset);
-        Assert.Contains("enrich.lasfile declares neither a mapping nor files", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("enrich.lasfile declares neither a mapping nor files nor bulk data", refused.Message, StringComparison.Ordinal);
     }
 
     [Fact]

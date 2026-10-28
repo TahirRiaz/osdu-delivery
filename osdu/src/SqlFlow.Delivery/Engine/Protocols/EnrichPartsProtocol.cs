@@ -33,13 +33,16 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
     private readonly OsduRecordProtocol _records;
     private readonly long _requestBodyCeiling;
     private readonly TimeProvider _time;
+    private readonly IReadOnlyList<StepWorkflow> _workflows;
 
     /// <param name="inner">The flow's own route, which writes the record.</param>
     /// <param name="client">The flow's client, under its endpoint, credentials and partition.</param>
     /// <param name="options">The flow's route options: the Dataset service's paths and the media type files go as.</param>
     /// <param name="requestBodyCeiling">The largest file one upload sends, or 0 for no ceiling.</param>
     /// <param name="time">The clock the steps are timed by.</param>
-    public EnrichPartsProtocol(IDeliveryProtocol inner, OsduHttpClient client, ProtocolOptions options, long requestBodyCeiling = 0, TimeProvider? time = null)
+    /// <param name="workflows">The workflows the flow's steps run over each record once it landed (osdu/docs/reference/flow/enrich-workflow.md).</param>
+    public EnrichPartsProtocol(
+        IDeliveryProtocol inner, OsduHttpClient client, ProtocolOptions options, long requestBodyCeiling = 0, TimeProvider? time = null, IReadOnlyList<StepWorkflow>? workflows = null)
     {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentNullException.ThrowIfNull(client);
@@ -51,7 +54,11 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
         _time = time ?? TimeProvider.System;
         _records = new OsduRecordProtocol(client, options, _time);
         _requestBodyCeiling = requestBodyCeiling;
+        _workflows = workflows ?? [];
     }
+
+    /// <summary>The workflows the flow's steps run over each record, by step.</summary>
+    public IReadOnlyList<StepWorkflow> Workflows => _workflows;
 
     /// <summary>The flow's own route, which this one wraps.</summary>
     public IDeliveryProtocol Inner => _inner;
@@ -119,7 +126,75 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
             }
         }
 
-        return plans.Select(p => p.Outcome()).ToList();
+        // The steps' workflows run over each record once it and the step's datasets landed, one after another.
+        foreach (var plan in plans.Where(p => p.Failure is null && p.Written is not { Failure: not null }))
+        {
+            foreach (var workflow in _workflows.Where(w => Due(plan, w)))
+            {
+                var outcome = await RunAsync(plan, workflow, ct).ConfigureAwait(false);
+                plan.Workflows.Add((workflow, outcome));
+                if (outcome.Failure is not null)
+                {
+                    break;
+                }
+            }
+        }
+
+        return plans.Select(p => p.Finish(p.Outcome())).ToList();
+    }
+
+    /// <summary>
+    /// Whether a step's workflow runs for a record in this delivery (osdu/docs/reference/flow/enrich-workflow.md): <c>changed</c>
+    /// when the step's datasets were registered (or, for a step registering none, the record was written), <c>created</c> when
+    /// the record was created, <c>requested</c> when a redelivery named the workflow; and every one when the whole record was
+    /// asked to be sent again, or never was.
+    /// </summary>
+    private static bool Due(Plan plan, StepWorkflow workflow)
+    {
+        var work = plan.Work;
+        var named = work.Forces(PayloadParts.Workflow);
+        var resent = work.StepPartsForced;
+        return workflow.RunWhen switch
+        {
+            WorkflowRunWhen.Created => named || work.ExistingVersion is null,
+            WorkflowRunWhen.Requested => named || (resent && work.ExistingVersion is not null),
+            _ => named || resent
+                || (workflow.RegistersFiles
+                    ? plan.Registered.Any(p => string.Equals(p.Step, workflow.Step, StringComparison.Ordinal))
+                    : plan.Written is { MetadataDelivered: true }),
+        };
+    }
+
+    /// <summary>
+    /// Runs a step's workflow over the record, through the workflow route itself: its stages triggered and polled, its results
+    /// found, nothing written of the record. Every step it reports, and every artifact, is named under the step
+    /// (<c>enrich.&lt;step&gt;.</c>), so two steps' runs never share a name, and a retry resumes after what the run completed.
+    /// </summary>
+    private static async Task<DeliveryOutcome> RunAsync(Plan plan, StepWorkflow workflow, CancellationToken ct)
+    {
+        var prefix = workflow.Prefix;
+        var outer = plan.Work;
+        var report = outer.StepCompleted;
+        var run = outer with
+        {
+            DeliverMetadata = false,
+            DeliverPayload = true,
+            Payload = null,
+            Parts = [],
+            ForcedParts = new HashSet<string>([PayloadParts.Workflow], StringComparer.Ordinal),
+            StepParts = [],
+            StepKeep = new Dictionary<string, string>(StringComparer.Ordinal),
+            ExistingVersion = plan.Written?.TargetVersion ?? outer.ExistingVersion,
+            RestoreFirst = false,
+            TargetState = outer.TargetState.Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .ToDictionary(kv => kv.Key[prefix.Length..], kv => kv.Value, StringComparer.Ordinal),
+            CompletedSteps = outer.CompletedSteps.Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .ToDictionary(kv => kv.Key[prefix.Length..], kv => kv.Value, StringComparer.Ordinal),
+            StepCompleted = report is null
+                ? null
+                : (step, token) => report(step with { Step = prefix + step.Step, Artifacts = step.Artifacts.Select(a => a with { Slot = prefix + a.Slot }).ToList() }, token),
+        };
+        return await workflow.Route.DeliverAsync(run, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -293,6 +368,23 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         var outcome = await _inner.DeleteAsync(targetId, scope, targetState, ct).ConfigureAwait(false);
+        if (scope != RemovalScope.History)
+        {
+            // What each step's workflow runs created for the record goes with it, as the workflow route takes its runs' records.
+            foreach (var workflow in _workflows)
+            {
+                var kept = (targetState ?? new Dictionary<string, string>(StringComparer.Ordinal))
+                    .Where(kv => kv.Key.StartsWith(workflow.Prefix, StringComparison.Ordinal))
+                    .ToDictionary(kv => kv.Key[workflow.Prefix.Length..], kv => kv.Value, StringComparer.Ordinal);
+                var (removed, notes) = await workflow.Route.RemoveCreatedAsync(targetId, scope, kept, ct).ConfigureAwait(false);
+                outcome = outcome with
+                {
+                    Deleted = outcome.Deleted || removed > 0,
+                    Detail = string.Join("; ", [outcome.Detail, .. notes.Select(n => $"enrich.{workflow.Step}: {n}")]),
+                };
+            }
+        }
+
         var datasets = EnrichParts.Datasets(targetState);
         if (scope != RemovalScope.Everything || datasets.Count == 0)
         {
@@ -316,7 +408,8 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
     public Task<IReadOnlyList<RemovalResult>> DeleteBatchAsync(IReadOnlyList<RecordRemoval> removals, RemovalScope scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(removals);
-        return scope == RemovalScope.Everything && removals.Any(r => EnrichParts.Datasets(r.TargetState).Count > 0)
+        return (scope == RemovalScope.Everything && removals.Any(r => EnrichParts.Datasets(r.TargetState).Count > 0))
+            || (scope != RemovalScope.History && _workflows.Count > 0)
             ? ((IDeliveryProtocol)this).DeleteOneByOneAsync(removals, scope, ct)
             : _inner.DeleteBatchAsync(removals, scope, ct);
     }
@@ -333,13 +426,30 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
     public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
         => _inner.ReadVersionAsync(targetId, version, ct);
 
-    /// <summary>The flow's own services as its route asks them, then the Dataset service the steps register their files through.</summary>
+    /// <summary>
+    /// The flow's own services as its route asks them, then the Dataset service the steps register their files through, then the
+    /// Workflow service and the workflows each step's stages name, as the workflow route asks them.
+    /// </summary>
     public async Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
     {
-        var inner = await _inner.ProbeAsync(ct).ConfigureAwait(false);
-        return inner.Reachable
-            ? await RecordWriter.ProbeAsync(_client, DatasetService.DefaultProbePath, ct).ConfigureAwait(false)
-            : inner;
+        var probe = await _inner.ProbeAsync(ct).ConfigureAwait(false);
+        if (!probe.Reachable)
+        {
+            return probe;
+        }
+
+        probe = await RecordWriter.ProbeAsync(_client, DatasetService.DefaultProbePath, ct).ConfigureAwait(false);
+        foreach (var workflow in _workflows)
+        {
+            if (!probe.Reachable)
+            {
+                return probe;
+            }
+
+            probe = await workflow.Route.ProbeAsync(ct).ConfigureAwait(false);
+        }
+
+        return probe;
     }
 
     /// <summary>
@@ -369,7 +479,25 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
                 results.AddRange(await ArtifactUndo.RecordItselfAsync(work with { KeepRecord = false }, datasets, side, ct).ConfigureAwait(false));
             }
 
-            var others = work.Items.Except(datasets).ToList();
+            // What a step's workflow left (its runs, the records they created) is the workflow route's to undo, under the names it
+            // reported them by; the results carry the items as the ledger holds them.
+            var claimed = new List<UndoItem>(datasets);
+            foreach (var workflow in _workflows)
+            {
+                var items = work.Items.Where(i => i.Artifact.Slot.StartsWith(workflow.Prefix, StringComparison.Ordinal)).ToList();
+                if (items.Count == 0)
+                {
+                    continue;
+                }
+
+                claimed.AddRange(items);
+                var originals = items.ToDictionary(i => i.ArtifactId);
+                var named = items.Select(i => i with { Artifact = i.Artifact with { Slot = i.Artifact.Slot[workflow.Prefix.Length..] } }).ToList();
+                var undone = await workflow.Route.UndoAsync([work with { Items = named }], ct).ConfigureAwait(false);
+                results.AddRange(undone.Select(r => r with { Item = originals[r.Item.ArtifactId] }));
+            }
+
+            var others = work.Items.Except(claimed).ToList();
             if (others.Count > 0)
             {
                 rest.Add(work with { Items = others });
@@ -410,6 +538,64 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
         public DeliveryOutcome? Written { get; set; }
 
         public Exception? Failure { get; set; }
+
+        /// <summary>The steps' workflows that ran over the record in this delivery, each with what it came to.</summary>
+        public List<(StepWorkflow Workflow, DeliveryOutcome Outcome)> Workflows { get; } = [];
+
+        /// <summary>
+        /// The record's outcome with what its steps' workflows came to: a failed run fails the record, as the workflow route's
+        /// does; a finished one's steps and returned values are kept under the step, and the version OSDU serves once the runs
+        /// are done is the record's, since a workflow may write the record itself.
+        /// </summary>
+        public DeliveryOutcome Finish(DeliveryOutcome outcome)
+        {
+            if (Workflows.Count == 0 || !outcome.Succeeded)
+            {
+                return outcome;
+            }
+
+            var steps = outcome.Steps.ToList();
+            var returned = new Dictionary<string, string>(outcome.Returned, StringComparer.Ordinal);
+            var version = outcome.TargetVersion;
+            var detail = new List<string>();
+            if (outcome.Detail is { Length: > 0 } own)
+            {
+                detail.Add(own);
+            }
+
+            foreach (var (workflow, ran) in Workflows)
+            {
+                steps.AddRange(ran.Steps.Select(s => s with { Name = workflow.Prefix + s.Name }));
+                if (ran.Failure is { } failure)
+                {
+                    return DeliveryOutcome.Failed(new DeliveryException($"enrich.{workflow.Step}: its workflow did not finish: {failure.Message}", failure), steps);
+                }
+
+                foreach (var (name, value) in ran.Returned)
+                {
+                    if (name == "version" && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var read))
+                    {
+                        version = read;
+                        returned["version"] = value;
+                    }
+                    else if (name != "recordId")
+                    {
+                        returned[workflow.Prefix + name] = value;
+                    }
+                }
+
+                detail.Add($"enrich.{workflow.Step}: {ran.Detail}");
+            }
+
+            return outcome with
+            {
+                Steps = steps,
+                Returned = returned,
+                TargetVersion = version,
+                PayloadDelivered = true,
+                Detail = string.Join("; ", detail),
+            };
+        }
 
         /// <summary>The hash of the record's document as the flow's route writes it, its parts left out.</summary>
         public string DocumentHash => ContentHash.Of(CanonicalJson.ToString(Work.Document));
@@ -498,4 +684,19 @@ public sealed class EnrichPartsProtocol : IDeliveryProtocol
             };
         }
     }
+}
+
+/// <summary>
+/// The workflow one step of <c>enrich:</c> runs over each record once it landed (osdu/docs/reference/flow/enrich-workflow.md):
+/// the step, when it runs, whether the step registers files (whose registration then says the run is due), and the workflow
+/// route that runs it over the record without writing it.
+/// </summary>
+/// <param name="Step">The step's name.</param>
+/// <param name="RunWhen">When the workflow runs.</param>
+/// <param name="RegistersFiles">True when the step registers files, whose registration makes a <c>changed</c> run due.</param>
+/// <param name="Route">The workflow route over the step's workflow, anchored on the record the flow's route writes.</param>
+public sealed record StepWorkflow(string Step, WorkflowRunWhen RunWhen, bool RegistersFiles, OsduWorkflowProtocol Route)
+{
+    /// <summary>What the record's steps, values and artifacts of this step's runs are named under: <c>enrich.&lt;step&gt;.</c>.</summary>
+    public string Prefix => "enrich." + Step + ".";
 }
