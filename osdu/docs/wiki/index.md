@@ -233,6 +233,11 @@ other packages adopt the same contract.
   why every request carries `correlation-id: osdu-delivery-<repository>-<operation>-<run id>`, why that header and no
   other, why the id is the run's rather than a try's, and why the repository's code is a document at its root rather than
   a key of every flow or a setting of the control plane.
+- [0038: a download flow writes each record to a file named after its id, and its ledger keeps the version each file holds](decisions/0038-download-flow.md) -
+  why records go to a folder a file each through a flow kind of its own rather than an option of the retrieval flow, why
+  the id becomes the file name by a rule that turns back (`:` as `~`, `%` as `=`) rather than an underscore or
+  percent-encoding, why a name its case or length cannot carry is named by the id's hash, and why the ledger keeps the
+  version each file holds.
 
 ## Coverage
 

@@ -8,11 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A download flow writes every record of OSDU kinds to a folder, a JSON file each named after its id.** A new flow kind,
+  `flowType: download`, lists its kinds as an inventory does and writes each record's metadata as storage holds it to a local
+  folder or Azure Storage, `dev:master-data--Wellbore:WB-1` as `dev~master-data--Wellbore~WB-1.json`; its ledger keeps the
+  version each file holds, so a run writes only what is new or changed, and the flow's Downloads tab lists every record with
+  its file ([download flow](osdu/docs/reference/flow/download.md)).
+
 - **Every OSDU request says what sent it.** Each request carries `correlation-id: osdu-delivery-<repository>-<operation>-<run id>`,
   which OSDU's services log with everything they do for it, so a run, or every run of a repository or a flow, can be
   found in the platform's logs by the value or a prefix of it. The repository's code is a new document at its root,
   `osdu-delivery.yaml` (`documentType: repository`, `code: wl`), and a flow names its operation code with
-  `telemetry.operation`, or takes its kind's (`dlv`, `cache`, `ret`, `ast`, `dim`, `inv`, `rmv`). The product's own
+  `telemetry.operation`, or takes its kind's (`dlv`, `cache`, `ret`, `ast`, `dim`, `inv`, `rmv`, `dwn`). The product's own
   operations carry `osdu-delivery-<operation>-<id>` (`explore`, `probe`, `read`, ...), and a run's log says what its
   requests carry ([request correlation](osdu/docs/reference/concepts/request-correlation.md),
   [the repository document](osdu/docs/reference/flow/repository.md)).

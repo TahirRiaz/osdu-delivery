@@ -353,7 +353,7 @@ matched without regard to case. A name the flow does not declare for the partiti
 `payload types names 'Well', which cache flow 'osdu-reference-00-cache' does not declare for partition 'dev'; it declares
 UnitOfMeasure, LogCurveType, WellLogSamplingDomainType.` In the GUI, the run dialog of a cache flow lists its types to
 pick from; none picked refreshes every one. The payload takes nothing else beside the configuration the control plane
-supplies (`payload force does not apply to a cache flow: only delivery and retrieval runs force; a cache flow's payload names only types.`),
+supplies (`payload force does not apply to a cache flow: only delivery, retrieval and download runs force; a cache flow's payload names only types.`),
 and a cache run takes none of SQLFlow's per-run overrides: `--full`, a backfill window and `--file-pattern` fail with `... do(es) not
 apply to 'cache' flows; a refresh sweeps every declared type in full.`, with or without a payload.
 

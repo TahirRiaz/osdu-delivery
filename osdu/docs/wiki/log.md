@@ -572,3 +572,11 @@ repository document (`osdu-delivery.yaml`, `documentType: repository`) nearest a
 `osdu-delivery-<operation>-<id>`. [0037](decisions/0037-request-correlation.md) records why, and
 [request correlation](../reference/concepts/request-correlation.md) and
 [the repository document](../reference/flow/repository.md) document it.
+
+## [2026-10-29] ingest | The download flow, decision 0038
+
+A new flow kind, `flowType: download`, writes every record of OSDU kinds in a partition to a folder, local or in Azure
+Storage, a JSON file each named after its id (`:` written `~`, `%` written `=`, a name its case or length cannot carry
+named by the id's hash), and keeps in its ledger the version each file holds, so a run writes only what is new or
+changed. [0038](decisions/0038-download-flow.md) records why, and [the download flow](../reference/flow/download.md)
+documents it; the [pattern catalog](maps/pattern-catalog.md) maps a record per file onto it.

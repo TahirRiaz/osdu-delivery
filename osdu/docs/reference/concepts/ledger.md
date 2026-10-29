@@ -87,7 +87,7 @@ one: the repository sync moves the old ledger to it when only the name changed, 
 until a flow takes it over on the Orphaned ledgers page ([Renaming a pipeline](renaming-a-pipeline.md)).
 
 `osdu.Ledger` is the directory: one row per ledger identity, naming its partition, its kind (`delivery`, `retrieval`,
-`assertion`, `dimension` or `inventory`), its flow and interface. `osdu.LedgerPartition` numbers each partition once, and every ledger table's key
+`assertion`, `dimension`, `inventory` or `download`), its flow and interface. `osdu.LedgerPartition` numbers each partition once, and every ledger table's key
 starts with that two-byte number, so one partition's rows are one range of every clustered index. A run registers its
 ledger in the partition it delivers to before it writes a row; a registration that names another partition than the
 directory holds is refused, naming both. See [Partitions](partitions.md).
