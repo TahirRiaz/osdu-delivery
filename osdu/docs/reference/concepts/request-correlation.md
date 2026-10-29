@@ -139,6 +139,7 @@ Left out, a run carries its kind's code:
 | dimension | `dim` |
 | inventory | `inv` |
 | removal | `rmv` |
+| download | `dwn` |
 
 The code names the flow, not the run's operation: a `plan` and a `deliver` of the same flow carry the same code, and the
 run's id says which run it was. Give a flow a code of its own when its runs must be told apart from its kind's other

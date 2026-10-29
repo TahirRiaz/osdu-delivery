@@ -88,7 +88,7 @@ is [`sqlflow check`](check.md); what needs OSDU or the ingestion tables is the r
 | Dictionary | `documentType: dictionary` | `OK  '<name> (<n> entries, key <key>)' is valid (dictionary).` |
 | Repository document | `documentType: repository` | `OK  '<code>' is valid (repository).` |
 
-The six flow kinds take SQLFlow's envelope keys (`schedule`, `mode`, and the rest SQLFlow documents for every flow) as
+The eight flow kinds take SQLFlow's envelope keys (`schedule`, `mode`, and the rest SQLFlow documents for every flow) as
 any flow does. The mapping, the dictionary and the repository document are companion documents: they are not flows, have no envelope, and are
 reported under their own document type. A `flowType` no kind registers fails with SQLFlow's message, which ends by
 listing the registered kinds (`Registered kinds: 'assertion' for ..., 'cache' for ..., 'delivery' for ..., ...`); a
@@ -356,7 +356,7 @@ SQLFlow's: 0 when the document (or every document of the folder) is valid, 1 oth
 
 - [sqlflow validate](../../../../sqlflow/docs/reference/cli/validate.md): the verb, its folder mode and `--json` report.
 - [sqlflow check](check.md): the mapping against the template its template folders hold and the cache, which needs the module database.
-- [The documents OSDU Delivery adds](../flow/overview.md): the six flow kinds, the mapping and the dictionary.
+- [The documents OSDU Delivery adds](../flow/overview.md): the eight flow kinds, the mapping, the dictionary and the repository document.
 - [Delivery flow](../flow/delivery.md), [The mapping document](../flow/mapping.md), [Cache flow](../flow/cache.md),
   [Dictionary](../flow/dictionary.md): every key each document takes.
 - [CLI conventions](../../../../sqlflow/docs/reference/concepts/cli-conventions.md): options, streams and exit codes shared by every command.
