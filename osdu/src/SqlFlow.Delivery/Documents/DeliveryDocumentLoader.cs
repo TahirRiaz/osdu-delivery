@@ -136,6 +136,7 @@ public sealed class DeliveryDocumentLoader
         DimensionFlowDefinition.FlowTypeName,
         InventoryFlowDefinition.FlowTypeName,
         RemovalFlowDefinition.FlowTypeName,
+        DownloadFlowDefinition.FlowTypeName,
     ];
 
     /// <summary>The discriminator of a document: one of <see cref="FlowTypes"/> for a flow, "mapping", "dictionary" or "repository" for a document.</summary>
@@ -297,6 +298,32 @@ public sealed class DeliveryDocumentLoader
         }
 
         return ParseRemoval(File.ReadAllText(path), path);
+    }
+
+    /// <summary>Parses a download flow document (<c>flowType: download</c>): the records of OSDU kinds, written to a folder a file each.</summary>
+    public DownloadFlowDefinition ParseDownload(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var kind = Probe(yaml, source);
+        if (!kind.Equals(DownloadFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{source}: expected 'flowType: {DownloadFlowDefinition.FlowTypeName}', found '{kind}'.");
+        }
+
+        var y = Deserialize<DownloadFlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        DocumentSecrets.Check(y, source);
+        return DownloadMapper.Map(y, source);
+    }
+
+    public DownloadFlowDefinition LoadDownload(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!File.Exists(path))
+        {
+            throw new FlowValidationException($"Download flow file not found: '{path}'.");
+        }
+
+        return ParseDownload(File.ReadAllText(path), path);
     }
 
     /// <summary>Loads the dictionary file at <paramref name="path"/>, naming it <paramref name="source"/> in every message.</summary>

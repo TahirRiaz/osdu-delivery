@@ -14,6 +14,7 @@ checks for these documents in the GUI's YAML editor, and in the language server 
 | `keys.dimension.json` | A dimension flow, `flowType: dimension`: its source and the dimensions it builds, with their keys, labels, attributes and cleaning. |
 | `keys.inventory.json` | An inventory flow, `flowType: inventory`: its source, the inventories it reads and what a removal may take. |
 | `keys.removal.json` | A removal flow, `flowType: removal`: its guard and its removals, each with the delivery flow it writes to and its key sources (`keys`, `removed`). |
+| `keys.download.json` | A download flow, `flowType: download`: its source, where its files go (`target`) and the downloads it writes. |
 | `keys.mapping.json` | A mapping, `documentType: mapping`: its header and its `record` tree, whose node grammar (every `$` word, modifier and setting) is described on `record.<name>`. |
 | `keys.dictionary.json` | A dictionary, `documentType: dictionary`. |
 | `keys.repository.json` | A repository document, `documentType: repository`: the code a repository's runs carry in their correlation id. |

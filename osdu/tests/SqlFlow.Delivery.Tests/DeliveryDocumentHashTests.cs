@@ -18,6 +18,7 @@ public sealed class DeliveryDocumentHashTests
         { LedgerKinds.Assertion, Path.Combine(Samples.Source, "flows", "welldb-well-04-assertion.yaml") },
         { LedgerKinds.Dimension, Path.Combine(Samples.Source, "flows", "welldb-welllog-05-dimensions.yaml") },
         { LedgerKinds.Inventory, Path.Combine(Samples.Source, "flows", "welldb-osdu-06-inventory.yaml") },
+        { LedgerKinds.Download, Path.Combine(Samples.Source, "flows", "welldb-osdu-07-download.yaml") },
     };
 
     [Theory]

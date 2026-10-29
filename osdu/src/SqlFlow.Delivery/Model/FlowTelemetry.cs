@@ -20,6 +20,8 @@ public static class FlowTelemetry
 
     public const string Removal = "rmv";
 
+    public const string Download = "dwn";
+
     /// <summary>Each flow kind's code, by its <c>flowType</c>.</summary>
     public static IReadOnlyDictionary<string, string> KindOperations { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -30,6 +32,7 @@ public static class FlowTelemetry
         [DimensionFlowDefinition.FlowTypeName] = Dimension,
         [InventoryFlowDefinition.FlowTypeName] = Inventory,
         [RemovalFlowDefinition.FlowTypeName] = Removal,
+        [DownloadFlowDefinition.FlowTypeName] = Download,
     };
 
     /// <summary>The code of the kind <paramref name="flowType"/> names.</summary>

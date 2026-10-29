@@ -189,6 +189,7 @@ public sealed class RequestCorrelationTests : IDisposable
         { DimensionFlowDefinition.FlowTypeName, FlowTelemetry.Dimension },
         { InventoryFlowDefinition.FlowTypeName, FlowTelemetry.Inventory },
         { RemovalFlowDefinition.FlowTypeName, FlowTelemetry.Removal },
+        { DownloadFlowDefinition.FlowTypeName, FlowTelemetry.Download },
     };
 
     public static TheoryData<string> KindNames => new(FlowTelemetry.KindOperations.Keys);
@@ -242,6 +243,7 @@ public sealed class RequestCorrelationTests : IDisposable
     [InlineData(AssertionFlowDefinition.FlowTypeName, "source:\n  endpoint: http://localhost\n", "source.headers")]
     [InlineData(DimensionFlowDefinition.FlowTypeName, "source:\n  endpoint: http://localhost\n", "source.headers")]
     [InlineData(InventoryFlowDefinition.FlowTypeName, "source:\n  endpoint: http://localhost\n", "source.headers")]
+    [InlineData(DownloadFlowDefinition.FlowTypeName, "source:\n  endpoint: http://localhost\n", "source.headers")]
     public void A_flow_never_declares_the_correlation_id_its_runs_set(string kind, string block, string key)
     {
         var header = key == "target.airflow.headers"
@@ -410,6 +412,18 @@ public sealed class RequestCorrelationTests : IDisposable
                   location: ../data/wellbore
                   options: { delimiter: ",", header: true }
             """,
+        [DownloadFlowDefinition.FlowTypeName] = """
+            flowType: download
+            name: wl-download
+            partitions: [dev]
+            source:
+              endpoint: http://localhost
+            target:
+              location: abfss://lake@welldbstorage.dfs.core.windows.net/osdu/records
+            downloads:
+              - name: WellLogs
+                kind: "*:*:work-product-component--WellLog:*"
+            """,
     };
 
     private static IFlowDocumentKind KindOf(string kind) => kind switch
@@ -421,6 +435,7 @@ public sealed class RequestCorrelationTests : IDisposable
         DimensionFlowDefinition.FlowTypeName => new DimensionFlowKind(Loader),
         InventoryFlowDefinition.FlowTypeName => new InventoryFlowKind(Loader),
         RemovalFlowDefinition.FlowTypeName => new RemovalFlowKind(Loader),
+        DownloadFlowDefinition.FlowTypeName => new DownloadFlowKind(Loader),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "not a flow kind of the module"),
     };
 
@@ -433,6 +448,7 @@ public sealed class RequestCorrelationTests : IDisposable
         DimensionFlowDefinition.FlowTypeName => Loader.ParseDimension(yaml, "f.yaml").TelemetryOperation,
         InventoryFlowDefinition.FlowTypeName => Loader.ParseInventory(yaml, "f.yaml").TelemetryOperation,
         RemovalFlowDefinition.FlowTypeName => Loader.ParseRemoval(yaml, "f.yaml").TelemetryOperation,
+        DownloadFlowDefinition.FlowTypeName => Loader.ParseDownload(yaml, "f.yaml").TelemetryOperation,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "not a flow kind of the module"),
     };
 
@@ -453,6 +469,7 @@ public sealed class RequestCorrelationTests : IDisposable
             DimensionFlowDefinition.FlowTypeName => new DimensionExecutor(provider),
             InventoryFlowDefinition.FlowTypeName => new InventoryExecutor(provider),
             RemovalFlowDefinition.FlowTypeName => new RemovalExecutor(provider),
+            DownloadFlowDefinition.FlowTypeName => new DownloadExecutor(provider),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "not a flow kind of the module"),
         };
 
