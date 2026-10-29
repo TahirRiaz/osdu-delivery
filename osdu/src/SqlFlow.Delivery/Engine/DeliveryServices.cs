@@ -73,6 +73,7 @@ public static class DeliveryServices
         services.AddSingleton<IFlowDocumentKind>(sp => sp.GetRequiredService<DeliveryFlowKind>());
         services.AddSingleton<ICompanionDocumentKind>(sp => sp.GetRequiredService<DeliveryFlowKind>());
         services.AddSingleton<ICompanionDocumentKind, DictionaryDocumentKind>();
+        services.AddSingleton<ICompanionDocumentKind, RepositoryDocumentKind>();
         services.AddSingleton<IFlowDocumentKind, RetrievalFlowKind>();
         services.AddSingleton<IFlowDocumentKind, CacheFlowKind>();
         services.AddSingleton<IFlowDocumentKind, AssertionFlowKind>();
