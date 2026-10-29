@@ -47,6 +47,18 @@ description: The well log estate.
 | `code` | string | yes | The repository's code: a lower-case letter, then lower-case letters and digits, at most 16 in all and no hyphen. |
 | `description` | string | no | Free text. |
 
+## What it changes
+
+Only the correlation id of the OSDU requests its flows' runs send. Nothing a flow reads, writes or delivers changes:
+
+| A run of `welldb-welllog-05-dimensions` (a dimension flow, operation code `dim`) | Carries |
+| --- | --- |
+| Under a repository document with `code: wl` | `correlation-id: osdu-delivery-wl-dim-<run id>` |
+| With no repository document above it | `correlation-id: osdu-delivery-dim-<run id>` |
+
+Adding one to a repository takes a file at its root, a `sqlflow validate .`, a commit and a sync
+([setting it up](../concepts/request-correlation.md#setting-it-up-for-a-repository)).
+
 ## Where a flow finds it
 
 A run of any flow kind reads the file nearest its flow's file: `osdu-delivery.yaml` (or `osdu-delivery.yml`) in the
@@ -95,5 +107,6 @@ ERROR  welldb/flows/welldb-welllog-05-dimensions.yaml: ../../osdu-delivery.yaml:
 
 ## See also
 
-- [Request correlation](../concepts/request-correlation.md): the value, the operation codes and where to find a run.
+- [Request correlation](../concepts/request-correlation.md): the whole design, from the value and the operation codes to
+  setting it up, which requests carry it and finding a run in the platform's logs.
 - [Laying out a repository](overview.md#laying-out-a-repository).
