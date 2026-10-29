@@ -200,7 +200,7 @@ public sealed class OfflineCheckTests : IDisposable
         var refused = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().Probe("name: x\n", "flows/x.yaml"));
 
         Assert.Equal(
-            "flows/x.yaml: the document declares no 'flowType' (delivery, retrieval, cache, assertion, dimension, inventory, removal) and no 'documentType' (mapping, dictionary).",
+            "flows/x.yaml: the document declares no 'flowType' (delivery, retrieval, cache, assertion, dimension, inventory, removal) and no 'documentType' (mapping, dictionary, repository).",
             refused.Message);
         Assert.Equal(["delivery", "retrieval", "cache", "assertion", "dimension", "inventory", "removal"], DeliveryDocumentLoader.FlowTypes);
     }

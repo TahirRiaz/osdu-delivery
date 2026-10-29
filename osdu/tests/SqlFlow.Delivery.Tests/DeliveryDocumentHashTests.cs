@@ -61,6 +61,17 @@ public sealed class DeliveryDocumentHashTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void A_flow_that_names_no_operation_code_of_its_own_hashes_as_before_and_one_that_does_is_another_document()
+    {
+        var yaml = File.ReadAllText(Samples.Flow).ReplaceLineEndings("\n");
+        var mappings = new Dictionary<string, string>(StringComparer.Ordinal) { ["WellLog@1.4.0"] = "mapping-hash" };
+        var documents = new DeliveryDocumentLoader();
+
+        Assert.Equal(SampleFlowHash, DeliveryDocumentHash.Of(documents.ParseSource(yaml + "\ntelemetry: { operation: dlv }\n", Samples.Flow), mappings));
+        Assert.NotEqual(SampleFlowHash, DeliveryDocumentHash.Of(documents.ParseSource(yaml + "\ntelemetry: { operation: whdr }\n", Samples.Flow), mappings));
+    }
+
     /// <summary>The document hash of the sample well log flow, read with LF line endings.</summary>
     internal const string SampleFlowHash = "a8c30f716110ea2279665928dedddcc9818ba9b34d0dd386819369e37f25b07a";
 }

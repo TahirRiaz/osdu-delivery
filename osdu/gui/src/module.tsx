@@ -124,6 +124,7 @@ const census: GuiModule["census"] = [
   { flowType: "removal", load: () => import("../../docs/census/keys.removal.json?raw").then((file) => file.default) },
   { documentType: "mapping", load: () => import("../../docs/census/keys.mapping.json?raw").then((file) => file.default) },
   { documentType: "dictionary", load: () => import("../../docs/census/keys.dictionary.json?raw").then((file) => file.default) },
+  { documentType: "repository", load: () => import("../../docs/census/keys.repository.json?raw").then((file) => file.default) },
 ];
 
 /**

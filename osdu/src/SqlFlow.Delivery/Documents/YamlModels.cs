@@ -14,6 +14,22 @@ internal sealed class DocumentProbeYaml
     public string? DocumentType { get; set; }
 }
 
+/// <summary>The <c>telemetry</c> block of a flow: what its runs' correlation id names (osdu/docs/reference/concepts/request-correlation.md).</summary>
+internal sealed class TelemetryYaml
+{
+    public string? Operation { get; set; }
+}
+
+/// <summary>A repository document (<c>documentType: repository</c>, osdu/docs/reference/flow/repository.md).</summary>
+internal sealed class RepositoryYaml
+{
+    public string? DocumentType { get; set; }
+
+    public string? Code { get; set; }
+
+    public string? Description { get; set; }
+}
+
 internal sealed class FlowYaml
 {
     public string? FlowType { get; set; }
@@ -29,6 +45,9 @@ internal sealed class FlowYaml
     public object? Mode { get; set; }
 
     public object? Lifecycle { get; set; }
+
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
 
     public Dictionary<string, DeliveryParameterYaml>? Parameters { get; set; }
 
@@ -1081,6 +1100,9 @@ internal sealed class RetrievalYaml
 
     public object? Lifecycle { get; set; }
 
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
+
     public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
 
     public RetrievalSourceYaml? Source { get; set; }
@@ -1107,6 +1129,9 @@ internal sealed class CacheYaml
     public object? Mode { get; set; }
 
     public object? Lifecycle { get; set; }
+
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
 
     public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
 
@@ -1249,6 +1274,9 @@ internal sealed class AssertionYaml
     public object? Mode { get; set; }
 
     public object? Lifecycle { get; set; }
+
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
 
     public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
 
@@ -1570,6 +1598,9 @@ internal sealed class InventoryFlowYaml
 
     public object? Lifecycle { get; set; }
 
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
+
     public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
 
     public InventorySourceYaml? Source { get; set; }
@@ -1665,6 +1696,9 @@ internal sealed class RemovalFlowYaml
 
     public object? Lifecycle { get; set; }
 
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
+
     public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
 
     /// <summary>The partitions the flow removes in, each by its data-partition-id.</summary>
@@ -1759,6 +1793,9 @@ internal sealed class DimensionFlowYaml
     public object? Mode { get; set; }
 
     public object? Lifecycle { get; set; }
+
+    // The flow's operation code, which its runs' correlation id says what ran with (telemetry.operation).
+    public TelemetryYaml? Telemetry { get; set; }
 
     public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
 
