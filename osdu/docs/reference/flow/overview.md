@@ -1,6 +1,6 @@
 ---
 id: delivery-flow-overview
-title: "Anatomy of the OSDU documents: six flow kinds, mappings and dictionaries"
+title: "Anatomy of the OSDU documents: seven flow kinds, mappings, dictionaries and the repository document"
 type: flow-reference
 summary: "Which documents OSDU Delivery adds to SQLFlow (six flowType kinds, mappings, dictionaries), how they chain after pre and ing flows, and how to lay them out."
 keywords:
@@ -17,6 +17,8 @@ keywords:
   - mappings folder
   - strict keys
   - operations
+  - telemetry
+  - repository document
 yamlPath: "(root: flowType, documentType)"
 related:
   - flow-overview
@@ -35,6 +37,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DimensionFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/DictionaryDocumentKind.cs
+  - osdu/src/SqlFlow.Delivery/Documents/RepositoryDocumentKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs
@@ -49,13 +52,13 @@ sourceRefs:
   - sqlflow/src/SqlFlow.Cli/Program.cs
 ---
 
-# Anatomy of the OSDU documents: six flow kinds, mappings and dictionaries
+# Anatomy of the OSDU documents: seven flow kinds, mappings, dictionaries and the repository document
 
 OSDU Delivery is SQLFlow with a module installed, so every SQLFlow document still works exactly as
 [SQLFlow's flow overview](../../../../sqlflow/docs/reference/flow/overview.md) describes it: file flows, `ing`, `exp`,
-`sp`, `batch` and the rest. The module adds eight document kinds of its own: six flow kinds, selected by `flowType` like
-SQLFlow's, and two companion documents, selected by `documentType`, that flows read but that never run. This page is the
-map of those eight: what each is for, how SQLFlow dispatches them, what they share, how they chain after SQLFlow's own
+`sp`, `batch` and the rest. The module adds ten document kinds of its own: seven flow kinds, selected by `flowType` like
+SQLFlow's, and three companion documents, selected by `documentType`, that flows read but that never run. This page is the
+map of those ten: what each is for, how SQLFlow dispatches them, what they share, how they chain after SQLFlow's own
 flows, and how a repository lays them out. Each kind's keys are on its own page.
 
 ## Where the OSDU documents sit in a chain
@@ -92,6 +95,7 @@ assertion after the delivery that writes the type it tests ([lineage](../concept
 | `flowType: removal` | Removal flow | Reads the keys a source holds now, whole, and the keys it lists as removed, compares them with a delivery flow's ledger, and takes out of OSDU, once, the records the source no longer holds | `remove` | [removal](removal.md) |
 | `documentType: mapping` | Mapping | How one row of an ingestion table becomes one OSDU record of one kind, pinned by `Name@version`, and what its `enrich:` adds to the record; with `enrichment: true`, what an enrichment renders | (never runs) | [mapping](mapping.md), [enrichments](enrich.md), [enrichment mappings](mapping-enrichment.md) |
 | `documentType: dictionary` | Dictionary | A small lookup table kept in the repository, held in a partition's cache by a cache flow | (never runs) | [dictionary](dictionary.md) |
+| `documentType: repository` | Repository document | The code of the repository, `osdu-delivery.yaml` at its root, which every run of its flows carries in the correlation id of its OSDU requests | (never runs) | [repository](repository.md) |
 
 The OSDU verbs of the `sqlflow` command line (`check`, `preview`, `values`, `records`, `cache`, `template`,
 `assertions`, `dimensions`, `inventory`, `removal`, `config`, `partition`) work with these documents and what their runs record.
@@ -118,7 +122,7 @@ and never treat it as a file flow. An unknown one fails the same way:
 ```text
 ERROR  b.yaml: unknown documentType 'mappings'. Registered document types: 'dictionary' for a lookup table a cache flow
 holds in the partition's cache, 'mapping' for how a delivery flow renders the rows of an ingestion table into records of
-one OSDU kind.
+one OSDU kind, 'repository' for the code a repository's runs carry in the correlation id of their OSDU requests.
 ```
 
 One registration owns both the delivery flows and the mappings they pin, and each says what it is in its own words: the
@@ -200,15 +204,28 @@ OK  delivery 'welldb-wellbore-03-delivery' completed in 4.2186943s
 
 `--json` prints the kind's outcome instead ([run artifacts](../../../../sqlflow/docs/reference/concepts/run-artifacts.md)).
 
+### The correlation id of a run's requests
+
+Every OSDU request a run sends carries `correlation-id: osdu-delivery-<repository>-<operation>-<run id>`, so the run
+can be followed into the platform's own logs: the `code` of the [repository document](repository.md) nearest above the
+flow's file, the flow's operation code, and the run's id. Every kind may name its operation code under `telemetry`; left
+out, a run carries its kind's (`dlv`, `cache`, `ret`, `ast`, `dim`, `inv`, `rmv`). The run log's first lines say what the
+requests carry, and no `headers` block may set the header itself ([request correlation](../concepts/request-correlation.md)).
+
+```yaml
+telemetry:
+  operation: whdr
+```
+
 ### Which kinds need the repository
 
 A node runs a flow from a snapshot of its one file unless the flow needs files beside it, and otherwise from a checkout
-of its repository at the run's commit. A delivery flow always needs the repository tree, because its mappings live
-there. Dimension and assertion flows always need it, because they read the templates of the kinds they read from the
+of its repository at the run's commit. Every OSDU flow kind needs the checkout: each run reads the
+[repository document](repository.md) above its flow for the code its requests carry. Beyond that, a delivery flow reads
+its mappings there; dimension and assertion flows read the templates of the kinds they read from the
 [template folders](../concepts/templates.md#what-a-document-reads) on their path (and a dimension's cleaning step reads
-its dictionary's file). A cache flow needs it only when it holds a dictionary. A removal flow always needs it, because
-it opens the delivery flows it names and reads their mappings. Retrieval and inventory flows need nothing but their own
-document.
+its dictionary's file); a cache flow reads the dictionaries it holds; and a removal flow opens the delivery flows it names
+and reads their mappings.
 
 ## The shape of each kind
 
@@ -517,6 +534,7 @@ a project:
 ```text
 repo/
   .sqlflow/env                                  local development values (git-ignored), see SQLFlow's environment variables
+  osdu-delivery.yaml                            documentType: repository, the code every run's requests carry
   welldb/
     data/wellbore/                              where the pre flow's files are dropped
     flows/welldb-wellbore-01-pre.yaml           file flow: lands the files into pre.Wellbore
@@ -546,6 +564,7 @@ How a flow finds what it reads:
 | --- | --- |
 | A mapping a delivery flow pins | `render.mappings` (relative to the flow file) when set; otherwise the nearest `mappings/` folder walking up from the flow file, at most 16 levels. The file is `<Name>@<version>.yaml` (or `.yml`), or `<Name>/<version>.yaml`. |
 | A dictionary a cache or dimension flow names | The nearest `dictionaries/` folder walking up from the flow file. The file is `<name>.yaml` or `<name>.yml`. |
+| The repository document every run reads | The nearest `osdu-delivery.yaml` (or `.yml`) walking up from the flow file, at most to the folder holding `.git` and at most 16 levels. None found, the runs carry no repository code. |
 | The template a mapping fills | The [template folders](../concepts/templates.md#template-folders) on the mapping's path, folders named `templates`, nearest first. |
 | A partition's cache | Not in the repository: written into the module's database by the runs of cache flows ([partition cache](../concepts/partition-cache.md)). |
 

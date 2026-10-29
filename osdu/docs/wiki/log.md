@@ -563,3 +563,12 @@ its rows and files bound by the flow under `source.datasets`, and every enrichme
 [0036](decisions/0036-enrich-in-the-mapping.md) records why, and [enrichments](../reference/flow/enrich.md),
 [records an enrichment adds](../reference/flow/enrich-records.md) and
 [enrichment mappings](../reference/flow/mapping-enrichment.md) document it.
+
+## [2026-10-29] ingest | The correlation id every OSDU request carries, decision 0037
+
+Every OSDU request now carries `correlation-id: osdu-delivery-<repository>-<operation>-<run id>`: the code of the
+repository document (`osdu-delivery.yaml`, `documentType: repository`) nearest above the flow, the flow's
+`telemetry.operation` or its kind's code, and the run's id; the product's own operations carry
+`osdu-delivery-<operation>-<id>`. [0037](decisions/0037-request-correlation.md) records why, and
+[request correlation](../reference/concepts/request-correlation.md) and
+[the repository document](../reference/flow/repository.md) document it.
