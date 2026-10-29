@@ -156,8 +156,9 @@ and what was sent, the hashes it established and the version OSDU returned, the 
 from, the redacted error, and every step of the route with what OSDU answered. Every column, key and index:
 [`osdu.Attempt`](../tables/attempt.md).
 
-The `correlationId` is the id each OSDU request of the try sent in its `correlation-id` header, so an attempt can be followed
-into the OSDU services' own logs.
+The `correlationId` is what each OSDU request of the try carried in its `correlation-id` header: the run's
+`osdu-delivery-<repository>-<operation>-<run id>` ([request correlation](request-correlation.md)), so an attempt can be
+followed into the OSDU services' own logs, and every attempt of one run names the same value.
 
 ### Runs, submissions and leases
 

@@ -2528,6 +2528,51 @@
       ]
     },
     {
+      "id": "delivery-concept-request-correlation",
+      "corpus": "reference",
+      "path": "concepts/request-correlation.md",
+      "title": "The correlation id every OSDU request carries, and how to follow a run into the platform's logs",
+      "type": "concept",
+      "summary": "Every OSDU request carries correlation-id: osdu-delivery-<repository>-<operation>-<run id>; where each part comes from and where the value is kept.",
+      "keywords": [
+        "correlation id",
+        "correlation-id header",
+        "telemetry",
+        "telemetry.operation",
+        "operation code",
+        "repository code",
+        "run id",
+        "azure logs",
+        "application insights",
+        "log analytics",
+        "trace a run",
+        "osdu-delivery header"
+      ],
+      "related": [
+        "delivery-flow-repository",
+        "delivery-flow-overview",
+        "delivery-concept-ledger",
+        "delivery-concept-run-trace-and-metrics",
+        "delivery-concept-protocols",
+        "delivery-concept-explorer",
+        "delivery-guide-operations-runbook"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Http/OsduCorrelation.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/RunCorrelation.cs",
+        "osdu/src/SqlFlow.Delivery/Model/FlowTelemetry.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/RepositoryDocuments.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduHttpClient.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Protocols/Etp/EtpConnection.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Workflows/WorkflowXCom.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Search/PartitionSchemaIndex.cs",
+        "osdu/src/SqlFlow.Delivery/Http/HttpExecutor.cs",
+        "osdu/src/SqlFlow.Delivery.Setup/OsduSignIn.cs"
+      ]
+    },
+    {
       "id": "delivery-concept-run-trace-and-metrics",
       "corpus": "reference",
       "path": "concepts/run-trace-and-metrics.md",
@@ -4801,7 +4846,7 @@
       "id": "delivery-flow-overview",
       "corpus": "reference",
       "path": "flow/overview.md",
-      "title": "Anatomy of the OSDU documents: six flow kinds, mappings and dictionaries",
+      "title": "Anatomy of the OSDU documents: seven flow kinds, mappings, dictionaries and the repository document",
       "type": "flow-reference",
       "summary": "Which documents OSDU Delivery adds to SQLFlow (six flowType kinds, mappings, dictionaries), how they chain after pre and ing flows, and how to lay them out.",
       "keywords": [
@@ -4817,7 +4862,9 @@
         "flow naming",
         "mappings folder",
         "strict keys",
-        "operations"
+        "operations",
+        "telemetry",
+        "repository document"
       ],
       "yamlPath": "(root: flowType, documentType)",
       "related": [
@@ -4838,6 +4885,7 @@
         "osdu/src/SqlFlow.Delivery/Documents/DimensionFlowKind.cs",
         "osdu/src/SqlFlow.Delivery/Documents/InventoryFlowKind.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DictionaryDocumentKind.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/RepositoryDocumentKind.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
         "osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
         "osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs",
@@ -4968,6 +5016,39 @@
         "osdu/gui/src/features/delivery/removals/RemovedKeysGrid.tsx",
         "osdu/docs/census/keys.removal.json",
         "osdu/samples/welldb/flows/welldb-wellbore-05-removal.yaml"
+      ]
+    },
+    {
+      "id": "delivery-flow-repository",
+      "corpus": "reference",
+      "path": "flow/repository.md",
+      "title": "Repository document (documentType: repository): the code a repository's runs carry in their correlation id",
+      "type": "flow-reference",
+      "summary": "osdu-delivery.yaml at a repository's root names the code its runs carry in every OSDU request's correlation-id; how a flow finds it.",
+      "keywords": [
+        "repository document",
+        "documenttype repository",
+        "osdu-delivery.yaml",
+        "repository code",
+        "correlation id",
+        "telemetry",
+        "header policy"
+      ],
+      "yamlPath": "(root, documentType: repository)",
+      "related": [
+        "delivery-concept-request-correlation",
+        "delivery-flow-overview",
+        "delivery-cli-validate",
+        "delivery-cli-run"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Documents/RepositoryDocuments.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/RepositoryDocumentKind.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/CompanionFiles.cs",
+        "osdu/src/SqlFlow.Delivery/Model/RepositoryDefinition.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/RunCorrelation.cs",
+        "osdu/docs/census/keys.repository.json"
       ]
     },
     {
@@ -9087,6 +9168,32 @@
         "osdu/src/SqlFlow.Delivery/Engine/Protocols/EnrichPartsProtocol.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/RecordEnrichments.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/RecordIdentity.cs"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0037-request-correlation",
+      "corpus": "wiki",
+      "path": "decisions/0037-request-correlation.md",
+      "title": "Decision 0037: every OSDU request carries the run's correlation id, named by the repository and the flow",
+      "type": "decision",
+      "summary": "Why every OSDU request carries the run's id in correlation-id, under the flow's operation code and a repository document's code.",
+      "keywords": [
+        "correlation id",
+        "correlation-id header",
+        "telemetry",
+        "repository document",
+        "osdu-delivery.yaml",
+        "operation code",
+        "run id",
+        "azure logs"
+      ],
+      "related": [],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Http/OsduCorrelation.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/RunCorrelation.cs",
+        "osdu/src/SqlFlow.Delivery/Documents/RepositoryDocuments.cs",
+        "osdu/src/SqlFlow.Delivery/Model/FlowTelemetry.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs"
       ]
     },
     {
