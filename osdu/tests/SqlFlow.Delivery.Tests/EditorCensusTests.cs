@@ -38,6 +38,7 @@ public sealed class EditorCensusTests
     [InlineData("keys.dimension.json", "dimension")]
     [InlineData("keys.inventory.json", "inventory")]
     [InlineData("keys.removal.json", "removal")]
+    [InlineData("keys.download.json", "download")]
     [InlineData("keys.mapping.json", "mapping")]
     [InlineData("keys.dictionary.json", "dictionary")]
     [InlineData("keys.repository.json", "repository")]
@@ -88,6 +89,7 @@ public sealed class EditorCensusTests
     [InlineData("keys.dimension.json", typeof(DimensionFlowYaml))]
     [InlineData("keys.inventory.json", typeof(InventoryFlowYaml))]
     [InlineData("keys.removal.json", typeof(RemovalFlowYaml))]
+    [InlineData("keys.download.json", typeof(DownloadFlowYaml))]
     public void A_flow_kinds_census_documents_exactly_the_keys_its_loader_accepts(string file, Type model)
     {
         var accepted = YamlKeyPaths.Of(model);

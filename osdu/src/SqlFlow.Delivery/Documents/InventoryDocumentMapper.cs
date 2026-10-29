@@ -101,7 +101,7 @@ internal static class InventoryMapper
         return flow;
     }
 
-    private static IReadOnlyList<string> MapPartitions(IReadOnlyList<string>? declared, string source)
+    internal static IReadOnlyList<string> MapPartitions(IReadOnlyList<string>? declared, string source)
     {
         if (declared is null)
         {
@@ -113,7 +113,7 @@ internal static class InventoryMapper
         return names;
     }
 
-    private static InventoryRead MapRead(string? declared, string source) => (declared?.Trim().ToLowerInvariant()) switch
+    internal static InventoryRead MapRead(string? declared, string source) => (declared?.Trim().ToLowerInvariant()) switch
     {
         null or "" or "search" => InventoryRead.Search,
         "storage" => InventoryRead.Storage,
@@ -285,7 +285,7 @@ internal static class InventoryMapper
             : throw new FlowValidationException($"{source}: {key} '{path}' must name the record it acts on as {{id}}, as '{fallback}' does.");
     }
 
-    private static string ServicePath(string? declared, string fallback, string key, string source)
+    internal static string ServicePath(string? declared, string fallback, string key, string source)
     {
         if (string.IsNullOrWhiteSpace(declared))
         {
