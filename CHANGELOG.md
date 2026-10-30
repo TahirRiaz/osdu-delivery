@@ -14,9 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the estate, its runs and what keeps a flow's records blocked. A run is started with its kind's operations and followed
   ([the VS Code extension](osdu/docs/reference/guides/vscode.md)).
 
-- **Sign in from an editor with Microsoft.** A client's browser sign-in now reaches the GUI, behind its usual sign-in, so an
-  account that signs in with Entra approves the extension or an assistant's `login`, which the control plane's own page could
-  not offer since it takes a password. It needs no new app registration ([signing in](osdu/docs/reference/guides/vscode.md#signing-in)).
+- **Sign in once, with Microsoft, in the browser.** A client's browser sign-in now reaches the GUI, behind its usual sign-in, so an
+  account that signs in with Entra approves the extension, an assistant's `login` or `sqlflow login`, which the control plane's
+  own page could not offer since it takes a password. It needs no new app registration, and the extension, the MCP server and
+  the command line share the credential ([signing in](osdu/docs/reference/guides/vscode.md#signing-in)).
+
+- **An assistant can script.** The extension carries the `sqlflow` command line beside the language server and the MCP server,
+  on the PATH of every integrated terminal, and `get_cli` tells an assistant where it is
+  ([scripting](osdu/docs/reference/guides/vscode.md#scripting-with-the-command-line)).
 
 - **The MCP server is built into the extension.** The editor's chat has the server's tools with nothing to install, one
   registration per mode, signed in with the editor, and a command connects Claude Code, Cursor and Codex to the same server
@@ -24,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **More for an assistant to read.** `run_trace` reads what a run did, `delivery_flow_issues` what keeps a flow's records blocked,
   `delivery_inventories` and `delivery_removals` those flows, `list_flow_kinds` the kinds and their run operations, and
-  `list_datasources` the connections flows use; `list_flow_keys` and `describe_flow_key` read a mapping or a schedule library as
+  `list_datasources` the connections flows use, `list_ai_contexts` where each AI context stands; `list_flow_keys` and `describe_flow_key` read a mapping or a schedule library as
   they read a flow, `delivery_dimensions` lays out a dimension's blueprint, and `sync_repo_source` and `run_schedule` act
   ([the MCP server](osdu/docs/reference/guides/mcp.md)).
 
@@ -347,6 +352,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- `sqlflow login` with no `--username` opens the browser to sign in, where it used to ask for a username and a password;
+  `--username` keeps the password sign-in, and `--device` prints the link rather than opening a browser
+  ([signing in](sqlflow/docs/reference/cli/control-plane.md#signing-in)).
+
 - **A run's requests carry the run's correlation id, and so do its attempts.** The `correlation-id` an OSDU request
   carries was a new GUID for each try, and the searches of cache, retrieval, dimension, inventory and assertion runs
   carried none; every request of a run now carries the run's value, which each attempt's `correlationId` names. A
