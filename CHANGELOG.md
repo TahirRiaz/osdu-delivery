@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The VS Code extension.** `osdu-delivery-vscode` makes the editor the place a pipeline is developed: a repository's plain `*.yaml`
+  files open as what they are, every key of every kind has completion, hover and checks, a mapping completes and is checked
+  against the template folders on its path as it is typed, and the views show the document in front of you, the repository,
+  the estate, its runs and what keeps a flow's records blocked. A run is started with its kind's operations and followed
+  ([the VS Code extension](osdu/docs/reference/guides/vscode.md)).
+
+- **Sign in from an editor with Microsoft.** A client's browser sign-in now reaches the GUI, behind its usual sign-in, so an
+  account that signs in with Entra approves the extension or an assistant's `login`, which the control plane's own page could
+  not offer since it takes a password. It needs no new app registration ([signing in](osdu/docs/reference/guides/vscode.md#signing-in)).
+
+- **The MCP server is built into the extension.** The editor's chat has the server's tools with nothing to install, one
+  registration per mode, signed in with the editor, and a command connects Claude Code, Cursor and Codex to the same server
+  ([the assistant](osdu/docs/reference/guides/vscode.md#the-assistant)).
+
+- **More for an assistant to read.** `run_trace` reads what a run did, `delivery_flow_issues` what keeps a flow's records blocked,
+  `delivery_inventories` and `delivery_removals` those flows, `list_flow_kinds` the kinds and their run operations, and
+  `list_datasources` the connections flows use; `list_flow_keys` and `describe_flow_key` read a mapping or a schedule library as
+  they read a flow, `delivery_dimensions` lays out a dimension's blueprint, and `sync_repo_source` and `run_schedule` act
+  ([the MCP server](osdu/docs/reference/guides/mcp.md)).
+
 - **Sync a repository from the Delivery page.** **Sync now** syncs the repository picked beside it, with the same message and
   trace as the Repos page, and the page reads its flows and counts again when a sync ends, so a commit reaches the flows
   without leaving the page. The list shows how each repository last synced and remembers the pick
