@@ -43,6 +43,16 @@ function copyBinaries() {
         ['osdu-delivery-mcp', join(repository, 'osdu', 'hosts', 'osdu-delivery-mcp', 'target')],
         ['sqlflow-lsp', join(repository, 'sqlflow', 'tools', 'target')],
     ];
+    // The command line, which `npm run publish:cli` publishes as a single file for this machine's platform. It goes in
+    // under the name it is documented by.
+    const cli = join(here, 'publish', 'cli', `SqlFlow.Delivery.Cli.Host${exe}`);
+    if (existsSync(cli)) {
+        cpSync(cli, join(bin, `sqlflow${exe}`));
+        console.log(`[esbuild] staged ${cli}`);
+    } else if (production) {
+        throw new Error('[esbuild] the sqlflow command line is not published, and a package has to hold it: npm run publish:cli.');
+    }
+
     for (const [name, target] of programs) {
         const roots = [process.env.CARGO_TARGET_DIR, target].filter(Boolean);
         const built = roots

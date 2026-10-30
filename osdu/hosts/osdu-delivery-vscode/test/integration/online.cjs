@@ -89,6 +89,32 @@ module.exports = (estate) => ({
         assert.ok(answer.requiredAndEmpty !== undefined || answer.issues !== undefined, JSON.stringify(answer).slice(0, 400));
     },
 
+    async 'the data definitions read the way the template commands walk them'() {
+        const { releases } = await estate.mcp.call('delivery_osdu_schemas');
+        assert.ok(releases.length > 0 && releases[0].name, JSON.stringify(releases).slice(0, 200));
+        // The command offers only a release in the local copy, which a hermetic estate has none of.
+        const local = releases.find((release) => release.local);
+        if (local) {
+            const index = await estate.mcp.call('delivery_osdu_schemas', { release: local.name });
+            assert.ok(index.schemas.length > 0 && index.schemas[0].kind, JSON.stringify(index).slice(0, 200));
+            const file = await estate.mcp.call('delivery_osdu_schemas', { release: local.name, kind: index.schemas[0].kind });
+            assert.ok(file.kind && file.version && file.schema, JSON.stringify(file).slice(0, 200));
+        }
+    },
+
+    async 'a table reads the way a mapping asks for its columns'() {
+        const listed = await estate.mcp.call('lineage_objects', { name: 'Wellbore' });
+        const objects = Array.isArray(listed) ? listed : listed.items;
+        assert.ok(objects.length > 0 && objects[0].key, JSON.stringify(listed).slice(0, 300));
+        const answer = await estate.mcp.call('lineage_object_columns', { key: objects[0].key });
+        const columns = Array.isArray(answer) ? answer : answer.items;
+        assert.ok(Array.isArray(columns), JSON.stringify(answer).slice(0, 300));
+    },
+
+    async 'an admin reads where the AI contexts stand'() {
+        assert.ok(Array.isArray(await estate.aiContexts()));
+    },
+
     async 'a record is found the way the command looks for it'() {
         const answer = await estate.mcp.call('delivery_find_records', {});
         assert.ok(Array.isArray(answer.items ?? answer.hits ?? answer), JSON.stringify(answer).slice(0, 300));

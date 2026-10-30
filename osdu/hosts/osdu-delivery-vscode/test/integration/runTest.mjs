@@ -25,6 +25,7 @@ try {
             HOME: home,
             USERPROFILE: home,
             SQLFLOW_CONTROL_PLANE_URL: 'http://127.0.0.1:1',
+            SQLFLOW_CREDENTIALS_FILE: join(home, 'credentials.json'),
             // A run may name a control plane to check the real answers (test/integration/online.cjs).
             ...(process.env.OSDU_VSCODE_TEST_CONTROL_PLANE
                 ? {
