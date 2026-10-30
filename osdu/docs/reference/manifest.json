@@ -2590,7 +2590,8 @@
         "trace-id",
         "osdu-delivery header",
         "header policy",
-        "troubleshooting correlation"
+        "troubleshooting correlation",
+        "editor key census"
       ],
       "related": [
         "delivery-flow-repository",
@@ -2625,7 +2626,9 @@
         "osdu/src/SqlFlow.Delivery/Http/HttpExecutor.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/ProblemSignature.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryDocumentHash.cs",
-        "osdu/src/SqlFlow.Delivery.Setup/OsduSignIn.cs"
+        "osdu/src/SqlFlow.Delivery.Setup/OsduSignIn.cs",
+        "osdu/docs/census/keys.repository.json",
+        "osdu/gui/src/module.tsx"
       ]
     },
     {
