@@ -603,7 +603,7 @@
     "publish:cli": "dotnet publish ../SqlFlow.Delivery.Cli.Host/SqlFlow.Delivery.Cli.Host.csproj -c Release --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -m:1 -o publish/cli"
   },
   "dependencies": {
-    "vscode-languageclient": "^10.1.2"
+    "vscode-languageclient": "^11.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
