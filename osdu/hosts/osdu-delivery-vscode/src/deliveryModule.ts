@@ -1,12 +1,16 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { IndexedDocument } from '../../../../sqlflow/tools/sqlflow-vscode/src/documents/documentIndex';
+import { scalarKeys } from '../../../../sqlflow/tools/sqlflow-vscode/src/documents/yamlPath';
 import { ModuleContext, VscodeModule } from '../../../../sqlflow/tools/sqlflow-vscode/src/host';
 import { InfoRow, InfoTreeProvider } from '../../../../sqlflow/tools/sqlflow-vscode/src/views/documentViews';
 import { PanelContent, PanelSection } from '../../../../sqlflow/tools/sqlflow-vscode/src/views/panelContent';
+import { askRunPayload } from './deliveryRuns';
+import { fetchTemplate, pickKind } from './deliverySchemas';
 import { JsonRow, rowsOf } from './jsonRows';
 import { MappingEditing, WorkingCopyTemplates } from './mappingEditing';
-import { declaredParameters } from './templates';
+import { declaredPartitions, objectParts } from './runOptions';
+import { declaredParameters, recordPath } from './templates';
 
 /** The flow kinds this product adds, each with the tool that says how it stands. */
 const FLOW_READERS: Record<string, { label: string; tool: string; icon: string }> = {
@@ -40,7 +44,16 @@ interface CheckAnswer {
     loads?: boolean;
     issues?: { severity: string; message: string; variable?: string }[];
     requiredAndEmpty?: (string | { path?: string; variable?: string })[];
+    shape?: unknown;
     links?: Record<string, string>;
+}
+
+interface LineageObject {
+    key: string;
+    name: string;
+    schema?: string | null;
+    database?: string | null;
+    kind?: string;
 }
 
 /** The OSDU Delivery module: what the module's kinds and documents add to the extension. */
@@ -65,6 +78,7 @@ export const deliveryModule: VscodeModule = {
             ['Mappings', 'symbol-namespace', 'delivery_mappings'],
             ['Templates', 'file-code', 'delivery_templates'],
             ['Caches', 'archive', 'delivery_caches'],
+            ['Cache Changes', 'diff', 'delivery_cache_changes'],
             ['Assertions', 'beaker', 'delivery_assertions'],
             ['Dimensions', 'symbol-enum', 'delivery_dimensions'],
             ['Inventories', 'list-tree', 'delivery_inventories'],
@@ -189,6 +203,35 @@ export const deliveryModule: VscodeModule = {
             },
         });
 
+        /** The columns of the table a mapping's rows come from: the record table of the delivery flow that pins it. */
+        const sourceColumns = async (mapping: IndexedDocument): Promise<{ value: string; detail?: string }[]> => {
+            const reference = path.basename(mapping.uri.fsPath).replace(/\.ya?ml$/, '');
+            for (const flow of (await documents.all()).filter((document) => document.flowType === 'delivery')) {
+                const text = Buffer.from(await vscode.workspace.fs.readFile(flow.uri)).toString('utf8');
+                if (!text.includes(reference)) {
+                    continue;
+                }
+                const object = scalarKeys(text.split(/\r?\n/)).find((key) => key.path.endsWith('record.object'))?.value;
+                if (!object) {
+                    continue;
+                }
+                const parts = objectParts(object);
+                const listed = await mcp.call<{ items: LineageObject[] } | LineageObject[]>('lineage_objects', { name: parts.name });
+                const objects = (Array.isArray(listed) ? listed : listed.items).filter((candidate) => candidate.name === parts.name);
+                const found = objects.find((candidate) => candidate.schema === parts.schema) ?? objects[0];
+                if (found) {
+                    const columns = await mcp.call<{ items: { name: string; dataType?: string | null }[] } | { name: string; dataType?: string | null }[]>('lineage_object_columns', { key: found.key });
+                    return (Array.isArray(columns) ? columns : columns.items).map((column) => ({ value: column.name, detail: column.dataType ?? undefined }));
+                }
+            }
+            return [];
+        };
+        references.register({
+            answers: (keyPath, document) => document?.documentType === 'mapping'
+                && (keyPath === 'dataset.key' || keyPath === 'dataset.identity' || keyPath.endsWith('.$from') || recordPath(keyPath) !== null),
+            values: async (document) => (document ? sourceColumns(document) : []),
+        });
+
         const checkMapping = async (uri: vscode.Uri): Promise<void> => {
             const document = await vscode.workspace.openTextDocument(uri);
             const pipeline = (await estate.repos())[0];
@@ -196,6 +239,7 @@ export const deliveryModule: VscodeModule = {
                 yaml: document.getText(),
                 path: vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/'),
                 repoId: pipeline?.id,
+                shape: true,
             });
             panels.show(`mapping:${uri.toString()}`, checkContent(path.basename(uri.fsPath), answer));
         };
@@ -235,19 +279,24 @@ export const deliveryModule: VscodeModule = {
         });
 
         command('osduDelivery.compareSchemaVersions', async () => {
-            const fromRelease = await vscode.window.showInputBox({ prompt: 'Release of the version in use (a tag delivery_osdu_schemas lists)', ignoreFocusOut: true });
-            const fromKind = fromRelease && (await vscode.window.showInputBox({ prompt: 'Kind in use, for example osdu:wks:work-product-component--WellLog:1.4.0', ignoreFocusOut: true }));
-            const toRelease = fromKind && (await vscode.window.showInputBox({ prompt: 'Release to move to', value: fromRelease, ignoreFocusOut: true }));
-            const toKind = toRelease && (await vscode.window.showInputBox({ prompt: 'Kind to move to', value: fromKind, ignoreFocusOut: true }));
-            if (!toKind) {
+            const from = await pickKind(mcp, 'The version in use');
+            const to = from && (await pickKind(mcp, 'The version to move to'));
+            if (!from || !to) {
                 return;
             }
-            const answer = await mcp.call<unknown>('delivery_osdu_schema_compare', { fromRelease, fromKind, toRelease, toKind });
-            panels.show(`compare:${fromKind}:${toKind}`, {
-                title: `${fromKind} to ${toKind}`,
+            const answer = await mcp.call<unknown>('delivery_osdu_schema_compare', {
+                fromRelease: from.release,
+                fromKind: from.kind,
+                toRelease: to.release,
+                toKind: to.kind,
+            });
+            panels.show(`compare:${from.kind}:${to.kind}`, {
+                title: `${from.kind} to ${to.kind}`,
                 sections: [{ heading: 'What a mapping has to change', code: JSON.stringify(answer, null, 2) }],
             });
         });
+
+        command('osduDelivery.fetchTemplate', () => fetchTemplate(mcp, context.product));
 
         command('osduDelivery.findRecord', async () => {
             const search = await vscode.window.showInputBox({ prompt: 'An OSDU id, a source key, or the start of a label', ignoreFocusOut: true });
@@ -281,13 +330,16 @@ export const deliveryModule: VscodeModule = {
             : []));
 
         context.addRunParameters(async (pipeline, document) => {
-            if (document) {
-                const text = (await vscode.workspace.openTextDocument(document.uri)).getText();
-                return declaredParameters(text.split(/\r?\n/));
-            }
-            const detail = await estate.pipeline(pipeline.id);
-            return declaredParameters(detail.yaml.split(/\r?\n/));
+            const lines = (document ? (await vscode.workspace.openTextDocument(document.uri)).getText() : (await estate.pipeline(pipeline.id)).yaml).split(/\r?\n/);
+            // A run acts in one partition, and a flow serving several has to be told which.
+            const partitions = declaredPartitions(lines);
+            return [
+                ...(partitions.length > 1 ? [{ name: 'partition', required: true, options: partitions }] : []),
+                ...declaredParameters(lines),
+            ];
         });
+
+        context.addRunPayload((pipeline, operation) => askRunPayload(estate, pipeline, operation));
 
         context.addRunSections(async (run): Promise<PanelSection[]> => {
             if (run.flowKind !== 'delivery') {
@@ -320,6 +372,7 @@ function checkContent(file: string, answer: CheckAnswer): PanelContent {
                 rows: (answer.issues ?? []).map((issue) => [issue.severity, issue.variable, issue.message]),
                 empty: 'No issues.',
             },
+            ...(answer.shape === undefined ? [] : [{ heading: 'The record it makes', code: JSON.stringify(answer.shape, null, 2) }]),
         ],
     };
 }

@@ -47,6 +47,18 @@ const checks = {
         assert.deepEqual(missing, []);
     },
 
+    async 'the packaged programs are there, and a terminal finds the command line'() {
+        const extension = vscode.extensions.getExtension(EXTENSION);
+        const fs = require('node:fs');
+        const exe = process.platform === 'win32' ? '.exe' : '';
+        for (const program of ['sqlflow-lsp', 'osdu-delivery-mcp', 'sqlflow']) {
+            assert.ok(fs.existsSync(path.join(extension.extensionPath, 'bin', `${program}${exe}`)), program);
+        }
+        const answer = await extension.exports.estate.mcp.call('get_cli');
+        assert.ok(answer.path.endsWith(`sqlflow${exe}`), answer.path);
+        assert.ok(answer.conventions.includes('--json'));
+    },
+
     async 'a plain yaml flow opens as a pipeline document'() {
         const document = await open('flows/welldb-wellbore-03-delivery.yaml');
         assert.equal(document.languageId, 'sqlflow-flow');

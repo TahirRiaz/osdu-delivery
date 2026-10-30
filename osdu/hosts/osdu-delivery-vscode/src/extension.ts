@@ -20,7 +20,6 @@ const OSDU_DELIVERY: VscodeHost = {
     product: 'OSDU Delivery',
     mcp: {
         program: 'osdu-delivery-mcp',
-        statePrefix: 'osdu-delivery-mcp',
         providerId: 'osduDelivery.mcp',
         searchPaths: (extensionPath) => builds(path.join(repositoryRoot(extensionPath), 'osdu', 'hosts', 'osdu-delivery-mcp')),
     },

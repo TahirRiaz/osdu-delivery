@@ -109,9 +109,9 @@
         },
         "sqlflow.cliPath": {
           "type": "string",
-          "default": "sqlflow",
+          "default": "",
           "scope": "machine",
-          "description": "The command line, for the verbs that run on this machine against the working copy."
+          "description": "The sqlflow command line. Empty uses the one this extension carries, else sqlflow on the PATH."
         },
         "sqlflow.recognizeDocuments": {
           "type": "boolean",
@@ -313,6 +313,11 @@
       {
         "command": "sqlflow.showSchedulePlan",
         "title": "Show What a Schedule Runs",
+        "category": "OSDU Delivery"
+      },
+      {
+        "command": "osduDelivery.fetchTemplate",
+        "title": "Fetch a Template into This Repository",
         "category": "OSDU Delivery"
       }
     ],
@@ -593,8 +598,9 @@
     "bundle": "node esbuild.mjs",
     "bundle:watch": "node esbuild.mjs --watch",
     "vscode:prepublish": "node esbuild.mjs --production",
-    "package": "npm run compile && vsce package --no-dependencies",
-    "test:integration": "node test/integration/runTest.mjs"
+    "package": "npm run compile && npm run publish:cli && vsce package --no-dependencies",
+    "test:integration": "node test/integration/runTest.mjs",
+    "publish:cli": "dotnet publish ../SqlFlow.Delivery.Cli.Host/SqlFlow.Delivery.Cli.Host.csproj -c Release --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -m:1 -o publish/cli"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.2"

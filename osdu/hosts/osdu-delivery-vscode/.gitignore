@@ -4,3 +4,4 @@ bin/
 *.vsix
 .vscode-test/
 LICENSE
+publish/
