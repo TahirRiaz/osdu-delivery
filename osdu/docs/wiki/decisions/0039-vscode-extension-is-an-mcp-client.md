@@ -1,8 +1,8 @@
 ---
 id: delivery-wiki-0039-vscode-extension-is-an-mcp-client
-title: "Decision 0039: the VS Code extension is a client of the MCP server, and a browser sign-in goes through the GUI"
+title: "Decision 0039: the VS Code extension is a client of the MCP server, and one browser sign-in serves it and the command line"
 type: decision
-summary: "Why the extension reads the estate through the MCP server's tools, shares its sign-in, and approves a browser sign-in in the GUI, where Microsoft sign-in lives."
+summary: "Why the extension reads through the MCP server, why one credential file serves it and the CLI, and why a browser sign-in goes through the GUI."
 keywords:
   - vs code extension
   - mcp client
@@ -12,11 +12,17 @@ keywords:
   - device approval page
   - template folders
   - extension host
+  - credentials.json
+  - sqlflow login
+  - get_cli
 updated: 2026-10-30
 sourceRefs:
   - sqlflow/tools/sqlflow-vscode/src/host.ts
   - sqlflow/tools/sqlflow-vscode/src/mcp/mcpServer.ts
   - sqlflow/tools/sqlflow-vscode/src/mcp/signIn.ts
+  - sqlflow/tools/sqlflow-vscode/src/cli.ts
+  - sqlflow/tools/sqlflow-mcp/src/config.rs
+  - sqlflow/src/SqlFlow.Cli/Remote/CredentialStore.cs
   - sqlflow/gui/src/auth/DeviceApprovalPage.tsx
   - sqlflow/src/SqlFlow.ControlPlane/Security/DeviceApprovalPage.cs
   - osdu/hosts/osdu-delivery-vscode/src/extension.ts
@@ -26,14 +32,16 @@ referenceRefs:
   - delivery-guide-mcp
   - delivery-concept-authentication-and-identity
 ---
-# 0039: The VS Code extension is a client of the MCP server, and a browser sign-in goes through the GUI
+# 0039: The VS Code extension is a client of the MCP server, and one browser sign-in serves it and the command line
 
 Status: accepted. Documented in [the VS Code extension](../../reference/guides/vscode.md).
 
 The human's words: "The goal for this extion is to provide all required information to develop pipelines. Note that the
 combination with MCP should be built in.", "I want the vscode to be the primary tool for yaml file development. It should
-have access all relevant infomration.", and "I want Singel sign on option where we authenticate with the browser", "azure
-ms signon is the main feature". The extension had not moved since SQLFlow was vendored: it keyed on `*.flow.yaml`, which
+have access all relevant infomration.", "I want Singel sign on option where we authenticate with the browser", "azure ms
+signon is the main feature", and "as a part of this vs-code extention we should also deliver sqlflow-binary. The idea being
+that things can be scripted by the agent, rather than the user clicking around.", "note that extention and sqlflow cli must
+be able to use the same authentication." The extension had not moved since SQLFlow was vendored: it keyed on `*.flow.yaml`, which
 this product's repositories do not use, so it never activated on one, and it knew nothing of the module's kinds.
 
 ## The extension reads through the server
@@ -73,6 +81,39 @@ grant gains single sign-on, the MCP server's `login` in Claude Code included, wi
   redirect URI, on every deployment.
 - **Rejected: approving by opening the link.** One click fewer, and anyone who sends a link could then sign in as whoever
   opens it, which is device-code phishing. Approving takes a click on a code the person can compare.
+
+## One credential, for the extension, the server and the command line
+
+A person signed in separately to `sqlflow` and to each MCP server, in separate files. So one file holds it:
+`~/.sqlflow/credentials.json`, which `sqlflow login` already kept per control-plane URL. The server reads and writes it, and
+the command line reads what the server left there. Keyed by URL, it keeps what the server's prefixed files were for: two
+control planes never read each other's credential.
+
+- **A server takes up a sign-in on its next call,** by checking the file's time before a request, so `sqlflow login` signs in
+  an editor that is already open with no restart, and a sign-out anywhere reaches everywhere.
+- **The file holds a session as well as a token.** It held personal access tokens alone, and the server deliberately mints
+  no long-lived credential from a browser approval, so the file gained what makes a session renew and the command line
+  renews one on the schedule the GUI and the server keep. Otherwise the command line would lapse within the hour of an
+  editor's sign-in. `sqlflow login` still stores the personal access token it always did.
+- **`sqlflow login` opens the browser.** It asked for a password before, which an Entra account does not have. `--device`
+  prints the link, for a machine with no browser, and `--username` is the local accounts' path.
+- **Rejected: passing the token to the command line in the environment.** It would serve the terminals the extension starts
+  and nothing else, and a person's own shell or an assistant's would sign in again.
+- **Rejected: the extension keeping the credential in VS Code's secret storage.** Only the editor could read it, which is the
+  thing being fixed. The file is owner-only, as `sqlflow login`'s always was.
+
+## The command line ships with the extension
+
+The package holds three programs: the language server, the MCP server and `sqlflow`, a single file for its platform, about
+118 MB of the package's size. The tools say what the estate is and the command line lets an assistant act on a working copy by
+script, in a loop, without a person clicking: every integrated terminal has it on its PATH, and `get_cli` tells an assistant
+where it is wherever it runs.
+
+The two have different rules on purpose, and the seam is stated rather than hidden. The MCP server answers from metadata
+([its rule](../../reference/guides/mcp.md#metadata-and-a--questions-query)). The command line is the person's own, on their
+machine, and `preview` and `values` print row values, so an assistant that runs them sends those values to its model
+provider. Nothing can stop that from here, so `get_cli` and the instructions tell the assistant to run those two, and any verb
+that writes, only when the person asked.
 
 ## The extension is a host, as the server and the GUI are
 

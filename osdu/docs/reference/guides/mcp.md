@@ -175,7 +175,7 @@ caller's name.
 
 An OSDU flow is run with SQLFlow's `trigger_run`, which carries the kind's `operation`, `values` and `payload`
 ([running an OSDU flow](../cli/run.md)); `list_flow_kinds` names each kind's operations and which of them write to the
-flow's target. `run_trace` reads what a run did, `sync_repo_source` syncs a repository after a push and `run_schedule` fires a
+flow's target. `list_ai_contexts` says, to an admin, where each AI context stands. `run_trace` reads what a run did, `sync_repo_source` syncs a repository after a push and `run_schedule` fires a
 schedule, the last two operator actions of SQLFlow's that a chat run is refused as `trigger_run` is. The server's instructions tell the assistant to run an operation that changes
 or removes what OSDU holds (`reverse`, `undo`, `remove`, `delete-ledger`, an inventory's or a removal flow's `remove`)
 only when the person asked for that exact operation; nothing in the server enforces it.

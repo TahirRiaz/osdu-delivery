@@ -241,9 +241,9 @@ other packages adopt the same contract.
   the id becomes the file name by a rule that turns back (`:` as `~`, `%` as `=`) rather than an underscore or
   percent-encoding, why a name its case or length cannot carry is named by the id's hash, and why the ledger keeps the
   version each file holds.
-- [0039: the VS Code extension is a client of the MCP server, and a browser sign-in goes through the GUI](decisions/0039-vscode-extension-is-an-mcp-client.md) -
-  why the extension reads through the server's tools and shares its session, why a missing tool was filled in the server,
-  and why Microsoft sign-in reaches a client through a GUI page rather than a registration of its own.
+- [0039: the VS Code extension is a client of the MCP server, and one browser sign-in serves it and the command line](decisions/0039-vscode-extension-is-an-mcp-client.md) -
+  why the extension reads through the server's tools, why a missing tool was filled in the server, why Microsoft sign-in
+  reaches a client through a GUI page, and why the extension, the server and `sqlflow` share one credential file.
 
 ## Coverage
 
