@@ -73,7 +73,10 @@ public sealed record DryRunNextRun
     public long Hold { get; init; }
 }
 
-/// <summary>What a schema said of the documents a dry run held to it.</summary>
+/// <summary>
+/// What a schema's own rules said of the documents a dry run held to it. A record a document refers to that nothing holds is no
+/// rule broken: it is counted apart (<see cref="DryRun.WithMissingReferences"/>).
+/// </summary>
 public sealed record DryRunVerdictCounts
 {
     public long Valid { get; init; }
