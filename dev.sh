@@ -241,6 +241,8 @@ pkill -f 'SqlFlow.Delivery.Worker.Host' 2>/dev/null || true
 # exported as it stands, never evaluated, so no value is ever run as shell.
 settings="$("$setup" env)" || { echo "[X] .sqlflow/env could not be read; ./dev.sh check says why." >&2; exit 1; }
 while IFS= read -r line; do
+    # Under Git Bash the setup is a Windows program, whose lines end with a carriage return.
+    line="${line%$'\r'}"
     [ -z "$line" ] && continue
     name="${line%%=*}"
     value="${line#*=}"
