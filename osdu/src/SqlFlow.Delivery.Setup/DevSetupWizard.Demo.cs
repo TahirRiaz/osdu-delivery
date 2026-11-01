@@ -30,6 +30,9 @@ internal sealed partial class DevSetupWizard
     /// <summary>Where the launchers have the stand-in keep what was delivered, beside the env file.</summary>
     internal const string StandInStateFile = "osdu-standin.json";
 
+    /// <summary>Where a demo's nodes keep their checkouts, beside the env file, so they and their run history are its own.</summary>
+    internal const string CheckoutsFolder = "node-cache";
+
     private const string DemoCatalog = "OsduDelivery";
 
     private const string DemoData = "OsduData";
@@ -83,12 +86,15 @@ internal sealed partial class DevSetupWizard
                 await machine.Sql.DropDatabaseAsync(sql.Target("master"), database, ct).ConfigureAwait(false);
             }
 
-            var held = Path.Combine(Path.GetDirectoryName(checkout.EnvFile)!, StandInStateFile);
+            var held = Path.Combine(DemoFolder, StandInStateFile);
             if (File.Exists(held))
             {
                 File.Delete(held);
             }
 
+            // Run history sits in the checkouts, and a flow takes its watermark from it: kept, it would skip a load whose
+            // table is gone with the database.
+            RemoveFolder(Path.Combine(DemoFolder, CheckoutsFolder));
             _ask.Say("Removed what the last demo made.", Tone.Good);
         }
 
@@ -120,8 +126,27 @@ internal sealed partial class DevSetupWizard
         return true;
     }
 
+    /// <summary>The folder a demo keeps what it makes in: the env file's.</summary>
+    private string DemoFolder => Path.GetDirectoryName(checkout.EnvFile)!;
+
+    /// <summary>Removes a folder of checkouts, whose git objects are read-only.</summary>
+    private static void RemoveFolder(string folder)
+    {
+        if (!Directory.Exists(folder))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+
+        Directory.Delete(folder, recursive: true);
+    }
+
     /// <summary>What the file holds: the sign-in and the stand-in's coordinates, each secret kept across a second run.</summary>
-    private static IEnumerable<KeyValuePair<string, string>> DemoValues(Dictionary<string, string> current, SqlChoice sql)
+    private IEnumerable<KeyValuePair<string, string>> DemoValues(Dictionary<string, string> current, SqlChoice sql)
     {
         const string Owners = "data.default.owners@dev.dataservices.energy";
         const string Viewers = "data.default.viewers@dev.dataservices.energy";
@@ -148,6 +173,7 @@ internal sealed partial class DevSetupWizard
             ["OSDU_LEGAL_TAG"] = "dev-sample-data",
             ["SQLFLOW_DEMO_DB"] = connection(DemoDatabase),
             [StandInSwitch] = "true",
+            ["SQLFLOW_NODE_CACHE"] = Path.Combine(DemoFolder, CheckoutsFolder),
             ["SQLFLOW_DELIVERY_ALLOW_LOOPBACK"] = "true",
             ["ControlPlane__Bootstrap__Repositories__osdu_estate__RemoteUrl"] = Current(current, "ControlPlane__Bootstrap__Repositories__osdu_estate__RemoteUrl") ?? OsduEstateUrl,
             ["ControlPlane__Bootstrap__Repositories__sqlflow_estate__RemoteUrl"] = Current(current, "ControlPlane__Bootstrap__Repositories__sqlflow_estate__RemoteUrl") ?? SqlFlowEstateUrl,

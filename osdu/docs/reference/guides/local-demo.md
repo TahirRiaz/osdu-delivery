@@ -104,7 +104,8 @@ record, the test and the value.
 | To start over from nothing, for a new take | `dev.bat demo reset` or `./dev.sh demo reset`; with the bootstrap script, set `OSDU_DELIVERY_RESET=1` first |
 | To start it again another day, with no tour | `dev.bat` or `./dev.sh` |
 
-A reset removes the three databases and what the stand-in holds. It runs only where this checkout's own demo made them.
+A reset removes the three databases, what the stand-in holds and the demo's checkouts. It runs only where this checkout's own demo
+made them.
 
 ## When it does not go as planned
 

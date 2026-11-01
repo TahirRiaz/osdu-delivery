@@ -184,7 +184,9 @@ already holds stays, so a second run keeps its secrets and server, and a file ca
 
 It stops, having changed nothing, on a `.sqlflow/env` that is not a demo's and on a catalog or another application's tables in
 `OsduDelivery` that this checkout did not make. With `--reset` (`dev.bat demo reset`), which only a demo's own file allows, it first
-drops the three databases and deletes what the stand-in holds.
+drops the three databases and deletes what the stand-in holds and its checkouts. A demo keeps its checkouts in `.sqlflow/node-cache`
+(`SQLFLOW_NODE_CACHE`), because a run's history sits in them and an incremental flow takes its watermark from it: a history that
+outlived the databases would skip a load whose table is gone.
 
 The launchers start the stand-in whenever the file sets `OSDU_STANDIN_WRITES=true`, so a plain `dev.bat` brings a demo back up.
 

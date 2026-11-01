@@ -68,6 +68,7 @@ public sealed class DevDemoTests : IDisposable
         Assert.Equal("https://github.com/TahirRiaz/osdu-delivery-estate.git", env["ControlPlane__Bootstrap__Repositories__osdu_estate__RemoteUrl"]);
         Assert.Equal("https://github.com/TahirRiaz/sqlflow-estate.git", env["ControlPlane__Bootstrap__Repositories__sqlflow_estate__RemoteUrl"]);
         Assert.Contains("Database=SqlFlowDemo", env["SQLFLOW_DEMO_DB"], StringComparison.Ordinal);
+        Assert.Equal(Path.Combine(Path.GetDirectoryName(_scope.Checkout.EnvFile)!, "node-cache"), env["SQLFLOW_NODE_CACHE"]);
         Assert.All(new[] { "OSDU_URL", "OSDU_TOKEN_URL" }, name => Assert.Null(DevValues.Problem(name, env[name], gui: true)));
     }
 
@@ -262,14 +263,24 @@ public sealed class DevDemoTests : IDisposable
         _scope.WithReadyServer();
         _scope.Sql.Databases["SqlFlowDemo"] = FakeSqlProbe.Present();
         DemoFile();
-        var state = Path.Combine(Path.GetDirectoryName(_scope.Checkout.EnvFile)!, DevSetupWizard.StandInStateFile);
+        var folder = Path.GetDirectoryName(_scope.Checkout.EnvFile)!;
+        var state = Path.Combine(folder, DevSetupWizard.StandInStateFile);
         await File.WriteAllTextAsync(state, "{}");
+
+        // A run's history in the demo's checkouts, read-only as a git object is: a watermark in it would skip a load after the
+        // reset, with the table it loaded gone.
+        var checkouts = Path.Combine(folder, DevSetupWizard.CheckoutsFolder);
+        var history = Path.Combine(checkouts, "repo", "commit", ".sqlflow", "runs", "run.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(history)!);
+        await File.WriteAllTextAsync(history, "{}");
+        File.SetAttributes(history, FileAttributes.ReadOnly);
 
         var (done, prompter) = await RunAsync(reset: true);
 
         Assert.True(done);
         Assert.Equal(["OsduDelivery", "OsduData", "SqlFlowDemo"], _scope.Sql.Dropped);
         Assert.False(File.Exists(state));
+        Assert.False(Directory.Exists(checkouts));
         Assert.Contains("OsduData", _scope.Sql.Created);
         Assert.Contains("SqlFlowDemo", _scope.Sql.Created);
         Assert.Contains(_scope.CommandLine.Runs, r => r.Arguments.SequenceEqual(["db", "migrate", "--create"]));
