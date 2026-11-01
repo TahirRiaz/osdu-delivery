@@ -31,6 +31,9 @@ public sealed class DevTourTests
 
         public Dictionary<string, HttpStatusCode> Refused { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>What the Assertions page counts on each read, before <see cref="Totals"/>.</summary>
+        public Queue<string> TotalsInTurn { get; } = new();
+
         /// <summary>What the lineage projects route answers.</summary>
         public HttpStatusCode LineageProjects { get; set; } = HttpStatusCode.OK;
 
@@ -108,7 +111,7 @@ public sealed class DevTourTests
 
             if (path == "/api/v1/delivery/assertions")
             {
-                return Answer(HttpStatusCode.OK, $$"""{ "totals": {{Totals}} }""");
+                return Answer(HttpStatusCode.OK, $$"""{ "totals": {{(TotalsInTurn.TryDequeue(out var next) ? next : Totals)}} }""");
             }
 
             if (path.StartsWith("/api/v1/runs/groups/", StringComparison.Ordinal))
@@ -177,6 +180,33 @@ public sealed class DevTourTests
         Assert.Equal(DevTour.Delivering.Concat(DevTour.Asserting).Select(s => s.Schedule), rig.Platform.Fired);
     }
 
+    [Fact]
+    public async Task Assertions_left_unjudged_by_a_late_write_get_the_index_its_time_and_run_again()
+    {
+        var rig = new Rig();
+        rig.Platform.TotalsInTurn.Enqueue("""{ "tests": 21, "passed": 2, "failed": 0, "errored": 0, "notRun": 19 }""");
+
+        Assert.True(await rig.RunAsync());
+
+        Assert.Equal([DevTour.IndexSettle, DevTour.IndexSettle], rig.Waits.Where(w => w == DevTour.IndexSettle));
+        var asserting = DevTour.Asserting.Select(s => s.Schedule).ToList();
+        Assert.Equal(DevTour.Delivering.Select(s => s.Schedule).Concat(asserting).Concat(asserting), rig.Platform.Fired);
+        Assert.Contains("19 of 21 assertions were not judged", rig.Prompter.Transcript, StringComparison.Ordinal);
+        Assert.Contains("21 of 21 assertions passed", rig.Prompter.Transcript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_assertion_that_failed_is_not_run_again_in_the_hope_of_a_pass()
+    {
+        var rig = new Rig();
+        rig.Platform.Totals = """{ "tests": 21, "passed": 18, "failed": 1, "errored": 0, "notRun": 2 }""";
+
+        Assert.False(await rig.RunAsync());
+
+        Assert.Equal([DevTour.IndexSettle], rig.Waits.Where(w => w == DevTour.IndexSettle));
+        Assert.Contains("1 failed", rig.Prompter.Transcript, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.OK, "elsewhere")]
     [InlineData(HttpStatusCode.ServiceUnavailable, "sales")]
@@ -202,6 +232,10 @@ public sealed class DevTourTests
         Assert.True(names.IndexOf("welldb-welllog") < names.IndexOf("welldb-dimensions"));
         Assert.True(names.IndexOf("welldb-master") < names.IndexOf("welldb-removal"));
         Assert.True(names.IndexOf("welldb-welllog") < names.IndexOf("welldb-welllog-custom-kind"));
+
+        // Each log names its record of the custom kind only once that exists, and a write after the index's wait would leave the
+        // logs' assertions unjudged, so that delivery comes before it.
+        Assert.True(names.IndexOf("welldb-welllog-custom-kind") < names.LastIndexOf("welldb-welllog"));
         Assert.Equal("welldb-inventory", names[^1]);
         await Task.CompletedTask;
     }

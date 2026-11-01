@@ -196,8 +196,9 @@ The launchers start the stand-in whenever the file sets `OSDU_STANDIN_WRITES=tru
 `tour` proves a running environment. It waits for the control plane to come up and the estates to sync, fires each schedule of
 both estates in the order their records refer to each other (each with `chain=false`, so the order is the tour's), waits out the
 assertions' index settle window, and runs the assertions. It exits 0 only when every run succeeded and every assertion was
-evaluated and passed: a test skipped counts against it. A step that fails is named with its error and the tour goes on, so one
-failure does not hide another. `dev.bat demo` runs it in a window of its own.
+evaluated and passed: a test skipped counts against it. Tests skipped because something wrote to their records during the assertions
+get the index's window again and one more run; a failed test never does. A step that fails is named with its error and the tour goes
+on, so one failure does not hide another. `dev.bat demo` runs it in a window of its own.
 
 ### What the check reports
 
