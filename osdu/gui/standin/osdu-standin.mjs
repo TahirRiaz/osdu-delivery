@@ -318,9 +318,20 @@ function splitTop(text, joint) {
   return parts.map((part) => part.trim());
 }
 
-/** The value a record holds at a dotted path, for grouping (a `.keyword` sub-field read as its property). */
+/**
+ * The value a record holds at a dotted path, for grouping (a `.keyword` sub-field read as its property). A path runs through an
+ * array to every element's value, as the index flattens one: `data.Curves.Mnemonic` is the mnemonic of each curve.
+ */
 function valueAt(record, path) {
-  return path.replace(/\.keyword$/, "").split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), record);
+  const step = (node, key) => {
+    if (Array.isArray(node)) {
+      return node.flatMap((element) => step(element, key) ?? []);
+    }
+
+    return node !== null && typeof node === "object" ? node[key] : undefined;
+  };
+
+  return path.replace(/\.keyword$/, "").split(".").reduce(step, record);
 }
 
 /**

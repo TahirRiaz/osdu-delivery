@@ -125,6 +125,15 @@ describe("the stand-in taking writes", () => {
     assert.equal((await search(standIn.url, 'data.FacilityName.keyword:"first"')).totalCount, 1);
   });
 
+  it("reads a property inside an array from every element, as the index flattens one", async () => {
+    await put(standIn.url, [record("dev:master-data--Well:curves", "curves", { data: { Curves: [{ Mnemonic: "GR" }, { Mnemonic: "DT" }] } })]);
+
+    assert.equal((await search(standIn.url, 'data.Curves.Mnemonic:"DT"')).totalCount, 1);
+    const body = JSON.stringify({ kind: "*:*:*:*", query: 'data.Curves.Mnemonic:"GR"', aggregateBy: "data.Curves.Mnemonic", limit: 0, trackTotalCount: true });
+    const answer = (await (await fetch(`${standIn.url}/api/search/v2/query`, { method: "POST", headers, body })).json()) as { aggregations: unknown };
+    assert.deepEqual(answer.aggregations, [{ key: "DT", count: 1 }, { key: "GR", count: 1 }]);
+  });
+
   it("mints an id for a record that names none", async () => {
     const minted = record("");
     delete (minted as { id?: string }).id;
