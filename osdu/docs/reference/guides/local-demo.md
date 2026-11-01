@@ -133,6 +133,9 @@ The stand-in is a small program, `osdu/gui/standin/osdu-standin.mjs`, not an OSD
 make, as the services' contracts do: Storage, Search, Legal, the Schema service and the Wellbore DDMS with its bulk data and
 sessions. It keeps what is delivered in `.sqlflow/osdu-standin.json`, so a restart keeps it.
 
+Its Schema service holds the published schemas the estates keep in their template folders, as a platform holds the standard
+kinds. The estate's own `WellDbWellLog` kind is not among them, so it reads as unregistered, as it would until someone registered it.
+
 It enforces no entitlements or legal tags, indexes at once where a real platform takes time, and answers only the Lucene the
 flows write. A delivery that works against it has met these contracts, not a platform's operations, so it is the way to see
 the product and to try a change, and no substitute for testing against your OSDU.
