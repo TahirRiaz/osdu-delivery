@@ -12,6 +12,23 @@ schema, its own codes and its own services, so most teams end up writing and mai
 OSDU Delivery replaces those loaders with configuration, for data teams that have to load data into OSDU, keep it
 current, and answer for it.
 
+## Try it
+
+One command takes a laptop from nothing to a running OSDU Delivery that has delivered a sample estate and proved it. No OSDU
+to connect to, no configuration: a stand-in for OSDU runs on the machine, and everything else is the real product.
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/TahirRiaz/osdu-delivery/main/bootstrap.ps1 | iex
+```
+
+```bash
+# macOS and Linux
+curl -fsSL https://raw.githubusercontent.com/TahirRiaz/osdu-delivery/main/bootstrap.sh | bash
+```
+
+You need a SQL Server, or Docker Desktop running to start one ([the local demo](osdu/docs/reference/guides/local-demo.md)).
+
 ## Introduction and architecture
 
 <table>
