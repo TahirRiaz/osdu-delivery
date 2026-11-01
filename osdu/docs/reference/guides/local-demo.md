@@ -82,7 +82,7 @@ flows give it that time as they would in production, so the tour does too.
 A green ending looks like this:
 
 ```text
-Everything held: 158 runs in 8.4 minutes, and 21 of 21 assertions passed on what OSDU holds.
+Everything held: 164 runs in 8.7 minutes, and 21 of 21 assertions passed on what OSDU holds.
 
 Open http://localhost:5173 and sign in as admin, password ...
   Schedules    the two estates, chained, and how long each link took
