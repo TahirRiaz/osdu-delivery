@@ -31,6 +31,12 @@ public sealed class DevTourTests
 
         public Dictionary<string, HttpStatusCode> Refused { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>What the lineage projects route answers.</summary>
+        public HttpStatusCode LineageProjects { get; set; } = HttpStatusCode.OK;
+
+        /// <summary>The project the lineage holds that the tour would point at.</summary>
+        public string SalesProjectName { get; set; } = "sales";
+
         /// <summary>Schedules that fire one run rather than a group.</summary>
         public HashSet<string> Single { get; } = new(StringComparer.Ordinal);
 
@@ -93,6 +99,11 @@ public sealed class DevTourTests
                 return Refused.TryGetValue(name, out var refused)
                     ? Answer(refused, "no member is runnable")
                     : Answer(HttpStatusCode.Accepted, Single.Contains(name) ? $$"""{ "runId": "{{name}}" }""" : $$"""{ "runId": "r", "groupId": "{{name}}" }""");
+            }
+
+            if (path == "/api/v1/lineage/projects")
+            {
+                return Answer(LineageProjects, $$"""[{ "project": "formats", "repoId": "other" }, { "project": "{{SalesProjectName}}", "repoId": "sales-repo" }]""");
             }
 
             if (path == "/api/v1/delivery/assertions")
@@ -166,6 +177,20 @@ public sealed class DevTourTests
         Assert.Equal(DevTour.Delivering.Concat(DevTour.Asserting).Select(s => s.Schedule), rig.Platform.Fired);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.OK, "elsewhere")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "sales")]
+    public async Task A_lineage_it_cannot_name_leaves_the_bare_page_and_the_tour_green(HttpStatusCode answer, string project)
+    {
+        var rig = new Rig();
+        rig.Platform.LineageProjects = answer;
+        rig.Platform.SalesProjectName = project;
+
+        Assert.True(await rig.RunAsync());
+
+        Assert.Contains("from source file to KPI: http://localhost:5173/lineage\n", rig.Prompter.Transcript, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task The_SQLFlow_estate_runs_before_the_OSDU_estate_and_its_chain_stays_in_order()
     {
@@ -203,6 +228,7 @@ public sealed class DevTourTests
         Assert.Contains("Everything held", rig.Prompter.Transcript, StringComparison.Ordinal);
         Assert.Contains("21 of 21 assertions", rig.Prompter.Transcript, StringComparison.Ordinal);
         Assert.Contains($"Open http://localhost:5173 and sign in as {User}, password {Password}", rig.Prompter.Transcript, StringComparison.Ordinal);
+        Assert.Contains("http://localhost:5173/lineage?repoId=sales-repo&project=sales", rig.Prompter.Transcript, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -82,9 +82,14 @@ flows give it that time as they would in production, so the tour does too.
 A green ending looks like this:
 
 ```text
-Everything held: 142 runs in 7.5 minutes, and 21 of 21 assertions passed on what OSDU holds.
+Everything held: 158 runs in 8.4 minutes, and 21 of 21 assertions passed on what OSDU holds.
 
 Open http://localhost:5173 and sign in as admin, password ...
+  Schedules    the two estates, chained, and how long each link took
+  Lineage      every table and flow, from source file to KPI: http://localhost:5173/lineage?repoId=...&project=sales
+  Assertions   every check of what OSDU holds, each with its evidence
+  Explorer     the records as OSDU holds them, every version of each
+  Mappings     how a source row became a record, field by field
 ```
 
 It says everything held only when every run succeeded and every assertion was **evaluated** and passed. A test skipped is

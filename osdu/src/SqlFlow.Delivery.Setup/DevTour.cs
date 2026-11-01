@@ -41,6 +41,9 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
     /// <summary>How often a long wait for the control plane says it is still waiting.</summary>
     private static readonly TimeSpan StillWaiting = TimeSpan.FromMinutes(1);
 
+    /// <summary>The project whose lineage the tour points at: files to an executive KPI, small enough to read.</summary>
+    private const string SalesProject = "sales";
+
     /// <summary>The repositories the demo registers.</summary>
     internal static readonly IReadOnlyList<string> Repositories = ["osdu_estate", "sqlflow_estate"];
 
@@ -142,7 +145,7 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
         prompter.Say(string.Empty);
         prompter.Say($"Open {gui} and sign in as {user}, password {password}", Tone.Heading);
         prompter.Say("  Schedules    the two estates, chained, and how long each link took");
-        prompter.Say("  Lineage      every table and flow, from source file to KPI");
+        prompter.Say($"  Lineage      every table and flow, from source file to KPI: {await LineageAsync(gui, ct).ConfigureAwait(false)}");
         prompter.Say("  Assertions   every check of what OSDU holds, each with its evidence");
         prompter.Say("  Explorer     the records as OSDU holds them, every version of each");
         prompter.Say("  Mappings     how a source row became a record, field by field");
@@ -347,6 +350,31 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
 
         prompter.Say($"OSDU: of {tests} assertions, {passed} passed, {failed} failed, {errored} could not run and {notRun} were not run.", Tone.Bad);
         return (passed, tests, false);
+    }
+
+    /// <summary>
+    /// The address that draws the sales estate's lineage, since the page itself opens on a project to pick. Everything has held
+    /// by now, so a graph it cannot name is no failure: the bare page is still the way there.
+    /// </summary>
+    private async Task<string> LineageAsync(string gui, CancellationToken ct)
+    {
+        var page = gui + "/lineage";
+        using var response = await http.GetAsync(new Uri("/api/v1/lineage/projects", UriKind.Relative), ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            return page;
+        }
+
+        using var projects = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+        foreach (var project in Items(projects.RootElement))
+        {
+            if (project.GetProperty("project").GetString() == SalesProject)
+            {
+                return $"{page}?repoId={project.GetProperty("repoId").GetString()}&project={SalesProject}";
+            }
+        }
+
+        return page;
     }
 
     private async Task<JsonDocument> GetAsync(string path, CancellationToken ct)
