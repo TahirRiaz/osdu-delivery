@@ -17,6 +17,7 @@ keywords:
   - apple silicon
 related:
   - delivery-cli-dev
+  - delivery-guide-local-demo
   - delivery-guide-welldb-sample
   - delivery-guide-getting-started
   - delivery-guide-deployment
@@ -38,6 +39,9 @@ The whole system (the control plane, its workers and the GUI) runs on one machin
 checkout of this repository. One command sets the machine up on its first start and starts everything after that. The
 setup it runs and the check it makes at every start are described in full on
 [osdu-delivery-setup and sqlflow dev](../cli/dev.md); this page is the short way through.
+
+To see it work before connecting anything, [the local demo](local-demo.md) does all of this from one command, with a stand-in
+for OSDU on the machine.
 
 ## What you need
 
