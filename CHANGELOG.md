@@ -639,6 +639,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- The Assertions page no longer marks a test unfit because it holds records to a mapping. The page never read the mapping its
+  run reads, so each such test showed "was not read" beside its passing result ([assertion flows](osdu/docs/reference/flow/assertion.md)).
 - A number with more than about seven significant digits in a flow is compared as the document writes it. An unquoted decimal was
   read in single precision, so a right depth such as 2128.7232 failed an `equals`
   ([assertion](osdu/docs/reference/flow/assertion.md)).
