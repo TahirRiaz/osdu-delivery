@@ -93,7 +93,8 @@ Open http://localhost:5173 and sign in as admin, password ...
 ```
 
 It says everything held only when every run succeeded and every assertion was **evaluated** and passed. A test skipped is
-not a test passed: anything not evaluated fails the tour.
+not a test passed. If something writes to the records while the assertions run, say you press **Redeliver** in the GUI, the tests it
+touched are skipped, so the tour gives the index its window again and runs them once more; anything still not evaluated fails it.
 
 ## See that the proof is real
 
@@ -124,7 +125,7 @@ made them.
 | `The sample estates did not sync` | GitHub could not be reached; the line gives git's error | Check the network or a proxy, and run the demo again |
 | `The control plane refused admin` | The password was changed after the demo set it | Change it back on the Users page, or `demo reset` |
 | `The tour lost the control plane` | It stopped while the tour ran; its window says why | Fix what it says, and run the demo again: what was delivered is kept |
-| `of 21 assertions, ... were not run` | A test was skipped, usually because the index had not settled | Run the demo again |
+| `of 21 assertions, ... were not run` | A test was still skipped after the second wait, because something kept writing to its records | Leave the delivery alone, and run the demo again |
 
 ## What the stand-in is
 

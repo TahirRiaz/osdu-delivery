@@ -63,6 +63,7 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
         new("sqlflow-logtype", "OSDU: curated log types"),
         new("welldb-welllog", "OSDU: well logs, with their curves as bulk data"),
         new("welldb-welllog-custom-kind", "OSDU: the same logs as a kind of this estate's own"),
+        new("welldb-welllog", "OSDU: the well logs again, each now naming its record of that kind"),
         new("welldb-dimensions", "OSDU: dimensions over what was delivered"),
         new("welldb-welllog-v150", "OSDU: the same logs as a newer schema version"),
         new("welldb-inventory", "OSDU: every id OSDU holds, set against the ledgers"),
@@ -131,8 +132,27 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
             held &= await FireAsync(step, schedules[step.Schedule], ct).ConfigureAwait(false);
         }
 
-        var (passed, tests, checksHeld) = await AssertionsAsync(ct).ConfigureAwait(false);
-        held &= checksHeld;
+        var totals = await AssertionTotalsAsync(ct).ConfigureAwait(false);
+        if (held && totals.OnlyNotJudged)
+        {
+            // Something wrote to what they read after the wait, such as a person pressing Redeliver. A test the index may not
+            // have caught up with is skipped, which says nothing against the records, so the index gets its time again.
+            prompter.Say($"{totals.NotRun} of {totals.Tests} assertions were not judged, because records they read changed moments ago. The index gets {IndexSettle.TotalSeconds:0} seconds more, then they run once again ...", Tone.Note);
+            await wait(IndexSettle, ct).ConfigureAwait(false);
+            foreach (var step in Asserting)
+            {
+                held &= await FireAsync(step, schedules[step.Schedule], ct).ConfigureAwait(false);
+            }
+
+            totals = await AssertionTotalsAsync(ct).ConfigureAwait(false);
+        }
+
+        if (!totals.Held)
+        {
+            prompter.Say($"OSDU: of {totals.Tests} assertions, {totals.Passed} passed, {totals.Failed} failed, {totals.Errored} could not run and {totals.NotRun} were not run.", Tone.Bad);
+            held = false;
+        }
+
         prompter.Say(string.Empty);
         if (!held)
         {
@@ -141,7 +161,7 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
         }
 
         var took = now() - started;
-        prompter.Say(string.Create(CultureInfo.InvariantCulture, $"Everything held: {_runs} runs in {took.TotalMinutes:0.#} minutes, and {passed} of {tests} assertions passed on what OSDU holds."), Tone.Good);
+        prompter.Say(string.Create(CultureInfo.InvariantCulture, $"Everything held: {_runs} runs in {took.TotalMinutes:0.#} minutes, and {totals.Passed} of {totals.Tests} assertions passed on what OSDU holds."), Tone.Good);
         prompter.Say(string.Empty);
         prompter.Say($"Open {gui} and sign in as {user}, password {password}", Tone.Heading);
         prompter.Say("  Schedules    the two estates, chained, and how long each link took");
@@ -338,18 +358,21 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
     }
 
     /// <summary>Whether every assertion was evaluated and held: a test the run passed over counts against it, never for it.</summary>
-    private async Task<(int Passed, int Tests, bool Held)> AssertionsAsync(CancellationToken ct)
+    private async Task<AssertionTotals> AssertionTotalsAsync(CancellationToken ct)
     {
         using var board = await GetAsync("/api/v1/delivery/assertions", ct).ConfigureAwait(false);
         var totals = board.RootElement.GetProperty("totals");
-        var (tests, passed, failed, errored, notRun) = (Count(totals, "tests"), Count(totals, "passed"), Count(totals, "failed"), Count(totals, "errored"), Count(totals, "notRun"));
-        if (tests > 0 && passed == tests && failed == 0 && errored == 0 && notRun == 0)
-        {
-            return (passed, tests, true);
-        }
+        return new AssertionTotals(Count(totals, "tests"), Count(totals, "passed"), Count(totals, "failed"), Count(totals, "errored"), Count(totals, "notRun"));
+    }
 
-        prompter.Say($"OSDU: of {tests} assertions, {passed} passed, {failed} failed, {errored} could not run and {notRun} were not run.", Tone.Bad);
-        return (passed, tests, false);
+    /// <summary>What the Assertions page counts.</summary>
+    private readonly record struct AssertionTotals(int Tests, int Passed, int Failed, int Errored, int NotRun)
+    {
+        /// <summary>Every assertion was judged and passed: one not judged is not one passed.</summary>
+        public bool Held => Tests > 0 && Passed == Tests && Failed == 0 && Errored == 0 && NotRun == 0;
+
+        /// <summary>Nothing is wrong, and some have no verdict yet.</summary>
+        public bool OnlyNotJudged => Failed == 0 && Errored == 0 && NotRun > 0;
     }
 
     /// <summary>
