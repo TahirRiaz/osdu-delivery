@@ -276,7 +276,10 @@ if [ -n "$managed" ]; then
     export ControlPlane__Worker__Enabled=false
     export ControlPlane__ManagedWorkers__Enabled=true
     export ControlPlane__ManagedWorkers__Launcher=process
-    export ControlPlane__ManagedWorkers__Process__Command="$root/osdu/hosts/SqlFlow.Delivery.Worker.Host/bin/Debug/net9.0/SqlFlow.Delivery.Worker.Host"
+    # Git Bash on Windows runs this script too, where the built host carries its extension.
+    worker="$root/osdu/hosts/SqlFlow.Delivery.Worker.Host/bin/Debug/net9.0/SqlFlow.Delivery.Worker.Host"
+    if [ -f "$worker.exe" ]; then worker="$worker.exe"; fi
+    export ControlPlane__ManagedWorkers__Process__Command="$worker"
     export ControlPlane__ManagedWorkers__Process__ControlPlaneUrl=http://localhost:5000
     export ControlPlane__ManagedWorkers__MaxWorkers="${ControlPlane__ManagedWorkers__MaxWorkers:-4}"
 fi
@@ -284,7 +287,11 @@ fi
 # --- The GUI and the stand-in for OSDU, in the background of this terminal: Ctrl+C (or the control plane ending) stops them ---
 gui_pid=""
 standin_pid=""
+tour_pid=""
 stop_gui() {
+    if [ -n "$tour_pid" ]; then
+        kill "$tour_pid" 2>/dev/null || true
+    fi
     if [ -n "$gui_pid" ]; then
         kill "$gui_pid" 2>/dev/null || true
         pkill -P "$gui_pid" 2>/dev/null || true
@@ -327,6 +334,8 @@ echo
 # cannot, so env passes them. The tour waits for this control plane to come up, and writes to this terminal beside it.
 if [ -n "$demo" ]; then
     "$setup" tour &
+    tour_pid=$!
+    trap stop_gui EXIT INT TERM
 fi
 env "Logging__LogLevel__Microsoft.AspNetCore=Warning" "Logging__LogLevel__Microsoft.EntityFrameworkCore=Warning" \
     dotnet run --project osdu/hosts/SqlFlow.Delivery.ControlPlane.Host --urls http://localhost:5000
