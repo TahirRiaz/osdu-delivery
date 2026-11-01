@@ -134,6 +134,17 @@ describe("the stand-in taking writes", () => {
     assert.deepEqual(answer.aggregations, [{ key: "DT", count: 1 }, { key: "GR", count: 1 }]);
   });
 
+  it("reads a nested array as the contract names it, counting its items", async () => {
+    const curves = { Curves: [{ Mnemonic: "NPHI" }, { Mnemonic: "NPHI" }, { Mnemonic: "SP" }] };
+    await put(standIn.url, [record("dev:master-data--Well:nested", "nested", { data: curves })]);
+
+    assert.equal((await search(standIn.url, 'nested(data.Curves, (Mnemonic.keyword:"SP"))')).totalCount, 1);
+    assert.equal((await search(standIn.url, 'nested(data.Curves, (Mnemonic.keyword:"ABSENT"))')).totalCount, 0);
+    const body = JSON.stringify({ kind: "*:*:*:*", query: 'nested(data.Curves, (Mnemonic:"SP"))', aggregateBy: "nested(data.Curves, Mnemonic.keyword)", limit: 0, trackTotalCount: true });
+    const answer = (await (await fetch(`${standIn.url}/api/search/v2/query`, { method: "POST", headers, body })).json()) as { aggregations: unknown };
+    assert.deepEqual(answer.aggregations, [{ key: "NPHI", count: 2 }, { key: "SP", count: 1 }]);
+  });
+
   it("mints an id for a record that names none", async () => {
     const minted = record("");
     delete (minted as { id?: string }).id;

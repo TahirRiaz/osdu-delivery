@@ -264,6 +264,12 @@ function matches(record, query) {
     return false;
   }
 
+  // A clause on the items of a nested array, each read apart: nested(data.Curves, (Mnemonic.keyword:"GR")).
+  const nested = /^nested\(\s*([\w.]+)\s*,\s*\((.+)\)\s*\)$/.exec(text);
+  if (nested !== null && balanced(nested[2])) {
+    return [valueAt(record, nested[1])].flat().some((item) => item !== null && typeof item === "object" && matches(item, nested[2]));
+  }
+
   if (acceptsWrites) {
     console.warn(`The OSDU stand-in does not read the query clause: ${text}`);
   }
@@ -320,7 +326,8 @@ function splitTop(text, joint) {
 
 /**
  * The value a record holds at a dotted path, for grouping (a `.keyword` sub-field read as its property). A path runs through an
- * array to every element's value, as the index flattens one: `data.Curves.Mnemonic` is the mnemonic of each curve.
+ * array to every element's value, as the index flattens one: `data.Curves.Mnemonic` is the mnemonic of each curve, and
+ * `nested(data.Curves, Mnemonic.keyword)` is how aggregateBy names the same values of a nested array.
  */
 function valueAt(record, path) {
   const step = (node, key) => {
@@ -331,7 +338,7 @@ function valueAt(record, path) {
     return node !== null && typeof node === "object" ? node[key] : undefined;
   };
 
-  return path.replace(/\.keyword$/, "").split(".").reduce(step, record);
+  return path.replace(/^nested\(\s*([\w.]+)\s*,\s*([\w.]+)\s*\)$/, "$1.$2").replace(/\.keyword$/, "").split(".").reduce(step, record);
 }
 
 /**
