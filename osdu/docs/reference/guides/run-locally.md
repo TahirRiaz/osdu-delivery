@@ -95,6 +95,8 @@ the password the setup put in `.sqlflow/env` as `SQLFLOW_ADMIN_PASSWORD`.
 | `dev.bat`, `./dev.sh` | The setup on a first start, then the check, then the control plane, its workers and the GUI. The control plane starts and stops worker processes of its own, as a deployment's workers run, so the Nodes page's scaling acts locally too. |
 | `dev.bat check`, `./dev.sh check` | The check alone, with a test sign-in to OSDU; nothing is started or stopped. |
 | `dev.bat setup`, `./dev.sh setup` | The setup questions again, offering the current values; the file it replaces is kept beside it. |
+| `dev.bat demo`, `./dev.sh demo` | [The local demo](local-demo.md): sets a clean machine up with nothing to ask, starts everything against a stand-in for OSDU, and runs both sample estates. |
+| `dev.bat demo reset`, `./dev.sh demo reset` | The same from nothing: first removes what an earlier demo made. |
 | `dev.bat api`, `./dev.sh api` | The control plane and its workers without the GUI. |
 | `dev.bat single`, `./dev.sh single` | One process: the control plane runs runs on its own node and starts no workers, as F5 does. Combine with `api` for neither workers nor the GUI. |
 | `dev.bat managed`, `./dev.sh managed` | The default, named; refused together with `single`. |
