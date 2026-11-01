@@ -562,7 +562,8 @@ rows can be delivered.
   Down step through them. After a [dry run](dry-run.md), **Ready**, **Worth a look**, **Held** and **Passed over** carry a count
   and narrow the list, each opening its first record. Its foot says how many rows are listed and of which table. Beside the list
   is one section, with one page at a time:
-  - **Render**: the record picked, the first the list holds until one is: what the next run would do with it and why, then its
+  - **Render**: the record picked, the first the list holds until one is: whether it is only staged or in the ledger, what the next
+    run would do with it and why, then its
     **Document**, what the **Schema service** says of it, **How it rendered**, how a **Delivery** would send it and its **Source
     rows**, as the flow's **Preview** shows them. Picking a row shows this page, from whichever page was open.
   - **Source YAML**: the mapping as written. With no flow to read rows from, the section opens here.
