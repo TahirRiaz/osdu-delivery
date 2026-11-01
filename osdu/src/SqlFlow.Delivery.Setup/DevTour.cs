@@ -16,7 +16,7 @@ internal sealed record TourStep(string Schedule, string Says);
 /// person's Run now takes, and says whether every run succeeded, the SQLFlow estate's proof held and the OSDU estate's
 /// assertions passed. An assertion that did not run is not a pass: the verdict counts what was evaluated.
 /// </summary>
-internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<DateTimeOffset> now, Func<TimeSpan, CancellationToken, Task> wait)
+internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<DateTimeOffset> now, Func<TimeSpan, CancellationToken, Task> wait, string? standIn = null)
 {
     /// <summary>The longest error the tour prints; the Runs page has the rest.</summary>
     private const int MostOfAnError = 200;
@@ -37,6 +37,9 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
     internal static readonly TimeSpan IndexSettle = TimeSpan.FromSeconds(310);
 
     private static readonly TimeSpan Poll = TimeSpan.FromSeconds(2);
+
+    /// <summary>How many times the stand-in is asked, a poll apart: it starts just before the control plane does.</summary>
+    private const int StandInAttempts = 5;
 
     /// <summary>How often a long wait for the control plane says it is still waiting.</summary>
     private static readonly TimeSpan StillWaiting = TimeSpan.FromMinutes(1);
@@ -86,7 +89,7 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
         prompter.Say(string.Empty);
         prompter.Say("OSDU Delivery: the tour", Tone.Heading);
         prompter.Say("Both sample estates run for real here: files to tables, tables to OSDU, and every value checked against its source.", Tone.Note);
-        if (!await ComeUpAsync(ct).ConfigureAwait(false))
+        if (!await ComeUpAsync(ct).ConfigureAwait(false) || !await StandInAnswersAsync(ct).ConfigureAwait(false))
         {
             return false;
         }
@@ -170,6 +173,44 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
         prompter.Say("  Explorer     the records as OSDU holds them, every version of each");
         prompter.Say("  Mappings     how a source row became a record, field by field");
         return true;
+    }
+
+    /// <summary>
+    /// Whether the stand-in for OSDU answers. Every OSDU step needs it, and without it each one fails on the same refused
+    /// connection after its retries, so a closed window is said once, in a line, before minutes go by.
+    /// </summary>
+    private async Task<bool> StandInAnswersAsync(CancellationToken ct)
+    {
+        if (standIn is null)
+        {
+            return true;
+        }
+
+        var health = new Uri(new Uri(standIn), "/health");
+        var why = string.Empty;
+        for (var attempt = 0; attempt < StandInAttempts; attempt++)
+        {
+            try
+            {
+                using var response = await http.GetAsync(health, ct).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+
+                why = $"HTTP {(int)response.StatusCode}";
+            }
+            catch (HttpRequestException ex)
+            {
+                why = SecretHygiene.RedactedMessage(ex);
+            }
+
+            await wait(Poll, ct).ConfigureAwait(false);
+        }
+
+        prompter.Say($"The stand-in for OSDU does not answer at {standIn}: {why}", Tone.Bad);
+        prompter.Say("-> Its window may have been closed. dev.bat demo (./dev.sh demo) starts it again, and what was delivered is kept.");
+        return false;
     }
 
     private async Task<bool> ComeUpAsync(CancellationToken ct)

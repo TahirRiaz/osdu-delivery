@@ -206,7 +206,10 @@ public static class DevCommand
         }
 
         using var http = new HttpClient { BaseAddress = address, Timeout = TimeSpan.FromMinutes(2) };
-        var tour = new DevTour(http, machine.Prompter, machine.Now, static (time, token) => Task.Delay(time, token));
+        var standIn = settings.FirstOrDefault(e => e.Name == DevSetupWizard.StandInSwitch)?.Value == "true"
+            ? settings.FirstOrDefault(e => e.Name == "OSDU_URL")?.Value
+            : null;
+        var tour = new DevTour(http, machine.Prompter, machine.Now, static (time, token) => Task.Delay(time, token), standIn);
         try
         {
             return await tour.RunAsync(user, password, DevValues.GuiOrigin, ct).ConfigureAwait(false) ? 0 : 1;

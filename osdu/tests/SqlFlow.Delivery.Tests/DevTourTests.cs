@@ -31,6 +31,9 @@ public sealed class DevTourTests
 
         public Dictionary<string, HttpStatusCode> Refused { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>How many times the stand-in refuses before it answers.</summary>
+        public int StandInRefusals { get; set; }
+
         /// <summary>What the Assertions page counts on each read, before <see cref="Totals"/>.</summary>
         public Queue<string> TotalsInTurn { get; } = new();
 
@@ -61,6 +64,18 @@ public sealed class DevTourTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.PathAndQuery;
+            if (path == "/health")
+            {
+                Assert.Equal("127.0.0.1:5301", request.RequestUri.Authority);
+                if (StandInRefusals > 0)
+                {
+                    StandInRefusals--;
+                    throw new HttpRequestException("No connection could be made because the target machine actively refused it.");
+                }
+
+                return Answer(HttpStatusCode.OK, """{ "status": "up" }""");
+            }
+
             if (path == "/health/startup")
             {
                 if (NotUpFor-- > 0)
@@ -160,12 +175,17 @@ public sealed class DevTourTests
         public async Task<bool> RunAsync()
         {
             using var http = new HttpClient(Platform) { BaseAddress = new Uri("http://localhost:5000") };
-            var tour = new DevTour(http, Prompter, () => Now, (time, _) =>
-            {
-                Waits.Add(time);
-                Now += time;
-                return Task.CompletedTask;
-            });
+            var tour = new DevTour(
+                http,
+                Prompter,
+                () => Now,
+                (time, _) =>
+                {
+                    Waits.Add(time);
+                    Now += time;
+                    return Task.CompletedTask;
+                },
+                "http://127.0.0.1:5301");
             return await tour.RunAsync(User, Password, "http://localhost:5173", CancellationToken.None);
         }
     }
@@ -178,6 +198,30 @@ public sealed class DevTourTests
         Assert.True(await rig.RunAsync());
 
         Assert.Equal(DevTour.Delivering.Concat(DevTour.Asserting).Select(s => s.Schedule), rig.Platform.Fired);
+    }
+
+    [Fact]
+    public async Task A_stand_in_that_does_not_answer_ends_the_tour_before_anything_runs()
+    {
+        var rig = new Rig();
+        rig.Platform.StandInRefusals = int.MaxValue;
+
+        Assert.False(await rig.RunAsync());
+
+        Assert.Empty(rig.Platform.Fired);
+        Assert.Contains("The stand-in for OSDU does not answer at http://127.0.0.1:5301: No connection", rig.Prompter.Transcript, StringComparison.Ordinal);
+        Assert.Contains("dev.bat demo (./dev.sh demo) starts it again", rig.Prompter.Transcript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_stand_in_still_starting_is_given_a_moment()
+    {
+        var rig = new Rig();
+        rig.Platform.StandInRefusals = 2;
+
+        Assert.True(await rig.RunAsync());
+
+        Assert.DoesNotContain("does not answer", rig.Prompter.Transcript, StringComparison.Ordinal);
     }
 
     [Fact]

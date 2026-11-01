@@ -121,6 +121,7 @@ made them.
 | `already holds a catalog, which this checkout did not make` | The SQL Server holds an OSDU Delivery catalog, which is someone's environment. The demo will not touch it, and the sample flows name their databases, so it cannot use others | Run the demo on a clean machine, or on a SQL Server of its own |
 | `This machine has no SQL Server, and Docker's engine is not running` | There is nothing to hold the databases | Start Docker Desktop, or install SQL Server as the line under it says, and run it again |
 | `holds something else` | The folder it would clone into is in use | Set `OSDU_DELIVERY_FOLDER` to a new folder |
+| `The stand-in for OSDU does not answer` | Its window was closed | Run the demo again: it starts the stand-in, and what was delivered is kept |
 | `Port 5301 is taken` | Something else holds the stand-in's port | Stop it, and run the demo again |
 | `The sample estates did not sync` | GitHub could not be reached; the line gives git's error | Check the network or a proxy, and run the demo again |
 | `The control plane refused admin` | The password was changed after the demo set it | Change it back on the Users page, or `demo reset` |
