@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -294,6 +294,32 @@ describe("the stand-in taking writes", () => {
   it("logs a route it does not answer, so a flow's need is found at once", async () => {
     assert.equal((await fetch(`${standIn.url}/api/nothing/here`, { headers })).status, 404);
     assert.match(standIn.log(), /answered 404 to GET \/api\/nothing\/here/);
+  });
+});
+
+describe("the schemas a demo's stand-in holds", () => {
+  it("serves the published schemas the checkouts keep, and leaves an estate's own kind unregistered", async () => {
+    const checkouts = mkdtempSync(join(tmpdir(), "standin-checkouts-"));
+    const templates = join(checkouts, "repo", "commit", "welldb", "templates");
+    mkdirSync(templates, { recursive: true });
+    writeFileSync(join(templates, "osdu_wks_master-data--Well_1.2.0.json"), JSON.stringify({ title: "Well" }));
+    writeFileSync(join(templates, "welldb_wks_work-product-component--WellDbWellLog_1.0.0.json"), JSON.stringify({ title: "Own" }));
+    writeFileSync(join(templates, "osdu_wks_master-data--Broken_1.0.0.json"), "{ not json");
+    const standIn = await start(5395, { OSDU_STANDIN_WRITES: "true", SQLFLOW_NODE_CACHE: checkouts });
+    try {
+      const schema = (id: string) => fetch(`${standIn.url}/api/schema-service/v1/schema/${encodeURIComponent(id)}`, { headers });
+
+      assert.deepEqual(await (await schema("osdu:wks:master-data--Well:1.2.0")).json(), { title: "Well" });
+      assert.equal((await schema("welldb:wks:work-product-component--WellDbWellLog:1.0.0")).status, 404);
+      assert.equal((await schema("osdu:wks:master-data--Broken:1.0.0")).status, 404);
+      assert.match(standIn.log(), /skipped the schema/);
+
+      const listing = (await (await fetch(`${standIn.url}/api/schema-service/v1/schema?scope=SHARED`, { headers })).json()) as { totalCount: number };
+      assert.equal(listing.totalCount, 1);
+    } finally {
+      await stop(standIn);
+      rmSync(checkouts, { recursive: true, force: true });
+    }
   });
 });
 

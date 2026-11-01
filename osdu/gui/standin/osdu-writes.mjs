@@ -6,7 +6,8 @@
 //
 // The e2e suite never loads this file: there a write answers 404, so a spec that tried to send a record fails loudly.
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parquetMetadata, parquetReadObjects } from "hyparquet";
 
 /** A Storage path naming a record, with what follows the id. */
@@ -26,11 +27,18 @@ const CURSOR = /^\/api\/search\/v2\/query_with_cursor\/([^/]+)$/;
 /** How many records a cursor keeps ready between its pages at most, as a guard against one that is never read to its end. */
 const MOST_CURSORS = 200;
 
+/** A published schema as an estate keeps it, in a template folder: templates/osdu_wks_<entity type>_<version>.json. */
+const PUBLISHED_TEMPLATE = /(?:^|[\\/])templates[\\/]osdu_wks_(.+)_(\d+\.\d+\.\d+)\.json$/;
+
+/** How long a look through the checkouts stands, since a schema is read for each kind of each page. */
+const SCHEMAS_FRESH_MS = 5000;
+
 /**
  * The write side over the records `store` holds: { held, withoutVersion, partitionRecords, explore, send, read, readBytes }.
- * Answers a request it takes and returns true; returns false for a request that is not one of its own.
+ * Answers a request it takes and returns true; returns false for a request that is not one of its own. `checkouts` is where the
+ * estates are checked out, whose template folders hold the published schemas a platform's Schema service would.
  */
-export function createWrites(store, stateFile) {
+export function createWrites(store, stateFile, checkouts = "") {
   const { held, withoutVersion, partitionRecords, explore, send, read, readBytes } = store;
   const removed = new Set();
   const bulk = new Map();
@@ -38,6 +46,7 @@ export function createWrites(store, stateFile) {
   const cursors = new Map();
   let lastVersion = 0;
   let saving = null;
+  let schemasRead = 0;
 
   /** A storage version: a microsecond timestamp, later than every one before it. */
   function nextVersion() {
@@ -547,5 +556,28 @@ export function createWrites(store, stateFile) {
 
     /** How many records a partition holds, for the line a start prints. */
     count: (partition) => partitionRecords(partition).length,
+
+    /**
+     * Holds in `schemas` every published schema the checkouts keep, as a platform holds the standard kinds. A kind of an estate's
+     * own stays out of it: nobody registered that here, so it reads as unregistered, as it would on a platform.
+     */
+    holdPublishedSchemas(schemas) {
+      if (checkouts === "" || !existsSync(checkouts) || Date.now() - schemasRead < SCHEMAS_FRESH_MS) {
+        return;
+      }
+
+      schemasRead = Date.now();
+      for (const file of readdirSync(checkouts, { recursive: true, encoding: "utf8" })) {
+        const template = PUBLISHED_TEMPLATE.exec(file);
+        const id = template === null ? null : `osdu:wks:${template[1]}:${template[2]}`;
+        if (id !== null && !schemas.has(id)) {
+          try {
+            schemas.set(id, JSON.parse(readFileSync(join(checkouts, file), "utf8")));
+          } catch (error) {
+            console.warn(`The OSDU stand-in skipped the schema ${file}: ${error instanceof Error ? error.message : error}`);
+          }
+        }
+      }
+    },
   };
 }

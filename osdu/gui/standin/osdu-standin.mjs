@@ -464,7 +464,8 @@ function decodeId(encoded) {
 const writes = acceptsWrites
   ? (await import("./osdu-writes.mjs")).createWrites(
     { held, withoutVersion, partitionRecords, explore, send, read, readBytes },
-    process.env.OSDU_STANDIN_STATE ?? "")
+    process.env.OSDU_STANDIN_STATE ?? "",
+    process.env.SQLFLOW_NODE_CACHE ?? "")
   : null;
 
 const server = createServer((request, response) => {
@@ -593,12 +594,14 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === "GET" && path === SCHEMA_LIST) {
+    writes?.holdPublishedSchemas(schemas);
     send(response, 200, listSchemas(new URL(request.url ?? "/", "http://stand-in").searchParams));
     return;
   }
 
   const schemaRead = request.method === "GET" ? SCHEMA_READ.exec(path) : null;
   if (schemaRead !== null) {
+    writes?.holdPublishedSchemas(schemas);
     const id = decodeId(schemaRead[1]);
     const schema = id === null ? undefined : schemas.get(id);
     if (schema === undefined) {
