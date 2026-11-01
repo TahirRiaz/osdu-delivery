@@ -93,6 +93,11 @@ export function lineOfResult(result: DeliveryDryRunRecord): StagedLine {
   };
 }
 
+/** The line of a row known by its source key alone, which a preview reads as a key. */
+export function lineOfKey(sourceKey: string): StagedLine {
+  return { sourceKey, keyJson: sourceKey, label: null, file: null, row: null, deletedUtc: null, children: {}, result: null };
+}
+
 /** What a dry run said of each row, by the name the rows go by, for a list of any length to look up in constant time. */
 export function resultsOf(run: DeliveryDryRun | null): ReadonlyMap<string, DeliveryDryRunRecord> | null {
   return run === null ? null : new Map(run.records.map((record) => [record.sourceKey, record]));

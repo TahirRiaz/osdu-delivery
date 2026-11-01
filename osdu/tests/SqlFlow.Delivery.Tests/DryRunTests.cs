@@ -5,7 +5,10 @@ using SqlFlow.Delivery.Engine.Checks;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Preview;
 using SqlFlow.Delivery.Engine.Search;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Rendering;
+using SqlFlow.Delivery.Source;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -49,14 +52,15 @@ public sealed class DryRunTests : IDisposable
     }
 
     /// <summary>The sample estate over the fake platform, whose Schema service holds the template the mapping pins unless <paramref name="registered"/> says otherwise.</summary>
-    private async Task<(MemoryIngestionTables Tables, FlowRuntime Runtime)> RuntimeAsync(Action<MemoryIngestionTables>? change = null, bool registered = true)
+    private async Task<(MemoryIngestionTables Tables, FlowRuntime Runtime)> RuntimeAsync(
+        Action<MemoryIngestionTables>? change = null, bool registered = true, Func<FlowDefinition, FlowDefinition>? adjust = null)
     {
         var tables = await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
         change?.Invoke(tables);
         var engine = Samples.Engine(ledger: null, _clock, protocols: _protocols, sources: tables, searches: FixedRecordSearchFactory.SampleWellbores()) with { Clients = _clients };
         var flow = Samples.LocalFlow(_root);
         flow = flow with { Target = flow.Target with { Endpoint = FakeOsduPlatform.Endpoint } };
-        var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        var runtime = await FlowRuntime.CreateAsync(engine, adjust is null ? flow : adjust(flow), SampleEstate.Values);
         if (registered)
         {
             _platform.Schemas[runtime.Mapping.Mapping.Kind] = (JsonObject)runtime.Mapping.Schema.Root.DeepClone();
@@ -291,6 +295,149 @@ public sealed class DryRunTests : IDisposable
             Assert.Equal(DryRunLegalStates.Refused, run.LegalTags.State);
             Assert.Contains("the tag has expired", run.LegalTags.Why, StringComparison.Ordinal);
             Assert.Equal(SampleEstate.Logs().Count, run.Records.Count);
+        }
+    }
+
+    [Fact]
+    public async Task The_list_and_a_dry_run_name_a_row_alike_so_what_became_of_it_finds_its_line()
+    {
+        var (_, runtime) = await RuntimeAsync();
+        using (runtime)
+        {
+            var page = await runtime.Source.ReadStagedAsync(new StagedRowsQuery { Limit = 500 });
+            var system = runtime.Mapping.Mapping.Dataset.System;
+
+            var run = (await DryRunAsync(runtime)).DryRun!;
+
+            Assert.Equal(page.Rows.Select(row => SourceKey.Display(system, row.Key.Values)), run.Records.Select(record => record.SourceKey));
+            Assert.Equal(page.Rows.Select(row => row.Key.Json), run.Records.Select(record => record.KeyJson));
+        }
+    }
+
+    [Theory]
+    [InlineData("acme:dspdm:well_test:1.0.0", "DSPDM")]
+    [InlineData("energistics:etp:obj_Grid2dRepresentation:2.0.1", "Energistics")]
+    public async Task A_kind_no_osdu_schema_describes_is_said_to_be_none_and_the_service_is_not_asked(string kind, string named)
+    {
+        var (_, runtime) = await RuntimeAsync();
+        using (runtime)
+        {
+            var check = await SchemaCrossCheck.OpenAsync(runtime);
+
+            var found = await check.KindAsync(kind, null, default);
+
+            Assert.Equal(SchemaMatchStates.NotApplicable, found.Match.State);
+            Assert.Contains(named, found.Match.Why, StringComparison.Ordinal);
+            Assert.Null(found.Rules);
+            Assert.Equal(0, _platform.SchemaReads(kind));
+        }
+    }
+
+    [Fact]
+    public async Task A_record_an_enrichment_adds_is_held_to_the_schema_of_its_own_kind_and_one_unregistered_says_so()
+    {
+        const string held = "osdu:wks:dataset--File.Generic:1.0.0";
+        const string unheld = "acme:custom:dataset--Own:1.0.0";
+        var (_, runtime) = await RuntimeAsync();
+        using (runtime)
+        {
+            _platform.Schemas[held] = new JsonObject
+            {
+                ["type"] = "object",
+                ["required"] = new JsonArray("kind", "data"),
+                ["properties"] = new JsonObject { ["kind"] = new JsonObject { ["type"] = "string" }, ["data"] = new JsonObject { ["type"] = "object" } },
+            };
+            var document = new JsonObject { ["kind"] = held };
+            var render = new RenderResult
+            {
+                SourceKey = "welldb:x",
+                Document = new JsonObject(),
+                Canonical = "{}",
+                MetadataHash = "h",
+                Holds = [],
+                Enrichment =
+                [
+                    new StepContribution
+                    {
+                        Step = "files",
+                        Records = [new EnrichRecord("dev:dataset--File.Generic:1", held, 0, document), new EnrichRecord("dev:dataset--Own:1", unheld, 1, new JsonObject { ["kind"] = unheld })],
+                    },
+                ],
+            };
+            var check = await SchemaCrossCheck.OpenAsync(runtime);
+
+            var added = await check.AddedOfAsync(render, default);
+
+            Assert.Equal(2, added.Count);
+            Assert.Equal(SchemaMatchStates.Read, added[0].Schema.Match.State);
+            Assert.True(added[0].Findings!.ProblemCount > 0);
+            Assert.Equal(SchemaMatchStates.Unregistered, added[1].Schema.Match.State);
+            Assert.Null(added[1].Findings);
+            Assert.Equal([unheld, held], check.Added.Select(match => match.Kind));
+        }
+    }
+
+    [Fact]
+    public async Task A_row_whose_id_osdu_already_holds_is_held_as_an_intake_would_hold_it()
+    {
+        var mappings = Path.Combine(_root, "mappings-key");
+        Directory.CreateDirectory(mappings);
+        var yaml = File.ReadAllText(Path.Combine(Samples.Mappings, "WellLog@1.4.0.yaml"));
+        var marked = System.Text.RegularExpressions.Regex.Replace(yaml, @"(?m)^  key: \[source_project, log_id\]", "$0\n  idFrom: key", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(5));
+        Assert.NotEqual(yaml, marked);
+        File.WriteAllText(Path.Combine(mappings, "WellLog@1.4.0.yaml"), marked);
+        var (_, runtime) = await RuntimeAsync(adjust: flow => flow with { Render = flow.Render with { MappingsDirectory = mappings } });
+        using (runtime)
+        {
+            var log = SampleEstate.Logs()[0];
+            var id = TargetId.ComposeFromKey(Samples.SamplePartition, "work-product-component--WellLog", [log.SourceProject, log.LogId], out _)!;
+            _platform.Put(FakeOsduPlatform.Record(id, runtime.Mapping.Mapping.Kind));
+
+            var run = (await DryRunAsync(runtime)).DryRun!;
+
+            Assert.Equal(1, run.Occupied);
+            var taken = Assert.Single(run.Records, record => record.Occupied);
+            Assert.Equal(DryRunOutcomes.Held, taken.Outcome);
+            Assert.Contains("already holds a record", taken.Reason, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("DEVELOPMENT", "INTERNAL")]
+    [InlineData("OBSOLETE", "SHARED")]
+    public async Task A_kinds_status_and_scope_are_read_from_the_listing_whichever_they_are(string status, string scope)
+    {
+        var (_, runtime) = await RuntimeAsync();
+        using (runtime)
+        {
+            _platform.SchemaInfos[runtime.Mapping.Mapping.Kind] = (status, scope);
+
+            var match = (await SchemaCrossCheck.OpenAsync(runtime)).Match;
+
+            Assert.Equal((status, scope), (match.Status, match.Scope));
+        }
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task A_listing_that_fails_leaves_the_status_unsaid_and_takes_nothing_else_away(HttpStatusCode status)
+    {
+        var (_, runtime) = await RuntimeAsync();
+        using (runtime)
+        {
+            foreach (var state in SchemaServiceReader.Statuses)
+            {
+                foreach (var scope in SchemaServiceReader.Scopes)
+                {
+                    _platform.SchemaListingRefusals[$"{state} {scope}"] = status;
+                }
+            }
+
+            var match = (await SchemaCrossCheck.OpenAsync(runtime)).Match;
+
+            Assert.Equal(SchemaMatchStates.Matches, match.State);
+            Assert.Null(match.Status);
         }
     }
 

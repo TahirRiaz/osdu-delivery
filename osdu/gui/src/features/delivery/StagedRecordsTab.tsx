@@ -23,6 +23,7 @@ import {
 } from "../../api/delivery";
 import {
   DRY_RUN_OUTCOMES,
+  lineOfKey,
   lineOfResult,
   lineOfRow,
   nextRunLine,
@@ -261,6 +262,7 @@ function DryRunChecks({ run, meta }: { run: DeliveryDryRun; meta: CheckMeta }) {
           <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2">
             <SchemaMatchLine match={schemaMatch} testId="dry-run-schema" />
             {judged && <span className={cn(schema.invalid > 0 && "text-warning")} data-testid="dry-run-schema-invalid">{breaksText(schema)}</span>}
+            {!judged && schemaMatch.why && <span className="text-[12px] text-muted-foreground" data-testid="dry-run-schema-why">{schemaMatch.why}</span>}
           </span>
         </Fact>
         <Fact label="Legal tags" wide testId="dry-run-legal">
@@ -361,10 +363,9 @@ export function StagedRecordsTab({ session, view }: { session: ValueCheckSession
   const total = narrowing !== null && run !== null ? run.outcomes[narrowing] : first?.total ?? null;
   const pick = view.pick;
   const openExample = useCallback((key: string) => {
+    // A rule's example need not be among the rows listed: its key names it to a preview all the same.
     const record = run?.records.find((candidate) => candidate.sourceKey === key);
-    if (record !== undefined) {
-      pick(lineOfResult(record));
-    }
+    pick(record === undefined ? lineOfKey(key) : lineOfResult(record));
   }, [run, pick]);
 
   if (session.flowsLoading) {
