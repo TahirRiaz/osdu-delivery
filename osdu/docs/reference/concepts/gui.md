@@ -547,8 +547,8 @@ to Templates, its tooltip naming the template folder file the version was read f
 path holds it); and **Open in builder**.
 
 Under the heading is one toolbar: the three views, **Overview**, **Staged records** and **Properties**, then which rows are
-read, and **Dry run**. It picks a flow that renders with the mapping (each names its record table), its scope's values and how many rows. A
-required parameter with no default starts on its first option, the value its record table holds most, so the page opens on rows
+read, and **Dry run**. It picks its scope's values and how many rows, and which flow's rows are read only when several flows render
+with the mapping (each names its record table). A required parameter with no default starts on its first option, the value its record table holds most, so the page opens on rows
 rather than on a refusal: the field shows the value taken, another is a pick away, and a field emptied stays empty. Nothing is
 read of the rows until the values are known to do. A run's own form never fills a value in this way. Under the toolbar, when
 there is something to say, one line says the dry run is under way, why it failed, why the rows cannot be read, or whether the
