@@ -56,10 +56,13 @@ internal sealed partial class DevTour(HttpClient http, IPrompter prompter, Func<
         new("welldb-cache", "OSDU: the lookup tables and the reference cache"),
         new("welldb-reference", "OSDU: reference data, into an empty partition"),
         new("welldb-master", "OSDU: wells, wellbores, surveys and formation tops"),
+        new("welldb-removal", "OSDU: the wellbores set against the source's current cut, nothing to take out"),
         new("sqlflow-logtype", "OSDU: curated log types"),
         new("welldb-welllog", "OSDU: well logs, with their curves as bulk data"),
+        new("welldb-welllog-custom-kind", "OSDU: the same logs as a kind of this estate's own"),
         new("welldb-dimensions", "OSDU: dimensions over what was delivered"),
         new("welldb-welllog-v150", "OSDU: the same logs as a newer schema version"),
+        new("welldb-inventory", "OSDU: every id OSDU holds, set against the ledgers"),
     ];
 
     /// <summary>The assertions, once the index has settled: the proof values, and the flows that test what they deliver.</summary>

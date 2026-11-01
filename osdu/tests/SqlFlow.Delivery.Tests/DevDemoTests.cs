@@ -65,6 +65,7 @@ public sealed class DevDemoTests : IDisposable
         Assert.Equal("dev", env["OSDU_DATA_PARTITION"]);
         Assert.Equal("true", env["OSDU_STANDIN_WRITES"]);
         Assert.Equal("true", env["SQLFLOW_DELIVERY_ALLOW_LOOPBACK"]);
+        Assert.Equal("6000", env["ControlPlane__RateLimit__PermitPerWindow"]);
         Assert.Equal("https://github.com/TahirRiaz/osdu-delivery-estate.git", env["ControlPlane__Bootstrap__Repositories__osdu_estate__RemoteUrl"]);
         Assert.Equal("https://github.com/TahirRiaz/sqlflow-estate.git", env["ControlPlane__Bootstrap__Repositories__sqlflow_estate__RemoteUrl"]);
         Assert.Contains("Database=SqlFlowDemo", env["SQLFLOW_DEMO_DB"], StringComparison.Ordinal);

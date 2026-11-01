@@ -175,6 +175,9 @@ public sealed class DevTourTests
         Assert.True(names.IndexOf("welldb-reference") < names.IndexOf("welldb-master"));
         Assert.True(names.IndexOf("welldb-master") < names.IndexOf("welldb-welllog"));
         Assert.True(names.IndexOf("welldb-welllog") < names.IndexOf("welldb-dimensions"));
+        Assert.True(names.IndexOf("welldb-master") < names.IndexOf("welldb-removal"));
+        Assert.True(names.IndexOf("welldb-welllog") < names.IndexOf("welldb-welllog-custom-kind"));
+        Assert.Equal("welldb-inventory", names[^1]);
         await Task.CompletedTask;
     }
 

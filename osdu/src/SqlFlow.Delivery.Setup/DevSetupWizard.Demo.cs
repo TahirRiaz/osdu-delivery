@@ -33,6 +33,12 @@ internal sealed partial class DevSetupWizard
     /// <summary>Where a demo's nodes keep their checkouts, beside the env file, so they and their run history are its own.</summary>
     internal const string CheckoutsFolder = "node-cache";
 
+    /// <summary>
+    /// A person on one machine clicking from page to page: each page polls, so the 120 a minute a deployment shares between its
+    /// users answers 429 before a first look round is done.
+    /// </summary>
+    private const string DemoPermitsPerWindow = "6000";
+
     private const string DemoCatalog = "OsduDelivery";
 
     private const string DemoData = "OsduData";
@@ -175,6 +181,7 @@ internal sealed partial class DevSetupWizard
             [StandInSwitch] = "true",
             ["SQLFLOW_NODE_CACHE"] = Path.Combine(DemoFolder, CheckoutsFolder),
             ["SQLFLOW_DELIVERY_ALLOW_LOOPBACK"] = "true",
+            ["ControlPlane__RateLimit__PermitPerWindow"] = DemoPermitsPerWindow,
             ["ControlPlane__Bootstrap__Repositories__osdu_estate__RemoteUrl"] = Current(current, "ControlPlane__Bootstrap__Repositories__osdu_estate__RemoteUrl") ?? OsduEstateUrl,
             ["ControlPlane__Bootstrap__Repositories__sqlflow_estate__RemoteUrl"] = Current(current, "ControlPlane__Bootstrap__Repositories__sqlflow_estate__RemoteUrl") ?? SqlFlowEstateUrl,
         };
