@@ -336,8 +336,8 @@ internal sealed class DryRunner
 
         var name = RecordPreviewer.ActionName(decided.Action);
         Count(outcome, name);
-        _template = _template.Add(template, render is { IsHeld: false });
-        _schema = _schema.Add(service, render is { IsHeld: false });
+        _template = _template.Add(item.Template);
+        _schema = _schema.Add(item.Service);
         var missing = (service ?? template)?.References.Missing ?? 0;
         _missing += missing > 0 ? 1 : 0;
         _occupied += isOccupied ? 1 : 0;
@@ -527,15 +527,18 @@ internal sealed class DryRunner
         public string ExampleValue { get; } = exampleValue;
     }
 
-    /// <summary>What a schema has said of the documents so far.</summary>
+    /// <summary>
+    /// What a schema has said of the documents so far, by its own rules alone: a record a document refers to that nothing holds
+    /// is no rule of the schema broken, and is counted apart (<see cref="DryRun.WithMissingReferences"/>).
+    /// </summary>
     private readonly record struct VerdictTally(long Valid, long Invalid, long Unverified, long NotChecked)
     {
-        public VerdictTally Add(ValidationVerdict? verdict, bool hadDocument) => verdict?.Outcome switch
+        public VerdictTally Add(RecordFindings? findings) => findings switch
         {
-            ValidationOutcome.Valid => this with { Valid = Valid + 1 },
-            ValidationOutcome.Invalid => this with { Invalid = Invalid + 1 },
-            ValidationOutcome.Unverified => this with { Unverified = Unverified + 1 },
-            _ => hadDocument || verdict is null ? this with { NotChecked = NotChecked + 1 } : this,
+            null => this with { NotChecked = NotChecked + 1 },
+            { ProblemCount: > 0 } => this with { Invalid = Invalid + 1 },
+            { UnverifiedCount: > 0 } => this with { Unverified = Unverified + 1 },
+            _ => this with { Valid = Valid + 1 },
         };
 
         public DryRunVerdictCounts Counts() => new() { Valid = Valid, Invalid = Invalid, Unverified = Unverified, NotChecked = NotChecked };
