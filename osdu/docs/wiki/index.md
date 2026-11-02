@@ -144,8 +144,9 @@ other packages adopt the same contract.
   be undone.
 - [0013: inventory flows compare what OSDU serves with every ledger of the partition](decisions/0013-inventory-flows.md) -
   why finding orphans needs a read of what OSDU serves set against every ledger, and what an inventory compares.
-- [0014: an inventory flow may remove the orphan, stale and forgotten ids it found](decisions/0014-inventory-removals.md) -
-  why an inventory flow may remove what it found when its document allows it, and how that stays traceable.
+- [0014: an inventory flow may remove the orphan, stale and forgotten ids it found, and restore its gone ids](decisions/0014-inventory-removals.md) -
+  why an inventory flow may remove what it found when its document allows it, bring back what a soft delete took, and how
+  that stays traceable.
 - [0015: a record OSDU lost is delivered again under its own id](decisions/0015-lost-records.md) - why it is
   delivered again under the id it claimed, restored first when soft-deleted, and given a new id only when an
   operator asks.

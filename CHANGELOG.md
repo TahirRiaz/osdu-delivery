@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Restore an inventory's gone ids in OSDU.** On an inventory's **gone** tab, **Restore in OSDU** brings back the soft-deleted
+  records behind the ids picked, or every one, at the version each had, and a soft-delete removal under **Removals** offers
+  **Restore what it removed**, which still works after its ids were removed from the inventory. An id a ledger knows, one another
+  identity created, and one storage purged is left with why; each id's outcome is kept with the removals. A restore is a run of
+  the inventory flow (`--operation restore`, `POST /inventories/{partition}/{inventoryId}/restores`) for a flow that declares
+  `removal` ([restoring gone ids](osdu/docs/reference/flow/inventory-removals.md#restoring-gone-ids)).
+
 - **Check that a removed record is gone from OSDU.** A verify run now checks every record removed from OSDU beside the
   delivered ones, and the Records tab shows `gone` or **still in OSDU** for each; **Drifted only** lists the ones OSDU still
   holds. A removed record's OSDU tab reads its id, answering that OSDU holds no record under it, and the Records tab's OSDU
@@ -427,6 +434,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **An inventory's actions say where they act.** The gone tab's **Remove** is now **Remove from inventory**, which forgets the ids
+  here and changes nothing in OSDU, and a removable finding's **Remove** is now **Remove from OSDU**
+  ([removing gone ids](osdu/docs/reference/flow/inventory-removals.md#removing-gone-ids)).
 - **An operation's trace waits in the title bar instead of taking the page's room.** Sync now, a discovery and a run
   still running when its page opens no longer open the bottom panel: a trace icon appears at the right of the title bar,
   with an arc turning around it and rings spreading from it while the work runs, and a check, a warning mark or a cross

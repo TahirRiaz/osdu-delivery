@@ -2365,9 +2365,10 @@ public interface ILedger
     Task<IReadOnlyList<DownloadRecordState>> ListDownloadRecordsAsync(string partition, int downloadId, string? state, string? search, long? after, int limit, CancellationToken ct = default);
 
     /// <summary>
-    /// Opens a removal of an inventory's ids (osdu/docs/reference/flow/inventory-removals.md, What a removal does): an earlier one
-    /// of the inventory its process left running is closed as failed first, since a removal is a run of the flow and the
-    /// flow runs one at a time. Returns the removal's number.
+    /// Opens a removal of an inventory's ids (osdu/docs/reference/flow/inventory-removals.md, What a removal does), or a restore of
+    /// its gone ids (scope <see cref="InventoryRemovals.Restore"/>, Restoring gone ids): an earlier one of the inventory its process
+    /// left running is closed as failed first, since a removal is a run of the flow and the flow runs one at a time. Returns the
+    /// removal's number.
     /// </summary>
     Task<long> StartInventoryRemovalAsync(Guid flowId, InventoryRemovalStart start, CancellationToken ct = default);
 
@@ -2398,6 +2399,26 @@ public interface ILedger
     /// </summary>
     Task<InventoryRemovalRound> RemoveFromInventoryAsync(
         Guid flowId, int inventoryId, long removalId, IReadOnlyList<string>? ids, long after, int limit, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// The next ids a restore may bring back (osdu/docs/reference/flow/inventory-removals.md, Restoring gone ids), at most
+    /// <paramref name="limit"/>, after <paramref name="after"/>: the inventory's gone ids, or with <paramref name="ids"/> those
+    /// ids whatever they are now, or with <paramref name="removalId"/> the ids that soft-delete removal of the inventory removed,
+    /// whether or not the inventory still holds a row of them; each with what the inventory and the ledgers hold of it now, and
+    /// the finding the reconcile's rule gives it against them and <paramref name="owners"/> once OSDU serves it again. A restore
+    /// names its ids or a removal, not both.
+    /// </summary>
+    Task<IReadOnlyList<InventoryRestoreCandidate>> InventoryRestoreCandidatesAsync(
+        Guid flowId, int inventoryId, IReadOnlyList<string>? ids, long? removalId, IReadOnlyList<string> owners, long after, int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// Keeps what one round of a restore came to, in one transaction: every id's outcome and reason, the ids brought back served
+    /// again in the inventory (<paramref name="restoredDetail"/>) with the finding the reconcile's rule gives them against the
+    /// ledgers and <paramref name="owners"/>, and the restore's tallies.
+    /// </summary>
+    Task RecordInventoryRestoreAsync(
+        Guid flowId, int inventoryId, long restoreId, IReadOnlyList<InventoryRemovalItem> items, IReadOnlyList<string> owners, string restoredDetail, DateTime nowUtc,
+        CancellationToken ct = default);
 
     /// <summary>Closes a removal as completed or failed, with why it stopped (redacted).</summary>
     Task CompleteInventoryRemovalAsync(Guid flowId, long removalId, string status, string? stoppedBy, DateTime nowUtc, CancellationToken ct = default);

@@ -479,9 +479,9 @@
       "id": "delivery-cli-inventory",
       "corpus": "reference",
       "path": "cli/inventory.md",
-      "title": "sqlflow inventory: read inventories, their findings, runs and removals from a terminal",
+      "title": "sqlflow inventory: read inventories, their findings, runs, removals and restores from a terminal",
       "type": "cli-command",
-      "summary": "sqlflow inventory list, show, records, lookup, runs, export, removals and removal: what inventory flows found of the ids OSDU serves.",
+      "summary": "sqlflow inventory list, show, records, lookup, runs, export, removals and removal: what inventory flows found, removed and restored.",
       "keywords": [
         "sqlflow inventory",
         "inventory findings",
@@ -491,6 +491,7 @@
         "inventory runs",
         "inventory export",
         "inventory removals",
+        "inventory restores",
         "removal outcome",
         "--finding"
       ],
@@ -2676,7 +2677,8 @@
         "artifacts",
         "undo unfinished deliveries",
         "records the source no longer holds",
-        "removal flow"
+        "removal flow",
+        "restore gone ids"
       ],
       "related": [
         "delivery-concept-ledger",
@@ -4689,18 +4691,22 @@
       "id": "delivery-flow-inventory-removals",
       "corpus": "reference",
       "path": "flow/inventory-removals.md",
-      "title": "Inventory removals (operation remove): taking what an inventory found out of OSDU, repairing missing ids, and removing gone ids",
+      "title": "Inventory removals (operations remove and restore): taking what an inventory found out of OSDU, bringing gone ids back, repairing missing ids, and removing gone ids",
       "type": "flow-reference",
-      "summary": "An inventory's remove run: what it checks and records id by id, delivering missing ids again, and removing gone ids from it.",
+      "summary": "An inventory's remove and restore runs: what each checks and records id by id, restoring gone ids, delivering missing ids again, removing gone ids.",
       "keywords": [
         "removal",
         "soft delete",
         "purge",
         "remove gone ids",
+        "remove from inventory",
         "obsolete inventory rows",
         "repair missing records",
         "deliver again",
         "restore soft deleted record",
+        "restore gone ids",
+        "undelete",
+        "undo a removal",
         "new osdu id"
       ],
       "related": [
@@ -4713,12 +4719,16 @@
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryRunner.Removal.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Inventories/InventoryRunner.Restore.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/InventoryRemovals.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/InventoryRepairs.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.InventoryRemoval.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventoryRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventoryRestore.cs",
         "osdu/src/SqlFlow.Delivery.Data/Migrations/20261008132311_InventoryRemovals.cs",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryInventoryEndpoints.cs"
+        "osdu/src/SqlFlow.Delivery.Data/Migrations/20261102200842_InventoryRestores.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryInventoryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryInventoryEndpoints.Restores.cs"
       ]
     },
     {
@@ -8048,6 +8058,7 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Inventory.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventoryRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventoryRestore.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Inventory.cs"
       ]
     },
@@ -8055,15 +8066,16 @@
       "id": "delivery-table-inventory-removal",
       "corpus": "reference",
       "path": "tables/inventory-removal.md",
-      "title": "osdu.InventoryRemoval: one removal of an inventory's ids an operator asked for, and what it came to",
+      "title": "osdu.InventoryRemoval: one removal of an inventory's ids, or one restore of its gone ids, and what it came to",
       "type": "table",
-      "summary": "One row per removal of an inventory's ids: the run, who asked, the finding and scope, how many ids the operator was shown, and its tallies.",
+      "summary": "One row per removal of an inventory's ids, or restore of its gone ids: the run, who asked, the finding and scope, the count shown, and its tallies.",
       "keywords": [
         "osdu.InventoryRemoval",
         "inventory removal table",
         "remove orphans",
         "soft delete",
         "purge",
+        "restore gone ids",
         "removal tallies"
       ],
       "related": [
@@ -8079,6 +8091,7 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.InventoryRemoval.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventoryRemoval.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.InventoryRestore.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/InventoryRemovals.cs"
       ]
     },
@@ -9305,7 +9318,7 @@
       "id": "delivery-wiki-0014-inventory-removals",
       "corpus": "wiki",
       "path": "decisions/0014-inventory-removals.md",
-      "title": "Decision 0014: an inventory flow may remove the orphan, stale and forgotten ids it found",
+      "title": "Decision 0014: an inventory flow may remove the orphan, stale and forgotten ids it found, and restore its gone ids",
       "type": "decision",
       "summary": "Why an inventory flow may remove what it found when its document allows it, and how that stays traceable.",
       "keywords": [
@@ -9313,7 +9326,8 @@
         "removal",
         "orphans",
         "cleanup",
-        "soft delete"
+        "soft delete",
+        "restore"
       ],
       "related": [
         "delivery-wiki-0013-inventory-flows",
