@@ -1,7 +1,7 @@
 import { REPO_NAME } from "./global-setup";
 import { expect, FIRST_PAGE_MS, test } from "./helpers";
 
-// Syncing a repository from the Delivery page (osdu/docs/reference/concepts/gui.md, Delivery). The first test syncs the
+// Syncing a repository from the Delivery page (osdu/docs/reference/concepts/gui-ledger.md, Delivery). The first test syncs the
 // estate's repository for real; the sync reads the commit the estate already holds, so the specs after this one see it
 // unchanged. The others answer the list themselves, for the standings the estate does not have.
 
