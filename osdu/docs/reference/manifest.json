@@ -2065,7 +2065,10 @@
         "preview rows",
         "first 100 rows",
         "right-click a table",
-        "table-rows"
+        "table-rows",
+        "rendered record",
+        "parameter values",
+        "right-click menu"
       ],
       "related": [
         "delivery-flow-mapping",
@@ -2081,12 +2084,15 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryValueCheckEndpoints.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Operations/TableRowsOperation.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Preview/RecordPreviewer.cs",
         "osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs",
         "osdu/gui/src/features/delivery/overview/MappingOverview.tsx",
         "osdu/gui/src/features/delivery/overview/OverviewCanvas.ts",
+        "osdu/gui/src/features/delivery/overview/OverviewRendered.tsx",
         "osdu/gui/src/features/delivery/overview/OverviewRows.tsx",
         "osdu/gui/src/features/delivery/overview/outlineLayout.ts",
         "osdu/gui/src/features/delivery/overview/outlineModel.ts",
+        "osdu/gui/src/features/delivery/overview/recordMarkdown.ts",
         "osdu/gui/src/features/delivery/overview/tableRows.ts"
       ]
     },
