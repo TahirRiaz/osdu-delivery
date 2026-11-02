@@ -23,6 +23,7 @@ keywords:
   - undo unfinished deliveries
   - records the source no longer holds
   - removal flow
+  - restore gone ids
 related:
   - delivery-concept-ledger
   - delivery-concept-artifacts-and-undo
@@ -75,6 +76,7 @@ against the storage service's OpenAPI description; route-specific calls are in [
 | You want to | Use |
 | --- | --- |
 | Take records out of OSDU, reversibly | A removal at the `record` scope. |
+| Bring back what an inventory found gone, or what one of its removals took out of OSDU | An inventory's [restore](../flow/inventory-removals.md#restoring-gone-ids). |
 | Take out of OSDU what the source no longer holds, on a schedule | A [removal flow](../flow/removal.md). |
 | Make the version before the latest current again | A removal at the `previous` scope. |
 | Destroy a record's earlier versions, or the record for good | A removal at the `history` or `everything` scope. |

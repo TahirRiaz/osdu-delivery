@@ -108,7 +108,7 @@ Every run and intervention across flows, newest first: when, **Took** (how long 
 (with its partition when none is picked in the title bar), **Action**, **By** (a schedule, a person, the command line), **Result** and **Target** (the record, else the
 submission, else the run). It narrows by actor, flow,
 action (`deliver`, `intake`, `drain`, `verify`, `probe`, `sync`, `release`, `adopt`, `redeliver`, `rerender`, `delete`,
-`restore-previous`, `purge`, `reverse`, `undo`, `delete-ledger`, `remove-dimension`, `inventory-remove`, `inventory-repair`,
+`restore-previous`, `purge`, `reverse`, `undo`, `delete-ledger`, `remove-dimension`, `inventory-remove`, `inventory-restore`, `inventory-repair`,
 `reassign-id`, `source-remove`, `lift-removal`, `ledger-move`) and outcome. Runs
 that changed nothing are left out until **Show idle runs**. An entry opens on its ids, **Parameters**, its captured
 **Log** (downloadable), and for a `deliver`, `replan`, `drain` or `intake` run that has ended, **Reverse this run**; a
