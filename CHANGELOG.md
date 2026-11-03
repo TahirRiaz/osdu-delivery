@@ -448,6 +448,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **A record's Render sets what it renders to now on the left and what OSDU holds on the right**, under headings that name
+  each side (**Rendered now**, **In OSDU** with the version read) in the foreground rather than in small grey type. Every
+  comparison's Explain and Copy name its sides by those headings ([a record's page](osdu/docs/reference/concepts/gui-ledger.md#a-records-page)).
 - **A search on a mapping's overview zooms to what it finds.** Once the typing stops in **Property or column**, the canvas
   frames the properties found and the columns they read, close enough to read (up to 140%, never under 100%), with each
   property found and each column the search names shaded. Clearing the search takes the view back to where it was, unless it
