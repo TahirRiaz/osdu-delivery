@@ -5684,7 +5684,8 @@
         "osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs",
         "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.SourceRemoval.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs",
-        "osdu/src/SqlFlow.Delivery/Documents/RemovalDocumentMapper.cs"
+        "osdu/src/SqlFlow.Delivery/Documents/RemovalDocumentMapper.cs",
+        "sqlflow/src/SqlFlow.SqlServer/Schema/MatchKeyGenerator.cs"
       ]
     },
     {
