@@ -447,6 +447,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([a mapping's overview](osdu/docs/reference/concepts/mapping-overview.md#the-way-a-value-is-filled)).
 - **An attribute's SQL opens on its failing rows.** Once a check has found rows wrong with an attribute, its SQL tab starts on
   **Failing rows** rather than **Every row** ([the Mappings page](osdu/docs/reference/concepts/gui-build.md#mappings)).
+- **A mapping's Dry run is on Properties.** The **Dry run** button and how many rows it reads now stand in the toolbar of
+  **Properties** only, rather than over every view; **Staged records** keeps its scope's values and still marks each record with
+  what the last dry run found ([the Mappings page](osdu/docs/reference/concepts/gui-build.md#mappings)).
 - **The issues workbook and `sqlflow values` lead with what is wrong.** The workbook's Issues column **Reason** is now **What is
   wrong**, in plain words, with the render's sentence moved to **Reason as rendered**; its Summary adds **What to do**; and
   `sqlflow values` prints each finding's headline, then `effect`, `where`, `reason`, `values`, `source` and `to fix` lines
