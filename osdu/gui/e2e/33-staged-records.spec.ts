@@ -182,12 +182,12 @@ test.describe.serial("a mapping's staged records and a dry run", () => {
     await expect(properties.getByTestId("variable-sql")).toContainText("SELECT", { timeout: 30_000 });
     await expect(properties.getByTestId("variable-sql")).toContainText("FROM", { timeout: 30_000 });
 
-    // Name fails no check here, so it offers no failing rows. An attribute the run found wrong does.
+    // Name fails no check here, so it offers no failing rows. An attribute the run found wrong opens on them.
     await expect(properties.getByTestId("variable-sql-rows-failing")).toHaveCount(0);
     await properties.getByTestId("templates-view-show-failing").click();
     await properties.locator('[data-testid^="templates-view-variable-"]').last().click();
     await properties.getByTestId("templates-view-properties-tab-sql").click();
-    await properties.getByTestId("variable-sql-rows-failing").click();
+    await expect(properties.getByTestId("variable-sql-rows-failing")).toHaveAttribute("data-state", "on", { timeout: 30_000 });
     await expect(properties.getByTestId("variable-sql")).toContainText("OPENJSON", { timeout: 30_000 });
     await properties.getByTestId("variable-sql-rows-all").click();
     await expect(properties.getByTestId("variable-sql")).not.toContainText("OPENJSON", { timeout: 30_000 });

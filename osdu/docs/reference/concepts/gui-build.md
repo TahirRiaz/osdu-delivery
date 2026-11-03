@@ -107,8 +107,8 @@ rows can be delivered.
     toolbar's flow and scope values, in the order a read pages in, as many rows as the toolbar reads, and without rows marked
     deleted. A child table is left joined, so a record with no child rows shows, with nulls, and its columns are named
     `curves.curve_unit`; each child table beyond one has a statement of its own, so their rows do not multiply. Once a check has
-    found rows wrong with the attribute, **Failing rows** narrows the query to the records it listed, as many as a request can
-    carry, and says how many of the rows that fail those are. A column the tables do not hold is named and left out, and an
+    found rows wrong with the attribute, the query opens on **Failing rows**: the records it listed, as many as a request can
+    carry, saying how many of the rows that fail those are. **Every row** reads the whole scope again. A column the tables do not hold is named and left out, and an
     attribute that reads no source column says so. The page writes the query from the tables' shape: it reads no row and runs
     nothing.
   - **Export rows**, in **Data**, saves the rows failing that attribute as an Excel workbook, reading them again on a node
