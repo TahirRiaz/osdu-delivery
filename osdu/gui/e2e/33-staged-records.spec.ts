@@ -111,10 +111,13 @@ test.describe.serial("a mapping's staged records and a dry run", () => {
     await expect(sheet.getByTestId("staged-rows-error")).toHaveCount(0);
     await expect(sheet.getByTestId("preview-schema-note")).toBeVisible();
 
+    // The list pages through the scope itself, so the dry run and how many rows it reads stand on Properties alone.
+    await expect(sheet.getByTestId("value-check-all")).toHaveCount(0);
+    await expect(sheet.getByTestId("value-check-rows")).toHaveCount(0);
+
     // A field emptied stays empty: the reader is told why there are no rows, and the mapping as written is still there to read.
     await sheet.getByTestId("value-check-parameter-logSource").press("Backspace");
     await expect(sheet.getByTestId("staged-blocked")).toBeVisible({ timeout: 30_000 });
-    await expect(sheet.getByTestId("value-check-all")).toBeDisabled();
     await expect(sheet.getByTestId("staged-rows-error")).toHaveCount(0);
     await sheet.getByTestId("value-check-parameter-logSource").fill(LOG_SOURCE);
     await sheet.getByTestId("value-check-parameter-logSource").press("Escape");
@@ -151,10 +154,12 @@ test.describe.serial("a mapping's staged records and a dry run", () => {
     await sheet.getByTestId("staged-search-clear").click();
     await expect(lines.first()).toBeVisible({ timeout: 30_000 });
 
-    // A dry run says what became of every row; nothing is sent.
+    // A dry run, from Properties, says what became of every row; nothing is sent. Staged records marks each row with it.
+    await sheet.getByTestId("delivery-mapping-tab-coverage").click();
     await sheet.getByTestId("value-check-all").click();
     await expect(sheet.getByTestId("dry-run-verdict")).toContainText("rows", { timeout: 240_000 });
     await expect(sheet.getByTestId("dry-run-verdict")).toContainText("Nothing was sent");
+    await sheet.getByTestId("delivery-mapping-tab-staged").click();
     await expect(lines.first()).not.toHaveAttribute("data-outcome", "none");
 
     // The sample's names break the rule only the service's schema states, which the template knows nothing of.
@@ -170,7 +175,7 @@ test.describe.serial("a mapping's staged records and a dry run", () => {
     await sheet.getByTestId("dry-run-rule-example").first().click();
     await expect(sheet.getByTestId("preview-result")).toBeVisible({ timeout: 60_000 });
 
-    // Properties reads the same run, attribute by attribute, without running it again.
+    // Properties reads the same run attribute by attribute.
     await sheet.getByTestId("delivery-mapping-tab-coverage").click();
     await expect(sheet.getByTestId("value-check-summary")).toBeVisible({ timeout: 30_000 });
 
