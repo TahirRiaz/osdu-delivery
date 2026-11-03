@@ -699,6 +699,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- A record that links its child with `$child` drops the link once the child is taken out of OSDU through **Remove**, a removal flow,
+  an inventory or a reversal: the records linking it are planned again and sent without it. The link stayed on a child OSDU no longer
+  held until the record's own row changed, and the record's **Render** tab showed the document without it beside a skip; that tab
+  now says when the next run would skip a record that renders differently, and **read by** leaves out a removed child
+  ([when a child is taken out](osdu/docs/reference/flow/mapping-child.md#when-a-child-is-taken-out)).
 - A backfill reaches a child file flow dated from its file's name or path, on a schedule and on a flow with its descendants. Only
   the first flow took the window, and a re-landed file keeps such a date, so the child's watermark skipped the slice and the backfill
   stopped after the copy ([backfilling a whole source](sqlflow/docs/reference/guides/source-backfill.md)).
