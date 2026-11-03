@@ -441,6 +441,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **A mapping's property panel shows what a lookup compares.** Clicking a property on a mapping's overview lays out its way as
+  **Input**, **Changed**, **Compared in** a table (each line's field beside the column or text it has to equal, with the row's
+  value when a record is shown), **Fetched** and **Written to**, with how the lines decide the record
+  ([a mapping's overview](osdu/docs/reference/concepts/mapping-overview.md#the-way-a-value-is-filled)).
 - **An attribute's SQL opens on its failing rows.** Once a check has found rows wrong with an attribute, its SQL tab starts on
   **Failing rows** rather than **Every row** ([the Mappings page](osdu/docs/reference/concepts/gui-build.md#mappings)).
 - **The issues workbook and `sqlflow values` lead with what is wrong.** The workbook's Issues column **Reason** is now **What is
