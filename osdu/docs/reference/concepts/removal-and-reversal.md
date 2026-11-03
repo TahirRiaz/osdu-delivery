@@ -109,6 +109,12 @@ otherwise write the version it took back again. The removal that opens [deleting
 for nothing, since the run after it reads every row, and neither does an inventory's removal of an id the ledger already
 holds as removed ([Inventory flows](../flow/inventory.md)), which only makes OSDU agree with the ledger.
 
+**Records that link a removed one.** A record taken out of OSDU (`record`, `everything`) can no longer be linked as a
+child: the records of the partition that link it with `$child` are asked to be planned again, and their flows' next runs
+send them without the link. The same holds for every way the ledger takes a record out: a removal flow, an inventory and
+a reversal ([mapping $child](../flow/mapping-child.md#when-a-child-is-taken-out)). `previous` and `history` leave the
+record in OSDU and ask nothing.
+
 **Which records.** A removal names its records by key, or by a listing filter that is resolved on the node when the
 removal runs, so "every record this submission delivered" travels as a filter rather than as thousands of keys. The filter
 has two ways of naming a submission's records: `submissionId` is the records the submission last planned, and
