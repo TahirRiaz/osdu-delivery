@@ -441,6 +441,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **An attribute's SQL opens on its failing rows.** Once a check has found rows wrong with an attribute, its SQL tab starts on
+  **Failing rows** rather than **Every row** ([the Mappings page](osdu/docs/reference/concepts/gui-build.md#mappings)).
 - **The issues workbook and `sqlflow values` lead with what is wrong.** The workbook's Issues column **Reason** is now **What is
   wrong**, in plain words, with the render's sentence moved to **Reason as rendered**; its Summary adds **What to do**; and
   `sqlflow values` prints each finding's headline, then `effect`, `where`, `reason`, `values`, `source` and `to fix` lines
