@@ -3213,6 +3213,43 @@
       ]
     },
     {
+      "id": "delivery-concept-value-proof",
+      "corpus": "reference",
+      "path": "concepts/value-proof.md",
+      "title": "Why an attribute fails a value check: which records hold wrong values, what to do, and queries that prove it",
+      "type": "concept",
+      "summary": "What a check's finding says in plain words (the type, field and source column behind it), what to do, and read-only queries that prove it.",
+      "keywords": [
+        "why does an attribute fail",
+        "missing in the cache",
+        "id not held",
+        "what to do about a finding",
+        "proof query",
+        "prove a finding",
+        "business keys with wrong values",
+        "which records hold a wrong value",
+        "records to fix",
+        "run the query",
+        "copy into SSMS"
+      ],
+      "related": [
+        "delivery-concept-dry-run",
+        "delivery-concept-gui-build",
+        "delivery-cli-values",
+        "delivery-concept-partition-cache",
+        "delivery-concept-api"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Rendering/RenderMiss.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Checks/ValueCheckExplainer.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Checks/ValueProof.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Operations/ValueProofOperation.cs",
+        "osdu/src/SqlFlow.Delivery/Source/IngestionSql.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/CacheProofSql.cs",
+        "osdu/gui/src/features/delivery/FindingExplanation.tsx"
+      ]
+    },
+    {
       "id": "delivery-flow-assertion",
       "corpus": "reference",
       "path": "flow/assertion.md",
@@ -10195,7 +10232,9 @@
         "bounded list",
         "keyset paging"
       ],
-      "related": [],
+      "related": [
+        "delivery-wiki-0044-findings-say-why-and-prove-it"
+      ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Engine/Checks/DryRunner.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Checks/SchemaCrossCheck.cs",
@@ -10290,6 +10329,36 @@
         "osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs",
         "osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.SourceRemoval.cs",
         "sqlflow/src/SqlFlow.SqlServer/Schema/MatchKeyGenerator.cs"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0044-findings-say-why-and-prove-it",
+      "corpus": "wiki",
+      "path": "decisions/0044-findings-say-why-and-prove-it.md",
+      "title": "Decision 0044: a finding says why in parts the render noted, and proves it with queries the control plane writes",
+      "type": "decision",
+      "summary": "Why a value check's finding is explained from what the render noted rather than its sentence, and why its proof is queries written server side, run as copied.",
+      "keywords": [
+        "value check explanation",
+        "proof query",
+        "cache miss",
+        "render miss",
+        "what to do",
+        "business keys",
+        "run the query"
+      ],
+      "related": [
+        "delivery-wiki-0040-dry-run-of-a-mapping"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Rendering/RenderMiss.cs",
+        "osdu/src/SqlFlow.Delivery/Rendering/RenderTrail.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Checks/ValueTally.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Checks/ValueCheckExplainer.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Checks/ValueProof.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/CacheProofSql.cs",
+        "osdu/src/SqlFlow.Delivery/Source/IngestionSql.cs",
+        "osdu/gui/src/features/delivery/FindingExplanation.tsx"
       ]
     },
     {

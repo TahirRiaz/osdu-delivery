@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A value check says why an attribute fails, what to do, and proves it from the data.** Each finding of a check or a dry run
+  leads with what is wrong in plain words (the cache type, field, value and source column behind it, such as "the cache holds
+  no `reference-data--UnitOfMeasure` record `ft`"), what it does to the records, and what to do. **Prove it from the data**
+  runs read-only queries on the page, or copies them for SSMS: where the source holds the values, the records to fix by their
+  keys, and what the cache holds of what was looked for (`POST /flows/{id}/value-proof`,
+  [why an attribute fails](osdu/docs/reference/concepts/value-proof.md)).
+
 - **Restore an inventory's gone ids in OSDU.** On an inventory's **gone** tab, **Restore in OSDU** brings back the soft-deleted
   records behind the ids picked, or every one, at the version each had, and a soft-delete removal under **Removals** offers
   **Restore what it removed**, which still works after its ids were removed from the inventory. An id a ledger knows, one another
@@ -434,6 +441,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **The issues workbook and `sqlflow values` lead with what is wrong.** The workbook's Issues column **Reason** is now **What is
+  wrong**, in plain words, with the render's sentence moved to **Reason as rendered**; its Summary adds **What to do**; and
+  `sqlflow values` prints each finding's headline, then `effect`, `where`, `reason`, `values`, `source` and `to fix` lines
+  ([why an attribute fails](osdu/docs/reference/concepts/value-proof.md)).
 - **An inventory's actions say where they act.** The gone tab's **Remove** is now **Remove from inventory**, which forgets the ids
   here and changes nothing in OSDU, and a removable finding's **Remove** is now **Remove from OSDU**
   ([removing gone ids](osdu/docs/reference/flow/inventory-removals.md#removing-gone-ids)).
