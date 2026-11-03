@@ -710,6 +710,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- A record a removal flow took out is delivered again by the delivery flow's next run once SQLFlow's key match finds its key back
+  in the source: the key match now stamps `UpdatedDate_DW` on a row it un-tags, as it does a row it updates. It took the mark off
+  and stamped nothing, so the delivery never read the row, and the ledger kept the record `deleted` until a removal run lifted it
+  and a later delivery sent it ([a key that comes back](osdu/docs/reference/flow/removal-marks.md#a-key-that-comes-back)).
 - A record that links its child with `$child` drops the link once the child is taken out of OSDU through **Remove**, a removal flow,
   an inventory or a reversal: the records linking it are planned again and sent without it. The link stayed on a child OSDU no longer
   held until the record's own row changed, and the record's **Render** tab showed the document without it beside a skip; that tab
