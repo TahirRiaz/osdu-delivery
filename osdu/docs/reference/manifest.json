@@ -2148,12 +2148,16 @@
       "path": "concepts/menu.md",
       "title": "The menu: where each page of OSDU Delivery sits in the side bar, the activity bar and the command palette",
       "type": "concept",
-      "summary": "The workbench's menu as OSDU Delivery lays it out: its groups and sections, every page under them, what each group is for, and how the menu folds.",
+      "summary": "OSDU Delivery's menu: its groups and sections, every page under them, what each group is for, the activity bar's shortcuts, and how the menu folds.",
       "keywords": [
         "menu",
         "side bar",
         "sidebar",
         "activity bar",
+        "shortcuts",
+        "menu button",
+        "quick links",
+        "jump to a page",
         "navigation",
         "command palette",
         "where is a page",
@@ -2180,6 +2184,7 @@
         "sqlflow/gui/src/layout/nav.ts",
         "sqlflow/gui/src/layout/workbench/SideBar.tsx",
         "sqlflow/gui/src/layout/workbench/ActivityBar.tsx",
+        "sqlflow/gui/src/layout/AppShell.tsx",
         "sqlflow/gui/src/layout/workbench/CommandPalette.tsx"
       ]
     },
@@ -10155,7 +10160,9 @@
         "subscribers",
         "osdu group"
       ],
-      "related": [],
+      "related": [
+        "delivery-wiki-0045-activity-bar-shortcuts"
+      ],
       "sourceRefs": [
         "osdu/gui/src/module.tsx",
         "osdu/gui/e2e/02-navigation.spec.ts",
@@ -10470,6 +10477,35 @@
         "osdu/src/SqlFlow.Delivery/Catalog/CacheProofSql.cs",
         "osdu/src/SqlFlow.Delivery/Source/IngestionSql.cs",
         "osdu/gui/src/features/delivery/FindingExplanation.tsx"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0045-activity-bar-shortcuts",
+      "corpus": "wiki",
+      "path": "decisions/0045-activity-bar-shortcuts.md",
+      "title": "Decision 0045: the activity bar opens the pages worked in most, in one click",
+      "type": "decision",
+      "summary": "Why the activity bar is a menu button and seven page shortcuts rather than an icon per menu group, and why a shortcut leaves the side bar as it was.",
+      "keywords": [
+        "activity bar",
+        "shortcuts",
+        "menu button",
+        "side bar",
+        "quick links",
+        "navigation"
+      ],
+      "related": [
+        "delivery-wiki-0034-one-menu-by-task"
+      ],
+      "sourceRefs": [
+        "osdu/gui/src/module.tsx",
+        "osdu/gui/e2e/02-navigation.spec.ts",
+        "sqlflow/gui/src/layout/menuLayout.ts",
+        "sqlflow/gui/src/layout/nav.ts",
+        "sqlflow/gui/src/layout/AppShell.tsx",
+        "sqlflow/gui/src/layout/workbench/ActivityBar.tsx",
+        "sqlflow/gui/src/layout/workbench/SideBar.tsx",
+        "sqlflow/gui/unit/menuLayout.test.ts"
       ]
     },
     {

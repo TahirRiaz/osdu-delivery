@@ -456,6 +456,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **The activity bar opens the pages worked in most, in one click.** Its icons are the Assistant, Repos, Mappings,
+  Schedules, Delivery, the Explorer and Assertions, under a menu button that shows and hides the side bar; they were an
+  icon per menu group, which only unfolded that group in the side bar. A shortcut is lit while its page is shown and
+  selects its entry in the side bar's menu, and every other page is in the side bar
+  ([the activity bar](osdu/docs/reference/concepts/menu.md#the-activity-bar)).
 - **A record's Render sets what it renders to now on the left and what OSDU holds on the right**, under headings that name
   each side (**Rendered now**, **In OSDU** with the version read) in the foreground rather than in small grey type. Every
   comparison's Explain and Copy name its sides by those headings ([a record's page](osdu/docs/reference/concepts/gui-ledger.md#a-records-page)).
