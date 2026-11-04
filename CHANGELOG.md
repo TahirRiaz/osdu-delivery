@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /api/v1/delivery/flows/{pipelineId}/source-tables` gives each table's node as `objectKey`
   ([a mapping's overview](osdu/docs/reference/concepts/mapping-overview.md#opening-a-part-in-lineage)).
 
+- **The staged rows behind an assertion open in SQL.** A check that accounts for a delivery flow's staged rows
+  (`delivered` with `staged: true`) shows **Show the rows in SQL** on the dashboard and in a run's report: the T-SQL that
+  reads the rows it lists, or every row of the scope it read, from the delivery flow's own tables, written as a mapping's
+  source query is, to run in SSMS. `POST /assertion-runs/{id}/source-sql` writes it
+  ([the rows in the source](osdu/docs/reference/flow/staged-accounting.md#the-rows-in-the-source)).
+
 - **A cache type attaches its parent records' properties to each cached record, as a dimension reads them.** A cache
   flow's OSDU type takes a dimension's `attributes` and `lookupKinds`, written and read exactly as a dimension's: paths
   through references (`WellName: [data.WellID, data.FacilityName]`), filters, `keep`, `many`, `decode`, `maxReferences` and
