@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A mapping's overview opens each of its parts in lineage, to show where it is populated from.** A right click on a
+  table, a column, a property, the record's heading or the canvas offers **Open in lineage**, and the details panel and
+  the panels under the canvas carry the lineage button: a table opens the node its flow reads, which the ingestion flow
+  filling it writes, a cache table its cache type, a search, a parent or a child record its kind, the parameters the
+  flow, a column its table, and a property each node its value comes from.
+  `GET /api/v1/delivery/flows/{pipelineId}/source-tables` gives each table's node as `objectKey`
+  ([a mapping's overview](osdu/docs/reference/concepts/mapping-overview.md#opening-a-part-in-lineage)).
+
 - **A cache type attaches its parent records' properties to each cached record, as a dimension reads them.** A cache
   flow's OSDU type takes a dimension's `attributes` and `lookupKinds`, written and read exactly as a dimension's: paths
   through references (`WellName: [data.WellID, data.FacilityName]`), filters, `keep`, `many`, `decode`, `maxReferences` and
@@ -787,6 +795,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- A mapping overview's table lists the columns the catalog holds of it through the flow's own connection, where a table
+  catalogued through two connections listed whichever the catalog held first
+  ([a mapping's overview](osdu/docs/reference/concepts/mapping-overview.md#the-outline)).
 - A count or a distinct count of an aggregate assertion no longer says its values "are neither numbers nor dates and were left
   out": it counts every value, and only a sum, an average, a minimum or a maximum leaves such values out and says so
   ([assertion flow](osdu/docs/reference/flow/assertion.md#assertions)).
