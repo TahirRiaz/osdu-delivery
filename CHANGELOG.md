@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Assertions compare OSDU with what the staged data holds now.** An assertion flow declares `queries`, each naming the
+  database it runs against (`connection`, a reference) beside its one read-only `sql`, and any value a comparison takes may
+  be a query's answer, named (`count: { query: staged-wellbores }`) or written in place. Known values read one row per row a
+  query answers, their values its columns. Tokens are bound as values, and the run reads each query once, through SQLFlow's
+  read-only guard, in a transaction that is always rolled back
+  ([proof values from staged data](osdu/docs/reference/flow/staged-proof-values.md)).
+
+- **A delivered assertion accounts for every staged row.** With `staged: true` it starts from the rows the delivery flow
+  stages, read through its own connection, and each is in OSDU, held back by the ledger with its reason (held, failed,
+  waiting, queued, removed, reverted), or not in OSDU with nothing to explain it (never planned, delivered and not found).
+  `explained` weighs the rows the ledger explains, and `values` binds the flow's scope
+  ([staged accounting](osdu/docs/reference/flow/staged-accounting.md)).
+
 - **Known values hold each log's curve data to what its source files state.** A row's `curves` gives, curve by curve, the
   values a source states: a curve's value at a depth (`GR: { at: { 1500.1524: 74.2 } }`, matched exactly as written), and
   its `count`, `missing`, `min`, `max`, `sum`, `avg`, `first` and `last` depth and `step`. The run reads only those curves of
