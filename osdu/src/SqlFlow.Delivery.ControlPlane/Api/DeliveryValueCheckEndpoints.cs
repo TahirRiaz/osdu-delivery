@@ -509,6 +509,39 @@ public static class DeliveryValueCheckEndpoints
         return null;
     }
 
+    /// <summary>
+    /// The keys among <paramref name="keys"/> a query of a flow's rows can be narrowed to (<see cref="SourceSqlArguments"/>):
+    /// each with the flow's <paramref name="parts"/> key parts, each once, in the order given, as many as one task's argument
+    /// carries, each as the JSON array of its parts.
+    /// </summary>
+    internal static IReadOnlyList<string> FittingKeys(IEnumerable<IReadOnlyList<string>> keys, int parts)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        var fitting = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // The argument is the array of every key: its brackets, then each key and the comma before every one but the first.
+        var length = 2;
+        foreach (var key in keys.Where(k => k.Count == parts))
+        {
+            var json = JsonSerializer.Serialize(key, PlainJson);
+            if (!seen.Add(json))
+            {
+                continue;
+            }
+
+            length += json.Length + (fitting.Count > 0 ? 1 : 0);
+            if (length > ComputeTaskPayload.MaxArgumentLength)
+            {
+                break;
+            }
+
+            fitting.Add(json);
+        }
+
+        return fitting;
+    }
+
     /// <summary>The parts of a key, or null for text that is not a key.</summary>
     private static IReadOnlyList<string>? KeyParts(string? key)
     {
