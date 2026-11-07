@@ -168,7 +168,9 @@ interface picker whose choice is in the address; a flow that names its partition
   **Drifted only**, **Step held** (while an enrichment is set aside on any record,
   [an enrichment set aside on its hold](../flow/enrich-holds.md)), **Restricted** (while any record's access is restricted,
   [restricting access](access-restriction.md)) and **Match anywhere**; links from elsewhere narrow it to one run (`?run=`), what a submission last
-  planned (`?submission=`) or delivered (`?delivered=`), or one issue (`?issue=`). **Export** downloads every record the
+  planned (`?submission=`) or delivered (`?delivered=`), or one issue (`?issue=`), and a link can start its filters set,
+  as the [Delivery](gui-ledger.md#delivery) page's counts do (`?status=held`, `?drifted=true`, `?stepHeld=true`,
+  `?restricted=true`). **Export** downloads every record the
   filter matches, not the page in view, as an Excel workbook to work through where the records come from
   ([records export](../cli/records.md#records-export)); it says on hover why it cannot when nothing matches or more than
   25,000 records do. Rows tick; the selection bar offers

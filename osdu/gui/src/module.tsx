@@ -505,7 +505,7 @@ export const osduDeliveryModule: GuiModule = {
   },
   navItems: [
     { label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery",
-        description: "Every delivery flow as a card with its counts in the picked partition: delivered, pending, held and failed. Open a card for that flow, look up a record by its key, or sync a repository." },
+        description: "Every delivery flow as a card in the picked partition, the ones that need someone first: what is wrong and where to act, its delivered, pending, held and failed counts, and when it last delivered. Look up a record by its key, or sync a repository." },
     { label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records",
         description: "The records the ledger took in or sent, newest first. Find one by well name, key, OSDU id or source file across every flow; open it for its timeline, render and OSDU copy." },
     { label: "Removals", to: "/delivery/removals", icon: ListX, testId: "nav-delivery-removals",
