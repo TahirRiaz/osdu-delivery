@@ -535,6 +535,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **Access restrictions and Partitions are in the menu's Admin group, with every other page an admin runs**, where they
+  were under OSDU. The group is shown to admins only; anyone signed in still opens both pages by their address, and
+  Partitions from the title bar's partition picker ([the menu](osdu/docs/reference/concepts/menu.md)).
 - **The Delivery page's cards lead with what needs someone, and the flows that do come first.** Each card shows its flow's
   records as a ring of shares in place of the bar across it, a verdict under the name (failed, held and whether they can be
   adopted, drifted, delivering, all delivered) that links to where it is acted on and says why on hover, the delivered,

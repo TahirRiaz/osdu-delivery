@@ -88,8 +88,8 @@ scopes](../../../../sqlflow/docs/reference/concepts/authentication-and-identity.
 - **records** and **runs** categories in the workbench's search: a run id, or a correlation id copied from a platform's log,
   lists the run with every run of its execution ([from a log line to the run](request-correlation.md#from-a-log-line-to-the-run)).
 
-The pages it adds sit in three of the menu's groups, and the sections below follow them: **Ledger**, **OSDU**, and the
-**Delivery** section of **Build**. No flow is configured on them. Flows of every kind, these included, are written in
+The pages it adds sit in four of the menu's groups, and the sections below follow them: **Ledger**, **OSDU**, the
+**Delivery** section of **Build**, and **Admin**. No flow is configured on them. Flows of every kind, these included, are written in
 their repository, synced and scheduled under **Build**, **Flows**, and a flow's own page is reached through
 **Pipelines** like any other. On these kinds' pipeline pages,
 SQLFlow's Transforms, Files and Definition tabs are hidden, and on their run pages its Files, Statements, Surrogate keys,
@@ -319,6 +319,19 @@ picked records, and the removal runs that wrote to its ledger.
   **Suggest joins**; a view opens on this page, with tabs **Columns**, **Joins**, **Checks**, **SQL** and **Definition**,
   and one no flow declares any more can be removed by an admin. See [dimension flows](../flow/dimension.md) and
   [dimension views](../flow/dimension-views.md).
+
+## Build
+
+The **Delivery** section of Build holds what a delivered record is built from and the order records reach OSDU in:
+**Mappings**, the **Mapping builder**, **Templates**, **Cache** and **Order**, on
+[a page of their own](gui-build.md). Its **Flows** and **Sources** sections are SQLFlow's pages.
+
+## Admin
+
+The **Admin** group, shown to an admin only, holds every page an admin runs: SQLFlow's Users, External triggers and AI
+context, and the two below. Anyone signed in can still open these by their address, and Partitions from the
+[partition picker](#the-partition-picker); only an admin changes what they hold.
+
 - **Partitions**: the registry, as the control plane's configuration names it. Each partition with its description,
   whether it is the default, its cache, the flows that serve it, and when and by whom it was registered. The page
   registers nothing: the configuration names the partitions, and the control plane registers them when it starts. A
@@ -333,12 +346,6 @@ picked records, and the removal runs that wrote to its ledger.
   **Register**s one (a name, what it is for, and the groups as one email per line, checked to be data groups before
   anything is sent), **Describe**s it, or **Remove**s one no record carries; while records carry it, **Remove** says so on
   hover. A restriction's groups stay as registered. See [restricting access](access-restriction.md#the-registry).
-
-## Build
-
-The **Delivery** section of Build holds what a delivered record is built from and the order records reach OSDU in:
-**Mappings**, the **Mapping builder**, **Templates**, **Cache** and **Order**, on
-[a page of their own](gui-build.md). Its **Flows** and **Sources** sections are SQLFlow's pages.
 
 ## Records in the workbench's search
 
