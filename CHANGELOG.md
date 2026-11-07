@@ -535,6 +535,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **The Delivery page's cards lead with what needs someone, and the flows that do come first.** Each card shows its flow's
+  records as a ring of shares in place of the bar across it, a verdict under the name (failed, held and whether they can be
+  adopted, drifted, delivering, all delivered) that links to where it is acted on and says why on hover, the delivered,
+  pending, held and failed counts each opening those records in the flow's Records tab, and when the flow last delivered,
+  was verified and took a submission. The page heading counts only what asks for someone, and a flow's Records tab opens
+  narrowed by `?status=`, `?drifted=true`, `?stepHeld=true` or `?restricted=true`
+  ([the Delivery page](osdu/docs/reference/concepts/gui-ledger.md#delivery)).
 - **The GUI opens in the Equinor design's dark mode until a person picks a design**, where it opened in SQLFlow's design in
   the operating system's mode. A browser that kept a light or dark choice opens in the Equinor design in that mode; the
   SQLFlow design is one pick away in the title bar's menu ([the designs](osdu/docs/reference/concepts/gui-designs.md)).
