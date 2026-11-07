@@ -14,6 +14,7 @@ keywords:
 related:
   - delivery-concept-database
   - delivery-concept-partition-cache
+  - delivery-concept-cache-merge
   - delivery-table-cache-version
   - delivery-table-cache-member
   - delivery-table-cache-definition
@@ -29,8 +30,8 @@ One cached record as a run of consecutive versions of its partition's cache held
 at the declared paths, valid from the version at `FromSequence` up to, and not including, the one at `ToSequence`, which
 is null while the newest version still holds it unchanged ([Versions](../concepts/partition-cache.md#versions)). A record
 is stored once per partition however many cache flows capture it ([`osdu.CacheMember`](cache-member.md) says which do), and
-a merge writes rows only for the records that changed, which it tells by `FieldsHash` without reading the values back.
-Not a ledger table: `Scope` names the partition.
+a merge writes rows only for the records that changed, which it tells by `FieldsHash` without reading the values back
+([the cache merge](../concepts/cache-merge.md)). Not a ledger table: `Scope` names the partition.
 
 The retention removes the closed ranges of versions it prunes ([Retention](../concepts/partition-cache.md#retention)).
 
