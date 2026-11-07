@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Each repository can sync only when asked, so a merge reaches an environment when its own trigger says.** An admin
+  turns auto sync off per repository on External triggers > Repositories (or `sqlflow repos auto-sync <name> off`, or
+  `autoSync: false` in the deployment's `repositories`). The repository then holds its commit until an external trigger
+  moves it to exactly the merge it reports (never a later merge, never back) or someone syncs it now, which asks first;
+  registering a partition and other recomputes sync the held commit again
+  ([automatic sync](sqlflow/docs/reference/concepts/repository-auto-sync.md)).
+
 - **The GUI comes in an Equinor design beside SQLFlow's, each light or dark, picked in the title bar or on the sign-in
   page.** The Equinor design takes the Equinor Design System's colours, Equinor's symbol in the title bar and Equinor's
   typeface for titles, both loaded from Equinor's own service. The design and mode a person last wore are kept in their
