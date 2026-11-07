@@ -1519,6 +1519,44 @@
       ]
     },
     {
+      "id": "delivery-concept-cache-merge",
+      "corpus": "reference",
+      "path": "concepts/cache-merge.md",
+      "title": "The cache merge: how a refresh writes a version in statements of bounded size, whatever the size of a type",
+      "type": "concept",
+      "summary": "How a cache merge compares a capture with the current version by hash and writes only what moved, a page of rows per statement, and what a timeout says.",
+      "keywords": [
+        "cache merge",
+        "merge timeout",
+        "execution timeout expired",
+        "sqlexception timeout cache",
+        "cache refresh slow",
+        "large cache type",
+        "wellbore cache",
+        "fieldshash",
+        "cache item hash",
+        "cache membership",
+        "osdu.cachemember",
+        "open ranges",
+        "page of rows",
+        "command timeout",
+        "merge lock"
+      ],
+      "related": [
+        "delivery-concept-partition-cache",
+        "delivery-flow-cache",
+        "delivery-table-cache-item",
+        "delivery-table-cache-member",
+        "delivery-table-cache-version",
+        "delivery-concept-database"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Catalog/OsduCacheStore.cs",
+        "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
+        "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs"
+      ]
+    },
+    {
       "id": "delivery-concept-change-detection",
       "corpus": "reference",
       "path": "concepts/change-detection.md",
@@ -2592,6 +2630,7 @@
       ],
       "related": [
         "delivery-flow-cache",
+        "delivery-concept-cache-merge",
         "delivery-flow-dictionary",
         "delivery-cli-cache",
         "delivery-concept-change-detection",
@@ -7969,6 +8008,7 @@
       "related": [
         "delivery-concept-database",
         "delivery-concept-partition-cache",
+        "delivery-concept-cache-merge",
         "delivery-table-cache-version",
         "delivery-table-cache-member",
         "delivery-table-cache-definition"
@@ -7997,6 +8037,7 @@
       "related": [
         "delivery-concept-database",
         "delivery-concept-partition-cache",
+        "delivery-concept-cache-merge",
         "delivery-table-cache-item",
         "delivery-table-cache-definition"
       ],

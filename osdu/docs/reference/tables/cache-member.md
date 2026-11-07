@@ -13,6 +13,7 @@ keywords:
 related:
   - delivery-concept-database
   - delivery-concept-partition-cache
+  - delivery-concept-cache-merge
   - delivery-table-cache-item
   - delivery-table-cache-definition
 sourceRefs:
@@ -28,9 +29,9 @@ record a flow no longer finds leaves the cache only when no other flow's capture
 ([Several cache flows, one cache](../concepts/partition-cache.md#several-cache-flows-one-cache)). Current state, not
 history: what each version held is in [`osdu.CacheItem`](cache-item.md). A merge writes only the rows that moved: a hold
 the flow's capture still has is left as it is, one it lost is deleted by its key and one it gained is inserted, so a
-refresh that found what it found last time writes none. When the repository stops declaring a type
-([`osdu.CacheDefinition`](cache-definition.md)), the sync deletes that flow's rows of it, 2,000 at a time. Not a ledger
-table: `Scope` names the partition.
+refresh that found what it found last time writes none ([the cache merge](../concepts/cache-merge.md)). When the
+repository stops declaring a type ([`osdu.CacheDefinition`](cache-definition.md)), the sync deletes that flow's rows of
+it, 2,000 at a time. Not a ledger table: `Scope` names the partition.
 
 ## Columns
 
