@@ -542,6 +542,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **A schedule runs every flow of a wave at once unless it sets `maxConcurrency`, so a fire with more work than one node
+  takes asks for more nodes.** A schedule that left the key out ran four flows at a time, one node's run slots, so its
+  fire never brought up a second node. Set `maxConcurrency` on a schedule whose flows should spare something they share
+  ([deployment](osdu/docs/reference/guides/deployment.md#the-images)).
+- **A schedule's flows wait only for the flows of the same run they depend on.** A flow that another schedule's deliveries
+  ordered, such as a cache refresh behind a reference-data delivery, waited in its own schedule's run as though those
+  deliveries ran there too; the sixteen cache flows of one estate ran as four waves where they now run as one
+  ([lineage](osdu/docs/reference/concepts/lineage.md#how-the-nodes-order-flows)).
 - **Access restrictions and Partitions are in the menu's Admin group, with every other page an admin runs**, where they
   were under OSDU. The group is shown to admins only; anyone signed in still opens both pages by their address, and
   Partitions from the title bar's partition picker ([the menu](osdu/docs/reference/concepts/menu.md)).

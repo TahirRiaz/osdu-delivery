@@ -10156,7 +10156,8 @@
       "related": [
         "delivery-wiki-0009-searched-references",
         "delivery-wiki-0017-pipelines-update-the-cache",
-        "delivery-wiki-0018-template-folders"
+        "delivery-wiki-0018-template-folders",
+        "delivery-wiki-0049-schedules-as-wide-as-their-waves"
       ],
       "sourceRefs": []
     },
@@ -10452,7 +10453,8 @@
         "whole-node runs"
       ],
       "related": [
-        "delivery-wiki-0006-work-batches"
+        "delivery-wiki-0006-work-batches",
+        "delivery-wiki-0049-schedules-as-wide-as-their-waves"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
@@ -11231,6 +11233,33 @@
         "osdu/gui/src/module.tsx",
         "osdu/gui/e2e/02-navigation.spec.ts",
         "osdu/gui/src/features/delivery/PartitionSwitcher.tsx"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0049-schedules-as-wide-as-their-waves",
+      "corpus": "wiki",
+      "path": "decisions/0049-schedules-as-wide-as-their-waves.md",
+      "title": "Decision 0049: a schedule runs every flow of a wave at once, in waves of the flows it runs",
+      "type": "decision",
+      "summary": "Why a schedule that sets no maxConcurrency is unbounded in OSDU Delivery, and why a fire's waves count only the flows that fire runs.",
+      "keywords": [
+        "schedule",
+        "maxconcurrency",
+        "fire width",
+        "waves",
+        "nodes",
+        "scale out"
+      ],
+      "related": [
+        "delivery-wiki-0016-osdu-order",
+        "delivery-wiki-0025-parallelism-and-default-fan-out"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Engine/DeliveryServices.cs",
+        "sqlflow/src/SqlFlow.Core/ScheduleFireDefaults.cs",
+        "sqlflow/src/SqlFlow.Catalog/RunScopeExpander.cs",
+        "sqlflow/src/SqlFlow.Lineage/Graph/MemberWaves.cs",
+        "sqlflow/src/SqlFlow.Catalog/ScaleTargetStore.cs"
       ]
     },
     {
