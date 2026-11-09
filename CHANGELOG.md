@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A `$findBy` line finds a cached record by several fields together, joined by `and`.** `well = wellbore_name and
+  mnemonic = curve_mnemonic` finds the row holding both values, so a lookup table that no one column tells apart is keyed
+  by an identity column and read by its columns together; the lines are still tried in order, the builder edits such a
+  line as one, and a row that comes to meet the values tags the records built without it
+  ([a line of several comparisons](osdu/docs/reference/flow/mapping-lookups-composite.md)).
 - **A mapping states rules on the rows it renders from beside its dataset, under `dataset.assert`, rather than on a
   property they are not about.** A rule judges a column of each row, how many child rows a record has, or that no two
   rows share some values, over the record's row, its rows of a child dataset (`rows: curves`) or every row of the run's
