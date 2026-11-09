@@ -4,7 +4,7 @@
 
 import type {
   DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftAssertion, MappingDraftEntry, MappingDraftFind, MappingDraftFindAll,
-  MappingDraftInput, MappingDraftModifier, MappingDraftModifierKind,
+  MappingDraftInput, MappingDraftModifier, MappingDraftModifierKind, MappingDraftRowRule,
 } from "../../api/delivery";
 import { assertionText } from "./mappingAssertionText";
 import { holderOfPath, repeaterOfPath } from "./recordPath";
@@ -816,4 +816,17 @@ export function staticModeFor(variable: Pick<DeliveryTemplateVariable, "shape" |
     default:
       return value === undefined || typeof value === "string" ? "text" : "json";
   }
+}
+
+/**
+ * A rule on the rows (`dataset.assert`) as one line: its name, else what it asserts over which rows
+ * (`curves: curve_unit exists`, `count { atLeast: 2 }`, `unique log_name, per run`).
+ */
+export function rowRuleText(rule: MappingDraftRowRule): string {
+  const rows = rule.rows === null ? "" : `${rule.rows}: `;
+  const asserted = rule.kind === "count"
+    ? `count ${rule.count ?? ""}`
+    : rule.kind === "unique" ? `unique ${rule.unique.join(", ")}` : `${rule.column ?? ""} ${rule.operator} ${rule.operand}`;
+  const text = `${rows}${asserted}${rule.per === "run" ? ", per run" : ""}`.trim();
+  return rule.name !== null && rule.name.trim() !== "" ? `${rule.name.trim()} (${text})` : text;
 }

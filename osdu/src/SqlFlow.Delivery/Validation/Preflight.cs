@@ -1244,6 +1244,27 @@ public static partial class Preflight
                 Require(column, entry.Where);
             }
         }
+
+        // The rules on the incoming rows read the record's row, a child dataset's rows, or the record table as a run reads it.
+        foreach (var rule in mapping.Dataset.Assertions)
+        {
+            if (rule.Rows is { } rows && !sourceColumns.ContainsKey(rows))
+            {
+                issues.Add(ValidationIssue.Error($"{where}: {rule.Location} reads the rows of child dataset '{rows}', which the flow does not declare under source.datasets."));
+                continue;
+            }
+
+            var judged = rule.Kind switch
+            {
+                DatasetAssertionKind.Value => [new DatasetColumn(rule.Rows, rule.Column!)],
+                DatasetAssertionKind.Unique => rule.Columns.Select(c => new DatasetColumn(rule.Rows, c)).ToList(),
+                _ => new List<DatasetColumn>(),
+            };
+            foreach (var column in judged.Concat(rule.Where.Select(f => f.Column).OfType<DatasetColumn>()))
+            {
+                Require(column, rule.Location);
+            }
+        }
     }
 
     [GeneratedRegex(@"^(?<id>[\w\-\.]+:(?<entity>[\w\-\.]+--[\w\-\.]+):[\w\-\.\%]+):?[0-9]*$")]

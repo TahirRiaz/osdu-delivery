@@ -103,6 +103,9 @@ public sealed record MappingDraft
     /// </summary>
     public string? IdFrom { get; init; }
 
+    /// <summary>The rules on the rows the mapping renders from (<c>dataset.assert</c>), in the order the document writes them.</summary>
+    public IReadOnlyList<MappingDraftRowRule> Rules { get; init; } = [];
+
     public IReadOnlyList<MappingDraftParameter> Parameters { get; init; } = [];
 
     /// <summary>The record sets the mapping's search entries look in.</summary>
@@ -276,6 +279,59 @@ public sealed record MappingDraftAssertion
 
     public double? Tolerance { get; init; }
 
+    public IReadOnlyList<MappingDraftAssertionFilter> Where { get; init; } = [];
+
+    public string? Name { get; init; }
+
+    public string? Description { get; init; }
+}
+
+/// <summary>
+/// One rule on the rows a mapping renders from (<c>dataset.assert</c>, osdu/docs/reference/flow/mapping-dataset-assertions.md),
+/// as the draft holds it: what it judges (<see cref="Kind"/>), over which rows, its condition and settings, each written back
+/// as the document writes it.
+/// </summary>
+public sealed record MappingDraftRowRule
+{
+    public const string ValueKind = "value";
+    public const string CountKind = "count";
+    public const string UniqueKind = "unique";
+
+    /// <summary><c>value</c> (a column and a condition), <c>count</c> or <c>unique</c>.</summary>
+    public string Kind { get; init; } = ValueKind;
+
+    /// <summary><c>record</c> (the default): judged as each record renders; <c>run</c>: once a run, over every row of its scope.</summary>
+    public string Per { get; init; } = MappingMapper.PerRecord;
+
+    /// <summary>The child dataset whose rows it reads; null for the record's own row of the record table.</summary>
+    public string? Rows { get; init; }
+
+    /// <summary>For a value rule: the column judged.</summary>
+    public string? Column { get; init; }
+
+    /// <summary>For a value rule: the condition's operator.</summary>
+    public string Operator { get; init; } = "equals";
+
+    /// <summary>For a value rule: the operand, one line of YAML as it follows the operator.</summary>
+    public string Operand { get; init; } = string.Empty;
+
+    /// <summary>For a count rule: the comparison, one line of YAML as it follows <c>count:</c> (<c>{ atLeast: 2 }</c>, or a number).</summary>
+    public string? Count { get; init; }
+
+    /// <summary>For a unique rule: the columns no two rows share.</summary>
+    public IReadOnlyList<string> Unique { get; init; } = [];
+
+    /// <summary>For a value rule over a child dataset's rows: true when one row has to meet it, false when every row does.</summary>
+    public bool AnyRow { get; init; }
+
+    public bool IgnoreCase { get; init; }
+
+    public double? Tolerance { get; init; }
+
+    /// <summary><c>hold</c> (the default) or <c>report</c>.</summary>
+    public string OnFail { get; init; } = AssertionWords.Hold;
+
+    /// <summary>The conditions selecting the rows it reads; each reads a column (<c>column</c>, or <c>child.column</c> for a child dataset's).</summary>
     public IReadOnlyList<MappingDraftAssertionFilter> Where { get; init; } = [];
 
     public string? Name { get; init; }
@@ -1400,6 +1456,15 @@ public static partial class MappingBuilder
             Line("  idFrom: " + Scalar(idFrom));
         }
 
+        if (draft.Rules.Count > 0)
+        {
+            Line("  assert:");
+            foreach (var rule in draft.Rules)
+            {
+                WriteRule(rule, "    ", Line);
+            }
+        }
+
         Line(string.Empty);
         Line("parameters:");
         foreach (var parameter in draft.Parameters)
@@ -1494,6 +1559,7 @@ public static partial class MappingBuilder
             Label = mapping.Dataset.Label,
             Identity = mapping.Dataset.Identity,
             IdFrom = mapping.Dataset.IdFrom == MappingIdSource.Key ? MappingMapper.IdFromKey : null,
+            Rules = mapping.Dataset.Assertions.Select(DraftRule).ToList(),
             Parameters = mapping.Parameters.Select(kv => new MappingDraftParameter(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description)).ToList(),
             Searches = mapping.Searches.Values
                 .OrderBy(s => s.Name, StringComparer.Ordinal)
@@ -1645,6 +1711,52 @@ public static partial class MappingBuilder
         Name = assertion.Named ? assertion.Label : null,
         Description = assertion.Description,
     };
+
+    /// <summary>A rule on the rows as the draft holds it: its condition and settings written back as the document writes them.</summary>
+    private static MappingDraftRowRule DraftRule(DatasetAssertion rule) => new()
+    {
+        Kind = rule.Kind switch
+        {
+            DatasetAssertionKind.Count => MappingDraftRowRule.CountKind,
+            DatasetAssertionKind.Unique => MappingDraftRowRule.UniqueKind,
+            _ => MappingDraftRowRule.ValueKind,
+        },
+        Per = rule.Per == DatasetAssertionPer.Run ? MappingMapper.PerRun : MappingMapper.PerRecord,
+        Rows = rule.Rows,
+        Column = rule.Column,
+        Operator = rule.Condition is { } condition ? AssertionText.Of(condition.Operator) : "equals",
+        Operand = rule.Condition is { } written ? ConditionReader.Written(written) : string.Empty,
+        Count = rule.Count is { } count ? CountText(count) : null,
+        Unique = rule.Columns,
+        AnyRow = rule.AnyRow,
+        IgnoreCase = rule.Condition?.IgnoreCase ?? false,
+        Tolerance = rule.Condition?.Tolerance,
+        OnFail = AssertionWords.Of(rule.OnFail),
+        Where = rule.Where
+            .Select(filter => new MappingDraftAssertionFilter(
+                MappingMapper.ColumnSetting,
+                ColumnText(filter.Column!),
+                AssertionText.Of(filter.Condition.Operator),
+                ConditionReader.Written(filter.Condition),
+                filter.Condition.IgnoreCase,
+                filter.Condition.Tolerance))
+            .ToList(),
+        Name = rule.Named ? rule.Label : null,
+        Description = rule.Description,
+    };
+
+    /// <summary>A count's comparison as <c>count:</c> writes it: a number meaning equals, or a map of its terms (<c>{ atLeast: 2, atMost: 5 }</c>).</summary>
+    private static string CountText(Comparison count)
+    {
+        if (count.Terms is [{ Operator: ComparisonOperator.EqualTo } only])
+        {
+            return only.Value.Text;
+        }
+
+        return "{ " + string.Join(", ", count.Terms.Select(term => term.Operator == ComparisonOperator.Between
+            ? $"between: [{term.Value.Text}, {term.Upper!.Text}]"
+            : $"{AssertionText.Of(term.Operator)}: {term.Value.Text}")) + " }";
+    }
 
     private static MappingDraftFind DraftFind(FindBy find) => new(find.Field, find.Column is null ? null : ColumnText(find.Column), find.Literal);
 
@@ -2258,6 +2370,87 @@ public static partial class MappingBuilder
         if (!string.IsNullOrWhiteSpace(assertion.Description))
         {
             line(more + "description: " + Scalar(assertion.Description.Trim()));
+        }
+    }
+
+    /// <summary>
+    /// One rule on the rows, as an item of <c>dataset.assert</c>: its name, then the rows it reads, what it judges, the settings
+    /// that differ from their defaults, its conditions and its description.
+    /// </summary>
+    private static void WriteRule(MappingDraftRowRule rule, string indent, Action<string> line)
+    {
+        var more = indent + "  ";
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(rule.Name))
+        {
+            lines.Add(MappingMapper.NameSetting + ": " + Scalar(rule.Name.Trim()));
+        }
+
+        if (string.Equals(rule.Per?.Trim(), MappingMapper.PerRun, StringComparison.Ordinal))
+        {
+            lines.Add(MappingMapper.PerSetting + ": " + MappingMapper.PerRun);
+        }
+
+        if (!string.IsNullOrWhiteSpace(rule.Rows))
+        {
+            lines.Add(MappingMapper.RowsSetting + ": " + Scalar(rule.Rows.Trim()));
+        }
+
+        switch (rule.Kind?.Trim())
+        {
+            case MappingDraftRowRule.CountKind:
+                lines.Add(MappingMapper.CountSetting + ": " + OneLine(rule.Count));
+                break;
+            case MappingDraftRowRule.UniqueKind:
+                lines.Add(MappingMapper.UniqueSetting + ": [" + string.Join(", ", rule.Unique.Select(c => FlowScalar(c.Trim()))) + "]");
+                break;
+            default:
+                lines.Add(MappingMapper.ColumnSetting + ": " + Scalar((rule.Column ?? string.Empty).Trim()));
+                lines.Add(OneLine(rule.Operator) + ": " + OneLine(rule.Operand));
+                if (rule.IgnoreCase)
+                {
+                    lines.Add("ignoreCase: true");
+                }
+
+                if (rule.Tolerance is { } tolerance)
+                {
+                    lines.Add("tolerance: " + tolerance.ToString("R", CultureInfo.InvariantCulture));
+                }
+
+                if (rule.AnyRow)
+                {
+                    lines.Add(MappingMapper.ValuesSetting + ": any");
+                }
+
+                break;
+        }
+
+        if (!string.Equals(rule.OnFail?.Trim(), AssertionWords.Hold, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(rule.OnFail))
+        {
+            lines.Add(MappingMapper.OnFailSetting + ": " + rule.OnFail.Trim());
+        }
+
+        line(indent + "- " + lines[0]);
+        foreach (var written in lines.Skip(1))
+        {
+            line(more + written);
+        }
+
+        if (rule.Where.Count > 0)
+        {
+            var scope = string.IsNullOrWhiteSpace(rule.Rows) ? null : rule.Rows.Trim();
+            line(more + MappingMapper.WhereSetting + ":");
+            foreach (var filter in rule.Where)
+            {
+                line(more + "  - " + MappingMapper.ColumnSetting + ": " + Scalar(ScopedColumn(filter.Path ?? string.Empty, scope)));
+                line(more + "    " + OneLine(filter.Operator) + ": " + OneLine(filter.Operand));
+                WriteConditionSettings(filter.IgnoreCase, filter.Tolerance, more + "    ", line);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(rule.Description))
+        {
+            line(more + "description: " + Scalar(rule.Description.Trim()));
         }
     }
 

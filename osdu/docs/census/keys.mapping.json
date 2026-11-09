@@ -5,7 +5,7 @@
   "strictKeys": true,
   "generatedFrom": "osdu/docs/reference/flow/mapping.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and MappingMapper.Record.cs",
   "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 48,
+  "keyCount": 50,
   "keys": [
     {
       "path": "documentType",
@@ -117,6 +117,19 @@
         "deliveryKey",
         "key"
       ]
+    },
+    {
+      "path": "dataset.assert",
+      "type": "list",
+      "required": false,
+      "description": "Optional rules on the rows the mapping renders from, at most 50, beside the dataset that names them, rather than on a property they are not about (osdu/docs/reference/flow/mapping-dataset-assertions.md). Each judges a column of each row, how many rows there are, or that no two rows share some values; over the record's own row of the record table, its rows of a child dataset (rows), or every row of the record table in the run's scope (per: run). A record that breaks one is held, its document kept until a release sends it, or sent with the failure recorded, as a property's $assert is."
+    },
+    {
+      "path": "dataset.assert[]",
+      "type": "object",
+      "required": false,
+      "freeForm": true,
+      "description": "One rule. What it judges, one of: column: <column> with one condition in the assertion flows' words (equals, notEquals, in, notIn, atLeast, atMost, greaterThan, lessThan, between, matches, notMatches, startsWith, endsWith, contains, notContains, exists, empty, type or length, with ignoreCase and tolerance), judged on each row it reads; count: how many rows it reads, a number meaning equals or a map of equals, notEquals, atLeast, atMost, greaterThan, lessThan and between, such as count: { atLeast: 2 }; or unique: the columns no two rows share, one or a list, such as unique: [curve_id], a row with no value in one of them compared with none. Which rows: the record's own row of the record table (the default); rows: <child dataset>, each record's rows of a child dataset the flow declares under source.datasets; or per: run (per: record is the default), every row of the record table in the run's scope not marked deleted, counted or compared once a run by the database before any record renders, with no rows and no where, a count failing reaching every record of the run and a unique failing the records whose rows share values. values: all (the default) or any, for a column judged over a child dataset's rows: every row has to meet it, or one. where: 1 to 10 conditions, each a column and one operator: one on a column of a child dataset's rows selects the rows it reads, and one on the record's row (any column without rows, $dataset.<column> beside them) decides whether the record is judged at all. onFail: hold (the default) or report; omit is a property's alone. name (1 to 200 characters, what its findings are recorded under; read off what it asserts when left out) and description. Its findings are incoming-stage findings named by the rows read: dataset.<column>, dataset.<child>[3].<column>, dataset.<child>, dataset."
     },
     {
       "path": "enrich",
