@@ -345,8 +345,18 @@ public sealed record MappingDraftRowRule
 /// </summary>
 public sealed record MappingDraftAssertionFilter(string Reads, string Path, string Operator, string Operand, bool IgnoreCase = false, double? Tolerance = null);
 
-/// <summary>One findBy line: the cached field, and the column (<c>column</c> or <c>child.column</c>) or literal it must equal.</summary>
-public sealed record MappingDraftFind(string Field, string? Column, string? Literal);
+/// <summary>
+/// One findBy line: the cached field, and the column (<c>column</c> or <c>child.column</c>) or literal it must equal. A line of
+/// a cache entry or a lookup may compare more fields in <see cref="And"/>, each one comparison with none of its own, which a
+/// record must meet together with this one (<c>Well = well_name and Mnemonic = curve_mnemonic</c>); null or empty for a line
+/// of one.
+/// </summary>
+public sealed record MappingDraftFind(string Field, string? Column, string? Literal, IReadOnlyList<MappingDraftFind>? And = null)
+{
+    /// <summary>Every comparison of the line, this one first.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<MappingDraftFind> Comparisons => And is { Count: > 0 } more ? [this, .. more] : [this];
+}
 
 /// <summary>
 /// One modifier: trim, upper, lower, split, replace, equals, date, number or id, with its settings; an id carries its template
@@ -790,7 +800,7 @@ public static partial class MappingBuilder
             error($"{at}: say how a row finds its record with at least one findBy line, such as FacilityName = wellbore_uwi.", target);
         }
 
-        foreach (var find in lookup.FindBy)
+        foreach (var find in lookup.FindBy.SelectMany(line => CompositeIssues(line, at, target, error)))
         {
             if (!FieldPath().IsMatch(find.Field ?? string.Empty) || find.Field!.StartsWith(Marker, StringComparison.Ordinal))
             {
@@ -816,7 +826,7 @@ public static partial class MappingBuilder
             }
         }
 
-        if (lookup.Modifiers.Count > 0 && lookup.FindBy.Count > 0 && lookup.FindBy.All(f => !string.IsNullOrWhiteSpace(f.Literal)))
+        if (lookup.Modifiers.Count > 0 && lookup.FindBy.Count > 0 && lookup.FindBy.SelectMany(f => f.Comparisons).All(f => !string.IsNullOrWhiteSpace(f.Literal)))
         {
             error($"{at}: modifiers change the dataset value a findBy line compares, and every line compares a fixed text; remove the modifiers.", target);
         }
@@ -1218,7 +1228,7 @@ public static partial class MappingBuilder
                     error($"{name}: say which cached record to read with at least one findBy line.", target);
                 }
 
-                foreach (var find in entry.FindBy)
+                foreach (var find in entry.FindBy.SelectMany(line => CompositeIssues(line, name, target, error)))
                 {
                     if (!FieldPath().IsMatch(find.Field ?? string.Empty) || find.Field!.StartsWith(Marker, StringComparison.Ordinal))
                     {
@@ -1249,6 +1259,11 @@ public static partial class MappingBuilder
                 if (entry.FindBy.Count == 0)
                 {
                     error($"{name}: say which record to find with at least one findBy line.", target);
+                }
+
+                if (entry.FindBy.Any(find => find.And is { Count: > 0 }))
+                {
+                    error($"{name}: a search asks the platform for one property at a time, so each findBy line compares one; write each as a line of its own, tried in order.", target);
                 }
 
                 foreach (var find in entry.FindBy)
@@ -1758,7 +1773,11 @@ public static partial class MappingBuilder
             : $"{AssertionText.Of(term.Operator)}: {term.Value.Text}")) + " }";
     }
 
-    private static MappingDraftFind DraftFind(FindBy find) => new(find.Field, find.Column is null ? null : ColumnText(find.Column), find.Literal);
+    private static MappingDraftFind DraftFind(FindBy find) => new(
+        find.Field,
+        find.Column is null ? null : ColumnText(find.Column),
+        find.Literal,
+        find.IsComposite ? find.And.Select(DraftFind).ToList() : null);
 
     private static MappingDraftModifier DraftModifier(Modifier modifier) => new(
         modifier.Kind.ToString().ToLowerInvariant(),
@@ -2801,13 +2820,46 @@ public static partial class MappingBuilder
     };
 
     /// <summary>A findBy line as the document writes it: the field of the record read, then the column in the entry's scope or a quoted text.</summary>
-    private static string FindByText(MappingDraftFind find, string? scope)
+    /// <summary>
+    /// The comparisons of one findBy line of a cache entry or a lookup, each to be checked as a line of one is, after what a
+    /// line of several may not do is reported: compare a field twice, which no record meets but by holding both values
+    /// under it, or nest comparisons inside a comparison, which the mapping cannot write.
+    /// </summary>
+    private static IReadOnlyList<MappingDraftFind> CompositeIssues(MappingDraftFind line, string at, string? target, Action<string, string?> error)
     {
-        var operand = !string.IsNullOrWhiteSpace(find.Literal)
-            ? QuotedText(find.Literal)
-            : ScopedColumn(find.Column ?? string.Empty, scope);
-        return $"{find.Field?.Trim()} = {operand}";
+        var comparisons = line.Comparisons;
+        if (comparisons.Count == 1)
+        {
+            return comparisons;
+        }
+
+        if (comparisons.Skip(1).Any(comparison => comparison.And is { Count: > 0 }))
+        {
+            error($"{at}: a findBy line compares its fields one after another, joined by and; a comparison holds none of its own.", target);
+        }
+
+        var twice = comparisons
+            .Select(comparison => comparison.Field?.Trim() ?? string.Empty)
+            .Where(field => field.Length > 0)
+            .GroupBy(field => field.StartsWith("data.", StringComparison.Ordinal) ? field["data.".Length..] : field, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (twice is not null)
+        {
+            error($"{at}: findBy compares {twice.Key} twice on one line; a line compares each field once, and a record must meet every comparison of it.", target);
+        }
+
+        return comparisons;
     }
+
+    /// <summary>A findBy line as the mapping writes it: each comparison <c>field = operand</c>, joined by <c>and</c>.</summary>
+    private static string FindByText(MappingDraftFind find, string? scope)
+        => string.Join(" and ", find.Comparisons.Select(comparison =>
+        {
+            var operand = !string.IsNullOrWhiteSpace(comparison.Literal)
+                ? QuotedText(comparison.Literal)
+                : ScopedColumn(comparison.Column ?? string.Empty, scope);
+            return $"{comparison.Field?.Trim()} = {operand}";
+        }));
 
     /// <summary>A fixed text a findBy or find all line compares with, in the quotes that do not occur in it.</summary>
     private static string QuotedText(string text) => text.Contains('\'', StringComparison.Ordinal) ? "\"" + text + "\"" : "'" + text + "'";

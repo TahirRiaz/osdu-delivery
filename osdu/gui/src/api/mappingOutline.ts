@@ -39,7 +39,8 @@ export interface MappingOutlineRead {
 export interface MappingOutlineLookup {
   source: string;
   field?: string | null;
-  matches: { field: string; value: string }[];
+  /** The comparisons, in order; `and` marks one that joins the comparison before it on the same findBy line. */
+  matches: { field: string; value: string; and?: boolean }[];
 }
 
 /** One thing done to a value on its way to the property. */
