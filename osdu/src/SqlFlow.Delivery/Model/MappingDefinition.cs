@@ -350,6 +350,13 @@ public sealed record MappingDataset
     public MappingIdSource IdFrom { get; init; } = MappingIdSource.DeliveryKey;
 
     /// <summary>
+    /// The rules the mapping states on the rows it renders from (<c>dataset.assert</c>,
+    /// osdu/docs/reference/flow/mapping-dataset-assertions.md), in document order: those judged as each record renders, over its
+    /// own row or its rows of a child dataset, and those judged once a run over the record table's rows.
+    /// </summary>
+    public IReadOnlyList<DatasetAssertion> Assertions { get; init; } = [];
+
+    /// <summary>
     /// The dataset of a fragment (<see cref="MappingDefinition.Fragment"/>), which keys no record of its own: no system and no
     /// key columns. Nothing derives a key, a label or an id from it, since a fragment only ever renders into a record the flow's
     /// own mapping keyed.

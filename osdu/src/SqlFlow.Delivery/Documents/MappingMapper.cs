@@ -184,6 +184,7 @@ internal static partial class MappingMapper
             Label = label,
             Identity = identity,
             IdFrom = IdFrom(dataset.IdFrom, source),
+            Assertions = DatasetAssertions(dataset.Assert, source),
         };
     }
 
