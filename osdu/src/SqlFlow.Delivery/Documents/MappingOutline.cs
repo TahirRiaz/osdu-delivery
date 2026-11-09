@@ -111,8 +111,12 @@ public sealed record MappingOutlineSource(string Id, string Kind, string Name, s
 /// <param name="Role"><c>value</c> for what the value is made of, <c>match</c> for what a lookup compares, <c>condition</c> for what a <c>$when</c> or a <c>$where</c> tests.</param>
 public sealed record MappingOutlineRead(string Source, string Field, string Role);
 
-/// <summary>One line a lookup finds its record by: the field compared, and what it is compared with.</summary>
-public sealed record MappingOutlineMatch(string Field, string Value);
+/// <summary>
+/// One comparison a lookup finds its record by: the field compared, and what it is compared with. <paramref name="And"/> is
+/// true for a comparison after the first of a findBy line written with <c>and</c>, which joins the comparison before it:
+/// the record must meet both, where the lines themselves are tried in turn.
+/// </summary>
+public sealed record MappingOutlineMatch(string Field, string Value, bool And = false);
 
 /// <summary>A table a step of a flow reads: the field it takes, and the lines that find the record holding it.</summary>
 /// <param name="Source">The <see cref="MappingOutlineSource.Id"/> looked in.</param>
@@ -840,11 +844,17 @@ public sealed record MappingOutline(
             {
                 foreach (var line in node.FindBy)
                 {
-                    draft.Field(line.Field).Match = true;
-                    matches.Add(new MappingOutlineMatch(line.Field, line.Column?.ToString() ?? $"'{line.Literal}'"));
-                    if (line.Column is { } column)
+                    var first = true;
+                    foreach (var comparison in line.Comparisons)
                     {
-                        reads.Add(Read(column, MatchRole));
+                        draft.Field(comparison.Field).Match = true;
+                        matches.Add(new MappingOutlineMatch(comparison.Field, comparison.Column?.ToString() ?? $"'{comparison.Literal}'", !first));
+                        if (comparison.Column is { } column)
+                        {
+                            reads.Add(Read(column, MatchRole));
+                        }
+
+                        first = false;
                     }
                 }
 
@@ -852,6 +862,10 @@ public sealed record MappingOutline(
                 var order = node.FindBy.Count > 1
                     ? "Each line is tried in turn, and the first to find exactly one record gives it."
                     : "The line has to find exactly one record.";
+                if (node.FindBy.Any(line => line.IsComposite))
+                {
+                    order += " A line of several comparisons finds the record that meets them all, and is skipped when any of its values is empty.";
+                }
                 var loose = searched
                     ? ", then ignoring case where the platform's index allows"
                     : node.IgnoreSeparators ? ", then ignoring case, then ignoring punctuation and spacing" : ", then ignoring case";

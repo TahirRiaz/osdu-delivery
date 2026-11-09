@@ -78,7 +78,11 @@ function Compared({ stage, cards, values, onPick }: {
   const sources = new Set(lines.map((line) => line.operand.read?.source ?? null));
   const [only] = sources;
   const against = sources.size === 1 && only !== null && only !== undefined ? sourceName(cards, only) : "Compared with";
+  // A leading column numbers the lines, tried in turn, when there are several, and says "and" before a comparison that
+  // joins the one before it on the same line.
   const numbered = lines.length > 1;
+  const lineCount = lines.filter((line) => !line.and).length;
+  const lineNumbers = lines.map((_, index) => lines.slice(0, index + 1).filter((line) => !line.and).length);
   // A row's value is shown once, at the first line comparing its column: the lines after it compare the same value.
   const shownAt = new Map<string, number>();
   lines.forEach((line, index) => {
@@ -102,7 +106,11 @@ function Compared({ stage, cards, values, onPick }: {
         const read = line.operand.read;
         return (
           <Fragment key={`${index}-${line.field}`}>
-            {numbered && <span className="text-[11px] text-muted-foreground tabular-nums">{index + 1}</span>}
+            {numbered && (
+              <span className="text-[11px] text-muted-foreground tabular-nums" data-testid="mapping-overview-compared-mark">
+                {line.and ? "and" : lineCount > 1 ? lineNumbers[index] : ""}
+              </span>
+            )}
             <FieldButton source={lookup.source} field={line.field} cards={cards} onPick={onPick} />
             <span className="font-mono text-[12px] text-muted-foreground">=</span>
             <span className="min-w-0" data-testid="mapping-overview-compared-operand">
