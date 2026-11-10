@@ -594,6 +594,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fire is still a click on Last run, and its history the Runs page's Schedule filter). The flow count opens the Pipelines
   page on the schedule's flows, a schedule of one flow included, which went to that flow's page
   ([Reading a schedule's plan](sqlflow/docs/reference/flow/schedule.md#reading-a-schedules-plan)).
+- **The explorer's dimension builder tells the dimension as a story of steps, and opens the record a key names itself.**
+  From the records read, one row per key, shown as a value, with columns, cleaned, it makes a table whose example row
+  ends it; only the step asking for a pick says what to do, each step's settings open in place, a problem is said at its
+  step, and the YAML is a view of its own. The menu beside a value offers **One row for each value**, **Collect into a
+  column**, **Show each row as this** and **Add as a column**, and **Open the *type* record** opens the example key's
+  record on the trail, from a record of the kind found holding it when none is open
+  ([building a dimension in the explorer](osdu/docs/reference/concepts/explorer-dimension-builder.md)).
 - **A cache flow's table type captures up to 1,000,000 rows, where it stopped at 100,000, and `types[].maxRows` sets
   another number, up to 5,000,000.** A table holding more than its type takes still refuses the capture, now naming the
   number and the key to raise; a plan warns first, and a pipeline's `cache.before` step reads the table with the same
