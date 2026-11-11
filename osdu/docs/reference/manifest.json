@@ -9334,7 +9334,7 @@
       "path": "tables/inventory-scan.md",
       "title": "osdu.InventoryScan: each id a build listed, staged until the read is whole and merged into the inventory",
       "type": "table",
-      "summary": "One row per id an inventory build's read listed, with its system properties as OSDU served them, held only until the build merges or fails.",
+      "summary": "One row per id an inventory build's read listed, with its record's name and system properties as OSDU served them, held only until the build merges or fails.",
       "keywords": [
         "osdu.InventoryScan",
         "inventory scan table",
