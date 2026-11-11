@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `osdu.InventoryRecord.Name` (migration InventoryRecordNames, module version 1.68.0). The Ids grid leads each row with
   the name, the lookup shows it, and the API, the CLI's `records` and `lookup` and the export carry it. Rows kept before
   take their names from the next build, which does not count them as changed ([Names](osdu/docs/reference/flow/inventory.md#names)).
+- **A file flow reads a Power Apps (Microsoft Dataverse) table.** `source.type: dataverse` with the environment URL and
+  the table's logical name lands the table typed from its metadata, so a column added or lengthened in Power Apps
+  reaches the target through schema evolution; an incremental `watermarkColumn` (`versionnumber` or `modifiedon`) asks the
+  service only for rows past the target's high-water mark, and throttling is waited out as the service asks
+  ([Dataverse source](sqlflow/docs/reference/flow/source-types/dataverse.md)).
 - **`sqlflow template register` registers a repository's custom schemas with a partition's Schema service.** It reads
   the connection and partition from an env file (`.sqlflow/env` by default), finds every template whose kind's authority
   is not `osdu`, shows where each stands in OSDU and what it would write, and registers or updates it in development,
