@@ -601,6 +601,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **An open assertion on the Assertions page reads as a brief, and a row says what was found.** A check that does not
+  hold is a card with **Expected** beside **Found** in plain words (`5 records`, `at least 5`): a count against its
+  number as figures over a bar that shows the range that holds and by how much it missed (`172 short of 812 (21.2%)`), a
+  share as one bar (`3 of 5 rows hold, 1 differs, 1 is not found`), and the records that fail it with each value they
+  differ in on a line of its own. The checks that hold are a line each, and what the assertion is about and how it was
+  checked stand beside them, with a step to the next assertion. A row names its first check that does not hold, what was
+  found against it and the measure of the two, and the downloaded dashboard reads the same
+  ([an open assertion](osdu/docs/reference/flow/assertion-sets.md#an-open-assertion)).
 - **The Mappings and Templates grids fit the window and say what is wrong first.** The rows of several repositories are
   listed under a heading for each, with its count and when its sync last saw it, in place of a repository and a synced
   column on every row; a mapping that does not load, or a file that holds no template, says why in its row, and a line
@@ -985,6 +993,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **An aggregate over each record's bulk data reads how many records meet it.** A run's report, a set's report and the
+  dashboard showed the share of the records that held as what the check found (`0`, `100`); they show the finding
+  itself, `2 of 3 record(s)' bulk data meet it` ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 - Every open page stays within reach of the tab strip. A page opened past the strip's end was never scrolled into view,
   and the strip had no scrollbar, so its tab and its close could not be reached. Tabs now give up width before the strip
   scrolls, a chevron at each end and the mouse wheel scroll it, the page in view always has its tab in view, the arrow
