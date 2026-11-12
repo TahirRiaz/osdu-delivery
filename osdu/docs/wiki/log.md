@@ -735,3 +735,12 @@ template folders, the partition connection and the Schema service reader.
 
 Added decision 0052 and `delivery-cli-template-register`; updated decision 0019's consequence on registration, the
 linked records pattern, `delivery-concept-templates` and `delivery-cli-template`.
+
+## [2026-11-12] ingest | The render context keeps what records point at
+
+Source: the owner's report that the catalog database reached 24.5 GB in four weeks from about 5 GB of source data, a
+storage report of the production database (35,610 cache sets no record pointed at, 8.8 GB), and the code that reads a
+set (a record's page, `CacheImpact.cs`, holding and releasing a record).
+
+Added decision 0053; updated `delivery-concept-storage-and-retention`, `delivery-table-cache-set` and
+`delivery-table-cache-set-entry`.

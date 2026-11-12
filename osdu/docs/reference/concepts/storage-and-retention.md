@@ -137,7 +137,7 @@ own locks, so a pass of any size never holds the tables a render writes to. A le
 it to a render and checks a set it remembers against the database at least every hour, so no set a render was given is
 removed before its record points at it, and a set removed while a ledger remembered it is minted again the next time
 a render needs it. The change log ([`osdu.UpdateTag`](../tables/update-tag.md)) stays: what changed, when, how many
-records it reached and what was decided.
+records it reached and what was decided ([decision 0053](../../wiki/decisions/0053-render-context-keeps-what-records-point-at.md)).
 
 ## Outside the database
 

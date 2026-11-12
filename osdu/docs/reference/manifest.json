@@ -11041,7 +11041,8 @@
         "statistics"
       ],
       "related": [
-        "delivery-wiki-0005-ledger-retention"
+        "delivery-wiki-0005-ledger-retention",
+        "delivery-wiki-0053-render-context-keeps-what-records-point-at"
       ],
       "sourceRefs": [
         "sqlflow/src/SqlFlow.ControlPlane/Maintenance/StorageArea.cs",
@@ -11772,6 +11773,32 @@
         "osdu/src/SqlFlow.Delivery/Engine/Search/SchemaServiceReader.cs",
         "osdu/src/SqlFlow.Delivery/Templates/CustomTemplates.cs",
         "osdu/specs/core/INTEGRATION.md"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0053-render-context-keeps-what-records-point-at",
+      "corpus": "wiki",
+      "path": "decisions/0053-render-context-keeps-what-records-point-at.md",
+      "title": "Decision 0053: the render context keeps only the sets of cached values a record points at",
+      "type": "decision",
+      "summary": "Why an hourly sweep removes each cache set no record points at once unused for a day, and why a ledger checks a set it remembers every hour.",
+      "keywords": [
+        "render context",
+        "cache set",
+        "CacheSetEntry",
+        "sweep",
+        "storage",
+        "change detection"
+      ],
+      "related": [
+        "delivery-wiki-0029-storage-maintenance"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Ledger/CacheSetKeeping.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.CacheSets.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheSetSweepService.cs",
+        "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs"
       ]
     },
     {
