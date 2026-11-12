@@ -275,7 +275,7 @@ public sealed class OsduStorageContributor : IStorageContributor
                 Holds = "Each dimension's members and the original values behind them, their attributes and nested elements, the records each key was read from, the views declared over them, and each dimension's own table (osdu.dim_*).",
                 Reason = "This is what the dimension flows publish, as it stands now: each build rewrites it, so its size is the size of the dimensions, not of their history.",
                 Brief = "Rewritten by each build",
-                Lifecycle = "A build rewrites it. A dimension its flow no longer declares is removed, with its table, on the Dimensions page.",
+                Lifecycle = "A build rewrites it, and first deletes what the build before it removed, with its attributes and elements; the change log keeps their text. A dimension its flow no longer declares is removed, with its table, on the Dimensions page.",
                 Tables =
                 [
                     T("Dimension"), T("DimensionMember"), T("DimensionValue"), T("DimensionAttribute"), T("DimensionAttributeName"),

@@ -10473,7 +10473,8 @@
       ],
       "related": [
         "delivery-wiki-0018-template-folders",
-        "delivery-wiki-0030-dimension-rows-one-range"
+        "delivery-wiki-0030-dimension-rows-one-range",
+        "delivery-wiki-0054-dimensions-keep-only-their-latest-state"
       ],
       "sourceRefs": []
     },
@@ -11799,6 +11800,34 @@
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheSetSweepService.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs"
+      ]
+    },
+    {
+      "id": "delivery-wiki-0054-dimensions-keep-only-their-latest-state",
+      "corpus": "wiki",
+      "path": "decisions/0054-dimensions-keep-only-their-latest-state.md",
+      "title": "Decision 0054: a dimension keeps only its latest state, and its change log keeps what left",
+      "type": "decision",
+      "summary": "Why the next build deletes what a build removed, a few keys at a time before it merges, and why each change keeps its key's and values' text.",
+      "keywords": [
+        "dimension",
+        "removed keys",
+        "latest state",
+        "purge",
+        "change log",
+        "storage",
+        "DimensionElement"
+      ],
+      "related": [
+        "delivery-wiki-0011-dimension-flows",
+        "delivery-wiki-0030-dimension-rows-one-range"
+      ],
+      "sourceRefs": [
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.Purge.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/SqlServerDimensionStore.cs",
+        "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Dimensions.cs",
+        "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Maintenance/OsduStorageContributor.cs"
       ]
     },
     {
