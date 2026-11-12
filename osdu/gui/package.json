@@ -73,6 +73,7 @@
   },
   "overrides": {
     "dompurify": "^3.4.16",
+    "minimatch": "^11.0.8",
     "osdu-delivery-gui-lint": {
       "typescript": "~6.0.3"
     }
