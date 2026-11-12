@@ -2457,10 +2457,10 @@ public sealed class DeliveryCacheMember
 
 /// <summary>
 /// One distinct combination of cached values that records were built from: the set of (type, cached record, path,
-/// value) a render consumed. Records share sets heavily (every log that resolved metres and the same wellbore
-/// shares one), so the estate's dependency trail is a few thousand sets rather than a row per record per value.
-/// A record points at its set; a cache change finds the sets that hold the changed value and, through them, the
-/// records to update.
+/// value) a render consumed. Records that read the same values share a set; a record whose render reads other values
+/// points at another. A record points at its set; a cache change finds the sets that hold the changed value and, through
+/// them, the records to update. A set no record points at is read by nothing, and the render-context sweep removes it
+/// once no render has used it for a day (<c>CacheSetKeeping</c>).
 /// </summary>
 public sealed class DeliveryCacheSet
 {

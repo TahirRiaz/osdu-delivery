@@ -611,6 +611,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **The render context keeps only the sets of cached values a record points at.** Every hour the control plane removes
+  each set no record points at, as its set or the one it is held on, that no render has used for a day, with its values
+  (`osdu.CacheSet`, `osdu.CacheSetEntry`). A record's set is replaced whenever a render reads other values, and nothing
+  reads the sets it left, which on a working estate had come to hold half the database. The change log
+  (`osdu.UpdateTag`) stays ([The render context](osdu/docs/reference/concepts/storage-and-retention.md#the-render-context)).
 - **An inventory's export has a `name` column after `id`**, so a script reading its columns by position reads one column
   further along from `kind` on ([export](osdu/docs/reference/cli/inventory.md#export)).
 - **An inventory's storage read (`read: storage`) and its missing checks read records by id, 100 to a request.** They read
