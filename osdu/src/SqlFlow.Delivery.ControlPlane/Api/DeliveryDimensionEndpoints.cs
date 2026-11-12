@@ -1032,7 +1032,7 @@ public static partial class DeliveryDimensionEndpoints
             state?.LastBuiltUtc,
             current is null ? null : ToDto(current),
             latest is null ? null : ToDto(latest),
-            state?.TableName is { } table ? DimensionTables.Shown(table) : null,
+            state?.TableName is { } table ? state.TableTarget.Shown(table) : null,
             spec?.KeyColumn ?? state?.KeyColumn ?? DimensionColumnNames.KeyRole,
             spec?.ValueColumn ?? state?.ValueColumn ?? DimensionColumnNames.ValueRole,
             state?.LastFullBuiltUtc);
