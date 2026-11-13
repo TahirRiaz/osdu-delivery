@@ -3671,6 +3671,11 @@ export interface DeliveryDimension {
    */
   table: string | null;
   /**
+   * Where the table is kept, or will be, as a person types it before its name: `osdu`, or `<database>.<schema>` when the
+   * flow's target names a database. Absent from an older control plane.
+   */
+  kept?: string;
+  /**
    * What the dimension calls its key: the property its path ends with (`WellboreID`), with `Key` at its end where its value
    * has that name (`SourceKey`), unless the flow names it. The column of its table that holds each key is named so after
    * its next build.
