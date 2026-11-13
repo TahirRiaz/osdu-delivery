@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **An admin sets how many versions a partition's cache keeps.** **Set versions kept** on the Cache page's Setup tab,
+  `PUT /api/v1/delivery/cache/retention` and `sqlflow cache keep <partition> --versions <n>` take a number from 2 to 1000,
+  show what it prunes first, save it for the partition and apply it at once; a purge may name one too (`versionsKept`,
+  `--keep-versions`) (migration CacheVersionsKept, module version 1.71.0;
+  [How many versions are kept](osdu/docs/reference/concepts/partition-cache.md#how-many-versions-are-kept)).
 - **A dimension flow keeps its tables and views in another database.** `target` takes `connection`, `database` and
   `schema`, each optional; a build merges each dimension in the catalog as before, then writes its `dim_` table where the
   target says, and its views beside the tables. A table step that fails leaves the dimension written and the next build
@@ -617,6 +622,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **A partition's cache keeps its newest 3 versions.** Every refresh prunes the records of the older versions, however
+  recently they were replaced, where before it kept every version replaced in the last 7 days (`retentionDays`), which
+  still prunes a version among the newest once it is older. The current version, the one it replaced and pinned versions
+  are kept as before, and a pruned version stays listed under History
+  ([Retention](osdu/docs/reference/concepts/partition-cache.md#retention)).
 - **Dimension views no longer need `target.connection`, and a target in another database is built there.** A flow
   naming no target keeps its views beside its tables in the catalog; one whose `target.connection` reaches another
   database than the module's, refused before, now keeps its tables and views in it
