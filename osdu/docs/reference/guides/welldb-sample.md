@@ -89,7 +89,9 @@ Once the records land, the package reads OSDU back:
   ([data quality tests](data-quality-tests.md)).
 - **Dimensions.** `welldb-welllog-05-dimensions` keeps the distinct logs, wellbores and curve mnemonics delivered, the
   mnemonics grouped through `curve-aliases.yaml`, so a search panel can offer them as choices
-  ([dimensions](dimensions.md)).
+  ([dimensions](dimensions.md)). Its tables and view are kept in the data database, schema `arc`
+  (`OsduData.arc.dim_WelldbWellLog`), so the catalog holds only the dimensions' records
+  ([Dimension target](../flow/dimension-target.md)).
 - **Inventory.** `welldb-osdu-06-inventory` sets what OSDU holds of the kinds the package delivers against every ledger
   of the partition. It only reads; an operator removes what it finds ([finding orphans](finding-orphans.md)).
 - **Removal.** `welldb-wellbore-05-removal` takes out of OSDU the wellbores the well database no longer holds, and waits

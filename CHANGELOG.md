@@ -621,6 +621,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   naming no target keeps its views beside its tables in the catalog; one whose `target.connection` reaches another
   database than the module's, refused before, now keeps its tables and views in it
   ([Dimension target](osdu/docs/reference/flow/dimension-target.md)).
+- **The welldb sample's dimensions keep their tables and view in the data database.**
+  `welldb-welllog-05-dimensions` targets `${env:OSDU_DATA_DB}` in schema `arc` (`OsduData.arc.dim_WelldbWellLog`,
+  `OsduData.arc.v_dim_WelldbWellLogWellbore`), where it kept them in the catalog's `osdu` schema; its next build moves
+  them, and a pipeline reading them reads them there ([Dimension target](osdu/docs/reference/flow/dimension-target.md)).
 - **The render context keeps only the sets of cached values a record points at.** Every hour the control plane removes
   each set no record points at, as its set or the one it is held on, that no render has used for a day, with its values
   (`osdu.CacheSet`, `osdu.CacheSetEntry`). A record's set is replaced whenever a render reads other values, and nothing

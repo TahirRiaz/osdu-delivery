@@ -4,7 +4,9 @@
 # with the wellbore it belongs to; every wellbore the logs name, by the wellbore's own name, read from the wellbore
 # record the reference names; and the curve mnemonics the logs carry, the spellings the well database files under another
 # curve grouped through ../dictionaries/curve-aliases.yaml. Nothing is written to OSDU: each dimension is a table of the
-# module's database (osdu.dim_<name>), and the view joins the logs to their wellbores for the pipelines that read it.
+# data database (OsduData.arc.dim_<name>), and the view (OsduData.arc.v_dim_<name>) joins the logs to their wellbores for
+# the pipelines that read it. The dimensions' records stay in the module's database; only the tables and the view are
+# kept in the data database, so the catalog does not hold their rows.
 #
 # It reads the well log kind the well log delivery writes, so lineage runs it after that delivery; a dimension's names are
 # unique across the module's database, so they carry the well database's name.
@@ -33,10 +35,11 @@ source:
 parallelism:
   recordsAtOnce: 4
 
-# The module's database, where the dimensions' tables and the view are, named as the pipelines reading the view name it.
-# The module lives in the catalog's database, reached through its one connection.
+# The data database, where the dimensions' tables and the view are kept in schema arc, named as the pipelines reading the
+# view name it. The build makes the schema when the database does not hold it.
 target:
-  connection: ${env:SQLFLOW_CATALOG_DB}
+  connection: ${env:OSDU_DATA_DB}
+  schema: arc
 
 dimensions:
   - name: WelldbWellLog
