@@ -1043,6 +1043,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **A schedule whose cron date never comes no longer fires the schedules chained behind it on every sync.** A cron such
+  as `30 0 31 2 *` (31 February) was armed at the sync time, the scheduler parked it while counting a fire that ran
+  nothing, and a schedule declared `after:` it ran all its flows, once for every sync of the repository, automatic or
+  from a merge. Such a schedule now stays parked: it never fires on its own, Run now still fires it, and its chain
+  follows only a fire that ran ([Schedules](sqlflow/docs/reference/flow/schedule.md#chained-schedules-after)).
 - **A source or dimension table database that cannot be opened says so, after its retries.** An open that failed on an
   error SQL Server raises while a database fails over (such as 4060) was tried four times and then surfaced as the
   retry logic's own message, every attempt's error listed and none of it redacted; it now fails the run as one line,
