@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Every run says what started it.** A schedule on its own, a schedule after the schedule it chains behind (naming the
+  parent fire it followed), a person or API client, an external trigger, or the command line: the runs board has a
+  Started by column and filter, a run's and a run group's page say it under the title, a chained run's page lists the
+  fires behind it back to the person or clock that set them off, the schedule timeline names it for each run, and
+  `sqlflow runs list --started-by` and `runs show` print it
+  ([what started a run](sqlflow/docs/reference/concepts/what-started-a-run.md)).
 - **An admin sets how many versions a partition's cache keeps.** **Set versions kept** on the Cache page's Setup tab,
   `PUT /api/v1/delivery/cache/retention` and `sqlflow cache keep <partition> --versions <n>` take a number from 2 to 1000,
   show what it prunes first, save it for the partition and apply it at once; a purge may name one too (`versionsKept`,
@@ -622,6 +628,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **A schedule's Run now and an external trigger's fire are recorded as asked for.** Their runs carry the trigger source
+  `manual` and name the person or trigger, where they read as the schedule firing on its own (`schedule`); past runs
+  are corrected the same way when the control plane upgrades, and a schedule fired behind its parents records `chain`.
+  The OSDU kinds' Requested by column on the runs board gives way to the board's own Started by
+  ([what started a run](sqlflow/docs/reference/concepts/what-started-a-run.md)).
 - **A partition's cache keeps its newest 3 versions.** Every refresh prunes the records of the older versions, however
   recently they were replaced, where before it kept every version replaced in the last 7 days (`retentionDays`), which
   still prunes a version among the newest once it is older. The current version, the one it replaced and pinned versions
@@ -1053,6 +1064,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **The Schedules page names the schedule a chained schedule fires behind.** It showed a bare dash, so a schedule that
+  ran after another, whoever started that one, looked like it had no trigger; the timeline called it "manual". A cron
+  whose date never comes now shows a next fire of "never" ([Schedules](sqlflow/docs/reference/flow/schedule.md)).
 - **A schedule whose cron date never comes no longer fires the schedules chained behind it on every sync.** A cron such
   as `30 0 31 2 *` (31 February) was armed at the sync time, the scheduler parked it while counting a fire that ran
   nothing, and a schedule declared `after:` it ran all its flows, once for every sync of the repository, automatic or
