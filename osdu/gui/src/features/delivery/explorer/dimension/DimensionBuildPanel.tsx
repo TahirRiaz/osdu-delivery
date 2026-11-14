@@ -239,14 +239,17 @@ export function DimensionBuildPanel({ build, startKind }: {
             )
             : <BuilderYaml compose={compose.data} failure={compose.isError ? failureText(compose.error) : null} />}
 
-      <div className="flex min-h-11 items-center gap-2 border-t px-3 py-1.5">
-        <Verdict
-          ready={draft.kind !== ""}
-          compose={compose.data}
-          composing={compose.isFetching}
-          failure={compose.isError ? failureText(compose.error) : null}
-          onShow={showProblem}
-        />
+      {/* The verdict keeps room to be read: on a narrow builder the actions go to a line of their own. */}
+      <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1 border-t px-3 py-1.5">
+        <div className="flex min-w-40 flex-1">
+          <Verdict
+            ready={draft.kind !== ""}
+            compose={compose.data}
+            composing={compose.isFetching}
+            failure={compose.isError ? failureText(compose.error) : null}
+            onShow={showProblem}
+          />
+        </div>
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {explain !== null && compose.data !== undefined && (
             <RichTooltip
