@@ -22,7 +22,6 @@ related:
   - delivery-guide-dimensions
   - delivery-guide-mcp
 sourceRefs:
-  - osdu/gui/src/features/delivery/explorer/dimension/BuilderFlowFile.tsx
   - osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts
   - osdu/gui/src/features/delivery/explorer/dimension/DimensionBuildPanel.tsx
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.Flow.cs
@@ -39,11 +38,13 @@ the way the estate already writes its dimension flows, so the file is ready to a
 ## In the builder
 
 **Write the flow file** sits in the builder's foot beside **Copy the YAML**, while the assistant is configured. It
-waits until the YAML loads, and its tooltip says why while it waits. A click opens a conversation in the builder's
-panel, under **Flow file** beside **Build**, **Preview** and **YAML**, asking for the whole file. The conversation is
-followed up there, like any other, and is kept on the Assistant page after it is closed. The question names the item
-as the builder wrote it and the partition it was built over. Asking again with the same YAML shows the same
-conversation; once the YAML has changed, it asks anew. **Start over** drops it.
+waits until the YAML loads, and its tooltip says why while it waits. A click opens a conversation asking for the whole
+file in the assistant's panel, which slides in from the left over the records and leaves the builder in view. The panel
+opens wide, since its answer is a file: drag its edge to make it wider or narrower (the width is kept), or maximize it
+to read the file alone. The conversation is followed up there, like any other, and is kept on the Assistant page after
+the panel is closed. The question names the item as the builder wrote it and the partition it was built over. A second
+click while the panel is open keeps the conversation it holds; once the YAML has changed, or the panel was closed, it
+asks anew.
 
 Nothing is saved by asking. The assistant shows the file in one YAML block. It can also propose it to the repository
 when asked, through the change the person approves (`propose_pipelines`).
