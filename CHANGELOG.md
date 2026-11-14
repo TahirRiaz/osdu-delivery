@@ -1136,6 +1136,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **A worker that stops cleanly leaves the Nodes page.** Every worker pod polls under a new name, and a stopped one was
+  listed offline for a day, so each revision and each scale-in added a page of dead rows to purge. A worker now says it
+  is leaving once its drain is over and its row goes on the next flush; one still listed offline went silent without
+  leaving (killed, crashed or cut off) and is pruned after `Dispatch:NodeRetentionHours`, 24 by default
+  ([the stopping node](sqlflow/docs/reference/concepts/control-plane.md#the-dispatcher)).
 - **The explorer opens a record of a partition's own type that names no group.** An id such as `dev:site-note:3b9c...`
   was refused as no OSDU record id, though the search listed it: the explorer's reads, checks and mentions now take any
   id the storage service takes (`ValidationDoc.RECORD_ID_REGEX`), and the search field opens one of the partition read.
