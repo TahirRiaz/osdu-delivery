@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dimension builder's Write the flow file has the assistant write the whole dimension flow.** The builder wrote only
+  the item a flow lists under `dimensions:`. Beside **Copy the YAML**, **Write the flow file** asks the assistant for the
+  whole file holding it: modelled on the estate's dimension flows (their source, auth, partitions, parameters and
+  schedule, as written), its tables kept in the database the estate's flows write their data to rather than the
+  catalog's, and checked before it is shown. The conversation opens in the builder's panel under **Flow file**. The
+  assistant's new `delivery_dimension_flow` tool reads the patterns (`GET /api/v1/delivery/dimensions/flow-patterns`)
+  and checks a whole document by the loader, its templates, the tables other flows write, the registry's partitions and
+  the target (`POST /api/v1/delivery/dimensions/flow-check`); both are open to an assistant run
+  ([writing a dimension flow file](osdu/docs/reference/guides/dimension-flow-file.md)).
 - **Compute usage: how long the nodes worked, and which team it is charged to.** Every run attempt and compute task a
   node does is measured on the node, from the moment it is handed the work until it reports the outcome, and written with
   its wall-clock time, the node's cores and slots and the compute units that comes to (one compute unit is one core held
