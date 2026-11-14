@@ -7,7 +7,7 @@ keywords:
   - write the flow file
   - whole dimension flow file
   - dimension flow from the builder
-  - delivery_dimension_flow
+  - delivery_flow_file
   - flow patterns
   - envelope
   - data database
@@ -21,8 +21,10 @@ related:
   - delivery-flow-dimension-target
   - delivery-guide-dimensions
   - delivery-guide-mcp
+  - delivery-guide-cache-flow-file
 sourceRefs:
   - osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts
+  - osdu/gui/src/features/delivery/explorer/dimension/BuilderFoot.tsx
   - osdu/gui/src/features/delivery/explorer/dimension/DimensionBuildPanel.tsx
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.Flow.cs
   - osdu/hosts/osdu-delivery-mcp/src/tools/dimensions.rs
@@ -53,7 +55,7 @@ when asked, through the change the person approves (`propose_pipelines`).
 
 The steps live in the MCP server, the same in the GUI chat, VS Code or any client:
 
-1. **Reads the patterns.** `delivery_dimension_flow` with no `yaml` answers the catalog's dimension flows. Each comes
+1. **Reads the patterns.** `delivery_flow_file` with no `yaml` answers the catalog's dimension flows. Each comes
    with its repository, file, batch, partitions, parameters, target, dimensions, the kinds they read, and its
    **envelope**: the document without its `dimensions` and `views`, comments and all. It also lists the connections the
    estate's flows read and write their data through, counted by flow kind, the module's own marked. Flows a sync saw
@@ -64,7 +66,10 @@ The steps live in the MCP server, the same in the GUI chat, VS Code or any clien
    pre flows write, not the module's database beside the catalog
    ([Dimension target](../flow/dimension-target.md)). The dimension's own record stays in the module's database either
    way.
-4. **Checks it** with `delivery_dimension_flow` and the `yaml`, until it is valid, before showing it.
+4. **Checks it** with `delivery_flow_file` and the `yaml`, until it is valid, before showing it.
+
+The same tool writes a cache flow's file, asked with `flowType: cache`
+([Writing a cache flow file](cache-flow-file.md)).
 
 ## The check
 
