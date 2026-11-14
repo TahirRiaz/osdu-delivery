@@ -49,7 +49,6 @@ sourceRefs:
   - osdu/gui/src/features/delivery/explorer/dimension/dimensionStory.ts
   - osdu/gui/src/features/delivery/explorer/dimension/dimensionDraft.ts
   - osdu/gui/src/features/delivery/explorer/dimension/useDimensionBuild.ts
-  - osdu/gui/src/features/delivery/explorer/dimension/BuilderFlowFile.tsx
   - osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts
 ---
 
@@ -139,8 +138,9 @@ a synced repository does not hold is a warning, with where to download one.
 
 **Write the flow file**, beside **Copy the YAML** once the YAML loads and while the assistant is configured, asks the
 assistant for the whole flow file holding the dimension: modelled on the estate's dimension flows, its tables kept
-where the estate keeps its data, and checked before it is shown. The conversation opens under **Flow file**, beside
-**YAML** ([Writing a dimension flow file](../guides/dimension-flow-file.md)).
+where the estate keeps its data, and checked before it is shown. The conversation opens in the assistant's panel,
+which slides in over the records and leaves the builder in view
+([Writing a dimension flow file](../guides/dimension-flow-file.md)).
 
 ## Kept in the address
 

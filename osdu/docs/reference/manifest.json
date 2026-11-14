@@ -2220,7 +2220,6 @@
         "osdu/gui/src/features/delivery/explorer/dimension/dimensionStory.ts",
         "osdu/gui/src/features/delivery/explorer/dimension/dimensionDraft.ts",
         "osdu/gui/src/features/delivery/explorer/dimension/useDimensionBuild.ts",
-        "osdu/gui/src/features/delivery/explorer/dimension/BuilderFlowFile.tsx",
         "osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts"
       ]
     },
@@ -7317,7 +7316,6 @@
         "delivery-guide-mcp"
       ],
       "sourceRefs": [
-        "osdu/gui/src/features/delivery/explorer/dimension/BuilderFlowFile.tsx",
         "osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts",
         "osdu/gui/src/features/delivery/explorer/dimension/DimensionBuildPanel.tsx",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.Flow.cs",
