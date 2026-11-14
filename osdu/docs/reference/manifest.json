@@ -2190,7 +2190,9 @@
         "dimension yaml",
         "key suggestions",
         "clean steps",
-        "where a key's record holds nothing"
+        "where a key's record holds nothing",
+        "write the flow file",
+        "whole flow file"
       ],
       "related": [
         "delivery-concept-explorer",
@@ -2199,7 +2201,8 @@
         "delivery-flow-dimension-clean",
         "delivery-concept-dimension-blueprint",
         "delivery-guide-dimensions",
-        "delivery-concept-templates"
+        "delivery-concept-templates",
+        "delivery-guide-dimension-flow-file"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryExplorerEndpoints.Dimension.cs",
@@ -2216,7 +2219,9 @@
         "osdu/gui/src/features/delivery/explorer/dimension/BuilderFilterDialog.tsx",
         "osdu/gui/src/features/delivery/explorer/dimension/dimensionStory.ts",
         "osdu/gui/src/features/delivery/explorer/dimension/dimensionDraft.ts",
-        "osdu/gui/src/features/delivery/explorer/dimension/useDimensionBuild.ts"
+        "osdu/gui/src/features/delivery/explorer/dimension/useDimensionBuild.ts",
+        "osdu/gui/src/features/delivery/explorer/dimension/BuilderFlowFile.tsx",
+        "osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts"
       ]
     },
     {
@@ -7282,6 +7287,41 @@
         "osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs",
         "sqlflow/src/SqlFlow.Cli/Program.cs",
         "sqlflow/src/SqlFlow.ControlPlane/Api/RunTriggerEndpoints.cs"
+      ]
+    },
+    {
+      "id": "delivery-guide-dimension-flow-file",
+      "corpus": "reference",
+      "path": "guides/dimension-flow-file.md",
+      "title": "Writing a dimension flow file: the whole file from a built dimension, modelled on the estate's flows",
+      "type": "guide",
+      "summary": "Write the flow file, in the dimension builder: the assistant writes the whole flow on the estate's own, its tables where its data is, checked first.",
+      "keywords": [
+        "write the flow file",
+        "whole dimension flow file",
+        "dimension flow from the builder",
+        "delivery_dimension_flow",
+        "flow patterns",
+        "envelope",
+        "data database",
+        "dimension tables in the data database",
+        "check a dimension flow",
+        "flow-check",
+        "flow-patterns"
+      ],
+      "related": [
+        "delivery-concept-explorer-dimension-builder",
+        "delivery-flow-dimension",
+        "delivery-flow-dimension-target",
+        "delivery-guide-dimensions",
+        "delivery-guide-mcp"
+      ],
+      "sourceRefs": [
+        "osdu/gui/src/features/delivery/explorer/dimension/BuilderFlowFile.tsx",
+        "osdu/gui/src/features/delivery/explorer/dimension/flowFileQuestion.ts",
+        "osdu/gui/src/features/delivery/explorer/dimension/DimensionBuildPanel.tsx",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.Flow.cs",
+        "osdu/hosts/osdu-delivery-mcp/src/tools/dimensions.rs"
       ]
     },
     {
