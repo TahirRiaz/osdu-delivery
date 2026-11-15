@@ -141,10 +141,10 @@ public sealed class DimensionWriteChangeTests : IDisposable
         var after = await HashesAsync();
         Assert.Equal(
             ["dev:work-product-component--WellLog:L05"],
-            after.Where(h => !h.Value.Elements!.SequenceEqual(hashes[h.Key].Elements!)).Select(h => h.Key).Order(StringComparer.Ordinal));
+            after.Where(h => h.Value.Elements != hashes[h.Key].Elements).Select(h => h.Key).Order(StringComparer.Ordinal));
         Assert.Equal(
             ["dev:work-product-component--WellLog:L00", "dev:work-product-component--WellLog:L03", "dev:work-product-component--WellLog:L06", "dev:work-product-component--WellLog:L09"],
-            after.Where(h => !h.Value.Attributes!.SequenceEqual(hashes[h.Key].Attributes!)).Select(h => h.Key).Order(StringComparer.Ordinal));
+            after.Where(h => h.Value.Attributes != hashes[h.Key].Attributes).Select(h => h.Key).Order(StringComparer.Ordinal));
         Assert.Equal(["GR"], await SqlAsync("SELECT [Mnemonic] FROM [osdu].[dim_LogCurve] WHERE [WellLogID] = N'dev:work-product-component--WellLog:L05' AND [element] = 2;"));
         Assert.Equal(
             ["dev:work-product-component--WellLog:L00|16", "dev:work-product-component--WellLog:L03|16", "dev:work-product-component--WellLog:L06|16", "dev:work-product-component--WellLog:L09|16"],
@@ -154,17 +154,19 @@ public sealed class DimensionWriteChangeTests : IDisposable
         Assert.Contains(some, l => l.Contains("dimension LogCurve: writing its table took ", StringComparison.Ordinal) && l.EndsWith(": 17 row(s) added, rewritten or deleted", StringComparison.Ordinal));
     }
 
-    /// <summary>Each key's hashes, by its text.</summary>
-    private async Task<Dictionary<string, (byte[]? Elements, byte[]? Attributes)>> HashesAsync()
+    /// <summary>Each key's hashes, by its text, each as hex.</summary>
+    private async Task<Dictionary<string, (string? Elements, string? Attributes)>> HashesAsync()
     {
         await using var connection = new SqlConnection(_db.ConnectionString);
         await connection.OpenAsync();
         await using var command = new SqlCommand("SELECT [Original], [ElementsHash], [AttributesHash] FROM [osdu].[DimensionValue] WHERE [RemovedRunId] IS NULL;", connection);
         await using var reader = await command.ExecuteReaderAsync();
-        var found = new Dictionary<string, (byte[]?, byte[]?)>(StringComparer.Ordinal);
+        var found = new Dictionary<string, (string?, string?)>(StringComparer.Ordinal);
         while (await reader.ReadAsync())
         {
-            found[reader.GetString(0)] = (reader.IsDBNull(1) ? null : (byte[])reader[1], reader.IsDBNull(2) ? null : (byte[])reader[2]);
+            found[reader.GetString(0)] = (
+                reader.IsDBNull(1) ? null : Convert.ToHexString((byte[])reader[1]),
+                reader.IsDBNull(2) ? null : Convert.ToHexString((byte[])reader[2]));
         }
 
         return found;
