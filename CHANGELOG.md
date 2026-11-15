@@ -687,8 +687,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Idle workers are removed after two minutes at most, and sooner the more of them are idle.** An idle worker is
   compute paid for nothing, and a delivery split over many nodes leaves one per part behind. With managed workers, the
   idle workers a pool can spare now share `IdleMinutes` (2 by default, where each waited 5): one waits two minutes, and
-  of six, three leave after 30 seconds, then one each after 40, 60 and 120, never sooner than 30 seconds. The workers
-  the next wave of a running schedule needs are not spare, so a job in flight keeps them. With an autoscaler, the worker
+  of six, three leave after 30 seconds, then one each after 40, 60 and 120, never sooner than 30 seconds. A running job
+  keeps its workers: while a schedule still has steps waiting to start no idle worker leaves, and while runs are
+  executing each idle worker waits the whole two minutes, so the shorter, shared wait applies only once a pool has
+  nothing queued or running. With an autoscaler, the worker
   templates take an idle pool to zero a minute after its last work, where the platforms waited five; this applies once
   the worker template is deployed again
   ([managed workers](sqlflow/docs/reference/guides/deployment.md#managed-workers-the-control-plane-starts-its-own-workers),
