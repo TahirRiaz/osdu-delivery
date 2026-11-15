@@ -1949,7 +1949,7 @@ internal static partial class SqlServerDimensionStore
                 var merged = await clock.TimeAsync(
                     DimensionWriteStep.Merge,
                     string.Create(CultureInfo.InvariantCulture,
-                        $"{stage.Values} key(s), {stage.Members} value(s), {stage.Attributes} attribute value(s) and {stage.Elements} element field(s) staged{(write.Partial ? ", an incremental load's" : string.Empty)}"),
+                        $"{stage.Values} key(s), {stage.Members} value(s), {stage.Attributes} collected value(s) and {stage.Elements} element object(s) staged{(write.Partial ? ", an incremental load's" : string.Empty)}"),
                     async () =>
                     {
                         for (var attempt = 1; ; attempt++)

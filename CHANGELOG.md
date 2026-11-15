@@ -694,8 +694,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   found by their text under a unique index, where they were found by a SHA-256 of it, and a key keeps the hash of its
   objects and of the attribute values read through its record: a build writes only the keys whose hash moved, and lays
   out the dimension's table rows of those keys alone. A weekly full load of a dimension that did not change writes few
-  rows however many it reads. The
-  `dim_` tables lose their `key_hash` column and a view joins a table on its key's text (`IX_key_text`). A key longer
+  rows however many it reads: on a reproduction of a well log curve dimension (10,602 logs, 116,622 curves of 17 fields),
+  the write went from 43 seconds to 3 and the full load from 67 to 21. The `dim_` tables lose their `key_hash` column and a view joins a table on its key's text (`IX_key_text`). A key longer
   than 800 characters is left out, where 1,024 were kept; an OSDU id is about a hundred. The migration empties the
   records keys were read through and held by, so every dimension's next build loads in full and lays its table out
   whole ([decision 0058](osdu/docs/wiki/decisions/0058-dimension-keys-by-their-text.md),
