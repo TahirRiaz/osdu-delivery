@@ -684,6 +684,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **Idle workers are removed after two minutes at most, and sooner the more of them are idle.** An idle worker is
+  compute paid for nothing, and a delivery split over many nodes leaves one per part behind. With managed workers, the
+  idle workers a pool can spare now share `IdleMinutes` (2 by default, where each waited 5): one waits two minutes, and
+  of six, three leave after 30 seconds, then one each after 40, 60 and 120, never sooner than 30 seconds. The workers
+  the next wave of a running schedule needs are not spare, so a job in flight keeps them. With an autoscaler, the worker
+  templates take an idle pool to zero a minute after its last work, where the platforms waited five; this applies once
+  the worker template is deployed again
+  ([managed workers](sqlflow/docs/reference/guides/deployment.md#managed-workers-the-control-plane-starts-its-own-workers),
+  [scale-in](osdu/docs/reference/guides/deployment.md#scale-in-placement-and-the-modules-own-settings)).
 - **`Dispatch:LongPollSeconds` and `Dispatch:NodeFlushSeconds` may add up to 50 at most.** A control plane set to more
   (the defaults are 30 and 5) refuses to start and names both settings: a node's last poll reaches the Nodes page one
   parked poll and one flush later, and past the 60 seconds a node counts as online for, every worker read offline between
@@ -1157,6 +1166,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once the platform stopped listing it. A worker that says it is leaving stops counting at once and is forgotten, and a
   fleet whose workers all left cleanly starts workers for queued runs instead of waiting as if it heard nobody
   ([managed workers](sqlflow/docs/reference/guides/deployment.md#managed-workers-the-control-plane-starts-its-own-workers)).
+- **An autoscaler no longer takes a pool to zero under running runs.** The replica target counted a worker as busy
+  from its last heartbeat alone. Nobody writes heartbeats while the control plane is away, and a heartbeat lags a
+  hand-out by a few seconds, so the target could read zero while runs executed and the autoscaler stopped the workers
+  under them. A worker now also counts as busy when the run journal says it holds a run
+  ([the dispatcher](sqlflow/docs/reference/concepts/control-plane.md#the-dispatcher)).
 - **A worker finishing its runs keeps its run slots on the Nodes page.** While it drained it reported none, so the page
   showed `2 / 0` and the run slots online dropped though the runs were still executing.
 - **The explorer opens a record of a partition's own type that names no group.** An id such as `dev:site-note:3b9c...`
