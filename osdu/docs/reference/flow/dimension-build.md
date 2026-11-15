@@ -120,7 +120,7 @@ how long it took, so a write that works, one that waits and one that is stuck re
 ```text
 dimension LogCurve: deleting what earlier builds removed: the keys and values earlier builds removed
 dimension LogCurve: deleting what earlier builds removed took 0.1 s: 0 key(s) and 0 value(s) deleted
-dimension LogCurve: merging: 10602 key(s), 2 value(s), 0 attribute value(s) and 116622 element object(s) staged
+dimension LogCurve: merging: 10602 key(s), 2 value(s), 0 collected value(s) and 116622 element object(s) staged
 dimension LogCurve: still merging after 60.0 s; its INSERT is working, waiting on PAGEIOLATCH_SH, 1,204,113 page(s) read and 22,410 written so far
 dimension LogCurve: merging took 71.3 s: 0 key(s) arrived, 0 left, 0 moved and 0 came back; 0 attribute value(s) and 0 element field(s) added, rewritten or dropped
 dimension LogCurve: writing its table: osdu.dim_LogCurve, the rows of the keys the write changed
