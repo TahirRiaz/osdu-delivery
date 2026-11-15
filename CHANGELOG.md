@@ -1415,8 +1415,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target when an archive entry, or a source object's key, would leave it
   ([Copy flow](sqlflow/docs/reference/flow/cpy.md#operations)).
 - **No dependency with a known advisory.** System.Security.Cryptography.Pkcs resolves at 10.0.13, past the .NET denial
-  of service advisories CVE-2026-84008 and CVE-2026-70162, and the GUI's dompurify at 3.4.17, past its two DOM XSS
-  advisories.
+  of service advisories CVE-2026-84008 and CVE-2026-70162, the GUI's dompurify at 3.4.17, past its two DOM XSS
+  advisories, and the VS Code extension bundles minimatch 11.0.8, past its globparts denial of service advisory
+  GHSA-g3hv-75wg-m249 ([The VS Code extension](osdu/docs/reference/guides/vscode.md)).
 
 ## [1.0.1] - 2026-10-19
 
