@@ -115,12 +115,21 @@ and the fonts are the editor theme's own variables, so a page reads as part of t
 works in. The status hues and the chart palette do not follow the theme. They are measured values and mean the same thing
 wherever a run or a record is shown, so they stay the workbench's own, in the step for the theme's mode.
 
-## One side bar: the working copy, and the GUI's menu
+## One side bar: the GUI's own navigation
 
-The side bar lists the working copy from disk, so it shows what is being written before any of it is pushed, and under it
-the GUI's own menu, each entry opening its page in a tab. What the first version's Document, Runs, Schedules, Data Streams
-and Delivery views listed is on those pages, with more than a row could say. A module no longer adds sections of rows: it
-adds what a document's row offers, and its pages are its GUI module's.
+The side bar is the workbench's navigation: its search, its menu, each entry opening its page in a tab, who is signed in,
+and a button that syncs a repository on the control plane signed in to. What the first version's Document, Runs,
+Schedules, Data Streams and Delivery views listed is on those pages, with more than a row could say, and a module adds no
+rows: its pages are its GUI module's.
+
+- **Rejected: listing the working copy in the side bar.** The first cut listed the documents of the open folder by kind,
+  each with what could be done with it. The editor's Explorer already lists the folder, so the list said it twice.
+- **Rejected: running a flow from the editor.** A flow's page has the GUI's own run form, which offers what each operation
+  takes and confirms one that writes to the flow's target. The editor's run button asked the same questions again in quick
+  picks, so the editor has none, and a flow's lenses lead to its page.
+- **Sync is a deploy, so it says where.** One repository feeds every environment's control plane, and a commit reaches an
+  environment when that control plane syncs it. The button names the control plane it acts on, and a repository that holds
+  its commit until asked moves only after the person confirms, in the words the Repos page confirms it with.
 
 ## A mapping's preview reads the file, and its rows read the sync
 
@@ -157,5 +166,3 @@ machine, and publishing is a box the person ticks: a run without it only keeps t
   plane on its estate's. A call a newer page makes of an older control plane is answered by the API's own error, which
   the page shows; nothing checks the two versions against each other yet, because the control plane does not say its
   version.
-- **The run form is the editor's own prompts.** Starting a run asks its questions in the editor's quick picks, as the
-  first version did, and only then opens the run's page.

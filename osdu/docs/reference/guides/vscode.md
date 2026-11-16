@@ -17,6 +17,7 @@ keywords:
   - preview mapping
   - working copy
   - side bar
+  - sync repository
   - pages in tabs
   - webview
   - marketplace
@@ -131,15 +132,17 @@ for files nobody has open.
 
 ## The side bar and the pages
 
-The extension's side bar has two parts, with a search over them and who is signed in beside it.
+The extension's side bar is the GUI's own navigation. Its header holds the search, which opens the search page; a
+**Sync** button; and who is signed in, and to which control plane. Under it is the GUI's menu, and every entry opens its
+page in a tab of the editor. The files of the folder you have open are in the editor's own Explorer, and a flow is run from
+its page or from the lens at the top of its file.
 
-| Part | Shows |
-| --- | --- |
-| **Working copy** | The documents of the folder open in the editor, by kind, read from disk: flows by their kind, mappings, dictionaries, schedules. A row opens its file, and offers what can be done with it on the row and in its menu: run a flow, open its page, compare it with what the estate runs, preview a mapping. A flow the estate does not have yet is marked, and so is the file in front of you when it differs from what runs. It needs no sign-in. |
-| **Estate** | The GUI's own menu. Every entry opens its page in a tab of the editor. |
-
-Typing in the search narrows the working copy to the documents with a word starting that way, in their name or their
-path; Enter searches the estate.
+**Sync** has the control plane you are signed in to read the latest commit of a repository's branch: it is how a commit
+you pushed reaches that environment, and runs started afterwards use it. Its tooltip names the repository, the commit it
+holds and the control plane. A repository that syncs only on request moves from the commit it holds only after you
+confirm, in the words the Repos page confirms it with. With several repositories registered, the button opens a menu of
+them, each with how its last sync went. When the sync ends the editor reads the control plane again, so a flow's lenses
+and **Compare with Synced** follow it.
 
 A page in a tab is the page [the GUI](../concepts/gui.md) shows, with the same data and the same actions, under your
 sign-in: a flow with its records, issues, submissions and preview, a run with its trace as it is written, lineage,
@@ -154,8 +157,8 @@ when the editor closes come back on the pages they showed.
 | **Open Delivery**, **Open Templates**, **Find a Record** | The delivery overview, the Templates page, the record lookup. |
 | **Open Flow Page** | The page of the flow in the editor, beside its file. Also a lens at the top of a flow. |
 
-The lenses at the top of a flow run it, say how it last ran, open its page, and **Compare with Synced** shows what your
-file changes from what runs. **Open in the Browser** opens the flow's page in the web GUI when `sqlflow.guiUrl` is set.
+The lenses at the top of a flow say how it last ran, open its page, and **Compare with Synced** shows what your file
+changes from what runs. **Open in the Browser** opens the flow's page in the web GUI when `sqlflow.guiUrl` is set.
 
 ### Previewing a mapping
 
@@ -171,15 +174,15 @@ file changes from what runs. **Open in the Browser** opens the flow's page in th
   sync to render rows with the new text.
 - The page follows the file as you save it. While the editor holds changes you have not saved it shows the file as last
   saved and says so, with a link to show the unsaved text at once, so a line half typed never redraws the page.
-- A mapping the estate has not seen yet shows Properties and Record shape, with its template settled from the template
-  folders of the repository its neighbours were synced from.
+- A mapping the estate has not seen yet, such as a new file, has the same page: Overview, Properties and Record shape
+  from its text, with its template settled from the template folders of the repository its neighbours were synced from,
+  and Staged records and the dry run saying they wait until it is pushed and synced.
 
 ### Running a flow
 
-**Run** asks what the run should do, from the operations the control plane registers, asks for the partition of a flow
-serving several and for the flow's parameters, offers what that operation takes (force, a submission, only some records,
-interfaces or types, what to send again), and confirms an operation that writes to the flow's target. The run's own page
-then opens beside the file and follows the run: its trace as it is written, and what it reported when it ended.
+A flow runs from its page, as in the GUI: **Open Flow Page** (or the lens at the top of the flow) opens it beside the file,
+and its run form asks what the run should do and confirms an operation that writes to the flow's target. The run's page
+follows it: its trace as it is written, and what it reported when it ended.
 
 **Run a Command Line Verb** runs `validate`, [`check`](../cli/check.md), [`preview`](../cli/preview.md) and
 [`values`](../cli/values.md) on the open file as a task, on this machine. They read your working copy whole, flow and
