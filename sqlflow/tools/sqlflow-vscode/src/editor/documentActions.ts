@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { DocumentIndex, IndexedDocument } from '../documents/documentIndex';
+import { isRunnable } from '../documents/recognition';
 import { DocumentProblem, Estate } from '../mcp/estate';
 import { ago } from '../time';
 
@@ -147,13 +148,16 @@ export class DocumentLenses implements vscode.CodeLensProvider {
         if (document.kind !== 'flow') {
             return [];
         }
-        const commands: vscode.Command[] = [{ title: '$(play) Run', command: 'sqlflow.runFlow', arguments: [document.uri] }];
+        // A lineage description has no Run: it is never executed. It keeps what the estate says of it.
+        const commands: vscode.Command[] = isRunnable(document)
+            ? [{ title: '$(play) Run', command: 'sqlflow.runFlow', arguments: [document.uri] }]
+            : [];
         if (!document.name) {
             return commands;
         }
         // The estate is a bonus on a lens: signed out or unreachable, the document still has its Run.
         try {
-            const pipeline = await this.estate.pipelineNamed(document.name, document.relativePath);
+            const pipeline = await this.estate.pipelineNamed(document.name, document.relativePath, document.flowType);
             if (!pipeline) {
                 commands.push({ title: 'Not synced', command: 'sqlflow.refreshCatalog' });
                 return commands;
@@ -190,7 +194,7 @@ export class SyncedDefinitions implements vscode.TextDocumentContentProvider {
 /** Shows what a local file changes from what the estate runs. */
 export async function compareWithSynced(estate: Estate, documents: DocumentIndex, uri: vscode.Uri): Promise<void> {
     const document = await documents.at(uri);
-    const pipeline = document?.name ? await estate.pipelineNamed(document.name, document.relativePath) : undefined;
+    const pipeline = document?.name ? await estate.pipelineNamed(document.name, document.relativePath, document.flowType) : undefined;
     if (!pipeline) {
         void vscode.window.showInformationMessage(`${path.basename(uri.fsPath)} is not in the estate yet.`);
         return;

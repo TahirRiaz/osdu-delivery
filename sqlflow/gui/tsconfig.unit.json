@@ -23,6 +23,7 @@
     "src/auth/loginStreamLanes.ts",
     "src/modules/branding.ts",
     "src/modules/homePrompts.ts",
+    "src/modules/lineageDescriptionKind.ts",
     "src/features/catalog/databaseTree.ts",
     "src/features/external-triggers/workflow.ts",
     "src/features/catalog/nodeIds.ts",
