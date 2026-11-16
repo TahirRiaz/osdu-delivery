@@ -313,7 +313,7 @@
         {
           "id": "sqlflow",
           "title": "OSDU Delivery",
-          "icon": "./resources/flow.svg"
+          "icon": "./resources/osdu-delivery.svg"
         }
       ]
     },
@@ -324,7 +324,7 @@
           "name": "",
           "type": "webview",
           "contextualTitle": "OSDU Delivery",
-          "icon": "./resources/flow.svg"
+          "icon": "./resources/osdu-delivery.svg"
         }
       ]
     },

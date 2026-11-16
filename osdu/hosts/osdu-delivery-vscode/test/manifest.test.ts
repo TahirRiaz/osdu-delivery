@@ -115,6 +115,21 @@ test('the icon is a PNG of at least 128 pixels a side, which the Marketplace ask
     assert.ok(width >= 128, `${width} pixels`);
 });
 
+test('the activity bar and the side bar carry the product\'s own mark, not the glyph a flow\'s file carries', () => {
+    const container = manifest.contributes.viewsContainers.activitybar[0];
+    const view = manifest.contributes.views.sqlflow[0];
+    const flowGlyph = manifest.contributes.languages.find((language: { id: string }) => language.id === 'sqlflow-flow').icon.dark;
+    for (const icon of [container.icon, view.icon]) {
+        assert.equal(icon, './resources/osdu-delivery.svg');
+        assert.notEqual(icon, flowGlyph);
+        const mark = readFileSync(join(folder, icon), 'utf8');
+        // The editor draws an activity bar icon as a mask in the theme's colour: one colour, in a box of 24, with no
+        // picture or page of its own to fetch.
+        assert.match(mark, /^<svg [^>]*viewBox="0 0 24 24"[^>]*fill="currentColor"/);
+        assert.doesNotMatch(mark, /<image|href=|#[0-9a-f]{3,6}\b/i);
+    }
+});
+
 test('the package carries a readme and a change log, and every picture and page they and the walkthrough name', () => {
     for (const file of ['README.md', 'CHANGELOG.md']) {
         assert.ok(existsSync(join(folder, file)), file);
