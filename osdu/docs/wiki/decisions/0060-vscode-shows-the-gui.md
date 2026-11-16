@@ -16,7 +16,7 @@ keywords:
   - editor theme
   - marketplace
   - platform package
-updated: 2026-11-16
+updated: 2026-11-17
 sourceRefs:
   - sqlflow/gui/src/embed/protocol.ts
   - sqlflow/gui/src/embed/hostTransport.ts
@@ -37,7 +37,8 @@ sourceRefs:
   - osdu/gui/vite.hosted.config.ts
   - osdu/hosts/osdu-delivery-vscode/src/deliveryModule.ts
   - osdu/hosts/osdu-delivery-vscode/package.mjs
-  - .github/workflows/vscode-extension.yml
+  - .github/workflows/vscode-build.yml
+  - .github/workflows/vscode-publish.yml
 referenceRefs:
   - delivery-guide-vscode
   - delivery-guide-mcp
@@ -148,8 +149,22 @@ where the language server analyses it, and a page's code views are read-only.
 
 A package carries three programs built for the platform it installs on, so the Marketplace holds one package per
 platform and gives each editor its own. A single package holding every platform's programs would be several hundred
-megabytes, most of it never run. Each is built on a runner of its platform by the packager a developer runs for their own
-machine, and publishing is a box the person ticks: a run without it only keeps the packages.
+megabytes, most of it never run. Each is built on a GitHub runner of its platform by the packager a developer runs for
+their own machine.
+
+Releasing follows DeltaForge's own extension, under its Marketplace publisher (`delta-forge.osdu-delivery`). One workflow
+builds, signs and packages, and keeps the packages; another publishes a signed build's packages. Building and
+notarizing take long and publishing can fail for reasons of its own (a token, a version the Marketplace holds, a passing
+5xx), so a failed publish is run again against the same packages, never built again. Hosted runners, not DeltaForge's own
+machines: the repository is public, so they cost nothing, and no machine of anyone's has to be online for a release.
+
+- **Every package carries its third-party notices.** The pages bundle hundreds of npm packages, the servers compile Rust
+  crates, and the command line carries NuGet packages and the .NET runtime; their licenses ask for their notices to go
+  with them. They are read from what each build left as the package is made, so a package lists exactly what it ships,
+  and a component that states no license stops it.
+- **Rejected: a package with no programs, for any platform.** DeltaForge publishes one as a fallback. This extension
+  without its language server, MCP server and command line is a YAML highlighter, so an editor on a platform with no
+  package of its own gets none.
 
 ## Known limits
 

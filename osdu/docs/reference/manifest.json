@@ -8349,7 +8349,9 @@
         "osdu/gui/src/hosted/workingCopy.ts",
         "osdu/gui/vite.hosted.config.ts",
         "osdu/hosts/osdu-delivery-vscode/package.mjs",
-        ".github/workflows/vscode-extension.yml"
+        ".github/workflows/vscode-build.yml",
+        ".github/workflows/vscode-publish.yml",
+        "osdu/hosts/osdu-delivery-vscode/notices.mts"
       ]
     },
     {
@@ -12475,7 +12477,8 @@
         "osdu/gui/vite.hosted.config.ts",
         "osdu/hosts/osdu-delivery-vscode/src/deliveryModule.ts",
         "osdu/hosts/osdu-delivery-vscode/package.mjs",
-        ".github/workflows/vscode-extension.yml"
+        ".github/workflows/vscode-build.yml",
+        ".github/workflows/vscode-publish.yml"
       ]
     },
     {

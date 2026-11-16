@@ -74,7 +74,9 @@ sourceRefs:
   - osdu/gui/src/hosted/workingCopy.ts
   - osdu/gui/vite.hosted.config.ts
   - osdu/hosts/osdu-delivery-vscode/package.mjs
-  - .github/workflows/vscode-extension.yml
+  - .github/workflows/vscode-build.yml
+  - .github/workflows/vscode-publish.yml
+  - osdu/hosts/osdu-delivery-vscode/notices.mts
 ---
 
 # The VS Code extension
@@ -247,7 +249,13 @@ npm run package                  # builds the three programs, the pages and the 
 A package holds three programs built for its platform (the language server, the MCP server and the command line), so
 there is one package per platform: `win32-x64`, `linux-x64`, `darwin-arm64` and `darwin-x64`. `npm run package` builds
 the one for the machine it runs on, and stops when a program is missing. `node package.mjs --skip-programs` packages again
-from the programs already built.
+from the programs already built, and `--programs-only` builds them and lists where each is, for signing before packaging.
+
+Every package carries `THIRD-PARTY-NOTICES.txt`, written as it is packaged from what the builds left: each npm package
+bundled into the pages and the extension, each Rust crate compiled into the two servers, and each NuGet package and the
+.NET runtime published into the command line, with its license (`notices.mts`). A component that states no license stops
+the package. A version is packaged only once the extension's `CHANGELOG.md` has its section, since the Marketplace shows
+it as the release notes.
 
 `npm run bundle` builds the extension for a checkout: F5 from this folder then runs it, finding the two servers in their
 target folders. It builds the pages when the folder has none; `npm run bundle:hosted` builds them again after the GUI
@@ -263,10 +271,25 @@ that control plane and checks that each one loads, is signed in and names its ta
 
 ### Publishing it
 
-The workflow **VS Code extension** (`.github/workflows/vscode-extension.yml`) builds the package of every platform, each
-on a runner of that platform, and keeps them as artifacts. It runs by hand only. Ticking **publish** sends the packages to
-the Visual Studio Marketplace, which needs the repository secret `VSCE_PAT`: a personal access token of the publisher the
-manifest names, with the Marketplace scope Manage. The Marketplace takes a version once, so raise `version` in
+The extension is published as `delta-forge.osdu-delivery`, under DeltaForge's Marketplace publisher, in two workflows run
+by hand, as DeltaForge publishes its own extension:
+
+1. **VS Code extension · build** (`.github/workflows/vscode-build.yml`) builds the three programs on a GitHub runner of
+   each platform, signs them, and packages one `.vsix` per platform, kept as artifacts for 30 days. The Windows programs
+   are signed with DigiCert KeyLocker; the macOS ones with a Developer ID certificate under the hardened runtime and are
+   notarized, the command line with the entitlements its .NET runtime needs (`signing/sqlflow.entitlements.plist`); the
+   Linux ones are not signed. Signing is on unless unticked.
+2. **VS Code extension · publish** (`.github/workflows/vscode-publish.yml`) publishes the packages of a build, the latest
+   successful one unless a run is named. It refuses an unsigned build. A platform the Marketplace already holds at that
+   version counts as published, so running it again retries only what failed.
+
+| Secret | For |
+| --- | --- |
+| `VSCE_PAT` | Publishing: a token of the publisher `delta-forge` with the scope Marketplace (Manage). |
+| `SM_HOST`, `SM_API_KEY`, `SM_CLIENT_CERT_FILE_B64`, `SM_CLIENT_CERT_PASSWORD`, `SM_KEYPAIR_ALIAS` | Signing on Windows, with DigiCert KeyLocker. |
+| `APPLE_CERT_P12_B64`, `APPLE_CERT_PASSWORD`, `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID` | Signing and notarizing on macOS. |
+
+They are the secrets DeltaForge's own workflows use. The Marketplace takes a version once, so raise `version` in
 `osdu/hosts/osdu-delivery-vscode/package.json` and add its section to the extension's `CHANGELOG.md` before the next one.
 
 ## See also
