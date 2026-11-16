@@ -155,10 +155,11 @@ const checks = {
         assert.ok(links);
     },
 
-    async 'a flow carries its actions at the top'() {
+    async 'a flow is run from its page, so the editor offers no run of its own'() {
         const document = await open('flows/welldb-wellbore-03-delivery.yaml');
         const lenses = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', document.uri);
-        assert.ok(lenses.some((lens) => lens.command?.command === 'sqlflow.runFlow'));
+        assert.ok(!lenses.some((lens) => lens.command?.command === 'sqlflow.runFlow'));
+        assert.ok(!(await vscode.commands.getCommands(true)).includes('sqlflow.runFlow'));
     },
 
     async 'a mapping offers its preview'() {

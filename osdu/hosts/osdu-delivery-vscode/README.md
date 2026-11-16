@@ -23,8 +23,8 @@ reads your file, and follows it as you save.
 
 ![The properties of a template with what a mapping fills](https://raw.githubusercontent.com/TahirRiaz/osdu-delivery/main/osdu/hosts/osdu-delivery-vscode/media/mapping-properties.png)
 
-**Your estate in the editor.** The side bar lists your working copy by kind, each document with what can be done with
-it, and under it the menu of the estate's pages. Every page is the one the web GUI shows, in the colours of your editor
+**Your estate in the editor.** The side bar is the web GUI's own navigation: its search, its menu, and a button that
+syncs your repository on the control plane you are signed in to, after you confirm. Every page is the one the web GUI shows, in the colours of your editor
 theme: a flow with its records, issues and submissions, a run with its trace as it is written, lineage, schedules,
 templates, the cache, and a record's whole history.
 
@@ -63,7 +63,6 @@ needs installing.
 | Command | What it does |
 | --- | --- |
 | Preview Mapping | Opens the mapping's page beside its file, read from the file. |
-| Run Flow | Asks what the run should do, starts it, and opens the run's page with its live trace. |
 | Open Flow Page | Opens the page of the flow in the editor: its records, issues, runs and schedules. |
 | Compare with Synced | Shows what your file changes from what the estate runs. |
 | Validate Repository | Checks every document of the working copy and lists what it finds in Problems. |
