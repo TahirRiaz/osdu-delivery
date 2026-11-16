@@ -347,10 +347,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /flows/{id}/check-values/export` asks for the same ([the Mappings page](osdu/docs/reference/concepts/gui-build.md#mappings)).
 
 - **The VS Code extension.** `osdu-delivery-vscode` makes the editor the place a pipeline is developed: a repository's plain `*.yaml`
-  files open as what they are, every key of every kind has completion, hover and checks, a mapping completes and is checked
-  against the template folders on its path as it is typed, and the views show the document in front of you, the repository,
-  the estate, its runs and what keeps a flow's records blocked. A run is started with its kind's operations and followed
-  ([the VS Code extension](osdu/docs/reference/guides/vscode.md)).
+  files open as what they are, every key of every kind has completion, hover and checks, and a mapping completes and is checked
+  against the template folders on its path as it is typed. A run is started with its kind's operations and followed on its
+  own page ([the VS Code extension](osdu/docs/reference/guides/vscode.md)).
+
+- **The GUI's pages in the editor.** The extension draws one side bar, the working copy by kind with what each document offers
+  and the GUI's own menu, and opens every page of the GUI in a tab, in the colours of the editor's theme and under your
+  sign-in: a flow, a run with its trace, lineage, templates, a record's history. No tree view or panel of the editor's own is
+  left ([the side bar and the pages](osdu/docs/reference/guides/vscode.md#the-side-bar-and-the-pages)).
+
+- **A mapping previewed from its file.** `Preview Mapping` (Ctrl+K V) opens the mapping's page beside its file and reads the
+  file: its overview, its properties against the template and the shape of its record show a mapping before it is pushed,
+  and follow the file as it is saved ([previewing a mapping](osdu/docs/reference/guides/vscode.md#previewing-a-mapping)).
+
+- **A package for the Marketplace.** The extension is packaged once per platform, each with its own language server, MCP
+  server and command line, by `npm run package` and by a workflow that builds all four and publishes them when asked
+  ([building it](osdu/docs/reference/guides/vscode.md#building-it)).
 
 - **Sign in once, with Microsoft, in the browser.** A client's browser sign-in now reaches the GUI, behind its usual sign-in, so an
   account that signs in with Entra approves the extension, an assistant's `login` or `sqlflow login`, which the control plane's
