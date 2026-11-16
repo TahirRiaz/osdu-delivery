@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { DocumentIndex, IndexedDocument } from '../documents/documentIndex';
 import { DocumentProblem, Estate } from '../mcp/estate';
-import { ago } from '../views/trees';
+import { ago } from '../time';
 
 /** A skeleton `New Document` offers: a document of one kind, with the keys it cannot do without. */
 export interface DocumentSkeleton {
@@ -167,6 +167,7 @@ export class DocumentLenses implements vscode.CodeLensProvider {
                 });
             }
             commands.push({ title: 'Compare with Synced', command: 'sqlflow.compareWithSynced', arguments: [document.uri] });
+            commands.push({ title: '$(preview) Flow Page', command: 'sqlflow.openPipeline', arguments: [document.uri] });
         } catch {
             return commands;
         }
