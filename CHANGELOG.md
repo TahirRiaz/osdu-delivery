@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Lineage can be followed past the estate, into the steps other systems run.** A lineage description
+  (`flowType: lin`) says what a step on another platform reads and writes: the job that fills a drop-off zone, the
+  notebook before it, a report that reads a table afterwards. Descriptions chain by the objects they name, reach the
+  estate by naming the flow that reads or writes an object (`feeds`, `fedBy`), carry prose `context` on what happens
+  to the data, and may map columns from source to target. A description is metadata only: it is never run, it is in
+  no wave, and lineage, waves, dependencies and the lists of pipelines are what they were without it. It is shown when
+  asked for: **Described steps** on the lineage graph, `described=true` on the lineage API, `sqlflow lineage`'s
+  `described lineage:` summary, and the assistant's `object_lineage(described: true)`, `list_lineage_descriptions`
+  and `column_mapping`. The editor checks and completes the document like any flow
+  ([lineage description](sqlflow/docs/reference/flow/lin.md),
+  [column mappings](sqlflow/docs/reference/flow/lin-columns.md),
+  [described lineage](sqlflow/docs/reference/concepts/described-lineage.md),
+  [describing a step another system runs](sqlflow/docs/reference/guides/describe-an-upstream-step.md)).
 - **A dimension build's trace says what its write is doing.** Each step of the write (deleting what earlier builds
   removed, merging, writing the table) logs when it starts and ends with its counts and how long it took; a wait for
   another build's write lock is logged with how long it waited; and a step still running after a minute logs again, at
