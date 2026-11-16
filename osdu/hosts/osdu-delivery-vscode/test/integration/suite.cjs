@@ -207,6 +207,40 @@ const checks = {
         }
     },
 
+    async 'a lineage description is understood as it is typed: its keys checked and documented'() {
+        // SQLFlow's own sample of the kind, with one key the kind does not have put first: the language server packaged
+        // here knows flowType lin, so the sample's own keys pass, the stray one is refused on its line, and a key is
+        // explained on hover. A package built from sources older than the kind fails here.
+        await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        const fs = require('node:fs');
+        const extension = vscode.extensions.getExtension(EXTENSION);
+        const original = fs.readFileSync(
+            path.join(extension.extensionPath, '..', '..', '..', 'sqlflow', 'samples', 'lineage-described', 'lineage', 'orders-u1-curate.yaml'),
+            'utf8'
+        );
+        const text = `notAKeyOfLin: 1\n${original}`;
+        const described = sample('flows/lineage-probe.yaml');
+        await vscode.workspace.fs.writeFile(described, Buffer.from(text));
+        try {
+            const document = await open('flows/lineage-probe.yaml');
+            const errors = await until('the language server\'s word on the lineage description', () => {
+                const found = vscode.languages.getDiagnostics(document.uri).filter((d) => d.severity === vscode.DiagnosticSeverity.Error);
+                return found.length > 0 ? found : undefined;
+            });
+            assert.deepEqual(errors.map((d) => [d.range.start.line, d.message.includes('notAKeyOfLin')]), [[0, true]], errors.map((d) => d.message).join('; '));
+
+            const systemLine = text.split('\n').findIndex((line) => line.startsWith('system:'));
+            const hovers = await until('a hover on system', async () => {
+                const found = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, new vscode.Position(systemLine, 2));
+                return found?.length ? found : undefined;
+            });
+            assert.match(hoverText(hovers), /the system that performs the step/i);
+        } finally {
+            await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+            await vscode.workspace.fs.delete(described);
+        }
+    },
+
     async 'the repository validates through the server, offline, and finds a broken file nobody has open'() {
         await vscode.commands.executeCommand('workbench.action.closeAllEditors');
         const broken = sample('flows/validate-probe.yaml');
