@@ -56,11 +56,6 @@ export interface PipelineDetail extends Pipeline {
     runsOnSchedule?: boolean;
 }
 
-export interface PipelineColumn {
-    columnName: string;
-    dataType?: string | null;
-}
-
 export interface Run extends WithLinks {
     runId: string;
     pipelineId: string;
@@ -90,41 +85,6 @@ export interface Run extends WithLinks {
     failedStatementSql?: string | null;
 }
 
-export interface RunTraceEntry {
-    kind: string;
-    ordinal: number;
-    timestampUtc?: string | null;
-    level: string;
-    step?: string | null;
-    message?: string | null;
-    sql?: string | null;
-    error?: string | null;
-    rows?: number | null;
-    elapsedMs?: number | null;
-}
-
-export interface RunStatement {
-    ordinal: number;
-    step: string;
-    sql: string;
-    error?: string | null;
-}
-
-export interface RunAssertion {
-    name: string;
-    result: string;
-    assertedValue: string;
-    evaluated: boolean;
-    error?: string | null;
-}
-
-export interface RunFile {
-    name: string;
-    path?: string | null;
-    rows: number;
-    sizeBytes: number;
-}
-
 export interface Schedule extends WithLinks {
     id: string;
     repoId: string;
@@ -140,34 +100,12 @@ export interface Schedule extends WithLinks {
     afterSchedules?: string[] | null;
 }
 
-/** One flow-to-flow step of a repository's order: `toFlow` waits for `fromFlow`, through the objects they share. */
-export interface FlowDependency {
-    fromFlow: string;
-    toFlow: string;
-    fromPipelineId: string;
-    toPipelineId: string;
-    viaObjects?: string;
-}
-
 export interface Datasource {
     reference: string;
     kind?: string | null;
     resolvable: boolean;
     sourcePipelines: number;
     targetPipelines: number;
-}
-
-/** Where an AI context stands, as an admin sees it. */
-export interface AiContext {
-    name: string;
-    status: string;
-    currentVersion?: string | null;
-    approvedVersion?: string | null;
-    approvedBy?: string | null;
-    approvedUtc?: string | null;
-    tableCount?: number;
-    servedTableCount?: number;
-    problemCount?: number;
 }
 
 export interface FlowKindOperation {
@@ -191,43 +129,12 @@ export interface DocumentProblem {
     message: string;
 }
 
-/** One data stream's verdict: a flow, the table it writes, and whether data is still arriving the way its learned
- * pattern says it should. */
-export interface DataStream {
-    pipelineId: string;
-    flowName: string;
-    targetObject?: string | null;
-    batch?: string | null;
-    status: 'stalled' | 'degraded' | 'watch' | 'healthy' | 'insufficient-history';
-    category: string;
-    severity: 'critical' | 'warning' | 'info';
-    agreeingDetectors: number;
-    summary: string;
-    profile: {
-        pattern: { shape: string; description: string; typicalRows: number };
-        daysSinceLastLoad: number | null;
-        unexpectedNullDays: number;
-        [k: string]: unknown;
-    };
-    [k: string]: unknown;
-}
-
-/** The data-stream board, ranked most urgent first, with the counts covering every analysed stream. */
-export interface DataStreams {
-    windowDays: number;
-    totalStreams: number;
-    analyzedStreams: number;
-    excludedBackfillRuns: number;
-    stalledCount: number;
-    degradedCount: number;
-    watchCount: number;
-    healthyCount: number;
-    insufficientHistoryCount: number;
-    streams: DataStream[];
-}
-
 /** How long a read of the catalog is reused. Lenses and views ask together as a person moves between files. */
 const MEMO_MS = 15_000;
+
+/** The flows read at a time when every one is wanted, and the most pages read: 20,000 flows, past any estate. */
+const EVERY_PIPELINE_PAGE = 200;
+const EVERY_PIPELINE_PAGES = 100;
 
 /** Unwrap either a PagedResult<T> or a bare T[] into T[]. */
 export function items<T>(result: { items: T[] } | T[]): T[] {
@@ -279,6 +186,23 @@ export class Estate {
         return items(await this.remembered<Paged<Pipeline> | Pipeline[]>('list_pipelines', { ...query, pageSize: query.pageSize ?? 200 }));
     }
 
+    /**
+     * Every flow of the catalog, read a page at a time: what lists a whole working copy against the estate needs them
+     * all, and an estate holds more flows than one page does.
+     */
+    async everyPipeline(): Promise<Pipeline[]> {
+        const all: Pipeline[] = [];
+        for (let page = 1; page <= EVERY_PIPELINE_PAGES; page++) {
+            const answer = await this.remembered<Paged<Pipeline> | Pipeline[]>('list_pipelines', { page, pageSize: EVERY_PIPELINE_PAGE });
+            const listed = items(answer);
+            all.push(...listed);
+            if (Array.isArray(answer) || listed.length < EVERY_PIPELINE_PAGE || all.length >= answer.total) {
+                break;
+            }
+        }
+        return all;
+    }
+
     /** The catalog's flow of a name, the one at `relativePath` when several repositories hold one. */
     async pipelineNamed(name: string, relativePath?: string): Promise<Pipeline | undefined> {
         const named = (await this.pipelines({ name })).filter((pipeline) => pipeline.name === name);
@@ -291,39 +215,8 @@ export class Estate {
         return this.remembered('get_pipeline', { id });
     }
 
-    async pipelineColumns(id: string): Promise<PipelineColumn[]> {
-        return items(await this.remembered<Paged<PipelineColumn> | PipelineColumn[]>('pipeline_columns', { id }));
-    }
-
     async runs(query: { pipelineId?: string; repoId?: string; status?: string; pageSize?: number } = {}): Promise<Run[]> {
         return items(await this.mcp.call<Paged<Run> | Run[]>('list_runs', { ...query, pageSize: query.pageSize ?? 50 }));
-    }
-
-    run(runId: string): Promise<Run> {
-        return this.mcp.call('get_run', { runId });
-    }
-
-    /** The end of a run's trace, however long it is: the first read says how many entries there are. */
-    async runTrace(runId: string, entries = 200): Promise<{ entries: RunTraceEntry[]; total: number }> {
-        const first = await this.mcp.call<Paged<RunTraceEntry>>('run_trace', { runId, pageSize: entries });
-        if (first.total <= first.items.length) {
-            return { entries: first.items, total: first.total };
-        }
-        const page = Math.ceil(first.total / entries);
-        const last = await this.mcp.call<Paged<RunTraceEntry>>('run_trace', { runId, page, pageSize: entries });
-        return { entries: last.items, total: first.total };
-    }
-
-    async runStatements(runId: string): Promise<RunStatement[]> {
-        return items(await this.mcp.call<Paged<RunStatement> | RunStatement[]>('run_statements', { runId }));
-    }
-
-    async runAssertions(runId: string): Promise<RunAssertion[]> {
-        return items(await this.mcp.call<Paged<RunAssertion> | RunAssertion[]>('run_assertions', { runId }));
-    }
-
-    async runFiles(runId: string): Promise<RunFile[]> {
-        return items(await this.mcp.call<Paged<RunFile> | RunFile[]>('run_files', { runId }));
     }
 
     async triggerRun(arguments_: {
@@ -339,10 +232,6 @@ export class Estate {
         return accepted;
     }
 
-    async cancelRun(runId: string): Promise<void> {
-        await this.mcp.text('cancel_run', { runId });
-    }
-
     async schedules(): Promise<Schedule[]> {
         return items(await this.remembered<Paged<Schedule> | Schedule[]>('list_schedules'));
     }
@@ -351,33 +240,8 @@ export class Estate {
         return items(await this.remembered<Paged<Datasource> | Datasource[]>('list_datasources'));
     }
 
-    async aiContexts(): Promise<AiContext[]> {
-        return (await this.remembered<{ contexts: AiContext[] }>('list_ai_contexts')).contexts;
-    }
-
     flowKinds(): Promise<FlowKinds> {
         return this.remembered('list_flow_kinds');
-    }
-
-    lineageWaves(repoId: string): Promise<unknown> {
-        return this.remembered('lineage_waves', { repoId });
-    }
-
-    async dependencies(repoId: string, pipelineId: string): Promise<FlowDependency[]> {
-        const answer = await this.remembered<FlowDependency[] | { items: FlowDependency[] }>('lineage_dependencies', { repoId, pipelineId });
-        return Array.isArray(answer) ? answer : answer.items ?? [];
-    }
-
-    flowFileHistory(pipelineId: string): Promise<unknown> {
-        return this.mcp.call('flow_definition_file_history', { pipelineId });
-    }
-
-    dataStreams(days: number): Promise<DataStreams> {
-        return this.mcp.call('detect_stream_anomalies', { days });
-    }
-
-    dataStream(pipelineId: string, days: number): Promise<DataStream> {
-        return this.mcp.call('detect_stream_anomalies', { pipelineId, days });
     }
 
     /** What the language engine reports of a document's text: the same analysis as the editor's, without opening it. */
