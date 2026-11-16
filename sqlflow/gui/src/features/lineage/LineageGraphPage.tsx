@@ -457,8 +457,10 @@ export default function LineageGraphPage() {
 
   // A node found in the catalog rather than on the canvas. A flow is drawn in its own repository, traced, so its
   // whole chain is there on both sides; anything else seeds on itself, since data belongs to no one repository.
-  const seedFocus = useCallback((id: string, hitRepoId?: string) => {
+  // A lineage description is drawn only with the described lineage on, so finding one turns it on.
+  const seedFocus = useCallback((id: string, hitRepoId?: string, described = false) => {
     patch({
+      ...(described ? { described: true } : {}),
       repoId: hitRepoId ?? "",
       project: "",
       focus: id,
@@ -841,6 +843,19 @@ export default function LineageGraphPage() {
                 <span className="inline-flex items-center gap-1.5 text-warning" data-testid="graph-trace-missing">
                   <TriangleAlert aria-hidden className="size-3.5" />
                   The traced node is not in this scope.
+                  {/* A step another system runs is in the drawing only with the described lineage on: a link that
+                      names one without asking for it lands here, one click from seeing it. */}
+                  {!params.described && payload?.describedAvailable === true && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="h-5"
+                      onClick={() => patch({ described: true })}
+                      data-testid="graph-trace-missing-described"
+                    >
+                      Show described steps
+                    </Button>
+                  )}
                   <Button variant="outline" size="xs" className="h-5" onClick={stopTracing}>Stop tracing</Button>
                 </span>
               )}

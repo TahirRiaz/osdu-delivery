@@ -124,11 +124,11 @@
     {
       "path": "reads",
       "type": "list<object>",
-      "required": "at least one of reads and writes names an object",
+      "required": false,
       "default": "[]",
       "description": "What the step reads. Each entry names one object, in one of two ways: by name (an object the estate does not manage, known only from descriptions) or with fedBy (the object a flow of the estate writes). At most 200 entries.",
       "definedIn": "src/SqlFlow.Yaml/YamlLineageDescriptionFlowLoader.cs",
-      "validation": "A description with neither reads nor writes, or with both empty, connects nothing and is a problem. The same object named twice is a problem."
+      "validation": "A description names at least one object under reads or writes; either may be left out when the other is there. A description with neither reads nor writes, or with both empty, connects nothing and is a problem. The same object named twice is a problem."
     },
     {
       "path": "reads[].system",
@@ -142,20 +142,20 @@
     {
       "path": "reads[].name",
       "type": "string",
-      "required": "exactly one of name and fedBy",
+      "required": false,
       "default": "none",
       "description": "The object's name as its system writes it, without anything that differs between environments (schema.table, not a catalog or a storage account). Two descriptions that name the same system and name mean the same object, whatever case they use, which is how descriptions chain. A * stands for a family of objects named alike. At most 512 characters.",
       "definedIn": "src/SqlFlow.Yaml/YamlLineageDescriptionFlowLoader.cs",
-      "validation": "A | or a control character in the name is a problem. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
+      "validation": "An entry has exactly one of name and fedBy. A | or a control character in the name is a problem. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
     },
     {
       "path": "reads[].fedBy",
       "type": "string",
-      "required": "exactly one of name and fedBy",
+      "required": false,
       "default": "none",
       "description": "The name of a flow of the estate whose output the step reads. The description is connected to the object that flow already declares it writes, so a description of something downstream of the estate meets the estate's own lineage without restating a table or a location.",
       "definedIn": "src/SqlFlow.Yaml/YamlLineageDescriptionFlowLoader.cs",
-      "validation": "The flow is looked up when lineage is computed. A flow the repository does not declare, another lineage description, a flow that takes no part in lineage, or a flow that writes several objects with no at to tell them apart leaves this one connection out with a finding that says what to write; the rest of the description stays. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
+      "validation": "An entry has exactly one of name and fedBy. The flow is looked up when lineage is computed. A flow the repository does not declare, another lineage description, a flow that takes no part in lineage, or a flow that writes several objects with no at to tell them apart leaves this one connection out with a finding that says what to write; the rest of the description stays. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
     },
     {
       "path": "reads[].at",
@@ -196,11 +196,11 @@
     {
       "path": "writes",
       "type": "list<object>",
-      "required": "at least one of reads and writes names an object",
+      "required": false,
       "default": "[]",
       "description": "What the step writes. Each entry names one object, in one of two ways: by name (an object the estate does not manage) or with feeds (the object a flow of the estate reads, such as the files a file flow lands). At most 200 entries.",
       "definedIn": "src/SqlFlow.Yaml/YamlLineageDescriptionFlowLoader.cs",
-      "validation": "A description with neither reads nor writes, or with both empty, connects nothing and is a problem. The same object named twice is a problem."
+      "validation": "A description names at least one object under reads or writes; either may be left out when the other is there. A description with neither reads nor writes, or with both empty, connects nothing and is a problem. The same object named twice is a problem."
     },
     {
       "path": "writes[].system",
@@ -214,20 +214,20 @@
     {
       "path": "writes[].name",
       "type": "string",
-      "required": "exactly one of name and feeds",
+      "required": false,
       "default": "none",
       "description": "The object's name as its system writes it, without anything that differs between environments. Naming the same system and name as another description's reads entry is what chains the two. A * stands for a family of objects named alike. At most 512 characters.",
       "definedIn": "src/SqlFlow.Yaml/YamlLineageDescriptionFlowLoader.cs",
-      "validation": "A | or a control character in the name is a problem. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
+      "validation": "An entry has exactly one of name and feeds. A | or a control character in the name is a problem. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
     },
     {
       "path": "writes[].feeds",
       "type": "string",
-      "required": "exactly one of name and feeds",
+      "required": false,
       "default": "none",
       "description": "The name of a flow of the estate that reads what the step writes. The description is connected to the object that flow already declares it reads (a file flow's source location, an ingestion's source table), so the location is written once, in the flow that uses it, and never repeated here.",
       "definedIn": "src/SqlFlow.Yaml/YamlLineageDescriptionFlowLoader.cs",
-      "validation": "The flow is looked up when lineage is computed. A flow the repository does not declare, another lineage description, a flow that takes no part in lineage, or a flow that reads several objects with no at to tell them apart leaves this one connection out with a finding that says what to write; the rest of the description stays. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
+      "validation": "An entry has exactly one of name and feeds. The flow is looked up when lineage is computed. A flow the repository does not declare, another lineage description, a flow that takes no part in lineage, or a flow that reads several objects with no at to tell them apart leaves this one connection out with a finding that says what to write; the rest of the description stays. A ${...} reference in the value is a problem: a description resolves nothing, so the value is written plainly."
     },
     {
       "path": "writes[].at",

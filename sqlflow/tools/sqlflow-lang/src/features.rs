@@ -1216,6 +1216,27 @@ mod tests {
     }
 
     #[test]
+    fn a_lineage_description_needs_one_of_reads_and_writes_not_both() {
+        // Its loader takes a step that only writes (an export nobody describes the source of) and one that only reads
+        // (a report at the end of a chain). A key required only when its sibling is absent is not required alone, so
+        // neither document gets a word.
+        for body in [
+            "writes:\n  - { name: exports.orders }\n",
+            "reads:\n  - { fedBy: load-orders }\n",
+            "reads:\n  - { name: curated.orders }\nwrites:\n  - feeds: land-orders\n",
+        ] {
+            let source = format!("flowType: lin\nname: orders-step-lin\nsystem: fabric\n{body}");
+            let diags = diagnostics(&FlowDocument::parse(&source));
+            assert!(diags.is_empty(), "a valid lineage description was flagged: {diags:?}\n{source}");
+        }
+
+        // What every description must have is still asked for.
+        let diags = diagnostics(&FlowDocument::parse("flowType: lin\nname: orders-step-lin\nwrites:\n  - { name: out }\n"));
+        let missing: Vec<_> = diags.iter().filter(|d| d.code.as_deref() == Some("flow-missing-required")).map(|d| d.message.as_str()).collect();
+        assert_eq!(missing, ["required key 'system' is missing"], "{diags:?}");
+    }
+
+    #[test]
     fn diagnoses_unknown_key_and_bad_enum() {
         // File flow (no flowType): load.mode is an enum here.
         let src = "name: demo\nload:\n  mode: nonsense\nbogusKey: 1\n";

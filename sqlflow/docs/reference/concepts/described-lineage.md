@@ -108,6 +108,10 @@ A description has no wave. It is laid by what it feeds: above the first flow tha
 
 Nothing offers to run a description: its node menu has no run entries, and its pipeline page has no **Trigger run**.
 
+A description's own page is its document. Its header says **never run here** and names the step: the system, where the step is found there, who to ask, and how many objects it reads and writes. It keeps the **YAML** and **Definition** tabs and has none of the tabs a run fills (runs, files, schedules, transforms).
+
+A link onto a description opens the graph with the switch on: **View in lineage** on its page, a hit of **Find**, and the lineage jump of a search result all ask for the described lineage, since the step would not be in the drawing without it. A link that names a description without asking (one typed by hand, say) says the traced node is not in the scope and offers **Show described steps**.
+
 ## Where a described chain ends
 
 Descriptions are optional and may cover part of a chain. So the end of a described chain is reported as a fact:
@@ -137,6 +141,7 @@ A described hop is what a document states about another system. The assistant is
 - **Names are compared as written.** Two descriptions chain when they name the same system and name. A different spelling of one object is two objects.
 - **Nothing checks a description against the system it describes.** `evidence` points at the code and its commit; SQLFlow fetches and compares nothing.
 - **The lineage walk is bounded.** It follows at most 8 levels, described or not, and says when it was cut (`truncated`).
+- **Column mappings stop at the estate's own flows.** A mapping is what a description states, and the estate's flows state none here. A column is followed from a landed file back to its source, through as many described steps as lie between. It is not followed across the flow that loads the file into a table, so a mapping asked from a report after the estate back to a source before it answers with nothing and says why. The object-level walk crosses both.
 - **The graph follows descriptions upstream only as far as they are needed.** With **Described steps** on, a description upstream of what is drawn is drawn with what it reads. What else that description writes, and what reads it, is not pulled in: the scope stays what was asked for plus where its data comes from.
 
 ## See also
