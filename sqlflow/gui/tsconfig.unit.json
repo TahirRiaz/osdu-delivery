@@ -51,6 +51,7 @@
     "src/layout/workbench/tabStrip.ts",
     "src/layout/workbench/traceTrayState.ts",
     "src/lib/codeLanguage.ts",
+    "src/lib/definition.ts",
     "src/lib/fetchEveryPage.ts",
     "src/lib/paging.ts",
     "src/lib/runTiming.ts",
