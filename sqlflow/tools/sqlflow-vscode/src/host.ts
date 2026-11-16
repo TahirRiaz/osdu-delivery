@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { cliCommand, offerCliInTerminals } from './cli';
 import { Docs } from './docs/docs';
 import { DocumentIndex, IndexedDocument, recogniseOpenedDocuments } from './documents/documentIndex';
+import { isLineageDescription, isRunnable } from './documents/recognition';
 import { keyPathAtLine } from './documents/yamlPath';
 import {
     cliTaskProvider,
@@ -299,7 +300,7 @@ export async function activateHost(context: vscode.ExtensionContext, host: Vscod
         const uri = arg instanceof vscode.Uri ? arg : vscode.window.activeTextEditor?.document.uri;
         const document = uri ? await documents.at(uri) : undefined;
         if (document?.kind === 'flow' && document.name) {
-            const pipeline = await estate.pipelineNamed(document.name, document.relativePath);
+            const pipeline = await estate.pipelineNamed(document.name, document.relativePath, document.flowType);
             if (pipeline) {
                 return { pipeline, document };
             }
@@ -339,6 +340,13 @@ export async function activateHost(context: vscode.ExtensionContext, host: Vscod
 
     command('sqlflow.runFlow', async (arg: unknown) => {
         const resolved = await resolvePipeline(arg);
+        if (resolved?.document !== undefined && isLineageDescription(resolved.document)) {
+            // The editor's title button is on every flow document; on a lineage description it says why nothing runs.
+            void vscode.window.showInformationMessage(
+                `${host.product}: '${resolved.pipeline.name}' is a lineage description. It describes a step another system runs, is read for lineage only, and is never executed.`
+            );
+            return;
+        }
         if (resolved) {
             await startRun(resolved);
         }
@@ -427,7 +435,10 @@ export async function activateHost(context: vscode.ExtensionContext, host: Vscod
             return [];
         }
         return [
-            { id: 'run', label: 'Run', icon: 'run', primary: true, run: () => vscode.commands.executeCommand('sqlflow.runFlow', document.uri) as Promise<void> },
+            // A lineage description is never run, so its row offers its page and its comparison, and no Run.
+            ...(isRunnable(document)
+                ? [{ id: 'run', label: 'Run', icon: 'run', primary: true, run: () => vscode.commands.executeCommand('sqlflow.runFlow', document.uri) as Promise<void> }]
+                : []),
             ...(pipeline === undefined ? [] : [
                 { id: 'page', label: 'Open the flow\'s page', icon: 'page', run: async () => openFlowPage(pipeline, { beside: true }) },
                 { id: 'compare', label: 'Compare with what the estate runs', icon: 'compare', run: () => compareWithSynced(estate, documents, document.uri) },

@@ -288,6 +288,11 @@ $0",
             "flowType: batch\nname: ${1:batchName}\nbatch: ${2:sourceSystem}\nmaxParallel: ${3:4}\n$0",
         ),
         (
+            "lineage-description",
+            "Lineage description skeleton (flowType: lin): a step another system runs, for lineage only, never executed",
+            "flowType: lin\nname: ${1:source-object-u1-step-lin}\ndescription: ${2:What the step does, in a sentence.}\nsystem: ${3:databricks}\nunit: ${4:the job and task, pipeline and activity, or notebook}\nevidence:\n  - { repo: ${5:repository}, path: ${6:path/to/the/code}, commit: ${7:commit} }\nreads:\n  - { name: ${8:schema.source_table}, as: ${9:src} }\nwrites:\n  - feeds: ${10:name-of-the-flow-that-reads-the-output}\ncontext: |\n  ${11:What happens to the data: which rows are left out or added and why, how keys are formed, when it runs, what becomes of a deleted record.}\n$0",
+        ),
+        (
             "ai-context",
             "AI context skeleton (*.ai-context.yaml), approved by an admin before an assistant uses it",
             "aiContext: ${1:sales}\ndescription: ${2:What the context covers}\ninstructions: |\n  ${3:Amounts are in the reporting currency, excluding tax.}\ntables:\n  - table: ${4:dw.sales.Orders}\n    name: ${5:Order lines}\n    description: ${6:One row per order line.}\n    key: [${7:OrderId}]\n    columns:\n      - column: ${8:Amount}\n        description: ${9:Line amount excluding tax.}\n    deny: [${10:CostPrice}]\n$0",
@@ -1178,6 +1183,36 @@ mod tests {
             diags.iter().any(|d| d.code.as_deref() == Some("flow-unknown-key") && d.message.contains("'schedule'")),
             "a batch's schedule should be flagged, got: {diags:?}"
         );
+    }
+
+    #[test]
+    fn a_lineage_description_takes_its_own_keys_and_nothing_a_running_flow_takes() {
+        let valid = "flowType: lin\nname: orders-u1-publish-lin\nsystem: databricks\nunit: job orders, task publish\n\
+                     evidence:\n  - jobs/orders/publish.py\n  - { repo: lakehouse, path: jobs/orders/job.yml, commit: 4f1c2ab9 }\n\
+                     reads:\n  - { name: curated.orders, as: orders, origin: true }\n\
+                     writes:\n  - feeds: land-orders\n    at: landing\n    columns:\n      order_id: orders.id\n      amount:\n        from: [orders.amount]\n        note: cast to decimal\n      \"*\": { from: \"orders.*\" }\n\
+                     context: |\n  Test orders are left out.\n";
+        let diags = diagnostics(&FlowDocument::parse(valid));
+        let flagged: Vec<_> = diags
+            .iter()
+            .filter(|d| matches!(d.code.as_deref(), Some("flow-unknown-key" | "flow-misplaced-key")))
+            .collect();
+        assert!(flagged.is_empty(), "a valid lineage description was flagged: {flagged:?}");
+
+        // It is never run and connects to nothing, so the envelope and the shared blocks other kinds take are unknown
+        // to it, and as errors: its loader refuses a document that carries one.
+        for key in ["schedule: nightly", "mode: manual", "connections:\n  dwh: x", "preInvoke: [a]"] {
+            let name = key.split(':').next().unwrap_or(key);
+            let diags = diagnostics(&FlowDocument::parse(&format!("{valid}{key}\n")));
+            let hit = diags.iter().find(|d| d.code.as_deref() == Some("flow-unknown-key") && d.message.contains(&format!("'{name}'")));
+            assert!(hit.is_some(), "'{name}' on a lineage description should be flagged, got: {diags:?}");
+            assert_eq!(hit.map(|d| d.severity), Some(Severity::Error), "'{name}' should be an error on a strict kind");
+        }
+
+        // The skeleton offered on an empty file is itself a valid description once its placeholders are filled.
+        let doc = FlowDocument::parse("");
+        let labels: Vec<_> = completion(&doc, Position { line: 0, character: 0 }).into_iter().map(|c| c.label).collect();
+        assert!(labels.contains(&"lineage-description".to_string()), "expected the lineage skeleton, got {labels:?}");
     }
 
     #[test]

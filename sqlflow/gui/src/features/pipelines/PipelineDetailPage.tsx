@@ -34,6 +34,7 @@ import { useTabFlowKind, useTabTitle } from "../../layout/workbench/TabsContext"
 import { embeddedHealthCheckName } from "../../lib/definition";
 import { formatBytes, formatDurationSeconds } from "../../lib/time";
 import { flowKindIdentity, flowKindToneClasses } from "../../modules/flowKinds";
+import { isLineageDescription } from "../../modules/lineageDescriptionKind";
 import { kindContribution } from "../../modules/registry";
 import { projectOf } from "../repos/project";
 import { TriggerRunDialog } from "../runs/TriggerRunDialog";
@@ -634,10 +635,13 @@ export default function PipelineDetailPage() {
                 </TooltipContent>
               </Tooltip>
             )}
-            <Button size="sm" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
-              <Play />
-              Trigger run
-            </Button>
+            {/* A lineage description is a step another system runs: there is nothing here to trigger. */}
+            {!isLineageDescription(detail.kind) && (
+              <Button size="sm" onClick={() => setTriggerOpen(true)} data-testid="open-trigger-run">
+                <Play />
+                Trigger run
+              </Button>
+            )}
           </>
         )}
         meta={(

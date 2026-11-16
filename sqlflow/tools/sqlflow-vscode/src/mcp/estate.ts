@@ -1,3 +1,4 @@
+import { LINEAGE_DESCRIPTION } from '../documents/recognition';
 import { McpServer } from './mcpServer';
 
 /** A page of results from the control plane's PagedResult<T> shape. */
@@ -191,9 +192,16 @@ export class Estate {
      * all, and an estate holds more flows than one page does.
      */
     async everyPipeline(): Promise<Pipeline[]> {
+        // The catalog lists the flows that run, and lists the lineage descriptions (documents that describe a step
+        // another system runs, and never run) when asked for by their kind. A working copy holds both.
+        return [...(await this.everyPipelineOf(undefined)), ...(await this.everyPipelineOf(LINEAGE_DESCRIPTION))];
+    }
+
+    private async everyPipelineOf(kind: string | undefined): Promise<Pipeline[]> {
         const all: Pipeline[] = [];
         for (let page = 1; page <= EVERY_PIPELINE_PAGES; page++) {
-            const answer = await this.remembered<Paged<Pipeline> | Pipeline[]>('list_pipelines', { page, pageSize: EVERY_PIPELINE_PAGE });
+            const answer = await this.remembered<Paged<Pipeline> | Pipeline[]>(
+                'list_pipelines', { page, pageSize: EVERY_PIPELINE_PAGE, ...(kind === undefined ? {} : { kind }) });
             const listed = items(answer);
             all.push(...listed);
             if (Array.isArray(answer) || listed.length < EVERY_PIPELINE_PAGE || all.length >= answer.total) {
@@ -203,9 +211,13 @@ export class Estate {
         return all;
     }
 
-    /** The catalog's flow of a name, the one at `relativePath` when several repositories hold one. */
-    async pipelineNamed(name: string, relativePath?: string): Promise<Pipeline | undefined> {
-        const named = (await this.pipelines({ name })).filter((pipeline) => pipeline.name === name);
+    /**
+     * The catalog's flow of a name, the one at `relativePath` when several repositories hold one. `flowType` is the
+     * document's own: a lineage description is listed by its kind, so it is asked for by it.
+     */
+    async pipelineNamed(name: string, relativePath?: string, flowType?: string): Promise<Pipeline | undefined> {
+        const kind = flowType?.trim().toLowerCase() === LINEAGE_DESCRIPTION ? LINEAGE_DESCRIPTION : undefined;
+        const named = (await this.pipelines({ name, ...(kind === undefined ? {} : { kind }) })).filter((pipeline) => pipeline.name === name);
         const normalised = relativePath?.replace(/\\/g, '/');
         return named.find((pipeline) => normalised !== undefined && pipeline.relativePath !== undefined
             && (normalised.endsWith(pipeline.relativePath) || pipeline.relativePath.endsWith(normalised))) ?? named[0];
