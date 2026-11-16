@@ -92,7 +92,8 @@ test('the language files match SQLFlow\'s, which they are copies of', () => {
 
 // What the Marketplace needs of a package, and refuses one without.
 test('the package says what the Marketplace shows of it', () => {
-    assert.match(manifest.publisher, /^[a-z0-9][a-z0-9-]*$/i);
+    // DeltaForge's publisher, whose token the release workflow publishes with: an extension's id never changes.
+    assert.equal(manifest.publisher, 'delta-forge');
     assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
     assert.ok(manifest.displayName && manifest.description.length <= 250, 'a name and a description that fits a listing');
     assert.ok(manifest.repository?.url && manifest.bugs?.url && manifest.homepage && manifest.license);
@@ -138,7 +139,11 @@ test('a package leaves out its sources and what a hosted page never loads, and k
         assert.ok(ignored.includes(pattern), pattern);
     }
     assert.ok(ignored.includes('!dist/hosted/.vite/manifest.json'), 'the list of the hosted build\'s files, which the extension reads');
-    for (const kept of ['dist/**', 'bin/**', 'resources/**', 'dist/hosted/**']) {
+    for (const kept of ['dist/**', 'bin/**', 'resources/**', 'dist/hosted/**', 'THIRD-PARTY-NOTICES.txt', 'LICENSE']) {
         assert.ok(!ignored.includes(kept), kept);
+    }
+    // The packager's own scripts and the signing configuration are a release's, not the extension's.
+    for (const script of ['package.mjs', 'notices.mts', 'programs.mts', 'signing/**']) {
+        assert.ok(ignored.includes(script), script);
     }
 });

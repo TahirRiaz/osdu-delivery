@@ -3,7 +3,7 @@
   "displayName": "OSDU Delivery",
   "description": "Develop OSDU Delivery pipelines in the editor: every YAML document understood, a mapping previewed as you write it, the estate's pages beside your files, and an AI assistant built in. Powered by SQLFlow.",
   "version": "1.0.0",
-  "publisher": "business-iq",
+  "publisher": "delta-forge",
   "icon": "resources/icon.png",
   "galleryBanner": {
     "color": "#283e56",

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const vscode = require('vscode');
 
-const EXTENSION = 'business-iq.osdu-delivery';
+const EXTENSION = 'delta-forge.osdu-delivery';
 
 const sample = (relative) => vscode.Uri.file(path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, relative));
 

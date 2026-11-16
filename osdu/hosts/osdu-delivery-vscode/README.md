@@ -55,8 +55,8 @@ plane and no sign-in.
 - VS Code 1.101 or later, on Windows x64, Linux x64, macOS arm64 or macOS x64.
 - An OSDU Delivery control plane you can sign in to, for the estate's pages, the assistant and running flows.
 
-The package carries its own language server, MCP server and `sqlflow` command line for your platform. Nothing else
-needs installing.
+The package carries its own language server, MCP server and `sqlflow` command line for your platform, signed on Windows
+and signed and notarized on macOS. Nothing else needs installing.
 
 ## Commands
 
@@ -97,4 +97,5 @@ needs installing.
 - [Writing a mapping](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/guides/writing-a-mapping.md)
 - [Report a problem](https://github.com/TahirRiaz/osdu-delivery/issues)
 
-OSDU Delivery is free software under the GNU General Public License, version 3 or later.
+OSDU Delivery is free software under the GNU General Public License, version 3 or later. The third-party components
+the package carries, and their licenses, are listed in `THIRD-PARTY-NOTICES.txt` inside it.
