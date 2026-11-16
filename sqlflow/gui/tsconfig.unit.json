@@ -17,6 +17,9 @@
   "include": [
     "unit/**/*.ts",
     "src/auth/entraSignIn.ts",
+    "src/embed/hostTransport.ts",
+    "src/embed/protocol.ts",
+    "src/embed/workspaceListing.ts",
     "src/auth/loginStreamLanes.ts",
     "src/modules/branding.ts",
     "src/modules/homePrompts.ts",
