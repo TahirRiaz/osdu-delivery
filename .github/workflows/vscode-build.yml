@@ -116,7 +116,8 @@ jobs:
 
       - name: Install DigiCert's signing tool
         if: inputs.sign && runner.os == 'Windows'
-        uses: digicert/code-signing-software-trust-action@v1.2.1
+        # Pinned to the commit of its v1.2.1 tag: a third-party action is taken by commit, never by a tag that can move.
+        uses: digicert/code-signing-software-trust-action@fae23a455ba4bde62b64fd7cb2f81ade788f5a95 # v1.2.1
         with:
           simple-signing-mode: true
         env:
