@@ -217,6 +217,16 @@
         "icon": "$(server)"
       },
       {
+        "command": "sqlflow.shareWithOtherTools",
+        "title": "Make the Command Line and Server Available to Other Tools",
+        "category": "SQLFlow"
+      },
+      {
+        "command": "sqlflow.unshareFromOtherTools",
+        "title": "Remove the Command Line and Server from Other Tools",
+        "category": "SQLFlow"
+      },
+      {
         "command": "sqlflow.showStatus",
         "title": "Show Status",
         "category": "SQLFlow"
