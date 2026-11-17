@@ -1223,6 +1223,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **An autoscaler no longer stops a worker in the middle of a run.** The platform picks which worker a lower replica
+  target stops, and the target fell as soon as some of a pool's work ended: when a split delivery's first parts
+  finished, the platform could stop a worker still delivering another part. That part ran again on another worker, and
+  the records it had queued were held until the flow's next run, saying their work batch was pruned or rewritten. While
+  any worker of a pool runs work, the target now keeps every worker the pool has, and the Nodes page says so (**held
+  while running**); the pool shrinks once its runs have ended
+  ([scale-in](osdu/docs/reference/guides/deployment.md#scale-in-placement-and-the-modules-own-settings)).
 - **A right-click on a mapping's overview lights what its menu is on.** The light fell back to whatever had been
   clicked before as soon as the pointer moved onto the menu. A right-click on a part of the canvas now picks it, as a
   click does, and a right-click in the YAML keeps the lines its menu is over lit while it is open
