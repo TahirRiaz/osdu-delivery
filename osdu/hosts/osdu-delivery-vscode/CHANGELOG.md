@@ -3,6 +3,18 @@
 What changed in the OSDU Delivery extension for VS Code, newest first. The extension has a version of its own; the
 product's own changes are in the [repository's change log](https://github.com/TahirRiaz/osdu-delivery/blob/main/CHANGELOG.md).
 
+## [Unreleased]
+
+### Your other tools
+
+- Signing in puts the `sqlflow` command line and the MCP server in `~/.sqlflow/bin`, at the end of your own PATH, and
+  registers the server with Claude Code for all its sessions, so Copilot and Claude Code sessions, terminals of your own
+  and scripts have them, signed in as you. It says what it changed, with **Undo**; **Make the Command Line and Server
+  Available to Other Tools** and **Remove the Command Line and Server from Other Tools** do and undo it
+  ([your other tools](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/guides/vscode.md#your-other-tools)).
+- **Connect an AI Assistant** registers Claude Code the same way, where it put a command in a terminal for you to run.
+- The server's `get_environment` tells an assistant how to call the command line where it runs, and what its verbs do.
+
 ## [1.0.1]
 
 ### Reports
