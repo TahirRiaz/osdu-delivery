@@ -109,7 +109,7 @@ The 32-byte minimums for the signing key and bootstrap secret are enforced at st
 
 ## The worker image
 
-`Dockerfile.worker` publishes `src/SqlFlow.Cli/SqlFlow.Cli.csproj` (framework-dependent, inside the Linux SDK image so the linux-x64 native assets for LibGit2Sharp and the DuckDB reader ship under `runtimes/linux-x64`) and installs `libssl3` on the Debian runtime image because LibGit2Sharp's bundled native git needs OpenSSL for HTTPS remotes.
+`Dockerfile.worker` publishes `src/SqlFlow.Cli.Host/SqlFlow.Cli.Host.csproj` (framework-dependent, inside the Linux SDK image so the linux-x64 native assets for LibGit2Sharp and the DuckDB reader ship under `runtimes/linux-x64`) and installs `libssl3` on the Debian runtime image because LibGit2Sharp's bundled native git needs OpenSSL for HTTPS remotes.
 
 The entrypoint, `deploy/docker/worker-entrypoint.sh`, composes the `sqlflow worker` invocation from the environment. The control plane URL and the node token are the CLI's own environment defaults (`SQLFLOW_URL`, `SQLFLOW_TOKEN`), so neither appears on the command line or in `ps` output. A worker needs no catalog connection at all: the run's definition, its snapshotted YAML, its lineage context and its live trace travel over the node protocol, so the only things a node reaches are the control plane, the data its flows touch, and (for a pinned run without a snapshot) the git remote. Configuration is environment-only, matching the worker's "credentials live on the node" model:
 

@@ -1627,6 +1627,7 @@ const CLI_CONVENTIONS: &str = "Run it in your shell, from the working copy's fol
 
 /// SQLFlow's own verbs, as `get_environment` shows them: a command as it is typed, and what it does. A module's follow.
 const CLI_USES: &[(&str, &str)] = &[
+    ("sqlflow --help", "every verb with its options, the module's among them"),
     ("sqlflow validate .", "every document of the working copy against the language, offline"),
     ("sqlflow whoami", "who the sign-in is, with the role and scopes the control plane gave it"),
     ("sqlflow repos list", "the repositories the estate syncs, and where each stands"),
