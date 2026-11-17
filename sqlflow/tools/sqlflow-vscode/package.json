@@ -187,6 +187,12 @@
         "icon": "$(history)"
       },
       {
+        "command": "sqlflow.openReports",
+        "title": "Open Reports",
+        "category": "SQLFlow",
+        "icon": "$(graph)"
+      },
+      {
         "command": "sqlflow.showLineage",
         "title": "Open Lineage",
         "category": "SQLFlow",

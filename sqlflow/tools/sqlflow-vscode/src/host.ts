@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { cliCommand, offerCliInTerminals } from './cli';
 import { Docs } from './docs/docs';
 import { DocumentIndex, IndexedDocument, recogniseOpenedDocuments } from './documents/documentIndex';
+import { pagePathOf } from './documents/recognition';
 import { keyPathAtLine } from './documents/yamlPath';
 import {
     cliTaskProvider,
@@ -308,7 +309,7 @@ export async function activateHost(context: vscode.ExtensionContext, host: Vscod
     };
 
     const openRun = (runId: string, where?: OpenPage): void => pages.open(`/runs/${encodeURIComponent(runId)}`, where);
-    const openFlowPage = (pipeline: Pipeline, where?: OpenPage): void => pages.open(`/pipelines/${encodeURIComponent(pipeline.id)}`, where);
+    const openFlowPage = (pipeline: Pipeline, where?: OpenPage): void => pages.open(pagePathOf(pipeline.id, pipeline.kind), where);
 
     command('sqlflow.openPipeline', async (arg: unknown) => {
         const resolved = await resolvePipeline(arg);
@@ -330,6 +331,7 @@ export async function activateHost(context: vscode.ExtensionContext, host: Vscod
     });
     register('sqlflow.openHome', () => pages.open('/'));
     register('sqlflow.openRuns', () => pages.open('/runs'));
+    register('sqlflow.openReports', () => pages.open('/reports'));
     register('sqlflow.showLineage', () => pages.open('/lineage'));
 
     command('sqlflow.compareWithSynced', async (arg: unknown) => {
