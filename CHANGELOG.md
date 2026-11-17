@@ -746,6 +746,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assistant runs, which control plane it reaches, and its verbs with what each does, the delivery module's among them; the
   server's instructions send an assistant to it before work a script does better
   ([the command line](osdu/docs/reference/guides/vscode.md#scripting-with-the-command-line)).
+- **A build's command line is `sqlflow`.** The OSDU Delivery command line builds as `sqlflow`, the name every document
+  gives it, where a build made `SqlFlow.Delivery.Cli.Host` beside SQLFlow's own `sqlflow`, which has none of the delivery
+  verbs; a script that ran `SqlFlow.Delivery.Cli.Host` from a build folder runs `sqlflow` now
+  ([getting started](osdu/docs/reference/guides/getting-started.md)).
 - **A dimension's full load writes only the keys whose content changed.** A key, a record id and a collected text are
   found by their text under a unique index, where they were found by a SHA-256 of it, and a key keeps the hash of its
   objects and of the attribute values read through its record: a build writes only the keys whose hash moved, and lays
@@ -1244,6 +1248,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **Asking `sqlflow` for its usage succeeds.** `sqlflow --help`, `sqlflow -h` and `sqlflow help` print the usage and exit 0,
+  where they exited 1 unless a whole command came with `--help`, which a script or an assistant read as a failure; the
+  usage shown because a command is missing what it needs still exits 1
+  ([getting started](osdu/docs/reference/guides/getting-started.md)).
 - **An autoscaler no longer stops a worker in the middle of a run.** The platform picks which worker a lower replica
   target stops, and the target fell as soon as some of a pool's work ended: when a split delivery's first parts
   finished, the platform could stop a worker still delivering another part. That part ran again on another worker, and
