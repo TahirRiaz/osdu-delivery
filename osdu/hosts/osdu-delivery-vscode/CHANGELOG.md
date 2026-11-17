@@ -3,7 +3,7 @@
 What changed in the OSDU Delivery extension for VS Code, newest first. The extension has a version of its own; the
 product's own changes are in the [repository's change log](https://github.com/TahirRiaz/osdu-delivery/blob/main/CHANGELOG.md).
 
-## [Unreleased]
+## [1.0.2]
 
 ### Your other tools
 
@@ -13,7 +13,16 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   Available to Other Tools** and **Remove the Command Line and Server from Other Tools** do and undo it
   ([your other tools](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/guides/vscode.md#your-other-tools)).
 - **Connect an AI Assistant** registers Claude Code the same way, where it put a command in a terminal for you to run.
-- The server's `get_environment` tells an assistant how to call the command line where it runs, and what its verbs do.
+- The server's `get_environment` tells an assistant how to call the command line where it runs, what its verbs do, and
+  what a sandboxed shell has to be allowed; the chat's servers run from `~/.sqlflow/bin`, so an assistant is never sent
+  into the extension's own folder, whose name changes with every version.
+- A chat's server takes the editor's sign-in for the control plane the editor uses, where one started before it was named
+  said no one was signed in.
+
+### The command line
+
+- `sqlflow --help`, `sqlflow -h` and `sqlflow help` print the usage and succeed, where they ended with an error unless a
+  whole command came with them.
 
 ## [1.0.1]
 
