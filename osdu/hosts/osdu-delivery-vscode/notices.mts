@@ -349,7 +349,7 @@ const RULE = '='.repeat(80);
 export function noticesText(sections: NoticeSection[]): string {
     const written = new Map<string, string>();
     const lines: string[] = [
-        'OSDU Delivery for VS Code: third-party notices',
+        'OSDU Delivery, powered by SQLFlow, for VS Code: third-party notices',
         RULE,
         '',
         'OSDU Delivery is free software under the GNU General Public License, version 3 or later (LICENSE in this',

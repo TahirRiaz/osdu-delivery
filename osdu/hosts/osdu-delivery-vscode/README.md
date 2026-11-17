@@ -1,8 +1,12 @@
-# OSDU Delivery for VS Code
+# OSDU Delivery, powered by SQLFlow
 
-Write OSDU Delivery pipelines where you write code. Every flow, mapping, template and schedule is understood as you
-type, a mapping shows what it makes while you write it, and the pages of your estate (runs, lineage, records, the
-ledger) open in tabs beside your files. Powered by SQLFlow.
+Write the pipelines that deliver subsurface records (wells, wellbores, well logs and the rest) into an OSDU® data
+platform, where you write code. Every flow, mapping, template and schedule is understood as you type, a mapping shows
+what it makes while you write it, and the pages of your estate (runs, lineage, records, the ledger) open in tabs beside
+your files.
+
+OSDU Delivery is an independent product built on SQLFlow. It is not affiliated with, sponsored by or endorsed by The
+Open Group or the OSDU® Forum ([trademarks](#trademarks)).
 
 ![A mapping's file with its preview beside it](https://raw.githubusercontent.com/TahirRiaz/osdu-delivery/main/osdu/hosts/osdu-delivery-vscode/media/mapping-preview.png)
 
@@ -98,3 +102,8 @@ and signed and notarized on macOS. Nothing else needs installing.
 
 OSDU Delivery is free software under the GNU General Public License, version 3 or later. The third-party components
 the package carries, and their licenses, are listed in `THIRD-PARTY-NOTICES.txt` inside it.
+
+## Trademarks
+
+OSDU is a registered trademark of The Open Group. OSDU Delivery is an independent product built on SQLFlow, and is
+not affiliated with, sponsored by, endorsed by or certified by The Open Group or the OSDU® Forum.

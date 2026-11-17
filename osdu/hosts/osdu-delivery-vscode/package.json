@@ -1,7 +1,7 @@
 {
   "name": "osdu-delivery",
-  "displayName": "OSDU Delivery",
-  "description": "Develop OSDU Delivery pipelines in the editor: every YAML document understood, a mapping previewed as you write it, the estate's pages beside your files, and an AI assistant built in. Powered by SQLFlow.",
+  "displayName": "OSDU Delivery, powered by SQLFlow",
+  "description": "Write the pipelines that deliver subsurface records into an OSDU® data platform: every YAML document understood, a mapping previewed as you write it, your estate's pages beside your files, and an AI assistant built in.",
   "version": "1.0.0",
   "publisher": "delta-forge",
   "icon": "resources/icon.png",
