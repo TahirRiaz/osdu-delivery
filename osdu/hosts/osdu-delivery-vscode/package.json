@@ -2,7 +2,7 @@
   "name": "osdu-delivery",
   "displayName": "OSDU Delivery, powered by SQLFlow",
   "description": "Get any data into an OSDU® data platform. Configured, not coded: describe a delivery in YAML, see each record before it is sent, and trace every record that lands.",
-  "version": "1.1.0",
+  "version": "1.0.1",
   "publisher": "delta-forge",
   "icon": "resources/icon.png",
   "galleryBanner": {
@@ -239,6 +239,12 @@
         "title": "Open Runs",
         "category": "OSDU Delivery",
         "icon": "$(history)"
+      },
+      {
+        "command": "sqlflow.openReports",
+        "title": "Open Reports",
+        "category": "OSDU Delivery",
+        "icon": "$(graph)"
       },
       {
         "command": "sqlflow.showLineage",

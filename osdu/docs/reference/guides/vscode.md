@@ -148,7 +148,7 @@ and **Compare with Synced** follow it.
 
 A page in a tab is the page [the GUI](../concepts/gui.md) shows, with the same data and the same actions, under your
 sign-in: a flow with its records, issues, submissions and preview, a run with its trace as it is written, lineage,
-schedules, templates, the cache, a record's history. A strip over the page goes back and forward through what the tab has
+schedules, templates, the cache, a record's history, and the estate's [reports](../../../../sqlflow/docs/reference/concepts/reports.md). A strip over the page goes back and forward through what the tab has
 shown, reads the page again, carries the partition every delivery page is read in, and opens the same page in your
 browser when `sqlflow.guiUrl` is set. A page already open is brought forward rather than opened twice, and the tabs open
 when the editor closes come back on the pages they showed.
@@ -156,11 +156,13 @@ when the editor closes come back on the pages they showed.
 | Command | Opens |
 | --- | --- |
 | **Open Home**, **Open Runs**, **Open Lineage** | The home page, the runs board, the lineage graph. |
+| **Open Reports** | The estate's reports; one opens in a tab, runs its queries and draws their answers. |
 | **Open Delivery**, **Open Templates**, **Find a Record** | The delivery overview, the Templates page, the record lookup. |
-| **Open Flow Page** | The page of the flow in the editor, beside its file. Also a lens at the top of a flow. |
+| **Open Flow Page** | The page of the flow in the editor, beside its file. Also a lens at the top of a flow. On a report it opens the report. |
 
 The lenses at the top of a flow say how it last ran, open its page, and **Compare with Synced** shows what your file
-changes from what runs. **Open in the Browser** opens the flow's page in the web GUI when `sqlflow.guiUrl` is set.
+changes from what runs. A report (`flowType: rpt`) is never run as a flow, so it has no last run: its lens is **Report
+Page**, which opens the report beside the file, where its queries run when the page opens. **Open in the Browser** opens the flow's page in the web GUI when `sqlflow.guiUrl` is set.
 
 ### Previewing a mapping
 
@@ -275,7 +277,9 @@ that control plane and checks that each one loads, is signed in and names its ta
 ### Publishing it
 
 The extension is published as `delta-forge.osdu-delivery`, under DeltaForge's Marketplace publisher, in two workflows run
-by hand, as DeltaForge publishes its own extension:
+by hand, as DeltaForge publishes its own extension. **Nothing publishes it on its own.** Both workflows start only when a
+person runs them (`workflow_dispatch`): no push, merge, tag, release or schedule builds or publishes the extension, and
+no other workflow starts either of them. The extension's own tests hold the workflows to that (`test/manifest.test.ts`).
 
 1. **VS Code extension · build** (`.github/workflows/vscode-build.yml`) builds the three programs on a GitHub runner of
    each platform, signs them, and packages one `.vsix` per platform, kept as artifacts for 30 days. The Windows programs
