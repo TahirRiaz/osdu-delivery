@@ -30,7 +30,10 @@ keywords:
   - osdu-delivery-vscode
   - sqlflow login
   - credentials.json
-  - get_cli
+  - get_environment
+  - other tools
+  - user path
+  - claude code registration
   - fetch a template
   - sqlflow.controlPlaneUrl
   - sqlflow.guiUrl
@@ -54,6 +57,9 @@ sourceRefs:
   - sqlflow/tools/sqlflow-vscode/src/mcp/mcpSetup.ts
   - sqlflow/tools/sqlflow-vscode/src/mcp/signIn.ts
   - sqlflow/tools/sqlflow-vscode/src/cli.ts
+  - sqlflow/tools/sqlflow-vscode/src/otherTools.ts
+  - sqlflow/tools/sqlflow-vscode/src/userPath.ts
+  - sqlflow/tools/sqlflow-vscode/src/mcp/claudeCode.ts
   - sqlflow/tools/sqlflow-mcp/src/config.rs
   - sqlflow/src/SqlFlow.Cli/Remote/CredentialStore.cs
   - osdu/hosts/osdu-delivery-vscode/src/deliveryRuns.ts
@@ -104,6 +110,10 @@ a moment later.
   assistant you connect and the `sqlflow` command line all read it, so `sqlflow login` signs the editor in as well as the
   other way round, in every window. A session renews itself up to the control plane's limit, from whichever of them is
   running.
+- The control plane in your settings is every server's of this product: one a chat or Claude Code started before you
+  named it moves to it on its next call and takes your sign-in for it, and naming another control plane in a chat takes
+  the sign-in held for that one, never this one's.
+- Signing in also gives your other tools the command line and the server ([your other tools](#your-other-tools)).
 - **OSDU Delivery: Sign In with an Access Token** takes a pasted token, for a place no browser reaches.
 
 The control plane sends the browser to the GUI when it knows the GUI's address:
@@ -206,18 +216,19 @@ Nothing needs installing. The extension registers the server with VS Code once p
 **OSDU Delivery (estate)** and **OSDU Delivery (data)** appear among the chat's tools, signed in with the editor. Turn on
 the one a chat needs.
 
-**Connect an AI Assistant** connects Claude Code, Cursor or Codex. It copies the server to `~/.sqlflow/bin`, so the
-registration survives the extension's updates, and takes the registration from the server's own `install`: for Claude
-Code it puts the command in a terminal for you to run, and for the others it shows what to add. It edits no other tool's
-configuration by itself.
+Signing in registers the server with Claude Code too, when it is installed: once per mode, for all its sessions
+([your other tools](#your-other-tools)). **Connect an AI Assistant** does that on request, and for Cursor or Codex shows
+the registration to add. Each registration is the server's own `install`, and runs the server from `~/.sqlflow/bin`, so it
+survives the extension's updates.
 
 ## Scripting with the command line
 
 The package carries the `sqlflow` command line beside the language server and the MCP server, so an assistant can do by
 script what a person would click through: validate a working copy, check a flow, sync, run and read back, in a loop. Every
-integrated terminal has it on its PATH, pointed at the control plane the editor uses, and the MCP tool `get_cli` tells an
-assistant where it is, wherever that assistant runs. It signs in with [the same credential](#signing-in), so a script needs
-no token.
+integrated terminal has it on its PATH, pointed at the control plane the editor uses, and once you sign in every other
+terminal has it too ([your other tools](#your-other-tools)). The MCP tool `get_environment` tells an assistant how to call
+it where that assistant runs, which control plane it reaches, and what its verbs do. It signs in with
+[the same credential](#signing-in), so a script needs no token.
 
 ```bash
 sqlflow login                       # opens the browser, if you have not signed in yet
@@ -231,6 +242,30 @@ needs no `--url` either while the credential file holds one control plane.
 
 The MCP server's rules hold for the assistant here too: a verb that writes runs only when you asked for it. `preview` and
 `values` print row values, which then reach the assistant and its model provider, so it runs them only when you ask.
+
+## Your other tools
+
+Signing in makes the extension's programs available beyond the editor, so a Copilot or Claude Code session, a terminal
+of your own and a script have them too, signed in as you:
+
+- **The command line on your PATH.** `sqlflow` and the MCP server are copied to `~/.sqlflow/bin`, which goes at the end
+  of your own PATH: on Windows the user environment's `Path`, every other entry kept as it was written; on macOS and Linux
+  a line in `.profile` (and in `.bash_profile`, `.bashrc` and `.zshenv` where they apply) that reads
+  `~/.sqlflow/path.sh`, and a file in fish's `conf.d`. A `sqlflow` you put on your PATH yourself keeps answering first.
+- **The server in Claude Code.** When Claude Code is installed, both [modes](mcp.md#installing-it-for-a-person) of the
+  server are registered for all its sessions, with the control plane the editor uses.
+- **One folder to allow.** The chat's servers run from `~/.sqlflow/bin` too, so an assistant is pointed to the command
+  line there, never into the extension's folder, whose name changes with every version. An assistant whose shell is
+  sandboxed needs read and execute on `~/.sqlflow/bin`, and read and write on `~/.sqlflow/credentials.json`, the sign-in
+  it shares; `get_environment` names both.
+- **No control plane in your environment.** `SQLFLOW_URL` is set in the editor's own terminals only: set for your whole
+  account it would outrank every repository's `.sqlflow/env`. Elsewhere the command line reaches the one control plane
+  your sign-in holds, or the one `--url` names.
+
+The extension says what it changed, with **Undo**. It does it again when the control plane in your settings changes, and
+an update refreshes `~/.sqlflow/bin` in place. A program already running, VS Code included, has the new PATH once it is
+restarted. **Remove the Command Line and Server from Other Tools** takes both out again, and a later sign-in leaves them
+out; **Make the Command Line and Server Available to Other Tools** puts them back.
 
 ## Settings
 
