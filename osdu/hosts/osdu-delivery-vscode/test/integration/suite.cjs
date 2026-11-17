@@ -60,9 +60,16 @@ const checks = {
         for (const program of ['sqlflow-lsp', 'osdu-delivery-mcp', 'sqlflow']) {
             assert.ok(fs.existsSync(path.join(extension.extensionPath, 'bin', `${program}${exe}`)), program);
         }
-        const answer = await extension.exports.estate.mcp.call('get_cli');
-        assert.ok(answer.path.endsWith(`sqlflow${exe}`), answer.path);
-        assert.ok(answer.conventions.includes('--json'));
+        const answer = await extension.exports.estate.mcp.call('get_environment');
+        assert.ok(answer.commandLine.path.endsWith(`sqlflow${exe}`), answer.commandLine.path);
+        assert.ok(answer.commandLine.conventions.includes('--json'));
+        const uses = answer.commandLine.uses.map((use) => use.command);
+        assert.ok(uses.some((command) => command.endsWith('validate .')), uses.join(', '));
+        assert.ok(uses.some((command) => command.endsWith('check <flow.yaml>')), uses.join(', '));
+        const commands = await vscode.commands.getCommands(true);
+        for (const id of ['sqlflow.shareWithOtherTools', 'sqlflow.unshareFromOtherTools']) {
+            assert.ok(commands.includes(id), id);
+        }
     },
 
     async 'a plain yaml flow opens as a pipeline document'() {
