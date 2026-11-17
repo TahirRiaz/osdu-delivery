@@ -1,7 +1,21 @@
 # Change log
 
-What changed in the OSDU Delivery extension for VS Code, newest first. The extension is versioned with OSDU Delivery;
-the product's own changes are in the [repository's change log](https://github.com/TahirRiaz/osdu-delivery/blob/main/CHANGELOG.md).
+What changed in the OSDU Delivery extension for VS Code, newest first. The extension has a version of its own; the
+product's own changes are in the [repository's change log](https://github.com/TahirRiaz/osdu-delivery/blob/main/CHANGELOG.md).
+
+## [1.1.0]
+
+### Reports
+
+- A report (`flowType: rpt`), read-only queries over the data shown as figures, charts and tables, is understood as it
+  is typed: completion, hover and problems for its keys. New Document starts one
+  ([writing a report](https://github.com/TahirRiaz/osdu-delivery/blob/main/sqlflow/docs/reference/guides/write-a-report.md)).
+- The side bar's menu lists the Reports page under Explore, and a report opens on its own page in a tab, which runs its
+  queries when it is opened.
+
+### The Marketplace page
+
+- A shorter page: what OSDU Delivery does, why it pays off, how to start, and links to its open-source repositories.
 
 ## [1.0.0]
 
