@@ -148,6 +148,20 @@ test('the package carries a readme and a change log, and every picture and page 
     assert.match(readFileSync(join(folder, 'CHANGELOG.md'), 'utf8'), new RegExp(`^## \\[${manifest.version.replace(/\./g, '\\.')}\\]`, 'm'));
 });
 
+// OSDU is a registered trademark of The Open Group, which asks for the mark with its symbol at its first use and an
+// attribution naming it. The product is independent of them, so its listing says so: "powered by SQLFlow" says whose it is.
+test('the listing names the product as powered by SQLFlow, and attributes the OSDU trademark to The Open Group', () => {
+    assert.equal(manifest.displayName, 'OSDU Delivery, powered by SQLFlow');
+    assert.match(manifest.description, /OSDU® data platform/);
+    const readme = readFileSync(join(folder, 'README.md'), 'utf8');
+    assert.match(readme, /^# OSDU Delivery, powered by SQLFlow$/m);
+    const first = readme.indexOf('OSDU', readme.indexOf('\n'));
+    assert.equal(readme.slice(first, first + 5), 'OSDU®', 'the first use of the mark after the heading carries its symbol');
+    assert.match(readme, /^## Trademarks$/m);
+    assert.match(readme, /OSDU is a registered trademark of The Open Group\./);
+    assert.match(readme, /not affiliated with, sponsored by, endorsed by or certified by The Open Group/);
+});
+
 test('a package leaves out its sources and what a hosted page never loads, and keeps what it runs', () => {
     const ignored = readFileSync(join(folder, '.vscodeignore'), 'utf8').split(/\r?\n/).filter((line) => line !== '');
     for (const pattern of ['src/**', 'test/**', 'node_modules/**', 'dist/hosted/assets/*.wasm', 'dist/hosted/assets/*.worker-*.js']) {
