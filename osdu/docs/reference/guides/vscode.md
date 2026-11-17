@@ -238,7 +238,8 @@ sqlflow trigger --repo welldb --flow welldb-well-03-delivery --follow
 ```
 
 `sqlflow login --device` prints the link instead of opening a browser, for a machine with none. Outside the editor a script
-needs no `--url` either while the credential file holds one control plane.
+needs no `--url` either: it reaches your current control plane, the one you last signed in to here or named with
+`sqlflow use` ([which control plane a command reaches](../../../../sqlflow/docs/reference/cli/control-plane.md#signing-in)).
 
 The MCP server's rules hold for the assistant here too: a verb that writes runs only when you asked for it. `preview` and
 `values` print row values, which then reach the assistant and its model provider, so it runs them only when you ask.
@@ -258,9 +259,10 @@ of your own and a script have them too, signed in as you:
   line there, never into the extension's folder, whose name changes with every version. An assistant whose shell is
   sandboxed needs read and execute on `~/.sqlflow/bin`, and read and write on `~/.sqlflow/credentials.json`, the sign-in
   it shares; `get_environment` names both.
-- **No control plane in your environment.** `SQLFLOW_URL` is set in the editor's own terminals only: set for your whole
-  account it would outrank every repository's `.sqlflow/env`. Elsewhere the command line reaches the one control plane
-  your sign-in holds, or the one `--url` names.
+- **Your control plane, with no environment variable.** Signing in here, or switching the control plane in your settings,
+  makes it your current control plane, which every shell and script reaches with no `--url`; `sqlflow use` switches it, and
+  `sqlflow use` alone says which one a command reaches and why. `SQLFLOW_URL` is set in the editor's own terminals only:
+  set for your whole account it would outrank every repository's `.sqlflow/env`.
 
 The extension says what it changed, with **Undo**. It does it again when the control plane in your settings changes, and
 an update refreshes `~/.sqlflow/bin` in place. A program already running, VS Code included, has the new PATH once it is
