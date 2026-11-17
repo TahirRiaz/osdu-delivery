@@ -74,7 +74,11 @@ export function fileText(name: string, bytes: Buffer): string {
     return (name.toLowerCase().endsWith('.rtf') ? rtfText(text) : text).trim();
 }
 
-/** The text of the license files at the top of a folder, and of any other file the component names, each under its name. */
+/**
+ * The text of the license files at the top of a folder, and of any other file the component names, each under its name.
+ * A component names a file inside it with either separator (a NuGet package writes `docs\LICENSE.txt`), and the name
+ * is read the same on every platform a package is built on.
+ */
 export function licenseTexts(folder: string, named: string[] = []): string {
     let entries: string[] = [];
     try {
@@ -82,10 +86,11 @@ export function licenseTexts(folder: string, named: string[] = []): string {
     } catch {
         return '';
     }
-    const files = [...new Set([...entries.filter((entry) => LICENSE_FILE.test(entry)).sort(), ...named])];
+    const inside = named.map((file) => file.replace(/\\/g, '/'));
+    const files = [...new Set([...entries.filter((entry) => LICENSE_FILE.test(entry)).sort(), ...inside])];
     const texts: string[] = [];
     for (const file of files) {
-        const path = join(folder, file);
+        const path = join(folder, ...file.split('/'));
         try {
             const stat = statSync(path);
             if (stat.isFile() && stat.size <= LARGEST_TEXT) {
