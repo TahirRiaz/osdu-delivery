@@ -139,6 +139,11 @@ test('the package carries a readme and a change log, and every picture and page 
     // The Marketplace shows a picture only from an https address; a path into the repository would show nothing there.
     for (const [, source] of readme.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)) {
         assert.match(source, /^https:\/\/.+\.(png|gif|jpg)$/, source);
+        // A picture of this folder is fetched from main, so it has to be in the folder to be there once this lands.
+        const own = source.match(/^https:\/\/raw\.githubusercontent\.com\/TahirRiaz\/osdu-delivery\/main\/osdu\/hosts\/osdu-delivery-vscode\/(.+)$/);
+        if (own) {
+            assert.ok(existsSync(join(folder, own[1])), own[1]);
+        }
     }
     for (const walkthrough of manifest.contributes.walkthroughs) {
         for (const step of walkthrough.steps) {
