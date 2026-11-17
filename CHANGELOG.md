@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The command line has a current control plane.** `sqlflow login` makes the control plane it signs in to the current
+  one, so does signing in through the VS Code extension or switching its control plane, and `sqlflow use <url>` names it;
+  any shell or script then reaches it with no `--url`, with several control planes signed in to. `--url`, `SQLFLOW_URL` and
+  a repository's `.sqlflow/env` still come first, and `sqlflow use` alone says which control plane a command reaches and
+  why ([signing in](sqlflow/docs/reference/cli/control-plane.md#signing-in)).
 - **Signing in to the VS Code extension gives your other tools the command line and the server.** `sqlflow` and the MCP
   server go to `~/.sqlflow/bin`, at the end of your own PATH, so a Copilot or Claude Code session, a terminal of your own
   and a script run `sqlflow` signed in as you; and the server is registered with Claude Code for all its sessions. The
@@ -1248,6 +1253,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **`get_environment` reads as one text.** Two of its answers carried a run of spaces mid-sentence, where their source's
+  lines were joined.
 - **Asking `sqlflow` for its usage succeeds.** `sqlflow --help`, `sqlflow -h` and `sqlflow help` print the usage and exit 0,
   where they exited 1 unless a whole command came with `--help`, which a script or an assistant read as a failure; the
   usage shown because a command is missing what it needs still exits 1
