@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Switch between dev, test and prod from the title bar.** Each deployment's configuration names the environment it is
+  and lists every one with the address of its GUI (Terraform's `environments`, Bicep's `environments`, already set in the
+  Radix configuration, or `ControlPlane__Environments__*` anywhere else). The title bar then says which environment you
+  are in, and its **Environment** menu opens another one's GUI, where it signs you in
+  ([Environments](sqlflow/docs/reference/concepts/environments.md)). Partitions of one deployment are not a substitute:
+  they keep a run's data apart, not people, agents or an untested mapping
+  ([partitions or environments](osdu/docs/reference/concepts/partitions.md#partitions-or-environments)).
 - **The command line has a current control plane.** `sqlflow login` makes the control plane it signs in to the current
   one, so does signing in through the VS Code extension or switching its control plane, and `sqlflow use <url>` names it;
   any shell or script then reaches it with no `--url`, with several control planes signed in to. `--url`, `SQLFLOW_URL` and
