@@ -3190,6 +3190,8 @@
         "record status",
         "record states",
         "held record",
+        "held at render",
+        "held under an earlier mapping",
         "failed record",
         "retry",
         "backoff",
