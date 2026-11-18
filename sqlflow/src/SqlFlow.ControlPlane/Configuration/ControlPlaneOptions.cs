@@ -56,6 +56,10 @@ public sealed class ControlPlaneOptions
     /// Bound from <c>ControlPlane:ExternalTriggers</c>.</summary>
     public ExternalTriggerOptions ExternalTriggers { get; set; } = new();
 
+    /// <summary>The environments the estate runs as separate deployments, which the title bar switches between. Bound from
+    /// <c>ControlPlane:Environments</c>; none by default.</summary>
+    public EnvironmentsOptions Environments { get; set; } = new();
+
     /// <summary>Validates the options, throwing a clear startup error for any missing or unsafe required value.
     /// Called during host build so a misconfigured deployment never starts serving.</summary>
     public void Validate()
@@ -135,6 +139,7 @@ public sealed class ControlPlaneOptions
         DataOps.Validate();
         AiContext.Validate(Assistant.Anthropic);
         ExternalTriggers.Validate();
+        Environments.Validate();
     }
 }
 

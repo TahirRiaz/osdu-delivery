@@ -616,6 +616,8 @@ public static class ControlPlaneHost
         v1.MapGroup(string.Empty).RequireAuthorization(ControlPlanePolicies.Read)
             .MapMeEndpoints()
             .MapBootstrapEndpoints()
+            // The estate's environments, which the title bar names and opens: addresses a person signed in may follow.
+            .MapEnvironmentEndpoints()
             .MapNotificationEndpoints()
             .MapMaintenanceReadEndpoints()
             // The GUI chat assistant: per-user conversations, streamed answers, each run under its own delegated token.
