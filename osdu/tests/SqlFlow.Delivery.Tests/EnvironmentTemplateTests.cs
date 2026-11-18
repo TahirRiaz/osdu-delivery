@@ -5,14 +5,12 @@ namespace SqlFlow.Delivery.Tests;
 /// <summary>
 /// The estate's environments (dev, test and prod, each a deployment of its own) reach each control plane from the
 /// deployment templates, so the GUI's title bar names the environment and opens the others
-/// (sqlflow/docs/reference/concepts/environments.md). These tests read the templates as committed: the Bicep template
-/// takes them and its compiled form, which a deployment sends, carries them too, and every Radix environment names itself
-/// beside one list of all three. The Terraform estate's own tests (osdu/deploy/terraform/tests) check what it writes.
+/// (sqlflow/docs/reference/concepts/environments.md). This test reads the Bicep template as committed: it takes them and
+/// its compiled form, which a deployment sends, carries them too. The Terraform estate's own tests
+/// (osdu/deploy/terraform/tests) check what it writes; Radix, compose and Kubernetes carry them as a comment to uncomment.
 /// </summary>
 public sealed class EnvironmentTemplateTests
 {
-    private static readonly string[] Environments = ["dev", "test", "prod"];
-
     [Fact]
     public void TheBicepTemplate_TakesTheEnvironments_AndItsCompiledFormCarriesThem()
     {
@@ -31,20 +29,6 @@ public sealed class EnvironmentTemplateTests
         })
         {
             Assert.Contains(setting, json, StringComparison.Ordinal);
-        }
-    }
-
-    [Fact]
-    public void EveryRadixEnvironment_NamesItself_BesideOneListOfAll()
-    {
-        var lines = Template("radix", "radixconfig.yaml").Split('\n').Select(line => line.Trim()).ToArray();
-
-        for (var i = 0; i < Environments.Length; i++)
-        {
-            var environment = Environments[i];
-            Assert.Single(lines, line => line == $"ControlPlane__Environments__Current: {environment}");
-            Assert.Single(lines, line => line == $"ControlPlane__Environments__Links__{i}__Name: {environment}");
-            Assert.Single(lines, line => line == $"ControlPlane__Environments__Links__{i}__Url: https://gui-osdu-delivery-{environment}.<radix cluster domain>");
         }
     }
 
