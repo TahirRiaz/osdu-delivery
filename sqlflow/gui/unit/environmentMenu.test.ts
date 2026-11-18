@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { EstateEnvironments } from "../src/api/types.ts";
 import { environmentMenu, readableAddress } from "../src/layout/workbench/environmentMenu.ts";
 
 const estate = {
@@ -77,6 +78,45 @@ describe("environmentMenu", () => {
 
     assert.ok(menu);
     assert.equal(menu.canSwitch, false);
+  });
+
+  it("shows nothing for an answer it cannot read, so the title bar never breaks on one", () => {
+    const unreadable: unknown[] = [null, "", [], "<html>", 42, {}, { current: 7 }, { current: " " }, { environments: [] }];
+    for (const answer of unreadable) {
+      assert.equal(environmentMenu(answer as EstateEnvironments), null, JSON.stringify(answer));
+    }
+  });
+
+  it("names the current environment alone when the list is missing or not a list", () => {
+    for (const environments of [undefined, null, "dev", {}]) {
+      const menu = environmentMenu({ current: "test", environments } as unknown as EstateEnvironments);
+
+      assert.ok(menu, JSON.stringify(environments));
+      assert.equal(menu.current.name, "test");
+      assert.equal(menu.canSwitch, false);
+    }
+  });
+
+  it("leaves out an entry it cannot read and keeps the rest", () => {
+    const menu = environmentMenu({
+      current: "test",
+      environments: [
+        null,
+        { name: 3, url: "https://sqlflow-dev.example.com", current: false },
+        { name: "dev", url: 5, current: false },
+        { name: " ", url: "https://sqlflow-dev.example.com", current: false },
+        { name: "test", url: "https://sqlflow-test.example.com", current: "yes", description: 12 },
+        { name: "prod", url: "https://sqlflow.example.com", current: false, description: "Production" },
+      ],
+    } as unknown as EstateEnvironments);
+
+    assert.ok(menu);
+    assert.deepEqual(menu.entries.map((entry) => [entry.name, entry.current, entry.description]), [
+      ["test", false, null],
+      ["prod", false, "Production"],
+    ]);
+    assert.equal(menu.current.name, "test");
+    assert.equal(menu.current.url, null);
   });
 });
 

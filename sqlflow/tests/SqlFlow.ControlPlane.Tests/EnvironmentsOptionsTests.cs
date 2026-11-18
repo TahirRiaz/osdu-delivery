@@ -4,9 +4,11 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The environments the title bar switches between (<c>ControlPlane:Environments</c>): nothing configured is the default and
-/// shows nothing, the current one may be named alone, and a list the title bar could not show stops the control plane at
-/// start, naming the setting and never repeating an address.
+/// The environments the title bar switches between (<c>ControlPlane:Environments</c>), as <see cref="EnvironmentsOptions.Read"/>
+/// reads them. Nothing configured shows nothing and says nothing; the current one may be named alone. A mistake never
+/// throws: an entry the menu cannot show is left out, a description it cannot show is dropped, and when the environment
+/// this control plane is cannot be told nothing is shown, each with a sentence naming the setting and never repeating an
+/// address.
 /// </summary>
 public sealed class EnvironmentsOptionsTests
 {
@@ -24,66 +26,79 @@ public sealed class EnvironmentsOptionsTests
         ],
     };
 
-    private static string Refusal(EnvironmentsOptions options)
-        => Assert.Throws<InvalidOperationException>(options.Validate).Message;
+    private static string[] Names(ConfiguredEnvironments read) => [.. read.Environments.Select(e => e.Name)];
 
-    [Fact]
-    public void NothingConfigured_IsTheDefault_AndNamesNoEnvironment()
+    private static void ShowsNothing(ConfiguredEnvironments read)
     {
-        var options = new EnvironmentsOptions();
-
-        options.Validate();
-
-        Assert.Null(options.CurrentName());
-        Assert.Empty(options.Links);
+        Assert.Null(read.Current);
+        Assert.Empty(read.Environments);
     }
 
     [Fact]
-    public void AListWithTheCurrentOneAmongIt_IsTaken()
+    public void NothingConfigured_ShowsNothing_AndSaysNothing()
     {
-        var options = Estate();
+        var read = new EnvironmentsOptions().Read();
 
-        options.Validate();
+        ShowsNothing(read);
+        Assert.Empty(read.Problems);
+    }
 
-        Assert.Equal("test", options.CurrentName());
+    [Fact]
+    public void AListWithTheCurrentOneAmongIt_IsShownWhole_InItsOrder()
+    {
+        var read = Estate().Read();
+
+        Assert.Equal("test", read.Current);
+        ConfiguredEnvironment[] expected =
+        [
+            new("dev", "https://sqlflow-dev.example.com", "Development"),
+            new("test", "https://sqlflow-test.example.com/", "Acceptance testing"),
+            new("prod", "https://sqlflow.example.com/workbench", "Production"),
+        ];
+        Assert.Equal(expected, read.Environments);
+        Assert.Empty(read.Problems);
     }
 
     [Fact]
     public void TheCurrentOne_IsSpelledAsTheListSpellsIt()
     {
-        var options = Estate(" TEST ");
+        var read = Estate(" TEST ").Read();
 
-        options.Validate();
-
-        Assert.Equal("test", options.CurrentName());
+        Assert.Equal("test", read.Current);
+        Assert.Empty(read.Problems);
     }
 
     [Fact]
-    public void TheCurrentOneAlone_IsTaken_SoTheTitleBarNamesItAndOffersNoOther()
+    public void TheCurrentOneAlone_IsNamed_WithNothingToOpen()
     {
-        var options = new EnvironmentsOptions { Current = "prod" };
+        var read = new EnvironmentsOptions { Current = "prod" }.Read();
 
-        options.Validate();
-
-        Assert.Equal("prod", options.CurrentName());
+        Assert.Equal("prod", read.Current);
+        Assert.Empty(read.Environments);
+        Assert.Empty(read.Problems);
     }
 
     [Fact]
-    public void AListThatNamesNoCurrentOne_IsRefused_NamingTheSettingAndTheList()
+    public void AListThatNamesNoCurrentOne_ShowsNothing_AndSaysWhy()
     {
-        var message = Refusal(Estate(current: null));
+        var read = Estate(current: null).Read();
 
-        Assert.Contains("ControlPlane:Environments:Current", message, StringComparison.Ordinal);
-        Assert.Contains("dev, test, prod", message, StringComparison.Ordinal);
+        ShowsNothing(read);
+        var problem = Assert.Single(read.Problems);
+        Assert.Contains("ControlPlane:Environments:Current names none of them", problem, StringComparison.Ordinal);
+        Assert.Contains("dev, test, prod", problem, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ACurrentOneTheListDoesNotHold_IsRefused()
+    public void ACurrentOneTheListDoesNotGive_ShowsNothing_RatherThanALabelThatCouldBeWrong()
     {
-        var message = Refusal(Estate("stage"));
+        var read = Estate("stage").Read();
 
-        Assert.Contains("ControlPlane:Environments:Current is 'stage'", message, StringComparison.Ordinal);
-        Assert.Contains("(dev, test, prod)", message, StringComparison.Ordinal);
+        ShowsNothing(read);
+        var problem = Assert.Single(read.Problems);
+        Assert.Contains("ControlPlane:Environments:Current is 'stage'", problem, StringComparison.Ordinal);
+        Assert.Contains("(dev, test, prod)", problem, StringComparison.Ordinal);
+        Assert.Contains("the title bar shows no environment", problem, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -91,12 +106,12 @@ public sealed class EnvironmentsOptionsTests
     [InlineData("-dev")]
     [InlineData("dev/1")]
     [InlineData("utvikling\u00e6")]
-    public void ACurrentNameThatIsNoName_IsRefused(string current)
+    public void ACurrentNameThatIsNoName_ShowsNothing(string current)
     {
-        var message = Refusal(new EnvironmentsOptions { Current = current });
+        var read = new EnvironmentsOptions { Current = current }.Read();
 
-        Assert.Contains("ControlPlane:Environments:Current", message, StringComparison.Ordinal);
-        Assert.Contains("is not an environment name", message, StringComparison.Ordinal);
+        ShowsNothing(read);
+        Assert.Contains("is not an environment name", Assert.Single(read.Problems), StringComparison.Ordinal);
     }
 
     [Theory]
@@ -104,168 +119,207 @@ public sealed class EnvironmentsOptionsTests
     [InlineData("  ")]
     [InlineData("pre prod")]
     [InlineData(".dev")]
-    public void AListedNameThatIsNoName_IsRefused_NamingItsEntry(string? name)
+    public void AListedNameThatIsNoName_LeavesOnlyThatEntryOut(string? name)
     {
-        var options = Estate();
+        var options = Estate("dev");
         options.Links[1] = Link(name, "https://sqlflow-test.example.com");
 
-        var message = Refusal(options);
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:1:Name", message, StringComparison.Ordinal);
-        Assert.Contains("is not an environment name", message, StringComparison.Ordinal);
+        Assert.Equal("dev", read.Current);
+        Assert.Equal(["dev", "prod"], Names(read));
+        var problem = Assert.Single(read.Problems);
+        Assert.Contains("ControlPlane:Environments:Links:1:Name", problem, StringComparison.Ordinal);
+        Assert.Contains("leaves the entry out", problem, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ANameOfTheLongestLength_IsTaken_AndOneLonger_IsRefused()
+    public void ANameOfTheLongestLength_IsShown_AndOneLonger_IsLeftOut()
     {
         var longest = new string('e', EnvironmentsOptions.MaxNameLength);
-        new EnvironmentsOptions { Current = longest, Links = [Link(longest, "https://e.example.com")] }.Validate();
+        var options = new EnvironmentsOptions
+        {
+            Current = longest,
+            Links = [Link(longest, "https://e.example.com"), Link(longest + "e", "https://f.example.com")],
+        };
 
-        var longer = longest + "e";
-        var message = Refusal(new EnvironmentsOptions { Current = longest, Links = [Link(longer, "https://e.example.com")] });
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:0:Name", message, StringComparison.Ordinal);
+        Assert.Equal([longest], Names(read));
+        Assert.Contains("ControlPlane:Environments:Links:1:Name", Assert.Single(read.Problems), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AnEnvironmentListedTwice_IgnoringCase_IsRefused()
+    public void AnEnvironmentListedAgain_IgnoringCase_KeepsItsFirstEntry()
     {
         var options = Estate();
         options.Links.Add(Link("PROD", "https://sqlflow-prod-2.example.com"));
 
-        var message = Refusal(options);
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:3:Name 'PROD'", message, StringComparison.Ordinal);
-        Assert.Contains("list each environment once", message, StringComparison.Ordinal);
+        Assert.Equal(["dev", "test", "prod"], Names(read));
+        Assert.Equal("https://sqlflow.example.com/workbench", read.Environments[2].Url);
+        Assert.Contains("ControlPlane:Environments:Links:3:Name 'PROD'", Assert.Single(read.Problems), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AnEmptyEntry_IsRefused()
+    public void AnEmptyEntry_IsLeftOut()
     {
         var options = Estate();
         options.Links.Insert(0, null);
 
-        var message = Refusal(options);
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:0 is empty", message, StringComparison.Ordinal);
+        Assert.Equal(["dev", "test", "prod"], Names(read));
+        Assert.Contains("ControlPlane:Environments:Links:0 is empty", Assert.Single(read.Problems), StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData(" ")]
-    public void AMissingAddress_IsRefused(string? url)
-    {
-        var options = Estate();
-        options.Links[2] = Link("prod", url);
-
-        var message = Refusal(options);
-
-        Assert.Contains("ControlPlane:Environments:Links:2:Url is required", message, StringComparison.Ordinal);
-    }
-
-    [Theory]
     [InlineData("sqlflow-prod.example.com")]
     [InlineData("/workbench")]
     [InlineData("ftp://sqlflow-prod.example.com")]
     [InlineData("javascript:alert(1)")]
     [InlineData("file:///c:/estate")]
-    public void AnAddressThatIsNoHttpAddress_IsRefused_WithoutRepeatingIt(string url)
+    [InlineData("https://sqlflow-prod.example.com:99999")]
+    [InlineData("https://sqlflow-prod.example.com/?partition=prod")]
+    [InlineData("https://sqlflow-prod.example.com/#records")]
+    public void AnAddressThatIsNoGuiAddress_LeavesItsEnvironmentOut_WithoutRepeatingIt(string? url)
     {
         var options = Estate();
         options.Links[2] = Link("prod", url);
 
-        var message = Refusal(options);
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:2:Url is not an absolute http or https address", message, StringComparison.Ordinal);
-        Assert.DoesNotContain(url, message, StringComparison.Ordinal);
+        Assert.Equal("test", read.Current);
+        Assert.Equal(["dev", "test"], Names(read));
+        var problem = Assert.Single(read.Problems);
+        Assert.Contains("ControlPlane:Environments:Links:2:Url", problem, StringComparison.Ordinal);
+        Assert.Contains("leaves 'prod' out", problem, StringComparison.Ordinal);
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            Assert.DoesNotContain(url.Trim(), problem, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
-    public void AnAddressCarryingACredential_IsRefused_WithoutRepeatingIt()
+    public void AnAddressCarryingACredential_LeavesItsEnvironmentOut_WithoutRepeatingIt()
     {
         var options = Estate();
         options.Links[0] = Link("dev", "https://operator:s3cret-Pa55@sqlflow-dev.example.com");
 
-        var message = Refusal(options);
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:0:Url carries a user name or a password", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("s3cret-Pa55", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("operator", message, StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData("https://sqlflow-dev.example.com/?partition=dev")]
-    [InlineData("https://sqlflow-dev.example.com/#records")]
-    public void AnAddressWithAQueryOrAFragment_IsRefused(string url)
-    {
-        var options = Estate();
-        options.Links[0] = Link("dev", url);
-
-        var message = Refusal(options);
-
-        Assert.Contains("ControlPlane:Environments:Links:0:Url carries a query or a fragment", message, StringComparison.Ordinal);
+        Assert.Equal(["test", "prod"], Names(read));
+        var problem = Assert.Single(read.Problems);
+        Assert.Contains("ControlPlane:Environments:Links:0:Url carries a user name or a password", problem, StringComparison.Ordinal);
+        Assert.DoesNotContain("s3cret-Pa55", problem, StringComparison.Ordinal);
+        Assert.DoesNotContain("operator", problem, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AnHttpAddress_IsTaken_ForAnEstateServedWithoutTls()
+    public void TheCurrentOnesOwnBadAddress_LeavesItOutOfTheMenu_ButStillNamesIt()
+    {
+        var options = Estate();
+        options.Links[1] = Link("test", "not an address");
+
+        var read = options.Read();
+
+        Assert.Equal("test", read.Current);
+        Assert.Equal(["dev", "prod"], Names(read));
+        Assert.Single(read.Problems);
+    }
+
+    [Fact]
+    public void AnHttpAddress_IsShown_ForAnEstateServedWithoutTls()
     {
         var options = Estate();
         options.Links[0] = Link("dev", "http://localhost:5173");
 
-        options.Validate();
+        var read = options.Read();
+
+        Assert.Equal("http://localhost:5173", read.Environments[0].Url);
+        Assert.Empty(read.Problems);
     }
 
     [Fact]
-    public void AnAddressLongerThanTheLongest_IsRefused()
+    public void AnAddressLongerThanTheLongest_LeavesItsEnvironmentOut()
     {
         var options = Estate();
         options.Links[0] = Link("dev", "https://sqlflow-dev.example.com/" + new string('a', EnvironmentsOptions.MaxUrlLength));
 
-        var message = Refusal(options);
+        var read = options.Read();
 
-        Assert.Contains("ControlPlane:Environments:Links:0:Url is not an absolute http or https address", message, StringComparison.Ordinal);
+        Assert.Equal(["test", "prod"], Names(read));
+        Assert.Contains("ControlPlane:Environments:Links:0:Url is not an absolute http or https address", Assert.Single(read.Problems), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(EnvironmentsOptions.MaxDescriptionLength + 1, "")]
+    [InlineData(10, "\n")]
+    [InlineData(10, "\t")]
+    public void ADescriptionItCannotShow_IsDropped_AndItsEnvironmentKept(int length, string control)
+    {
+        var options = Estate();
+        var half = new string('d', (length + 1) / 2);
+        options.Links[0] = Link("dev", "https://sqlflow-dev.example.com", half + control + half);
+
+        var read = options.Read();
+
+        Assert.Equal(new ConfiguredEnvironment("dev", "https://sqlflow-dev.example.com", null), read.Environments[0]);
+        Assert.Contains("ControlPlane:Environments:Links:0:Description", Assert.Single(read.Problems), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ADescriptionOfTheLongestLength_IsTaken_AndOneLongerOrOnTwoLines_IsRefused()
+    public void ADescriptionOfTheLongestLength_IsShown()
     {
         var options = Estate();
         options.Links[0] = Link("dev", "https://sqlflow-dev.example.com", new string('d', EnvironmentsOptions.MaxDescriptionLength));
-        options.Validate();
 
-        options.Links[0] = Link("dev", "https://sqlflow-dev.example.com", new string('d', EnvironmentsOptions.MaxDescriptionLength + 1));
-        Assert.Contains("ControlPlane:Environments:Links:0:Description", Refusal(options), StringComparison.Ordinal);
+        var read = options.Read();
 
-        options.Links[0] = Link("dev", "https://sqlflow-dev.example.com", "Development\nand experiments");
-        Assert.Contains("describe the environment in one line", Refusal(options), StringComparison.Ordinal);
+        Assert.Equal(EnvironmentsOptions.MaxDescriptionLength, read.Environments[0].Description!.Length);
+        Assert.Empty(read.Problems);
     }
 
     [Fact]
-    public void AListOfTheMostEnvironments_IsTaken_AndOneMore_IsRefused()
+    public void AListLongerThanTheMost_ShowsTheFirstOnes()
     {
         var options = new EnvironmentsOptions { Current = "env0" };
-        for (var i = 0; i < EnvironmentsOptions.MaxLinks; i++)
+        for (var i = 0; i <= EnvironmentsOptions.MaxLinks; i++)
         {
             options.Links.Add(Link($"env{i}", $"https://env{i}.example.com"));
         }
 
-        options.Validate();
+        var read = options.Read();
 
-        options.Links.Add(Link("one-more", "https://one-more.example.com"));
-        Assert.Contains($"at most {EnvironmentsOptions.MaxLinks} are listed", Refusal(options), StringComparison.Ordinal);
+        Assert.Equal(EnvironmentsOptions.MaxLinks, read.Environments.Count);
+        Assert.Equal("env0", read.Current);
+        Assert.Contains($"shows the first {EnvironmentsOptions.MaxLinks}", Assert.Single(read.Problems), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TheControlPlanesOwnValidation_ChecksTheEnvironments()
+    public void AListWhoseEntriesAreAllUnreadable_ShowsNothing()
+    {
+        var options = new EnvironmentsOptions { Current = "dev", Links = [Link("pre prod", "https://a.example.com")] };
+
+        var read = options.Read();
+
+        ShowsNothing(read);
+        Assert.Equal(2, read.Problems.Count);
+        Assert.Contains("(no environment it could read)", read.Problems[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheControlPlanesOwnValidation_NeverRefusesTheEnvironments()
     {
         var options = new ControlPlaneOptions
         {
             Jwt = new JwtOptions { SigningKey = new string('k', 64) },
-            Environments = Estate("stage"),
+            Environments = new EnvironmentsOptions { Current = "stage", Links = [null, Link("pre prod", "javascript:alert(1)")] },
         };
 
-        var message = Assert.Throws<InvalidOperationException>(options.Validate).Message;
-
-        Assert.Contains("ControlPlane:Environments:Current is 'stage'", message, StringComparison.Ordinal);
+        options.Validate();
     }
 }

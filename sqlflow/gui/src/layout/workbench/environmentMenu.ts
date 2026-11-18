@@ -44,28 +44,45 @@ export function readableAddress(url: string): string | null {
   return parsed.host + parsed.pathname.replace(/\/+$/, "");
 }
 
+/** Whether `value` is an object, so its fields can be read. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
- * The control the title bar shows for `environments`, or null when no environment is configured (or the list has not
- * loaded), and the title bar then shows none. An entry whose address is not http(s) is left out rather than linked.
+ * The control the title bar shows for `environments`, or null when no environment is configured, the list has not
+ * loaded, or the answer is not one it can read, and the title bar then shows none. The title bar is on every page, so
+ * nothing in the answer may break it: an entry it cannot read, or whose address is not http(s), is left out rather than
+ * linked.
  */
 export function environmentMenu(environments: EstateEnvironments | undefined): EnvironmentMenu | null {
-  const currentName = environments?.current?.trim();
-  if (environments === undefined || !currentName) {
+  const answer: unknown = environments;
+  if (!isRecord(answer) || typeof answer.current !== "string" || answer.current.trim() === "") {
     return null;
   }
 
-  const entries = environments.environments.flatMap((environment): EnvironmentEntry[] => {
+  const currentName = answer.current.trim();
+  const listed: unknown[] = Array.isArray(answer.environments) ? answer.environments : [];
+  const entries = listed.flatMap((environment): EnvironmentEntry[] => {
+    if (!isRecord(environment) || typeof environment.name !== "string" || environment.name.trim() === ""
+      || typeof environment.url !== "string") {
+      return [];
+    }
+
+    const current = environment.current === true;
     const address = readableAddress(environment.url);
-    if (address === null && !environment.current) {
+    if (address === null && !current) {
       return [];
     }
 
     return [{
       name: environment.name,
-      description: environment.description,
+      description: typeof environment.description === "string" && environment.description.trim() !== ""
+        ? environment.description
+        : null,
       url: address === null ? null : environment.url,
       address,
-      current: environment.current,
+      current,
     }];
   });
 

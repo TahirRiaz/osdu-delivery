@@ -9,7 +9,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// <c>GET /api/v1/environments</c> through the in-memory host: the environments as the deployment's settings name them
 /// (environment variables bind them as <c>ControlPlane__Environments__Links__0__Name</c>), in their order, the current one
-/// marked; nothing when none is configured; only to a signed-in caller; and a list it could not show stops the host.
+/// marked; nothing when none is configured; only to a signed-in caller; and a mistake in the list never stops the host,
+/// which leaves it out and logs why.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class EnvironmentsApiTests
@@ -80,15 +81,31 @@ public sealed class EnvironmentsApiTests
     }
 
     [Fact]
-    public async Task AListItCouldNotShow_StopsTheHostAtStart_NamingTheSetting()
+    public async Task ACurrentOneTheListDoesNotGive_StartsTheHost_ShowsNoEnvironment_AndLogsWhy()
     {
         await using var factory = Estate("stage");
+        using var client = factory.CreateClient();
 
-        var error = Assert.ThrowsAny<Exception>(() => factory.CreateClient());
+        var environments = await GetAsync(client, await TokenAsync(client));
 
-        var refusal = error as InvalidOperationException ?? error.InnerException as InvalidOperationException;
-        Assert.NotNull(refusal);
-        Assert.Contains("ControlPlane:Environments:Current is 'stage'", refusal.Message, StringComparison.Ordinal);
+        Assert.Null(environments.Current);
+        Assert.Empty(environments.Environments);
+        Assert.Contains(factory.Logs, line => line.Contains("ControlPlane:Environments:Current is 'stage'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AnEntryWithABadAddress_StartsTheHost_LeavesThatEntryOut_AndLogsWhyWithoutTheAddress()
+    {
+        await using var factory = Estate("test")
+            .WithSetting("ControlPlane:Environments:Links:2:Url", "https://operator:s3cret-Pa55@sqlflow.example.com");
+        using var client = factory.CreateClient();
+
+        var environments = await GetAsync(client, await TokenAsync(client));
+
+        Assert.Equal("test", environments.Current);
+        Assert.Equal(["dev", "test"], environments.Environments.Select(e => e.Name));
+        Assert.Contains(factory.Logs, line => line.Contains("ControlPlane:Environments:Links:2:Url", StringComparison.Ordinal));
+        Assert.DoesNotContain(factory.Logs, line => line.Contains("s3cret-Pa55", StringComparison.Ordinal));
     }
 
     private static async Task<EnvironmentsDto> GetAsync(HttpClient client, string token)

@@ -9,10 +9,14 @@ namespace SqlFlow.ControlPlane.Configuration;
 /// <see cref="Links"/> lists every environment of the estate, this one among them, in the order the title bar's menu shows
 /// them, each with the address of its GUI. Every deployment can be given the same list, so they differ only in
 /// <see cref="Current"/>. Nothing is configured by default, and the title bar then names no environment.
+/// <para>
+/// The setting only labels and links, so a mistake in it never stops a control plane: <see cref="Read"/> leaves out what
+/// it cannot show and says why, and the host logs each reason at start.
+/// </para>
 /// </summary>
 public sealed class EnvironmentsOptions
 {
-    /// <summary>The most environments the list may hold.</summary>
+    /// <summary>The most environments the title bar's menu lists; the rest of a longer list is left out.</summary>
     public const int MaxLinks = 20;
 
     /// <summary>The longest an environment's name may be.</summary>
@@ -24,9 +28,12 @@ public sealed class EnvironmentsOptions
     /// <summary>The longest an environment's address may be.</summary>
     public const int MaxUrlLength = 2000;
 
+    private const string NameRule =
+        "letters, digits, '-', '_' and '.', starting with a letter or a digit, at most 64 characters";
+
     /// <summary>
-    /// The name of the environment this control plane is. Required when <see cref="Links"/> lists any, and then one of
-    /// theirs; set alone, the title bar names the environment and offers no other.
+    /// The name of the environment this control plane is: one of the names <see cref="Links"/> gives, when it lists any.
+    /// Set alone, the title bar names the environment and offers no other.
     /// </summary>
     public string? Current { get; set; }
 
@@ -34,89 +41,112 @@ public sealed class EnvironmentsOptions
     public List<EnvironmentLinkOptions?> Links { get; set; } = [];
 
     /// <summary>
-    /// The name of the environment this control plane is, spelled as <see cref="Links"/> spells it, or null when none is
-    /// configured. Read after <see cref="Validate"/>.
+    /// What the title bar shows of the setting, and a sentence for each mistake it found, naming the setting and what was
+    /// left out because of it. An entry the title bar cannot show (a name that is not one, an environment listed again, an
+    /// address that is not an http(s) address of a GUI, one past the <see cref="MaxLinks"/>th) is left out of the menu,
+    /// and a description it cannot show is dropped from its entry. When the environment this control plane is cannot be
+    /// told (no <see cref="Current"/> beside a list, a name that is not one, or one the list does not give), the title bar
+    /// shows no environment at all rather than a label that could be wrong. An address is never repeated in a sentence,
+    /// since a mistyped one could carry a credential. Nothing here throws.
     /// </summary>
-    public string? CurrentName()
+    public ConfiguredEnvironments Read()
     {
-        var current = Current?.Trim();
-        if (string.IsNullOrEmpty(current))
-        {
-            return null;
-        }
-
-        return Links
-            .Select(link => link?.Name?.Trim())
-            .FirstOrDefault(name => string.Equals(name, current, StringComparison.OrdinalIgnoreCase)) ?? current;
-    }
-
-    /// <summary>
-    /// Refuses a list the title bar could not show: a name that is not one, an environment listed twice, an address that is
-    /// not an http(s) address of a GUI, or a current environment the list does not hold. An address is never repeated in
-    /// a refusal, since a mistyped one could carry a credential.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">A setting the title bar cannot show, naming the setting.</exception>
-    public void Validate()
-    {
-        if (Links.Count > MaxLinks)
-        {
-            throw new InvalidOperationException(
-                $"ControlPlane:Environments:Links lists {Links.Count} environments; at most {MaxLinks} are listed.");
-        }
-
-        var names = new List<string>(Links.Count);
+        var problems = new List<string>();
+        var listed = new List<string>();
+        var shown = new List<ConfiguredEnvironment>();
         for (var i = 0; i < Links.Count; i++)
         {
+            if (i == MaxLinks)
+            {
+                problems.Add(
+                    $"ControlPlane:Environments:Links lists {Links.Count} environments; the title bar's menu shows the first "
+                    + $"{MaxLinks} and leaves out the rest.");
+                break;
+            }
+
             var setting = $"ControlPlane:Environments:Links:{i}";
-            var link = Links[i]
-                ?? throw new InvalidOperationException($"{setting} is empty: give it a Name and a Url, or take it out of the list.");
+            var link = Links[i];
+            if (link is null)
+            {
+                problems.Add($"{setting} is empty, so the title bar's menu leaves it out.");
+                continue;
+            }
 
             var name = link.Name?.Trim();
             if (!IsName(name))
             {
-                throw new InvalidOperationException(
-                    $"{setting}:Name {Quoted(link.Name)} is not an environment name: letters, digits, '-', '_' and '.', starting "
-                    + $"with a letter or a digit, at most {MaxNameLength} characters.");
+                problems.Add(
+                    $"{setting}:Name {Quoted(link.Name)} is not an environment name ({NameRule}), so the title bar's menu "
+                    + "leaves the entry out.");
+                continue;
             }
 
-            if (names.Contains(name, StringComparer.OrdinalIgnoreCase))
+            if (listed.Contains(name, StringComparer.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
-                    $"{setting}:Name '{name}' names an environment an earlier entry of ControlPlane:Environments:Links names; "
-                    + "list each environment once.");
+                problems.Add(
+                    $"{setting}:Name '{name}' names an environment an earlier entry of ControlPlane:Environments:Links "
+                    + "names, so the title bar's menu leaves this entry out.");
+                continue;
             }
 
-            names.Add(name);
-            ValidateUrl(link.Url, setting + ":Url");
-            ValidateDescription(link.Description, setting + ":Description");
+            listed.Add(name);
+            if (AddressProblem(link.Url, setting + ":Url") is { } problem)
+            {
+                problems.Add($"{problem}, so the title bar's menu leaves '{name}' out.");
+                continue;
+            }
+
+            var description = link.Description?.Trim();
+            if (description is { Length: > 0 } && (description.Length > MaxDescriptionLength || description.Any(char.IsControl)))
+            {
+                problems.Add(
+                    $"{setting}:Description is longer than {MaxDescriptionLength} characters or holds a control character, "
+                    + $"so the title bar's menu shows '{name}' without it.");
+                description = null;
+            }
+
+            shown.Add(new ConfiguredEnvironment(name, link.Url!.Trim(), string.IsNullOrEmpty(description) ? null : description));
         }
 
         var current = Current?.Trim();
         if (string.IsNullOrEmpty(current))
         {
-            if (names.Count > 0)
+            if (listed.Count > 0)
             {
-                throw new InvalidOperationException(
-                    $"ControlPlane:Environments:Links lists {string.Join(", ", names)}, and ControlPlane:Environments:Current names "
-                    + "none of them: set it to the environment this control plane is.");
+                problems.Add(
+                    $"ControlPlane:Environments:Links lists {string.Join(", ", listed)}, and ControlPlane:Environments:Current "
+                    + "names none of them, so the title bar shows no environment: set it to the environment this control "
+                    + "plane is.");
             }
 
-            return;
+            return new ConfiguredEnvironments(null, [], problems);
         }
 
         if (!IsName(current))
         {
-            throw new InvalidOperationException(
-                $"ControlPlane:Environments:Current {Quoted(Current)} is not an environment name: letters, digits, '-', '_' and "
-                + $"'.', starting with a letter or a digit, at most {MaxNameLength} characters.");
+            problems.Add(
+                $"ControlPlane:Environments:Current {Quoted(Current)} is not an environment name ({NameRule}), so the title "
+                + "bar shows no environment.");
+            return new ConfiguredEnvironments(null, [], problems);
         }
 
-        if (names.Count > 0 && !names.Contains(current, StringComparer.OrdinalIgnoreCase))
+        if (Links.Count > 0)
         {
-            throw new InvalidOperationException(
-                $"ControlPlane:Environments:Current is '{current}', which ControlPlane:Environments:Links does not list "
-                + $"({string.Join(", ", names)}): name one of them, or add this environment to the list with its address.");
+            var spelled = listed.FirstOrDefault(name => string.Equals(name, current, StringComparison.OrdinalIgnoreCase));
+            if (spelled is null)
+            {
+                var names = listed.Count > 0 ? string.Join(", ", listed) : "no environment it could read";
+                problems.Add(
+                    $"ControlPlane:Environments:Current is '{current}', which ControlPlane:Environments:Links does not list "
+                    + $"({names}), so the title bar shows no environment: name one of them, or add this environment to the "
+                    + "list with its address.");
+                return new ConfiguredEnvironments(null, [], problems);
+            }
+
+            current = spelled;
         }
+
+        return new ConfiguredEnvironments(current, shown, problems);
     }
 
     private static bool IsName([NotNullWhen(true)] string? name)
@@ -127,12 +157,12 @@ public sealed class EnvironmentsOptions
     private static string Quoted(string? value)
         => string.IsNullOrWhiteSpace(value) ? "is missing, so it" : $"'{value.Trim()}'";
 
-    private static void ValidateUrl(string? url, string setting)
+    /// <summary>Why <paramref name="url"/> is not the http(s) address of a GUI, naming <paramref name="setting"/>; null when it is.</summary>
+    private static string? AddressProblem(string? url, string setting)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
-            throw new InvalidOperationException(
-                $"{setting} is required: the address of the environment's GUI, for example https://sqlflow-test.example.com.");
+            return $"{setting} is empty: it is the address of the environment's GUI, for example https://sqlflow-test.example.com";
         }
 
         var trimmed = url.Trim();
@@ -140,38 +170,17 @@ public sealed class EnvironmentsOptions
             || !Uri.TryCreate(trimmed, UriKind.Absolute, out var address)
             || (address.Scheme != Uri.UriSchemeHttps && address.Scheme != Uri.UriSchemeHttp))
         {
-            throw new InvalidOperationException(
-                $"{setting} is not an absolute http or https address of the environment's GUI (at most {MaxUrlLength} characters).");
+            return $"{setting} is not an absolute http or https address of the environment's GUI (at most {MaxUrlLength} characters)";
         }
 
         if (address.UserInfo.Length > 0)
         {
-            throw new InvalidOperationException(
-                $"{setting} carries a user name or a password: give the address of the environment's GUI alone, since each "
-                + "environment signs a person in itself.");
+            return $"{setting} carries a user name or a password, which the address of an environment's GUI never holds";
         }
 
-        if (address.Query.Length > 0 || address.Fragment.Length > 0)
-        {
-            throw new InvalidOperationException(
-                $"{setting} carries a query or a fragment: give the address of the environment's GUI alone.");
-        }
-    }
-
-    private static void ValidateDescription(string? description, string setting)
-    {
-        if (description is null)
-        {
-            return;
-        }
-
-        var trimmed = description.Trim();
-        if (trimmed.Length > MaxDescriptionLength || trimmed.Any(char.IsControl))
-        {
-            throw new InvalidOperationException(
-                $"{setting} is longer than {MaxDescriptionLength} characters or holds a control character: describe the "
-                + "environment in one line.");
-        }
+        return address.Query.Length > 0 || address.Fragment.Length > 0
+            ? $"{setting} carries a query or a fragment, where only the address of the environment's GUI belongs"
+            : null;
     }
 }
 
@@ -187,3 +196,16 @@ public sealed class EnvironmentLinkOptions
     /// <summary>What the environment is for, in one line; shown under its name in the menu.</summary>
     public string? Description { get; set; }
 }
+
+/// <summary>
+/// What the title bar shows of <c>ControlPlane:Environments</c>, read once at start (<see cref="EnvironmentsOptions.Read"/>):
+/// the environment this control plane is (null when it cannot be told, and then nothing is shown), the environments the
+/// menu lists in order, and a sentence for each mistake the setting held.
+/// </summary>
+public sealed record ConfiguredEnvironments(
+    string? Current,
+    IReadOnlyList<ConfiguredEnvironment> Environments,
+    IReadOnlyList<string> Problems);
+
+/// <summary>One environment the title bar's menu lists: its name, the address of its GUI, and what it is for.</summary>
+public sealed record ConfiguredEnvironment(string Name, string Url, string? Description);
