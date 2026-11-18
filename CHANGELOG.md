@@ -747,6 +747,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curve `MD` among its curves ([Assertions](osdu/docs/reference/flow/assertion.md#assertions)).
 
 ### Changed
+- **Signing in looks like the product.** In the VS Code extension, the side bar before you sign in shows the product
+  and its pitch, the control plane you sign in to with whether it answers, and **Sign in**; while your browser is open it
+  shows the code to approve, with **Open the page again** and **Cancel**. The GUI's page that approves the code stands on
+  the login page's brand field, names the account the client will act as and what it may do
+  ([signing in](osdu/docs/reference/guides/vscode.md#signing-in)).
 - **The MCP tool `get_cli` is `get_environment`.** Beside the command line's path it says how to call it where the
   assistant runs, which control plane it reaches, and its verbs with what each does, the delivery module's among them; the
   server's instructions send an assistant to it before work a script does better
