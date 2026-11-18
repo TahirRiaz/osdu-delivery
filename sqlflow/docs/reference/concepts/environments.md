@@ -48,7 +48,7 @@ can be given the same list, so they differ only in `Current`.
 
 | Key | Meaning |
 | --- | --- |
-| `Environments:Current` | The name of the environment this control plane is. Required when `Links` lists any, and then one of their names (case does not matter; the list's spelling is shown). Set alone, the title bar names the environment and offers no other. |
+| `Environments:Current` | The name of the environment this control plane is: one of the names `Links` gives when it lists any (case does not matter; the list's spelling is shown). Set alone, the title bar names the environment and offers no other. |
 | `Environments:Links:<n>:Name` | An environment's name, as the title bar shows it: `dev`, `test`, `prod`. |
 | `Environments:Links:<n>:Url` | The address of that environment's GUI, which the menu opens. |
 | `Environments:Links:<n>:Description` | What the environment is for, in one line, shown under its name. Optional. |
@@ -72,29 +72,34 @@ ControlPlane__Environments__Links__2__Description=Production
 
 The dev and prod deployments carry the same lines with `Current` set to `dev` and to `prod`.
 
-## What start refuses
+## A mistake in the setting
 
-The control plane checks the setting with the rest of its configuration and refuses to start on the first value it cannot
-show, naming the setting:
+The setting only labels and links, so a mistake in it never stops a control plane, whatever else it is running. The
+control plane reads the setting once when it starts, leaves out what the title bar cannot show, and logs a warning for
+each mistake, naming the setting and what was left out:
 
-| Rule | Detail |
+| A mistake | What the title bar does |
 | --- | --- |
-| Names | Letters, digits, `-`, `_` and `.`, starting with a letter or a digit, at most 64 characters; each environment listed once, ignoring case. |
-| Current | Set whenever `Links` lists any, and one of their names. |
-| Addresses | An absolute `http` or `https` address, at most 2,000 characters, with no user name or password, query or fragment. A refusal never repeats the address, since a mistyped one could carry a credential. |
-| Descriptions | At most 400 characters, on one line. |
-| Count | At most 20 environments. |
+| A name that is not one (letters, digits, `-`, `_` and `.`, starting with a letter or a digit, at most 64 characters), or an environment listed again, ignoring case | Leaves that entry out of the menu; an environment listed again keeps its first entry. |
+| An address that is not an absolute `http` or `https` address of at most 2,000 characters, or that carries a user name, password, query or fragment | Leaves that environment out of the menu. The warning never repeats the address, since a mistyped one could carry a credential. |
+| A description over 400 characters, or on more than one line | Shows the environment without it. |
+| More than 20 environments | Shows the first 20. |
+| `Links` lists environments and `Current` names none of them, or is not a name | Shows no environment at all, rather than a label that could be wrong. |
 
-For example:
-`ControlPlane:Environments:Current is 'stage', which ControlPlane:Environments:Links does not list (dev, test, prod): name one of them, or add this environment to the list with its address.`
+Leaving the setting out entirely shows nothing and logs nothing. A warning reads, for example:
+`The title bar's environments: ControlPlane:Environments:Current is 'stage', which ControlPlane:Environments:Links does not list (dev, test, prod), so the title bar shows no environment: name one of them, or add this environment to the list with its address.`
 and
-`ControlPlane:Environments:Links:2:Url carries a user name or a password: give the address of the environment's GUI alone, since each environment signs a person in itself.`
+`The title bar's environments: ControlPlane:Environments:Links:2:Url carries a user name or a password, which the address of an environment's GUI never holds, so the title bar's menu leaves 'prod' out.`
+
+A deployment template may check the setting earlier still, as a Terraform variable's validation does at plan, before
+anything changes.
 
 ## The API
 
-`GET /api/v1/environments` (policy `read`) answers the setting as the title bar shows it: `current`, the name of the
-environment this control plane is (null when none is configured), and `environments`, each with `name`, `description`,
-`url` and `current`, in the configured order (empty when only the current one is named). It answers a signed-in caller
+`GET /api/v1/environments` (policy `read`) answers the setting as the title bar shows it, what a mistake left out already
+left out: `current`, the name of the environment this control plane is (null when none is configured, or when the setting
+does not say which it is), and `environments`, each with `name`, `description`, `url` and `current`, in the configured
+order (empty when only the current one is named). It answers a signed-in caller
 only, since the list names the estate's other addresses, and is closed to an assistant run's delegated token.
 
 ```json
@@ -114,7 +119,9 @@ The title bar shows **Environment** and the current environment's name, just bef
 other environments listed, it opens a menu of every environment in order: the current one checked, each other one a link
 to its GUI with its description and address. Following one opens that environment's start page, in the same tab (or a new
 one, as any link can), where it signs the person in. With no other environment it names this one without a menu, and with
-none configured it shows nothing. The GUI links only an `http` or `https` address, whatever the list holds.
+none configured it shows nothing. The title bar is on every page, so nothing in the answer may break it: the GUI links
+only an `http` or `https` address, leaves out an entry it cannot read, and shows nothing when the answer is not one it
+can read or the request fails.
 
 ## See also
 
