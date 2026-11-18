@@ -18,11 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Switch between dev, test and prod from the title bar.** Each deployment's configuration names the environment it is
-  and lists every one with the address of its GUI (Terraform's `environments`, Bicep's `environments`, already set in the
-  Radix configuration, or `ControlPlane__Environments__*` anywhere else). The title bar then says which environment you
-  are in, and its **Environment** menu opens another one's GUI, where it signs you in
-  ([Environments](sqlflow/docs/reference/concepts/environments.md)). Partitions of one deployment are not a substitute:
-  they keep a run's data apart, not people, agents or an untested mapping
+  and lists every one with the address of its GUI (Terraform's `environments`, Bicep's `environments`, a comment to
+  uncomment in the Radix configuration, or `ControlPlane__Environments__*` anywhere else). The title bar then says which
+  environment you are in, and its **Environment** menu opens another one's GUI, where it signs you in
+  ([Environments](sqlflow/docs/reference/concepts/environments.md)). The setting never stops a deployment: left out,
+  nothing changes, and a mistake in it is left out of the title bar and logged when the control plane starts
+  ([a mistake in the setting](sqlflow/docs/reference/concepts/environments.md#a-mistake-in-the-setting)). Partitions of
+  one deployment are not a substitute: they keep a run's data apart, not people, agents or an untested mapping
   ([partitions or environments](osdu/docs/reference/concepts/partitions.md#partitions-or-environments)).
 - **The command line has a current control plane.** `sqlflow login` makes the control plane it signs in to the current
   one, so does signing in through the VS Code extension or switching its control plane, and `sqlflow use <url>` names it;

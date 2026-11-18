@@ -83,13 +83,18 @@ Dev, test and prod are deployments of their own, each with its own sign-in, cata
 which [moves to a new commit only when that environment syncs it](../../../../sqlflow/docs/reference/concepts/repository-auto-sync.md).
 Each deployment's configuration names the environment it is and lists every environment with the address of its GUI
 (`ControlPlane:Environments`), and the title bar names the current one and opens another from a menu. The Terraform
-estate and the Bicep template take the list as a variable, the Radix configuration carries its three environments, and
-the setting is SQLFlow's, since any SQLFlow estate runs environments the same way.
+estate and the Bicep template take the list as a variable, the Radix configuration carries its three environments as a
+comment to uncomment, and the setting is SQLFlow's, since any SQLFlow estate runs environments the same way.
 
 - **The menu is a link.** Opening another environment opens its GUI's start page, which signs the person in itself. It
   carries nothing over: no page, no partition, no token.
 - **The list is the control plane's configuration**, as the rest of a deployment's description is, so the deployment
-  templates set it like any other setting, and start refuses a list the title bar could not show.
+  templates set it like any other setting.
+- **A mistake in it never stops a deployment.** The human, of deployed environments: "we have deployed and i dont want to
+  break. so there should be a failsafe handling of this". The setting only labels and links, so the control plane reads
+  it once at start, leaves out of the title bar what it cannot show, and logs why; when it cannot tell which environment
+  it is, it shows none rather than a label that could be wrong. The GUI shows nothing for an answer it cannot read. The
+  Terraform estate still refuses a mistake at plan, which stops the change before anything is deployed.
 - **Only a signed-in person reads it.** The list names the estate's other addresses.
 
 ## Rejected
@@ -104,6 +109,9 @@ the setting is SQLFlow's, since any SQLFlow estate runs environments the same wa
 - **Keeping the list in the GUI's `config.json`.** That file is public and the GUI's alone, while the control plane's
   configuration is where a deployment is described and checked at start, and where another client can read it.
 - **Showing the list on the sign-in page.** It would hand the estate's other addresses to anyone who reaches the page.
+- **Refusing to start on a mistake in the list**, as the first version did and as the control plane does for settings it
+  cannot run without. A typo in a label would have taken down a deployed environment, and a fork pulling the template
+  could have deployed its placeholders.
 
 ## What stays open
 
