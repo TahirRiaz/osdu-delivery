@@ -19,6 +19,14 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   record missing the same values. The mapping builder's switch marks a node, and **Check values** counts its rows as
   restricted.
 
+### A mapping's overview
+
+- The YAML beside a mapping's overview, in **Preview** or on its page, closes from the button at the end of its heading,
+  as **YAML** on the toolbar closes it.
+- A part's menu leaves out **Details**: **Show in the YAML** shows the lines of the same part beside the canvas, and a
+  double click, or Enter, still opens its details
+  ([a mapping's overview](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/mapping-overview.md#the-menus)).
+
 ## [1.0.3]
 
 ### Signing in
