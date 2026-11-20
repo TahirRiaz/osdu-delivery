@@ -131,6 +131,22 @@ test.describe.serial("pipelines", () => {
     const tabs = adminPage.getByTestId("pipeline-tabs");
     await tabs.getByRole("tab", { name: /runs/i }).click();
 
+    // A delivery run counts records, not rows: its own counts stand where SQLFlow's row and file counts stand.
+    const runs = adminPage.getByTestId("paged-table").filter({ has: adminPage.getByTestId("run-records-link") });
+    for (const header of ["Delivered", "Unchanged", "Held", "Failed"]) {
+      await expect(runs.getByRole("columnheader", { name: header, exact: true })).toBeVisible({ timeout: 30_000 });
+    }
+    for (const header of ["Rows loaded", "Inserted", "Updated", "Deleted", "Files"]) {
+      await expect(runs.getByRole("columnheader", { name: header, exact: true })).toHaveCount(0);
+    }
+
+    // The intake that staged the records reports what it planned: rows it found unchanged and records it held, as
+    // numbers; it delivers nothing itself, so Delivered is a dash.
+    const newest = runs.getByTestId("table-row").first();
+    await expect(newest.getByTestId("run-list-unchanged")).toHaveText(/^\d+$/, { timeout: 30_000 });
+    await expect(newest.getByTestId("run-list-held")).toHaveText(/^\d+$/);
+    await expect(newest.getByTestId("run-list-delivered")).toHaveCount(0);
+
     // A run's row opens the run; its Records icon opens the flow's Records tab narrowed to what the run touched.
     const link = adminPage.getByTestId("run-records-link").first();
     await expect(link).toBeVisible({ timeout: 30_000 });

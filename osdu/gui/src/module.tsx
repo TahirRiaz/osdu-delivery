@@ -10,7 +10,9 @@ import type { FlowKindContribution, GuiModule, RunDetailContribution } from "@/m
 import { Deferred } from "./features/delivery/Deferred";
 import { AssertionRunActions, AssertionRunCounts } from "./features/delivery/assertions/AssertionRunHeader";
 import { AssertionTriggerFields } from "./features/delivery/assertions/AssertionTriggerFields";
-import { CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunMeta, DeliveryRunRecordsLink } from "./features/delivery/DeliveryRunHeader";
+import {
+  CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunListCount, DeliveryRunMeta, DeliveryRunRecordsLink,
+} from "./features/delivery/DeliveryRunHeader";
 import { DimensionRunActions, DimensionRunCounts } from "./features/delivery/dimensions/DimensionRunHeader";
 import { DimensionTriggerFields } from "./features/delivery/dimensions/DimensionTriggerFields";
 import { InventoryRunActions, InventoryRunCounts } from "./features/delivery/inventories/InventoryRunHeader";
@@ -182,6 +184,15 @@ const deliveryRunColumns: Column<RunSummary>[] = [
   { id: "records", header: "Records", align: "center", render: (row) => <DeliveryRunRecordsLink run={row} /> },
 ];
 
+// A delivery run counts records, not rows: what it delivered, found unchanged, held and failed stand where SQLFlow's row
+// and file counts stand on a list of runs, as its page shows them in place of those counts.
+const deliveryRunCountColumns: Column<RunSummary>[] = [
+  { id: "delivered", header: "Delivered", align: "right", render: (row) => <DeliveryRunListCount run={row} count="delivered" /> },
+  { id: "unchanged", header: "Unchanged", align: "right", render: (row) => <DeliveryRunListCount run={row} count="unchanged" /> },
+  { id: "held", header: "Held", align: "right", render: (row) => <DeliveryRunListCount run={row} count="held" /> },
+  { id: "failed", header: "Failed", align: "right", render: (row) => <DeliveryRunListCount run={row} count="failed" /> },
+];
+
 function runPanels(extra: Omit<RunDetailContribution, "card" | "hiddenTabs">): RunDetailContribution {
   return {
     ...extra,
@@ -259,6 +270,7 @@ const deliveryKind: FlowKindContribution = {
   hiddenPipelineFacts: ["targetServer"],
   pipelineFacts: (pipeline) => <Deferred placeholder={false}><DeliveryTargetFacts pipelineId={pipeline.id} /></Deferred>,
   runColumns: deliveryRunColumns,
+  runCountColumns: deliveryRunCountColumns,
   run: runPanels({
     headerActions: (run) => <DeliveryRunActions run={run} />,
     headerMeta: (run) => <DeliveryRunMeta run={run} />,

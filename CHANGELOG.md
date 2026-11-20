@@ -779,6 +779,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   character to compare with the one your tool shows (typed or pasted in any case, with or without its dash), the account
   it signs in as with **Use another account**, and **Deny** and **Approve** side by side
   ([the device-authorization grant](sqlflow/docs/reference/concepts/authentication-and-identity.md)).
+- **A delivery flow's runs count records.** A delivery flow's **Runs** tab, and the runs board filtered to delivery
+  flows, show what each run **Delivered**, found **Unchanged**, **Held** and **Failed** in place of SQLFlow's Rows
+  loaded, Inserted, Updated, Deleted and Files, which a delivery run never reported and which showed a dash on every row.
+  On a run's page, **Unchanged** now also counts the records OSDU already held when the run came to send them, and a
+  drain's count shows where it showed a dash. A run started from the command line keeps what it reported, so its page
+  and the lists show its counts too, where they showed a dash
+  ([a delivery flow's page](osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
 - **The Records tab says what a link narrowed it to.** A run, a submission, an issue or a set of missing values a link
   narrowed the list to is a chip at the top of the list, read as a sentence (**Touched by run …1a2b3c**) whose id opens
   what it names and whose cross drops it, with **Clear all** for several; the status and access pickers show when they
