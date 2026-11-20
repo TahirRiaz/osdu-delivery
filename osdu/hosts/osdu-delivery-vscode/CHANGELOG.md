@@ -3,6 +3,18 @@
 What changed in the OSDU Delivery extension for VS Code, newest first. The extension has a version of its own; the
 product's own changes are in the [repository's change log](https://github.com/TahirRiaz/osdu-delivery/blob/main/CHANGELOG.md).
 
+## [1.0.5]
+
+### A run's records
+
+- A delivery flow's **Runs** tab has a **Records** icon on each run that opens the flow's Records tab narrowed to the
+  records the run touched, those of the parts a delivery split over nodes included, and **Records of this run** on a
+  run's page opens them in the interface and partition the run worked in.
+- What a link narrowed a flow's Records tab to (a run, a submission, an issue, a set of missing values) is a chip at the
+  top of the list whose id opens what it names and whose cross drops it, with **Clear all** for several. The run's chip
+  says its operation, how it ended and when, and leads from a part to the whole run
+  ([a delivery flow's page](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
+
 ## [1.0.4]
 
 ### Restricted until complete
