@@ -1280,6 +1280,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **A run's records include what its parts delivered.** A delivery split over several nodes writes its records under each
+  part's run, so the Records tab narrowed to the run that split it, **Records of this run** on its page, the export of
+  them and a removal of every record matching them found only what that run sent itself. They now find every record its
+  parts touched too; a part's records are still its own alone
+  ([records of a split run](osdu/docs/reference/concepts/submissions.md#many-nodes)).
 - **Removing every record that matches the Records tab's filter keeps its Step held and Access filters.** With **Step
   held**, an **Access** choice or a set of missing values narrowing the list, **Select all N matching** and **Remove**
   queued a run that left those filters out, and so removed records the list had not shown. The run now removes exactly
