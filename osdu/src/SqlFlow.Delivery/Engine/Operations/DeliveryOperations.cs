@@ -492,6 +492,24 @@ public sealed class RemovalFilter
     /// <summary>Only drifted records when true; left out, every record.</summary>
     public bool? Drifted { get; set; }
 
+    /// <summary>Only records an enrichment held in and was set aside on, when true.</summary>
+    public bool? StepHeld { get; set; }
+
+    /// <summary>Only records an operator restricted, or asked to restrict, when true.</summary>
+    public bool? Restricted { get; set; }
+
+    /// <summary>Only records OSDU holds restricted until complete, when true.</summary>
+    public bool? Incomplete { get; set; }
+
+    /// <summary>Only records restricted either way, by an operator or until complete, when true.</summary>
+    public bool? AccessRestricted { get; set; }
+
+    /// <summary>
+    /// The set of missing values whose records restricted until complete the listing keeps: the sixteen characters a record's
+    /// <c>incompleteGroup</c> gives it.
+    /// </summary>
+    public string? Missing { get; set; }
+
     /// <summary>The issue whose blocked records the listing keeps: the sixteen characters the flow's issues listing gives it.</summary>
     public string? Issue { get; set; }
 
@@ -529,6 +547,15 @@ public sealed class RemovalFilter
                     $"payload filter issue '{filter.Issue}' is not an issue: an issue is the {ProblemSignature.TextLength} characters the flow's issues listing gives it.");
         }
 
+        long? missing = null;
+        if (!string.IsNullOrWhiteSpace(filter.Missing))
+        {
+            missing = ProblemSignature.TryParse(filter.Missing.Trim().ToLowerInvariant(), out var group)
+                ? group
+                : throw new SqlFlowException(
+                    $"payload filter missing '{filter.Missing}' is not a set of missing values: it is the {ProblemSignature.TextLength} characters a record restricted until complete gives as its incompleteGroup.");
+        }
+
         return new RecordQuery
         {
             Status = status,
@@ -539,6 +566,11 @@ public sealed class RemovalFilter
             DeliveredBySubmissionId = filter.DeliveredBySubmissionId,
             RunId = filter.RunId,
             Drifted = filter.Drifted == true,
+            StepHeld = filter.StepHeld == true,
+            Restricted = filter.Restricted == true,
+            Incomplete = filter.Incomplete == true || missing is not null,
+            Missing = missing,
+            AccessRestricted = filter.AccessRestricted == true,
         };
     }
 
@@ -557,6 +589,12 @@ public sealed class RemovalFilter
                 DeliveredBySubmissionId = query.DeliveredBySubmissionId,
                 RunId = query.RunId,
                 Drifted = query.Drifted ? true : null,
+                StepHeld = query.StepHeld ? true : null,
+                Restricted = query.Restricted ? true : null,
+                // A set of missing values implies the records restricted until complete, so it is written alone.
+                Incomplete = query.Incomplete && query.Missing is null ? true : null,
+                AccessRestricted = query.AccessRestricted ? true : null,
+                Missing = query.Missing is { } missing ? ProblemSignature.Format(missing) : null,
                 Issue = query.Problem is { } issue ? ProblemSignature.Format(issue) : null,
             },
             DeliveryOperation.JsonOptions);
