@@ -107,10 +107,13 @@ Each line is `<field> = <operand>`:
   wellbore with three aliases is found by each of them. A lookup table is matched on its key column by name, or any
   other column it keeps.
 - `<operand>` is a column, named as `$from` names it (a bare name reads the row the node is in, `$dataset.<column>` the
-  dataset's own row from inside a `$forEach`), or a quoted text (`'KellyBushing'`).
+  dataset's own row from inside a `$forEach`), or a quoted text (`'KellyBushing'`), which reads the mapping's
+  parameters as every literal does (`'{$param.dataPartition}:master-data--GeoPoliticalEntity:NO:'`); a parameter the
+  mapping does not declare is refused when the mapping is read.
 
 One line, or a list. The lines are tried in order: a line whose value is empty is skipped, and the first line that finds
-exactly one record wins. A node's [modifiers](mapping-modifiers.md) change the incoming value before every line compares
+exactly one record wins. The lines tried before it are recorded with the render, each as it found nothing or several
+records, so a version in which one of them finds exactly one record reaches the records built from the later line. A node's [modifiers](mapping-modifiers.md) change the incoming value before every line compares
 it; what the cache holds is OSDU's own and is never modified, so `$modifiers` on a node whose lines compare only quoted
 texts is refused (`$modifiers change incoming dataset values, and this node's $findBy reads none; cache values are never
 modified.`).
@@ -141,9 +144,12 @@ value exact with a replace modifier`. A later line that finds exactly one record
   reference data by its code therefore finds the record that code is the id of, even where the record's own `Code` says
   something else. A type whose cache flow keeps a field called `ID` (the `data.ID` of reference data) compares that
   field under `id` and `ID` instead. `$cache: <Type>.id` always writes the record id.
-- **A value that already is an OSDU id** (`dev:reference-data--UnitOfMeasure:m`) names its record by id, exactly. When
-  the cache does not hold it, a `<Type>.id` node writes it as it is, ending in `:`, and a node reading another field
-  counts it as a miss (`'<value>' is already an OSDU id that <version> does not hold, ...`).
+- **A value that already is an OSDU id** (`dev:reference-data--UnitOfMeasure:m`) names its record by id, exactly, a code
+  holding colons of its own included (`dev:reference-data--CoordinateReferenceSystem:Projected:EPSG::23031:`). When
+  the cache does not hold it, a `<Type>.id` node writes it as it is, ending in `:` unless it names a version
+  (`dev:master-data--Wellbore:1234:1700000000000`, as OSDU's reference pattern reads it), and a node reading another field
+  counts it as a miss (`'<value>' is already an OSDU id that <version> does not hold, ...`). A required node held for it
+  waits for the record ([a record held for a reference waits for it](../concepts/partition-cache.md#a-record-held-for-a-reference-waits-for-it)).
 - **A lookup table** (a `table` or `dictionary` type) holds rows, not OSDU records, so it has no id to write. Read one of
   its fields: `$cache: CurveDictionary.log_curve_type_id` with `$findBy: mnemonic = curve_mnemonic`. A value shaped like
   an OSDU id is matched there like any other text.
@@ -154,9 +160,9 @@ value exact with a replace modifier`. A later line that finds exactly one record
 | --- | --- | --- |
 | One record | Its id or field | Its id or field |
 | No record on any line | Record held: `no UnitOfMeasure matches 'furlong' by Code/Name in version <version> of the cache of partition 'dev'` | Property left out |
-| Every line's value empty | Record held: `<columns> is empty, so there is nothing to find in the cache, and the entry is required` | Property left out |
+| Every line's value empty | Record held: `<columns> is empty, so there is nothing to find in the cache, and the entry is required`, or, for a value the node's modifiers turned into nothing, `<column> is '<value>', which its modifiers (...) turn into no value, ...` | Property left out |
 | Several records | Record held | Record held |
-| The record keeps nothing at the field read | Record held, naming what the type caches | Property left out |
+| The record keeps nothing at the field read: no value, blank text, or an empty list | Record held, naming what the type caches | Property left out |
 | The cache version holds no such type | Record held: `the cache holds no type '<Type>' in <version>` | Record held |
 
 A cached field that holds a set writes a list where the template takes one, and holds the record where the template
@@ -312,8 +318,8 @@ does not have, or a schema no template folder on the mapping's path holds.
 A value that cannot be asked for is not sent: an empty value, a value longer than the 256 characters the keyword
 sub-field keeps, the text `null` (what the keyword holds for a property without a value), a control character, the text
 `nested(` anywhere, and inside a nested query unbalanced parentheses or `AND`, `OR` or `NOT` followed by a word ending in
-a colon. A value that already is an OSDU id of the searched entity type names its record without a search; one of
-another entity type holds the record.
+a colon. A value that already is an OSDU id of the searched entity type names its record without a search, and is
+written with the version separator added unless it names a version; one of another entity type holds the record.
 
 ### What a search gives
 

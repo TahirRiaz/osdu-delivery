@@ -24,6 +24,14 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   fields that must be empty
   ([$findAll](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/flow/mapping-lookups-find-all.md)).
 
+### Mappings read more strictly, and kept current
+
+- A mapping property's hover says that a `$findBy` text reads `{$param.<name>}` and that the first line finding exactly
+  one record wins. The command line and the MCP server the extension carries refuse a modifier text YAML would read
+  back otherwise (an unquoted `01` or `1.0`), naming its line, and give the fix for an empty modifier setting, a stray
+  `otherwise` and an unquoted `{$param.<name>}`
+  ([rules that hold for every modifier](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/flow/mapping-modifiers.md#rules-that-hold-for-every-modifier)).
+
 ## [1.0.4]
 
 ### Restricted until complete
