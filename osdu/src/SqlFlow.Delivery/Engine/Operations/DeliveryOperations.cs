@@ -489,6 +489,13 @@ public sealed class RemovalFilter
 
     public Guid? RunId { get; set; }
 
+    /// <summary>
+    /// The parts <see cref="RunId"/> split its delivery into, as the control plane read them when it counted the selection: a
+    /// node has no catalog to read them from again, and without them the run would remove only what the run that split the
+    /// delivery sent itself.
+    /// </summary>
+    public IReadOnlyList<Guid>? RunParts { get; set; }
+
     /// <summary>Only drifted records when true; left out, every record.</summary>
     public bool? Drifted { get; set; }
 
@@ -556,6 +563,11 @@ public sealed class RemovalFilter
                     $"payload filter missing '{filter.Missing}' is not a set of missing values: it is the {ProblemSignature.TextLength} characters a record restricted until complete gives as its incompleteGroup.");
         }
 
+        if (filter.RunParts is { Count: > 0 } && filter.RunId is null)
+        {
+            throw new SqlFlowException("payload filter runParts names the parts of a run, and the filter names no runId they are parts of.");
+        }
+
         return new RecordQuery
         {
             Status = status,
@@ -565,6 +577,7 @@ public sealed class RemovalFilter
             SubmissionId = filter.SubmissionId,
             DeliveredBySubmissionId = filter.DeliveredBySubmissionId,
             RunId = filter.RunId,
+            RunParts = filter.RunParts is { Count: > 0 } parts ? [.. parts] : [],
             Drifted = filter.Drifted == true,
             StepHeld = filter.StepHeld == true,
             Restricted = filter.Restricted == true,
@@ -588,6 +601,7 @@ public sealed class RemovalFilter
                 SubmissionId = query.SubmissionId,
                 DeliveredBySubmissionId = query.DeliveredBySubmissionId,
                 RunId = query.RunId,
+                RunParts = query.RunId is not null && query.RunParts.Count > 0 ? query.RunParts : null,
                 Drifted = query.Drifted ? true : null,
                 StepHeld = query.StepHeld ? true : null,
                 Restricted = query.Restricted ? true : null,
