@@ -15,8 +15,6 @@ keywords:
   - reference data lookup
   - find record by code
   - wellbore id by name
-  - access groups from cache
-  - acl viewers by field and country
   - cache miss held record
 yamlPath: "(documentType: mapping) lookups, searches, record.<property>.$cache | $lookup | $search"
 related:
@@ -28,6 +26,7 @@ related:
   - delivery-concept-change-detection
   - delivery-concept-preflight
   - delivery-flow-mapping-lookups-composite
+  - delivery-flow-mapping-lookups-find-all
   - delivery-wiki-pattern-catalog
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs
@@ -244,110 +243,19 @@ the platform instead ([searches](#searches-and-search)).
 ## $findAll: every matching row
 
 `$findBy` names the one record a value stands for. `$findAll` reads every row of a cached type a value keys, however
-many, and the node gives the field it reads from each of them, as a list.
+many, narrowed by fields that must be empty and by one field of the row that must contain another, and the node gives
+the field it reads from each of them, as a list: the access groups of a wellbore's field and country, for one.
 
 ```yaml
 $cache: AccessGroup.GroupEmail
 $findAll:
   - CountryID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
   - FieldIDs is empty
+  - GroupName contains CountryName
 ```
 
-Reads as: the group address of every access group naming the wellbore's country and no field.
-
-- **Exactly one key line**, `<field> = <operand>`. The operand is a column (after the node's modifiers), a quoted text,
-  or `$lookup.<lookup>.<path>`, a path of the record a lookup finds, every value of which is a key of its own (a
-  wellbore in two fields keys both). A `$lookup` operand must read another type than the node.
-- **Any number of `<field> is empty` lines**, which keep only the rows holding nothing under that field.
-- A row matches when any value of its key field is a key, **ignoring case**. A key that is an OSDU reference also finds
-  rows naming the record with or without the separator before its version (`dev:master-data--Field:1234:` and
-  `dev:master-data--Field:1234`).
-- Rows are read in the order of their ids, and a value two rows give (whatever its case) is written once.
-- `<Type>.id` writes each row's id in the reference form; a lookup table has no id to write.
-
-A `$findAll` gives a list, so it fills a list property, or an item of a
-[list of values](mapping-values.md) such as `acl.viewers`. When it finds no row, or the rows give nothing, a required
-node holds the record naming the keys (`no AccessGroup row with FieldIDs empty holds '...' under CountryID in
-<version>`), and an optional one adds nothing. A lookup that finds no record gives no keys, which counts the same way.
-
-Every key is recorded with the ids of the rows it found, none included, and every field a row was judged by. A refresh
-that lists another row under a key, drops one, or changes one tags every record built from the key as `relisted`, so a
-record may go out without a group the cache does not list yet and is delivered again when it does.
-
-Refused when the mapping is read:
-
-| Written | Message |
-| --- | --- |
-| `$findAll` beside `$findBy` | `... finds its record with $findBy and reads every matching row with $findAll; a node does one of them ...` |
-| two `=` lines | `... it takes one such line, the key the rows are found by, and any number of <field> is empty.` |
-| only `is empty` lines | `$findAll needs the line the rows are found by, <field> = <value>, ...` |
-| on a `$from` or `$search` node | `$findAll reads every row of a cached type that matches, so it belongs to a $cache node; ...` |
-| a line joined by `and` | `... joins conditions with and; a $findAll takes each condition as a line of its own, ...` |
-| with `$ignoreSeparators` | `... remove $ignoreSeparators.` |
-
-The preflight also refuses a key field the cache version does not hold, a field asked to be empty that no row of the
-type holds (`... no row of cache version '<version>' holds a <field>, so every row would pass. Capture data.<field> in
-the cache flow that fills <Type>.`), a `$lookup` path no record holds, and a `$findAll` written to a single-value
-property.
-
-## Access groups from cached records
-
-An organisation that keeps its entitlement groups per field and per country as records in the partition can widen
-each record's viewers from them. Here the partition holds a type the cache flow names `AccessGroup` (the kind below
-stands for whatever kind your organisation defines), one record per group: the group address, the fields it covers, and
-its country. The cache flow captures the paths the mapping reads:
-
-```yaml
-types:
-  - kind: "osdu:wks:master-data--Wellbore:*"
-    name: Wellbore
-    fields:
-      - data.FacilityName
-      - data.NameAliases.AliasName
-      - data.GeoContexts.FieldID
-      - data.GeoContexts.GeoPoliticalEntityID
-  - kind: "example:governance:reference-data--AccessGroup:*"
-    name: AccessGroup
-    fields: [data.GroupEmail, data.FieldIDs, data.CountryID]
-```
-
-The mapping finds the wellbore once and reads its field and country there:
-
-```yaml
-lookups:
-  wellbore:
-    $cache: Wellbore
-    $findBy:
-      - FacilityName = wellbore_name
-      - NameAliases.AliasName = wellbore_name
-    $ignoreSeparators: true
-
-record:
-  acl:
-    owners: ["{$param.aclOwner}"]
-    viewers:
-      - "{$param.aclViewer}"
-      - $cache: AccessGroup.GroupEmail
-        $findAll: FieldIDs = $lookup.wellbore.GeoContexts.FieldID
-        $required: false
-      - $cache: AccessGroup.GroupEmail
-        $findAll:
-          - CountryID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
-          - FieldIDs is empty
-        $required: false
-  legal:
-    legaltags: ["{$param.legalTag}"]
-    otherRelevantDataCountries: [US]
-  data:
-    WellboreID:
-      $lookup: wellbore.id
-```
-
-The viewers are the flow's group, then the groups of the wellbore's fields, then the country groups of its country,
-each once. A country group is a row naming the country and no field, so a field's group never widens to the whole
-country. A wellbore in no field, or a field with no group yet, gives the record what was found and the flow's group at
-the least; the refresh that brings the missing group redelivers it. The access lists must hold at least one literal
-value, so no record goes out without a viewer; the legal lists take no nodes at all.
+Its lines, how a row is matched, what it gives, the cache trail it records and its errors are on
+[$findAll](mapping-lookups-find-all.md), with the access groups example.
 
 ## searches and $search
 

@@ -15,6 +15,13 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   says its operation, how it ended and when, and leads from a part to the whole run
   ([a delivery flow's page](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
 
+### A field that contains another
+
+- A mapping property's hover describes the `$findAll` line `<field> contains <field>`, which keeps the cached rows whose
+  text under one field holds their text under another, and the mapping builder's find all adds such a line under the
+  fields that must be empty
+  ([$findAll](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/flow/mapping-lookups-find-all.md)).
+
 ## [1.0.4]
 
 ### Restricted until complete

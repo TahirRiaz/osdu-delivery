@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A `$findAll` line compares two fields of the same row.** `GroupName contains CountryName` keeps the rows whose text
+  under the first field holds their text under the second, by letters and digits alone and ignoring case, so a rule such
+  as "a country group's name says its country" holds for every country without naming one. A renamed group or a
+  corrected name redelivers the records built from it, and the mapping builder writes the line too
+  ([$findAll](osdu/docs/reference/flow/mapping-lookups-find-all.md#the-lines)).
 - **A delivery flow's runs lead to the records they touched.** Each run on a delivery flow's **Runs** tab, and on the
   runs board filtered to delivery flows, has a **Records** icon that opens the flow's Records tab narrowed to the records
   the run delivered, held, failed, passed over or removed; **Records of this run** on a run's page opens them in the

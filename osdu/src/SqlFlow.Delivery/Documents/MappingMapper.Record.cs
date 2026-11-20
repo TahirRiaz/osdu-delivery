@@ -891,11 +891,14 @@ internal static partial class MappingMapper
     /// A cache node's <c>$findAll</c>: one line or a list of them, which a row must hold every one of. Exactly one line is
     /// the key, <c>&lt;field&gt; = &lt;operand&gt;</c>, comparing a field of the row with a column, a quoted text or a path
     /// of the record a lookup finds (<c>$lookup.wellbore.GeoContexts.FieldID</c>); every other line is
-    /// <c>&lt;field&gt; is empty</c>, which a row holding nothing under that field meets.
+    /// <c>&lt;field&gt; is empty</c>, which a row holding nothing under that field meets, or
+    /// <c>&lt;field&gt; contains &lt;field&gt;</c>, which a row whose text under the first field holds its text under the
+    /// second meets.
     /// </summary>
     private static FindAllQuery FindAllLines(object? value, MappingSource read, TreeScope scope, string at)
     {
         const string Example = "FieldIDList = $lookup.wellbore.GeoContexts.FieldID";
+        const string Narrowing = "any number of <field> is empty and <field> contains <field>";
         List<string> lines = value switch
         {
             string one => [one],
@@ -906,12 +909,18 @@ internal static partial class MappingMapper
 
         (string Field, FindAllOperand Operand)? key = null;
         var empty = new List<string>();
+        var contains = new List<FindAllContains>();
         foreach (var line in lines)
         {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                throw new FlowValidationException($"{at}: {FindAllKey} has an empty line; write each line as a condition, such as {Example} or FieldList is empty.");
+            }
+
             if (AndParts(line).Count > 1)
             {
                 throw new FlowValidationException(
-                    $"{at}: {FindAllKey} '{line}' joins conditions with and; a {FindAllKey} takes each condition as a line of its own, every one of which a row must meet: one <field> = <value>, and any number of <field> is empty.");
+                    $"{at}: {FindAllKey} '{line}' joins conditions with and; a {FindAllKey} takes each condition as a line of its own, every one of which a row must meet: one <field> = <value>, and {Narrowing}.");
             }
 
             if (EmptyLinePattern().Match(line) is { Success: true } emptiness)
@@ -926,17 +935,23 @@ internal static partial class MappingMapper
                 continue;
             }
 
+            if (ContainsLinePattern().Match(line) is { Success: true } holding)
+            {
+                contains.Add(ContainsLine(holding, line, contains, at));
+                continue;
+            }
+
             var match = FindByPattern().Match(line);
             if (!match.Success)
             {
                 throw new FlowValidationException(
-                    $"{at}: {FindAllKey} '{line}' must read <field> = <column>, <field> = 'text', <field> = {LookupReference}.<lookup>.<field>, or <field> is empty, such as {Example}.");
+                    $"{at}: {FindAllKey} '{line}' must read <field> = <column>, <field> = 'text', <field> = {LookupReference}.<lookup>.<field>, <field> is empty, or <field> contains <field>, such as {Example}.");
             }
 
             if (key is not null)
             {
                 throw new FlowValidationException(
-                    $"{at}: {FindAllKey} compares a field with a value on '{line}' and on '{key.Value.Field} = {key.Value.Operand}'; it takes one such line, the key the rows are found by, and any number of <field> is empty.");
+                    $"{at}: {FindAllKey} compares a field with a value on '{line}' and on '{key.Value.Field} = {key.Value.Operand}'; it takes one such line, the key the rows are found by, and {Narrowing}.");
             }
 
             var field = CachedField(match.Groups["field"].Value, line, at);
@@ -970,7 +985,7 @@ internal static partial class MappingMapper
         if (key is not { } found)
         {
             throw new FlowValidationException(
-                $"{at}: {FindAllKey} needs the line the rows are found by, <field> = <value>, such as {Example}; '<field> is empty' only narrows the rows that line finds.");
+                $"{at}: {FindAllKey} needs the line the rows are found by, <field> = <value>, such as {Example}; '<field> is empty' and '<field> contains <field>' only narrow the rows that line finds.");
         }
 
         if (empty.Contains(found.Field, StringComparer.OrdinalIgnoreCase))
@@ -978,7 +993,44 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{at}: {FindAllKey} finds rows by {found.Field} and asks for {found.Field} to be empty; no row holds both.");
         }
 
-        return new FindAllQuery(read.CacheType!, found.Field, found.Operand, empty);
+        // A contains line is met only by a row holding something under both of its fields.
+        foreach (var line in contains)
+        {
+            if (empty.FirstOrDefault(field => string.Equals(field, line.Field, StringComparison.OrdinalIgnoreCase) || string.Equals(field, line.Part, StringComparison.OrdinalIgnoreCase)) is { } both)
+            {
+                throw new FlowValidationException($"{at}: {FindAllKey} asks for {both} to be empty and reads it in '{line}', which a row holding nothing under {both} never meets; no row holds both.");
+            }
+        }
+
+        return new FindAllQuery(read.CacheType!, found.Field, found.Operand, empty) { Contains = contains };
+    }
+
+    /// <summary>
+    /// A <c>$findAll</c> line <c>&lt;field&gt; contains &lt;field&gt;</c>: two different fields of the rows the node reads,
+    /// written as the cache names them. What it compares with is always a field of the same row, never a column, a text or a
+    /// lookup's record, so those are refused here rather than read as a field no row holds.
+    /// </summary>
+    private static FindAllContains ContainsLine(Match holding, string line, List<FindAllContains> earlier, string at)
+    {
+        var part = holding.Groups["part"].Value.Trim();
+        if (Quoted(part) is not null || part.StartsWith(Marker, StringComparison.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{at}: {FindAllKey} '{line}' compares with {part}; a contains line compares two fields of the same row, such as GroupName contains CountryName, and the rows are found by a value on the key line, <field> = <value>.");
+        }
+
+        var contained = new FindAllContains(CachedField(holding.Groups["field"].Value, line, at), CachedField(part, line, at));
+        if (string.Equals(contained.Field, contained.Part, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{at}: {FindAllKey} '{line}' compares {contained.Field} with itself, which every row holding a value meets; name two fields of the row.");
+        }
+
+        if (earlier.Any(other => string.Equals(other.Field, contained.Field, StringComparison.OrdinalIgnoreCase) && string.Equals(other.Part, contained.Part, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new FlowValidationException($"{at}: {FindAllKey} '{line}' says it a second time.");
+        }
+
+        return contained;
     }
 
     /// <summary>A field of a cached row as a <c>$findAll</c> line names it: dotted names, never the language's own words.</summary>
@@ -1740,6 +1792,10 @@ internal static partial class MappingMapper
     /// <summary>A <c>$findAll</c> line a row meets by holding nothing under a field: <c>FieldList is empty</c>.</summary>
     [GeneratedRegex(@"^\s*(?<field>[^\s=]+)\s+is\s+empty\s*$")]
     private static partial Regex EmptyLinePattern();
+
+    /// <summary>A <c>$findAll</c> line comparing two fields of the same row: <c>GroupName contains CountryName</c>.</summary>
+    [GeneratedRegex(@"^\s*(?<field>[^\s=]+)\s+contains\s+(?<part>[^=]+?)\s*$")]
+    private static partial Regex ContainsLinePattern();
 
     /// <summary>A token in braces, as a label, an id or a literal writes one.</summary>
     [GeneratedRegex(@"\{(?<token>[^{}]*)\}")]
