@@ -296,6 +296,13 @@ internal static partial class MappingMapper
 
         foreach (var word in words.Where(w => !NodeKeys.Contains(w)))
         {
+            // {$param.aclOwner} written unquoted is a map to YAML: one key, the token without its braces, and no value.
+            if (keys.Count == 1 && Get(map, word) is null && word.StartsWith(Marker + "param.", StringComparison.Ordinal))
+            {
+                throw new FlowValidationException(
+                    $"{at}: {{{word}}} is written unquoted, so YAML reads it as a map and not as text; quote it, \"{{{word}}}\", to write the parameter's value.");
+            }
+
             throw new FlowValidationException(Nearest(word, NodeKeys) is { } nearest
                 ? $"{at}: '{word}' is not a word of the mapping language. Did you mean '{nearest}'? A property whose name starts with '{Marker}' is written {Marker}{Marker}{word[1..]}."
                 : $"{at}: '{word}' is not a word of the mapping language, which reads {SourceList} with their settings, or {ForEachKey} and {ItemKey}. A property whose name starts with '{Marker}' is written {Marker}{Marker}{word[1..]}.");
@@ -1518,6 +1525,79 @@ internal static partial class MappingMapper
     /// </summary>
     internal static string? OldCondition(string text)
     {
+        // Each clause joined by and or or is rewritten on its own, so the suggestion for "a is not empty and b = 1" is
+        // "not empty(a) and b = 1", never a comparison of a with the text of the rest of the line.
+        var clauses = Clauses(text.Trim());
+        var rewritten = clauses.Select(clause => OldClause(clause.Text)).ToList();
+        return rewritten.All(clause => clause is null)
+            ? null
+            : string.Concat(clauses.Select((clause, i) => (i == 0 ? string.Empty : $" {clause.Joiner} ") + (rewritten[i] ?? clause.Text)));
+    }
+
+    /// <summary>
+    /// The clauses of a condition joined by <c>and</c> or <c>or</c> outside quoted text, each with the word joining it to the
+    /// one before (empty for the first).
+    /// </summary>
+    private static List<(string Joiner, string Text)> Clauses(string text)
+    {
+        var clauses = new List<(string Joiner, string Text)>();
+        var joiner = string.Empty;
+        var start = 0;
+        char? quote = null;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (quote is not null)
+            {
+                quote = c == quote ? null : quote;
+                continue;
+            }
+
+            if (c is '"' or '\'')
+            {
+                quote = c;
+                continue;
+            }
+
+            if (!char.IsWhiteSpace(c))
+            {
+                continue;
+            }
+
+            var word = JoinerAt(text, i);
+            if (word is null)
+            {
+                continue;
+            }
+
+            clauses.Add((joiner, text[start..i].Trim()));
+            joiner = word;
+            i += word.Length + 1;
+            start = i + 1;
+        }
+
+        clauses.Add((joiner, text[start..].Trim()));
+        return clauses;
+
+        static string? JoinerAt(string text, int space)
+        {
+            foreach (var word in new[] { "and", "or" })
+            {
+                var end = space + 1 + word.Length;
+                if (end < text.Length && char.IsWhiteSpace(text[end])
+                    && string.Compare(text, space + 1, word, 0, word.Length, StringComparison.Ordinal) == 0)
+                {
+                    return word;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>One clause of a condition written in the old form, <c>x is [not] y</c>, as an expression; null for another clause.</summary>
+    private static string? OldClause(string text)
+    {
         var match = ConditionPattern().Match(text.Trim());
         if (!match.Success)
         {
@@ -1664,9 +1744,9 @@ internal static partial class MappingMapper
     {
         var literal = node switch
         {
-            IDictionary<object, object> map => new JsonObject(map.Select(kv => new KeyValuePair<string, JsonNode?>(
+            IDictionary<object, object> map => LiteralObject(map.Select(kv => new KeyValuePair<string, JsonNode?>(
                 PropertyOfKey(KeyText(kv.Key)),
-                kv.Value is null ? throw new FlowValidationException($"{at}: '{KeyText(kv.Key)}' in the list has no value.") : TreeLiteral(kv.Value, at)))),
+                kv.Value is null ? throw new FlowValidationException($"{at}: '{KeyText(kv.Key)}' in the list has no value.") : TreeLiteral(kv.Value, at))), at),
             IEnumerable<object> list => new JsonArray(list.Select(item => item is null
                 ? throw new FlowValidationException($"{at}: a list holds an empty item.")
                 : TreeLiteral(item, at)).ToArray()),

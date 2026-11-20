@@ -683,7 +683,7 @@ public sealed class ReferenceType
     /// type and that code (<c>{partition}:reference-data--LogCurveFamily:Gamma%20Ray:</c>), so a table that names reference
     /// data by its code (a curve dictionary giving each mnemonic its family) finds the one record of the type it names.
     /// </summary>
-    private static IEnumerable<string> RecordIdTerms(string id)
+    internal static IEnumerable<string> RecordIdTerms(string id)
     {
         yield return id;
         var parts = id.Split(':');

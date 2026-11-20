@@ -786,6 +786,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drain's count shows where it showed a dash. A run started from the command line keeps what it reported, so its page
   and the lists show its counts too, where they showed a dash
   ([a delivery flow's page](osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
+- **A `$findBy` or `$findAll` text reads the mapping's parameters.** A quoted text such as
+  `'{$param.dataPartition}:master-data--GeoPoliticalEntity:NO:'` is compared with its parameter's value, as every other
+  literal is, where it was compared with the token itself and matched nothing; a parameter the mapping does not declare
+  in such a text is now refused when the mapping is read ([findBy lines](osdu/docs/reference/flow/mapping-lookups.md#findby-lines)).
+- **A modifier's text written as a number YAML reads back otherwise is refused.** An unquoted `01`, `1.0`, `1e3` or
+  `TRUE` in a replace, `otherwise`, `equals` or split's `separator` was read as `1`, `1`, `1000` or `True` and delivered
+  so; the mapping is now refused naming the line, and quoting the value keeps it. An unquoted value that reads back as
+  written (`1`, `2.5`, `true`) is taken as before
+  ([rules that hold for every modifier](osdu/docs/reference/flow/mapping-modifiers.md#rules-that-hold-for-every-modifier)).
 - **The Records tab says what a link narrowed it to.** A run, a submission, an issue or a set of missing values a link
   narrowed the list to is a chip at the top of the list, read as a sentence (**Touched by run …1a2b3c**) whose id opens
   what it names and whose cross drops it, with **Clear all** for several; the status and access pickers show when they
@@ -1307,6 +1316,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **A cache refresh reaches the records a `$findAll` read from a lookup table.** A row the table moved to another key,
+  or a row it added under one, left the records built from that key as they were, so a log could keep an access group
+  the table no longer listed for its field. They are now tagged `relisted`, as for a type of OSDU records
+  ([from a cache change to OSDU](osdu/docs/reference/concepts/partition-cache.md#from-a-cache-change-to-osdu)).
+- **A findBy line tried before the one that found the record is recorded.** Where a later line won (a wellbore found by
+  its alias), a version in which an earlier line finds exactly one record (a wellbore of that name) did not reach the
+  record; it is now tagged `listed`, and an earlier line several records answered to notes each of them
+  ([findBy lines](osdu/docs/reference/flow/mapping-lookups.md#findby-lines)).
+- **A blank cached value is no value.** A `$cache` node reading blank text or an empty list wrote it into the record; it
+  now holds the record, leaves the property out or restricts the record, as its `$required` and `$restrictWhenMissing`
+  say, as for a field the record does not hold ([what a cache node gives](osdu/docs/reference/flow/mapping-lookups.md#what-a-cache-node-gives)).
+- **A record built without a record the cache did not hold yet is reached when it arrives.** One held for it, where a
+  cached field written to a relationship or a value that already is an OSDU id named it, is released, where it waited
+  for an operator; one delivered without the property is tagged `found`. So is one whose `id` line looked for a code
+  that differs from the record's `Code`, and one a `replace: $cache.<Type>` reading OSDU records found no record for
+  is tagged `listed`. An id whose code holds colons (`...:Projected:EPSG::23031:`) is now found by its id
+  ([a record held for a reference waits for it](osdu/docs/reference/concepts/partition-cache.md#a-record-held-for-a-reference-waits-for-it)).
+- **An OSDU id that names a version is written as it is.** A value such as
+  `dev:master-data--Wellbore:1234:1700000000000`, given to a `$cache: <Type>.id` node the cache does not hold it for, a
+  `$search` node or an id modifier, was written with a `:` after the version, a reference to a record whose code is
+  `1234:1700000000000`; an id modifier then held the record although the cache held record `1234`
+  ([special values](osdu/docs/reference/flow/mapping-lookups.md#special-values)).
+- **A hold or a refusal names the real cause.** A findBy value the node's modifiers turn into nothing says what the
+  column held rather than that it is empty; an old-form condition joined by `and` or `or` is rewritten clause by clause;
+  `- trim:` with an empty setting, an `otherwise` written as an item of its own, an unquoted `{$param.<name>}` and a
+  legal list with `$value` items each say how to write them, and two keys of a literal object that name one property
+  (`"a "` and `a`, `1.0` and `"1"`) are refused rather than failing the load with an internal error
+  ([what a cache node gives](osdu/docs/reference/flow/mapping-lookups.md#what-a-cache-node-gives)).
 - **A run's records include what its parts delivered.** A delivery split over several nodes writes its records under each
   part's run, so the Records tab narrowed to the run that split it, **Records of this run** on its page, the export of
   them and a removal of every record matching them found only what that run sent itself. They now find every record its
