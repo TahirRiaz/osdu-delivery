@@ -3121,7 +3121,7 @@ export interface MappingDraftAssertionFilter {
 /**
  * A cache entry's $findAll: the cached field the rows are found by, compared with exactly one of a dataset column, a fixed
  * text, or a field of a lookup's record written with the lookup's name (`wellbore.GeoContexts.FieldID`); and the fields a
- * row must hold nothing under.
+ * row must hold nothing under; and the lines comparing two fields of the same row (`GroupName contains CountryName`).
  */
 export interface MappingDraftFindAll {
   field: string;
@@ -3129,6 +3129,16 @@ export interface MappingDraftFindAll {
   literal: string | null;
   lookup: string | null;
   empty: string[];
+  contains: MappingDraftFindAllContains[];
+}
+
+/**
+ * A $findAll line a row meets when its text under `field` holds its text under `part`, both read by their letters and
+ * digits alone, ignoring case.
+ */
+export interface MappingDraftFindAllContains {
+  field: string;
+  part: string;
 }
 
 /**

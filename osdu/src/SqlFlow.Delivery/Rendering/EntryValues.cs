@@ -441,6 +441,7 @@ internal static partial class EntryValues
             ? $"({column} | {ModifierText(node.Modifiers)})"
             : findAll.Operand.ToString();
         return string.Join(" and ", findAll.Empty.Select(field => $"{ReferenceField.Normalize(field)} is empty")
+            .Concat(findAll.Contains.Select(line => $"{ReferenceField.Normalize(line.Field)} {FindAllContains.Word} {ReferenceField.Normalize(line.Part)}"))
             .Prepend($"{ReferenceField.Normalize(findAll.Field)} = {operand}"));
     }
 
@@ -1652,7 +1653,7 @@ internal static partial class EntryValues
             usages.Add(CacheUsage.Listing(type.Name, field, key, found.Select(row => row.Id)));
             foreach (var row in found)
             {
-                if (!rows.Contains(row) && Passes(type, row, query.Empty, usages))
+                if (!rows.Contains(row) && Passes(type, row, query, usages))
                 {
                     rows.Add(row);
                 }
@@ -1693,7 +1694,10 @@ internal static partial class EntryValues
         }
 
         var keysText = string.Join(", ", keys.Select(k => $"'{k}'"));
-        var narrowed = query.Empty.Count == 0 ? string.Empty : $" with {string.Join(" and ", query.Empty.Select(f => $"{ReferenceField.Normalize(f)} empty"))}";
+        var narrowing = query.Empty.Select(f => $"{ReferenceField.Normalize(f)} empty")
+            .Concat(query.Contains.Select(c => $"{ReferenceField.Normalize(c.Field)} containing its {ReferenceField.Normalize(c.Part)}"))
+            .ToList();
+        var narrowed = narrowing.Count == 0 ? string.Empty : $" with {string.Join(" and ", narrowing)}";
         if (rows.Count > 0)
         {
             // The rows are there and hold nothing at the field read: what is missing is in the cache's own rows, not the source.
@@ -1854,13 +1858,14 @@ internal static partial class EntryValues
     }
 
     /// <summary>
-    /// Whether a row a <c>$findAll</c> key found holds nothing under every field the node asks to be empty. Each field a row
-    /// passed on is recorded as read empty, and the first it failed on with what it held, so a later version that fills one
-    /// or empties the other reaches the record.
+    /// Whether a row a <c>$findAll</c> key found holds nothing under every field the node asks to be empty, and meets every
+    /// contains line. Each field a row passed on is recorded as read empty, and the first it failed on with what it held; a
+    /// contains line records both of its fields as the row held them. So a later version that fills one, empties the other,
+    /// or renames a group, reaches the record.
     /// </summary>
-    private static bool Passes(ReferenceType type, ReferenceItem row, IReadOnlyList<string> empty, List<CacheUsage> usages)
+    private static bool Passes(ReferenceType type, ReferenceItem row, FindAllQuery query, List<CacheUsage> usages)
     {
-        foreach (var field in empty)
+        foreach (var field in query.Empty)
         {
             var name = ReferenceField.Normalize(field);
             if (type.HoldsNothing(row, field))
@@ -1873,7 +1878,31 @@ internal static partial class EntryValues
             return false;
         }
 
+        foreach (var line in query.Contains)
+        {
+            var text = Judged(type, row, line.Field, usages);
+            var part = Judged(type, row, line.Part, usages);
+            if (!text.Any(t => part.Any(p => ReferenceKeyFold.Holds(t, p))))
+            {
+                return false;
+            }
+        }
+
         return true;
+    }
+
+    /// <summary>The values a row holds under a field a contains line reads, recorded as read: its terms, or none when it holds nothing.</summary>
+    private static IReadOnlyList<string> Judged(ReferenceType type, ReferenceItem row, string field, List<CacheUsage> usages)
+    {
+        var name = ReferenceField.Normalize(field);
+        if (type.Value(row, field) is not { Terms.Count: > 0 } value)
+        {
+            usages.Add(new CacheUsage(type.Name, row.Id, name, string.Empty, CacheUsageKind.Empty));
+            return [];
+        }
+
+        usages.Add(new CacheUsage(type.Name, row.Id, name, value.Text, CacheUsageKind.Value));
+        return value.Terms;
     }
 
     /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of the cache of partition 'dev'".</summary>
