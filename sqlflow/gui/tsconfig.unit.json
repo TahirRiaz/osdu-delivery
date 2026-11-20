@@ -16,6 +16,7 @@
   },
   "include": [
     "unit/**/*.ts",
+    "src/auth/deviceCode.ts",
     "src/auth/entraSignIn.ts",
     "src/embed/hostTransport.ts",
     "src/embed/protocol.ts",
