@@ -769,6 +769,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing=<group>` ([Restricted until complete](osdu/docs/reference/flow/mapping-restricted-access.md)).
 
 ### Changed
+- **The page that approves a sign-in from your editor or terminal looks like a device sign-in, not a second login
+  page.** One card on the brand's navy field shows your editor or terminal linked to the product, the code in a box per
+  character to compare with the one your tool shows (typed or pasted in any case, with or without its dash), the account
+  it signs in as with **Use another account**, and **Deny** and **Approve** side by side
+  ([the device-authorization grant](sqlflow/docs/reference/concepts/authentication-and-identity.md)).
 - **The Records tab says what a link narrowed it to.** A run, a submission, an issue or a set of missing values a link
   narrowed the list to is a chip at the top of the list, read as a sentence (**Touched by run …1a2b3c**) whose id opens
   what it names and whose cross drops it, with **Clear all** for several; the status and access pickers show when they
