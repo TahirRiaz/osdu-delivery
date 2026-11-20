@@ -145,6 +145,26 @@ public sealed class CachedLookupCacheChangeTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task A_wellbore_written_another_way_reaches_a_log_whose_lookup_folds_separators_away()
+    {
+        // The lookup ignores punctuation and spacing, and no wellbore is named WB Z-12 however it is written.
+        var folding = Mapping(
+            record: TestSchema.Envelope,
+            lookups: Lookups.Replace("    $description:", "    $ignoreSeparators: true\n    $description:", StringComparison.Ordinal),
+            data: "WellboreID: { $lookup: wellbore.id, $required: false }");
+        var rendered = Renderer(folding).Render(Record("WB Z-12"));
+        Assert.Contains(rendered.CacheUsages, u => u.Kind == CacheUsageKind.Unlisted && CacheUsage.IsComposite(u.ItemId) && u.Path == "FacilityName");
+        await DeliveredAsync(folding, Cache(), "WB Z-12", 2);
+
+        // A wellbore named WB_Z_12, which the lookup finds once separators are folded, reaches the records built without it.
+        var impact = await AnalyzeAsync(Wellbores(), Wellbores(Item("dev:master-data--Wellbore:z12", ("FacilityName", "\"WB_Z_12\""))));
+
+        Assert.Equal(2, impact.AffectedRecords);
+        var tag = await OnlyTagAsync();
+        Assert.Equal(("listed", "dev:master-data--Wellbore:z12"), (tag.Change, tag.ItemId));
+    }
+
+    [Fact]
     public async Task A_wellbore_of_the_name_a_log_was_found_by_alias_reaches_the_log()
     {
         // WELLBORE A-1 is known by the alias FIELD A A1, which the log names; the line trying the name came first and found none.

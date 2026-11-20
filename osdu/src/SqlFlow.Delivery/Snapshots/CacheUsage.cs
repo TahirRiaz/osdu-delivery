@@ -128,14 +128,21 @@ public sealed record CacheUsage(string TypeName, string ItemId, string Path, str
     /// every comparison reaches the record, whichever of its values another row shares. Null when the key or the path would
     /// not fit the ledger's columns whole: a miss that could not be asked for again is not noted, as a key longer than any a
     /// table can hold is not.
+    /// <para>
+    /// A line of one comparison is noted so too when its node folds punctuation and spacing away
+    /// (<paramref name="ignoreSeparators"/>): what a record finds by the folded value cannot be told from the value's own
+    /// key, so every such miss of a type is asked again whenever the type changes, as a composite miss is.
+    /// </para>
     /// </summary>
     public static CacheUsage? CompositeMiss(string typeName, IReadOnlyList<(string Field, string Value)> comparisons, bool ignoreSeparators)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
         ArgumentNullException.ThrowIfNull(comparisons);
-        if (comparisons.Count < 2)
+        if (comparisons.Count == 0 || (comparisons.Count == 1 && !ignoreSeparators))
         {
-            throw new ArgumentException("A composite miss compares at least two fields; one is noted as the field and value it compared.", nameof(comparisons));
+            throw new ArgumentException(
+                "A composite miss compares at least two fields, or one its node folds separators away for; one compared as written is noted as the field and value it compared.",
+                nameof(comparisons));
         }
 
         var key = CompositeKey(comparisons.Select(c => c.Value).ToList(), ignoreSeparators);

@@ -368,7 +368,7 @@ moved between, and how many delivered records it reaches.
 | `changed` | A value records read now reads differently. |
 | `removed` | A cached record records used is no longer in the cache. |
 | `unmatched` | A record no longer matches by the value records found it by. |
-| `listed` | A lookup table now lists a key records looked up and found no row under, an OSDU type now holds a record by a value records found none by, or a type now holds a record meeting values a line compared together and found none meeting. |
+| `listed` | A lookup table now lists a key records looked up and found no row under, an OSDU type now holds a record by a value records found none by, or a type now holds a record meeting values a line compared together and found none meeting, or one a value finds once punctuation and spacing are ignored, where the node folds them away. |
 | `relisted` | The rows a key finds are no longer the ones records read every one of. |
 | `found` | The cache now holds a record that records reference as an unverified id, that a held record's reference named and the cache did not hold, or that a record was built without, its property left out, because the cache did not hold it. |
 

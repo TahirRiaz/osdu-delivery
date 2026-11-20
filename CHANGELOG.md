@@ -1320,6 +1320,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a row it added under one, left the records built from that key as they were, so a log could keep an access group
   the table no longer listed for its field. They are now tagged `relisted`, as for a type of OSDU records
   ([from a cache change to OSDU](osdu/docs/reference/concepts/partition-cache.md#from-a-cache-change-to-osdu)).
+- **A lookup that folds separators away reaches a record written another way.** A value a `$ignoreSeparators` lookup
+  found no record by was noted as written, so a version holding the record written another way (`WB_Z_12` for
+  `WB Z-12`) never reached the records built without it; every version of the type now asks for it again, of a lookup
+  table as of a type of OSDU records ([how a value is matched](osdu/docs/reference/flow/mapping-lookups.md#how-a-value-is-matched)).
 - **A findBy line tried before the one that found the record is recorded.** Where a later line won (a wellbore found by
   its alias), a version in which an earlier line finds exactly one record (a wellbore of that name) did not reach the
   record; it is now tagged `listed`, and an earlier line several records answered to notes each of them

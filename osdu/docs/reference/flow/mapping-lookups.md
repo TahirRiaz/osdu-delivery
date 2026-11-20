@@ -131,7 +131,9 @@ value: `well = wellbore_name and mnemonic = curve_mnemonic`. How such a line is 
 3. **Ignoring separators**, only with `$ignoreSeparators: true` on the node, and only after both comparisons above found
    nothing. Letters and digits are kept in order (letters outside ASCII included, lower-cased) and every run of anything
    else counts as one separator, on the cached values and the incoming value alike: `WB A-12 ST2`, `WB_A_12_ST2` and
-   `wb-a-12-st2` find the same name. It is for names, never codes (`s/m` and `S.M` would fold together).
+   `wb-a-12-st2` find the same name. It is for names, never codes (`s/m` and `S.M` would fold together). A value no
+   record answers to even so is recorded with the render, and every version of the type is asked for it again, so one
+   holding a record written another way (`WB_A_12` for `WB A-12`) reaches the record.
 
 A value several records answer to, at whichever step, holds the record **whatever `$required` says**, naming the
 candidates: `'<value>' matches 2 UnitOfMeasure records by Code once case is ignored (...) in <version>; make the incoming
