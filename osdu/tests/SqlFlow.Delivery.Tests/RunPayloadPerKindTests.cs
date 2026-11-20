@@ -232,6 +232,30 @@ public sealed class RunPayloadPerKindTests
         Assert.Equal(listing, back.Filter);
         Assert.Contains($"\"issue\":\"{ProblemSignature.Format(issue)}\"", byFilter.ToJson(), StringComparison.Ordinal);
 
+        // So do the Step held and access filters and a set of missing values: left out, the run would remove more records than
+        // the operator was shown.
+        var missing = ProblemSignature.Of("data.Curves[].CurveUnit");
+        var narrowed = new RecordQuery
+        {
+            StepHeld = true,
+            Restricted = true,
+            AccessRestricted = true,
+            Incomplete = true,
+            Missing = missing,
+        };
+        var narrowedBack = DeliveryRunPayload.Parse(new DeliveryRunPayload { Filter = narrowed, Scope = RemovalChoice.Record }.ToJson()).Filter!;
+        Assert.Equal(narrowed, narrowedBack);
+        foreach (var part in new[] { "incomplete", "restricted" })
+        {
+            var only = DeliveryRunPayload.Parse($$"""{"filter":{"{{part}}":true},"scope":"record"}""").Filter!;
+            Assert.Equal((part == "incomplete", part == "restricted"), (only.Incomplete, only.Restricted));
+        }
+
+        Assert.Contains(
+            "payload filter missing 'unit' is not a set of missing values",
+            Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{"filter":{"missing":"unit"},"scope":"record"}""")).Message,
+            StringComparison.Ordinal);
+
         // A removal takes as many keys as one removal may, past the thousand any other run is scoped to.
         var keys = Enumerable.Range(0, DeliveryRunPayload.MaxRecordKeys + 1).Select(_ => Guid.NewGuid()).ToList();
         DeliveryRunPayload.Parse(new DeliveryRunPayload { RecordKeys = keys, Scope = RemovalChoice.Record }.ToJson()).Validate(DeliveryOperations.Remove);

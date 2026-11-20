@@ -1280,6 +1280,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **Removing every record that matches the Records tab's filter keeps its Step held and Access filters.** With **Step
+  held**, an **Access** choice or a set of missing values narrowing the list, **Select all N matching** and **Remove**
+  queued a run that left those filters out, and so removed records the list had not shown. The run now removes exactly
+  the records counted and confirmed ([a delivery flow's payload](osdu/docs/reference/cli/run.md)).
 - **Picking several values in the run form keeps the list under the pointer.** A pick that wrapped the chips onto
   another line moved the list away from the pointer, so the next click dropped a value already picked or closed the
   list; the list now holds still while the pointer is on it, and a pick no longer scrolls the form
