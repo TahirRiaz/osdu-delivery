@@ -202,9 +202,15 @@ interface picker whose choice is in the address; a flow that names its partition
   narrowed to it) and **Release N**, which can queue a deliver run straight after. An issue of records held because OSDU
   already holds a record at the ids their keys make also offers **Adopt N**, which asks every record of it to adopt the
   record OSDU holds once the partition is typed back, and can queue a deliver run straight after.
-- **Runs**: SQLFlow's list of the flow's runs, a row opening its run, with the run's **Operation** and a **Records** icon
-  that opens the Records tab narrowed to what the run touched (a dash for a `plan` run, which changes nothing, and for a
-  `delete-ledger` run, which leaves no record). The runs board filtered to delivery flows carries the same two columns.
+- **Runs**: SQLFlow's list of the flow's runs, a row opening its run. A delivery run counts records, not rows, so in
+  place of SQLFlow's **Rows loaded**, **Inserted**, **Updated**, **Deleted** and **Files** each run shows the records it
+  **Delivered**, found **Unchanged** (rows read and found as they were, and records OSDU already held when it came to
+  send them), **Held** and **Failed**, as its page counts them, with a dash for a count it does not report (a `plan`
+  sends nothing; an `intake` plans what its `drain` delivers). A delivery split over nodes counts the whole submission on
+  the run that split it and each part's own share on the part ([Many nodes](submissions.md#many-nodes)). After them come
+  the run's **Operation** and a **Records** icon that opens the Records tab narrowed to what the run touched (a dash for
+  a `plan` run, which changes nothing, and for a `delete-ledger` run, which leaves no record). The runs board filtered to
+  delivery flows carries the same columns.
 - **Submissions**: every submission with what it read, when it was received and its counts, one line each, in a grid
   that fits the window; a row opens its page. The **Run** icon opens the run that coordinated it (its id on hover), and a
   submission that stopped wears a mark under **Error** whose card holds the whole reason with a copy. **Received** reads
@@ -270,7 +276,7 @@ A run page gains, by kind:
 
 | Kind | Header actions | Counts |
 | --- | --- | --- |
-| delivery | **Records of this run** (the Records tab narrowed to it, in the interface and partition it ran in); **Reverse this run** once a `deliver`, `replan`, `drain` or `intake` run has ended | Planned, Delivered, Held, Failed, Unchanged, Waiting; the submission as a chip. A `remove` run: Selected, Removed (Restored for a step back), Already gone, Skipped, Failed, and Deleted from the ledger when it was asked to, with what it was asked to take and its summary line |
+| delivery | **Records of this run** (the Records tab narrowed to it, in the interface and partition it ran in); **Reverse this run** once a `deliver`, `replan`, `drain` or `intake` run has ended | Planned, Delivered, Held, Failed, Unchanged (a deliver run's rows found as they were and records OSDU already held when it came to send them; a drain's records OSDU already held), Waiting; the submission as a chip. A `remove` run: Selected, Removed (Restored for a step back), Already gone, Skipped, Failed, and Deleted from the ledger when it was asked to, with what it was asked to take and its summary line |
 | cache | **Open the cache** | |
 | assertion | **Open the report** | Assertions, Passed, Failed, Warned, Errored, Skipped |
 | dimension | **Open dimensions** | Built, Failed, Skipped, Values, Keys, and Views when the run reported any |

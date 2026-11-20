@@ -7,7 +7,8 @@ import { DetailPair } from "@/components/DetailPair";
 import { IdChip } from "@/components/IdChip";
 import { deliveryRunRecordsRoute, ledgerLabel } from "../../api/delivery";
 import {
-  DELIVERING_OPERATIONS, runRecordCounts, runRemovalCounts, runRequest, runResult, runScope, runSubmissionId, type RunRemovalCounts,
+  DELIVERING_OPERATIONS, listedRunCounts, runRecordCounts, runRemovalCounts, runRequest, runResult, runScope, runSubmissionId,
+  type RunRecordCounts, type RunRemovalCounts,
 } from "./runOutcome";
 import { ReverseButton } from "./ReverseButton";
 import { shortId } from "./idTail";
@@ -91,6 +92,18 @@ export function DeliveryRunRecordsLink({ run }: { run: Pick<RunSummary, "runId" 
       <TooltipContent>Records this run touched</TooltipContent>
     </Tooltip>
   );
+}
+
+/**
+ * One of a delivery run's record counts on a list of runs (the flow's Runs tab, the runs board narrowed to delivery
+ * flows), in place of the row counts SQLFlow's own runs carry: what its result reports, as its page shows it, and a muted
+ * dash for a count the run does not report (a plan delivers nothing; an intake plans, and its drain delivers).
+ */
+export function DeliveryRunListCount({ run, count }: { run: Pick<RunSummary, "operation" | "resultCounts">; count: keyof RunRecordCounts }) {
+  const value = listedRunCounts(run)[count];
+  return value === null
+    ? <span className="text-muted-foreground">-</span>
+    : <span className="font-mono tabular-nums" data-testid={`run-list-${count}`}>{value}</span>;
 }
 
 /** The cache run's way to the cache it refreshed. */

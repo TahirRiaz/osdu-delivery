@@ -14,6 +14,8 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   top of the list whose id opens what it names and whose cross drops it, with **Clear all** for several. The run's chip
   says its operation, how it ended and when, and leads from a part to the whole run
   ([a delivery flow's page](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
+- A delivery flow's **Runs** tab shows what each run **Delivered**, found **Unchanged**, **Held** and **Failed**, in
+  place of the row counts (Rows loaded, Inserted, Updated, Deleted, Files) a delivery run never reported.
 
 ### A field that contains another
 
