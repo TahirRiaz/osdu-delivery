@@ -1499,6 +1499,16 @@ internal static partial class EntryValues
                         usages.Add(miss);
                     }
                 }
+                else if (entry.IgnoreSeparators)
+                {
+                    // A value the node folds punctuation and spacing away for may be found by a record holding it written
+                    // another way (WB_A_12 for WB A-12), which no key of the value tells; it is noted as a composite miss,
+                    // which every version of the type is asked again, of a lookup table as of a type of OSDU records.
+                    if (CacheUsage.CompositeMiss(typeName, [(values[0].Find.Field, values[0].Value)], ignoreSeparators: true) is { } folded)
+                    {
+                        usages.Add(folded);
+                    }
+                }
                 else if (!type.IsLookup)
                 {
                     // Each value no record answered to is recorded, so a later version holding a record it finds (a wellbore
