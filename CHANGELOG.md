@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A delivery flow's runs lead to the records they touched.** Each run on a delivery flow's **Runs** tab, and on the
+  runs board filtered to delivery flows, has a **Records** icon that opens the flow's Records tab narrowed to the records
+  the run delivered, held, failed, passed over or removed; **Records of this run** on a run's page opens them in the
+  interface and partition the run worked in ([a delivery flow's page](osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
 - **Switch between dev, test and prod from the title bar.** Each deployment's configuration names the environment it is
   and lists every one with the address of its GUI (Terraform's `environments`, Bicep's `environments`, a comment to
   uncomment in the Radix configuration, or `ControlPlane__Environments__*` anywhere else). The title bar then says which
@@ -765,6 +769,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing=<group>` ([Restricted until complete](osdu/docs/reference/flow/mapping-restricted-access.md)).
 
 ### Changed
+- **The Records tab says what a link narrowed it to.** A run, a submission, an issue or a set of missing values a link
+  narrowed the list to is a chip at the top of the list, read as a sentence (**Touched by run …1a2b3c**) whose id opens
+  what it names and whose cross drops it, with **Clear all** for several; the status and access pickers show when they
+  are set. The run's chip says its operation, how it ended and when, leads from a part of a split delivery to the whole
+  run, and says when the run worked in another interface or partition, with the way there. A run now keeps narrowing the
+  list when another interface is picked ([a delivery flow's page](osdu/docs/reference/concepts/gui.md#a-delivery-flows-page)).
 - **An issue names the property its records are held for.** A property name in brackets (`tags['dra.securityClassification']`)
   is kept in an issue's pattern rather than read as a value (`tags['<value>']`), so records held for two properties are two
   issues, each naming its own. A record blocked before this version keeps the issue it was sorted into until it is blocked

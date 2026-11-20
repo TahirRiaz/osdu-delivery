@@ -3306,6 +3306,26 @@ export const deliveryRecordRoute = ({ flowId, deliveryKey }: DeliveryRecordRef) 
   `/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
 
 /**
+ * A delivery flow's Records tab narrowed to the records one run touched: those its attempts name, and its parts' when it
+ * split its delivery over nodes. A run that names the interface or the partition it ran in opens that ledger; one that names
+ * neither opens the ledger in view, whose records it touched like every other interface's of its source.
+ */
+export function deliveryRunRecordsRoute(
+  pipelineId: string, runId: string, scope: { interfaceName: string | null; partition: string | null } = { interfaceName: null, partition: null },
+): string {
+  const params = new URLSearchParams({ tab: "records", run: runId });
+  if (scope.interfaceName !== null) {
+    params.set("interface", scope.interfaceName);
+  }
+
+  if (scope.partition !== null) {
+    params.set("partition", scope.partition);
+  }
+
+  return `/pipelines/${encodeURIComponent(pipelineId)}?${params.toString()}`;
+}
+
+/**
  * One OSDU partition: whether the registry holds it and whether it is the default, and what it holds (its cache, the
  * delivery flows that deliver to it). What the title bar's partition switcher and the Partitions page list.
  */
