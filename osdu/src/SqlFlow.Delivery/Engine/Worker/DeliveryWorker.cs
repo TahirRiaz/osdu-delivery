@@ -1427,31 +1427,23 @@ public sealed class DeliveryWorker
     }
 
     /// <summary>
-    /// The paths of the document a work item carries, decoded from base64, or null for one queued before the ledger kept them.
-    /// Paths the line holds unreadably are said on the trace and left out, so the record keeps none rather than wrong ones.
+    /// The paths of the document a work item carries, as the text the ledger keeps, once they read back; null for a line queued
+    /// before the ledger kept them. Paths the line holds unreadably are said on the trace and left out, so the record keeps none
+    /// rather than wrong ones.
     /// </summary>
-    private byte[]? ReadPaths(WorkItem item, RecordState state)
+    private string? ReadPaths(WorkItem item, RecordState state)
     {
         if (item.Paths is not { Length: > 0 } text)
         {
             return null;
         }
 
-        try
+        if (RenderPaths.DecodeText(text, out var problem) is not null)
         {
-            var bytes = Convert.FromBase64String(text);
-            if (RenderPaths.Decode(bytes, out var problem) is not null)
-            {
-                return bytes;
-            }
-
-            _logger.LogWarning("The paths queued for record {Key} cannot be read ({Problem}); the record keeps none of the document it sends.", state.DeliveryKey, problem);
-        }
-        catch (FormatException ex)
-        {
-            _logger.LogWarning("The paths queued for record {Key} are not base64 ({Error}); the record keeps none of the document it sends.", state.DeliveryKey, ex.Message);
+            return text;
         }
 
+        _logger.LogWarning("The paths queued for record {Key} cannot be read ({Problem}); the record keeps none of the document it sends.", state.DeliveryKey, problem);
         return null;
     }
 
