@@ -748,7 +748,7 @@ public sealed partial class OsduLedger : ILedger
 
                     // A record delivered before the ledger kept its document's paths keeps them from the render found
                     // identical to what OSDU holds, so its next delivery can name what it changes.
-                    entity.RenderPaths ??= skip.RenderPaths;
+                    entity.RenderPaths ??= skip.RenderPaths is { } kept ? Convert.FromBase64String(kept) : null;
                     if (changed)
                     {
                         entity.SourceFileName = Truncate(skip.Origin.FileName, DeliveryModel.MaxSourceFileNameLength);
@@ -4622,7 +4622,7 @@ public sealed partial class OsduLedger : ILedger
         MappingName = r.MappingName,
         RenderContext = r.RenderContext,
         RenderCommit = r.RenderCommit,
-        RenderPaths = r.RenderPaths,
+        RenderPaths = r.RenderPaths is { } paths ? Convert.ToBase64String(paths) : null,
         SourceFingerprint = r.SourceFingerprint,
         SourceModifiedUtc = r.SourceModifiedUtc,
         SourceFileName = r.SourceFileName,
