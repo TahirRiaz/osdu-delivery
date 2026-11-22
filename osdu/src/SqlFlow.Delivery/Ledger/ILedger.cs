@@ -1029,6 +1029,12 @@ public sealed record SkippedRecord
     public string? RenderCommit { get; init; }
 
     /// <summary>
+    /// For a render identical to what OSDU holds: what moved to render it (osdu/docs/reference/concepts/delivery-reasons.md),
+    /// which the skip's attempt keeps; null when nothing the ledger compares moved, and for every other skip.
+    /// </summary>
+    public Planning.DeliveryReason? Why { get; init; }
+
+    /// <summary>
     /// For a rendered skip of a record whose document's paths the ledger never kept: the paths of the document OSDU holds,
     /// which the render found identical (<see cref="Planning.RenderPaths.EncodeText"/>). Null for every other skip.
     /// </summary>
@@ -1728,6 +1734,13 @@ public sealed record RecordQuery
     /// ran": what it put into OSDU, findable and removable after the records have moved on.
     /// </summary>
     public Guid? DeliveredBySubmissionId { get; init; }
+
+    /// <summary>
+    /// With <see cref="DeliveredBySubmissionId"/> or <see cref="RunId"/>: only the records it delivered for this kind of
+    /// trigger, read from the delivered attempts' <c>Triggers</c> (osdu/docs/reference/concepts/delivery-reasons.md): the
+    /// records a submission's or a run's count of one cause stands for. A record counts under every kind its reason names.
+    /// </summary>
+    public Planning.TriggerKinds? DeliveredFor { get; init; }
 
     /// <summary>
     /// Only records the given platform run touched, resolved through the attempts that run wrote. Records carry no
@@ -2882,6 +2895,13 @@ public interface ILedger
     /// the submission's delivered attempts through their index.
     /// </summary>
     Task<SubmissionTriggerCounts> CountDeliveredTriggersAsync(Guid submissionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The records the platform runs <paramref name="runIds"/> delivered, counted as <see cref="CountDeliveredTriggersAsync"/>
+    /// counts a submission's: what a run (with the parts it split its delivery into) was delivering for. One read of their
+    /// delivered attempts through the attempts' run index.
+    /// </summary>
+    Task<SubmissionTriggerCounts> CountRunDeliveredTriggersAsync(IReadOnlyCollection<Guid> runIds, CancellationToken ct = default);
 
     Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default);
 

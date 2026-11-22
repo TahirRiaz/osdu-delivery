@@ -673,6 +673,7 @@ public sealed class SubmissionIntake
         RenderContext = entry.SkipTier == SkipTier.ContentHash ? renderContext : null,
         RenderCommit = entry.SkipTier == SkipTier.ContentHash ? commit : null,
         RenderPaths = entry.Paths?.EncodeText(),
+        Why = entry.SkipTier == SkipTier.ContentHash ? entry.Why : null,
         ChildLinkKey = entry.SkipTier == SkipTier.ContentHash ? entry.Render?.ChildLinkKey : null,
         HeldSteps = entry.SkipTier == SkipTier.ContentHash ? HeldStepsOf(entry.Render) : null,
         RunId = RunId,

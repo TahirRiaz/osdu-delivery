@@ -337,6 +337,31 @@ public sealed class DeliveryReasonTests
         Assert.Contains("a record it searches for in OSDU, its parent, or a child it links", other.Detail, StringComparison.Ordinal);
     }
 
+    // --- A render that sends nothing ---------------------------------------------------------------------------------
+
+    [Fact]
+    public void A_render_identical_to_what_OSDU_holds_says_what_moved_to_render_it_and_that_nothing_was_sent()
+    {
+        var unchanged = ChangeDetector.Decide(Delivered(), "m1", "p1", true, new FlowChange());
+
+        var reason = Reasons(Context(fingerprint: NewFingerprint), NewCommit).ForUnchanged(Delivered(), unchanged, Row());
+
+        Assert.NotNull(reason);
+        Assert.Equal(DeliveryReason.NoneAction, reason!.Action);
+        Assert.Equal([ReasonKinds.MappingChanged], Kinds(reason));
+        Assert.Null(reason.Paths);
+        Assert.Equal("mapping WellLog@1.4.0 changed (852db64); renders what OSDU holds", reason.Summary());
+        Assert.Equal(reason.Summary(), DeliveryReason.FromJson(JsonNode.Parse(reason.ToJson().ToJsonString()))!.Summary());
+    }
+
+    [Fact]
+    public void A_render_identical_to_what_OSDU_holds_with_nothing_moved_says_nothing()
+    {
+        var unchanged = ChangeDetector.Decide(Delivered(), "m1", "p1", true, new FlowChange());
+
+        Assert.Null(Reasons().ForUnchanged(Delivered(), unchanged, Row()));
+    }
+
     // --- Several at once, and the real case --------------------------------------------------------------------------
 
     [Fact]
