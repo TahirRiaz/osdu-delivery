@@ -419,11 +419,12 @@ public sealed record RecordState
     public string? RenderCommit { get; init; }
 
     /// <summary>
-    /// The paths of the document OSDU holds of the record and a hash of each value (<see cref="Planning.RenderPaths"/>, encoded):
-    /// what a delivery compares its render with to name the paths it changes. Null for a record delivered before the ledger
-    /// kept them, and once OSDU no longer holds the version they describe (a removal, a reversal, a step back).
+    /// The paths of the document OSDU holds of the record and a hash of each value (<see cref="Planning.RenderPaths.EncodeText"/>):
+    /// what a delivery compares its render with to name the paths it changes. Text, so a state compares equal to another read
+    /// of the same record. Null for a record delivered before the ledger kept them, and once OSDU no longer holds the version
+    /// they describe (a removal, a reversal, a step back).
     /// </summary>
-    public byte[]? RenderPaths { get; init; }
+    public string? RenderPaths { get; init; }
 
     /// <summary>The ingestion fingerprint of the rows the delivered document was built from.</summary>
     public string? SourceFingerprint { get; init; }
@@ -819,10 +820,10 @@ public sealed record RecordCompletion
     public string? TargetId { get; init; }
 
     /// <summary>
-    /// For a promotion: the paths of the document the try sent, encoded (<see cref="Planning.RenderPaths"/>), which the record
+    /// For a promotion: the paths of the document the try sent (<see cref="Planning.RenderPaths.EncodeText"/>), which the record
     /// keeps as those of the document OSDU holds; null for a try that sent no document, or whose work carried none.
     /// </summary>
-    public byte[]? RenderPaths { get; init; }
+    public string? RenderPaths { get; init; }
 
     /// <summary>For a promotion: the estate commit the work's render context was planned at, which the record keeps with it.</summary>
     public string? RenderCommit { get; init; }
@@ -1029,9 +1030,9 @@ public sealed record SkippedRecord
 
     /// <summary>
     /// For a rendered skip of a record whose document's paths the ledger never kept: the paths of the document OSDU holds,
-    /// which the render found identical (<see cref="Planning.RenderPaths"/>, encoded). Null for every other skip.
+    /// which the render found identical (<see cref="Planning.RenderPaths.EncodeText"/>). Null for every other skip.
     /// </summary>
-    public byte[]? RenderPaths { get; init; }
+    public string? RenderPaths { get; init; }
 
     /// <summary>
     /// For a rendered skip, the unique segment of the ids of the children the render looked for (<see cref="RecordState.ChildLinkKey"/>),

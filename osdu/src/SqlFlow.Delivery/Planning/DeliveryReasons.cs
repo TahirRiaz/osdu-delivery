@@ -136,7 +136,7 @@ public sealed class DeliveryReasons
             return PathChanges.Without("the ledger keeps no path hashes of the version OSDU holds: it was delivered before the ledger kept them, or a reversal or a step back put an earlier version in its place");
         }
 
-        return RenderPaths.Decode(kept, out var problem) is { } before
+        return RenderPaths.DecodeText(kept, out var problem) is { } before
             ? RenderPaths.Compare(before, rendered)
             : PathChanges.Without(problem!);
     }
