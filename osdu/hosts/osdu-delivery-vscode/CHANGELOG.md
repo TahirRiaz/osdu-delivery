@@ -5,6 +5,15 @@ product's own changes are in the [repository's change log](https://github.com/Ta
 
 ## [1.0.5]
 
+### A run you start
+
+- **Delete ledger**, **Redeliver**, **Sync timelines**, **Release blocked**, **Adopt**, **Remove**, a reversal and the
+  other actions that queue a run open the run's live trace in the page's bottom panel, with **Open run** to its page,
+  and keep it behind the trace indicator once the panel is closed. A delivery flow's **Delivery**, **Records** and
+  **Submissions** tabs name a run of the flow while it is queued or running, with how long it has run, what it is doing,
+  **Trace** and **Open run**
+  ([a run an action starts](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/gui.md#a-run-an-action-starts)).
+
 ### Why a record was delivered
 
 - A record's timeline titles each **Delivered** row with what sent it, and opens to every input that moved (the mapping

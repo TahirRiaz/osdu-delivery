@@ -789,6 +789,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing=<group>` ([Restricted until complete](osdu/docs/reference/flow/mapping-restricted-access.md)).
 
 ### Changed
+- **A run an action starts shows as it starts.** **Delete ledger**, **Redeliver**, **Sync timelines**, **Release
+  blocked**, **Adopt**, **Remove**, a reversal and the other actions that queue a run open the run's live trace in the
+  bottom panel, with **Open run** to its page, and keep it behind the title bar's trace indicator once the panel is
+  closed, where they raised a toast alone. While any run of a delivery flow is queued or running, its **Delivery**,
+  **Records** and **Submissions** tabs name it, with how long it has run, what it is doing, **Trace** and **Open run**
+  ([a run an action starts](osdu/docs/reference/concepts/gui.md#a-run-an-action-starts)).
 - **The page that approves a sign-in from your editor or terminal looks like a device sign-in, not a second login
   page.** One card on the brand's navy field shows your editor or terminal linked to the product, the code in a box per
   character to compare with the one your tool shows (typed or pasted in any case, with or without its dash), the account
