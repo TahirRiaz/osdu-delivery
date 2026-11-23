@@ -14,6 +14,14 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   **Trace** and **Open run**
   ([a run an action starts](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/gui.md#a-run-an-action-starts)).
 
+### A record set aside, not held
+
+- A record whose queued document was not where the run sending it reads its work from (another node wrote it, or it was
+  pruned) shows **Set aside: its queued document could not be read where it was sent from** on its timeline, and **Set
+  aside: waiting for the next run** until a run sends it, rather than **Held** with "Not tried again until someone
+  releases it": nothing about it is wrong and nobody has to release it
+  ([work queued where a run cannot read it](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/submissions.md#work-queued-where-a-run-cannot-read-it)).
+
 ### Why a record was delivered
 
 - A record's timeline titles each **Delivered** row with what sent it, and opens to every input that moved (the mapping

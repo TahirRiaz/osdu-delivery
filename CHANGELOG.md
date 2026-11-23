@@ -1337,6 +1337,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **A part of a split delivery no longer fails on a deadlock while it holds records.** Holding records, and recording a
+  render that sent nothing, took them in an order of their own while a landing on another node released or asked for
+  them again, so the database chose one as a deadlock victim and the part failed. Every write of named records now takes
+  them in the order of the table's key, and a write that decides record by record locks its records before it decides
+  ([writes at scale](osdu/docs/reference/concepts/ledger.md#writes-at-scale)).
+- **Work queued where a run cannot read it is delivered in the same run.** A record a part, or a run on a lost node,
+  queued in a work folder another node cannot open was passed over as already queued and then held until the flow's next
+  run. The run that comes next renders it again into its own batches and sends it; the first run of a split delivery does
+  so for every part that left records behind; and a record set aside for its missing document is read again by key and
+  sent before the run ends, its timeline saying **Set aside** rather than **Held**
+  ([work queued where a run cannot read it](osdu/docs/reference/concepts/submissions.md#work-queued-where-a-run-cannot-read-it)).
 - **A cache refresh reaches the records a `$findAll` read from a lookup table.** A row the table moved to another key,
   or a row it added under one, left the records built from that key as they were, so a log could keep an access group
   the table no longer listed for its field. They are now tagged `relisted`, as for a type of OSDU records
