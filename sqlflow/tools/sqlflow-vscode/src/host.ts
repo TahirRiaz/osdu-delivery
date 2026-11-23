@@ -135,6 +135,13 @@ export async function activateHost(context: vscode.ExtensionContext, host: Vscod
         if (url === '') {
             return;
         }
+        // A test run works against a control plane of its own, which the person's other servers on the machine it runs
+        // on must not follow: the server keeps the address it is given in the person's own folder, whatever home the
+        // test gives it. This extension's server is started with the address in its environment and needs nothing more.
+        if (context.extensionMode === vscode.ExtensionMode.Test) {
+            output.info('[mcp] the control plane is not given to the other servers: the extension runs under tests.');
+            return;
+        }
         mcp.text('set_control_plane_url', { url }).catch((err: unknown) => {
             output.warn(`[mcp] the control plane could not be given to the other servers: ${err instanceof Error ? err.message : String(err)}`);
         });
