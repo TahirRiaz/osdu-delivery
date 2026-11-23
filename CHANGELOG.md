@@ -797,6 +797,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Set Control Plane URL** in the VS Code extension is replaced by **Switch or Add an Environment**, and moving to
   another control plane closes the pages open from the one before, since their addresses name its flows, runs and
   records ([environments in the extension](osdu/docs/reference/guides/vscode-environments.md#switching)).
+- **Delete ledger and Remove work several pages of records at once.** They worked one page of 500 records at a time,
+  and removed what each record's deliveries had registered (a file delivery's `dataset--File.Generic`) with a call of
+  its own. A removal now runs `parallelism.recordsAtOnce` pages at once (8 by default), each sized so every lane has
+  work, under the flow's rate limit; the datasets of a page go in one bulk call per 500. What a refusal or a failure
+  does is unchanged: the ledger is deleted only once OSDU answered for every record
+  ([how a removal works through many records](osdu/docs/reference/concepts/removal-and-reversal.md#how-a-removal-works-through-many-records)).
 - **A run an action starts shows as it starts.** **Delete ledger**, **Redeliver**, **Sync timelines**, **Release
   blocked**, **Adopt**, **Remove**, a reversal and the other actions that queue a run open the run's live trace in the
   bottom panel, with **Open run** to its page, and keep it behind the title bar's trace indicator once the panel is
