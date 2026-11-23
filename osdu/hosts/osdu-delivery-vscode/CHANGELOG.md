@@ -5,6 +5,13 @@ product's own changes are in the [repository's change log](https://github.com/Ta
 
 ## [1.0.6]
 
+### Saving an environment
+
+- Saving an environment in a window that opened before the extension was installed or updated said only that
+  `sqlflow.environments` "is not a registered configuration". The side bar now says the window has not loaded the
+  setting, and the notification offers **Reload Window**, after which the save goes through
+  ([the setting](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/guides/vscode-environments.md#the-setting)).
+
 ### Delivery
 
 - **The Delivery page filters its flows.** The field first in its header narrows the flow cards to the flows whose card
