@@ -1355,6 +1355,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says ([Upgrading an estate](osdu/docs/reference/concepts/templates.md#upgrading-an-estate-that-saved-templates-in-the-database)).
 
 ### Fixed
+- **Saving an environment in a window that has not loaded the setting says what to do.** When the VS Code extension
+  was installed or updated after the window opened, VS Code refused to save `sqlflow.environments` with "not a
+  registered configuration". The side bar now says the window has not loaded the setting, and the notification
+  offers **Reload Window**
+  ([the setting](osdu/docs/reference/guides/vscode-environments.md#the-setting)).
 - **A part of a split delivery no longer fails on a deadlock while it holds records.** Holding records, and recording a
   render that sent nothing, took them in an order of their own while a landing on another node released or asked for
   them again, so the database chose one as a deadlock victim and the part failed. Every write of named records now takes
