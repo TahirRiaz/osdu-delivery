@@ -44,6 +44,9 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.RecordActions.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Unattended.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Removals.cs
   - osdu/src/SqlFlow.Delivery/Engine/SourceRuntime.cs
   - osdu/src/SqlFlow.Delivery/Engine/Planning/Planner.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs

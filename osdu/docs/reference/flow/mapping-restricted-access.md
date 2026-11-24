@@ -40,6 +40,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs
   - osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Preflight.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/DeliveryWorker.cs
   - osdu/src/SqlFlow.Delivery/Engine/Reversals/VersionWriteBack.cs
   - osdu/src/SqlFlow.Delivery/Ledger/DocumentAccess.cs

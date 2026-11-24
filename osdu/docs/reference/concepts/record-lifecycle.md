@@ -74,6 +74,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
   - osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.RecordActions.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Background/RecordProblemBackfillService.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryIssueEndpoints.cs
