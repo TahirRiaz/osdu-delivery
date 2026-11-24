@@ -63,7 +63,7 @@ internal static class DeliveryRecordVerbs
             "export" => await ExportAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
             "show" => await ShowAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
             "issues" => await IssuesAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
-            "release" => await ReleaseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
+            "release" => await ReleaseAsync(ModuleCommand.Of(context), ledger, engine, flow, label, ct).ConfigureAwait(false),
             "adopt" => await AdoptAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
             "reverse" => await DeliveryReversalVerbs.ReverseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
             "reversals" => await DeliveryReversalVerbs.ListAsync(context, ledger, flow, label, ct).ConfigureAwait(false),
@@ -429,14 +429,16 @@ internal static class DeliveryRecordVerbs
 
     /// <summary>
     /// Releases the interface's blocked records (held, failed, reverted, or removed by a reversal) and its held or failed ones
-    /// nothing moves: every one, the ones named by <c>--key</c>, or every one an issue keeps blocked (<c>--issue</c>). A
-    /// record that still holds a rendered document goes back to pending and is sent as it is; the rest are planned again
-    /// from their rows by the next run, which holds a record again if its row still calls for it. Fixing what blocked them is the operator's job; this is the verb that says "try again". It is recorded
-    /// on the audit trail as <c>cli:&lt;user&gt;@&lt;machine&gt;</c>'s (<see cref="RunActors.LocalAccount"/>), with every
-    /// record it released named under it.
+    /// nothing moves: the ones named by <c>--key</c>, every one an issue keeps blocked (<c>--issue</c>), or with <c>--all</c>
+    /// every one. Exactly one of the three is given: a command that names none is refused rather than taken for every
+    /// record, as the API and the MCP server refuse it. A record that still holds a rendered document goes back to pending
+    /// and is sent as it is; the rest are planned again from their rows by the next run, which holds a record again if its
+    /// row still calls for it. Fixing what blocked them is the operator's job; this is the verb that says "try again". It is
+    /// recorded on the audit trail as <c>cli:&lt;user&gt;@&lt;machine&gt;</c>'s (<see cref="RunActors.LocalAccount"/>), with
+    /// every record it released named under it.
     /// </summary>
-    private static async Task<int> ReleaseAsync(
-        CliVerbContext context, ILedger ledger, EngineContext engine, FlowDefinition flow, string label, CancellationToken ct)
+    internal static async Task<int> ReleaseAsync(
+        ModuleCommand context, ILedger ledger, EngineContext engine, FlowDefinition flow, string label, CancellationToken ct)
     {
         var asked = context.Arguments.GetOptions("--key").ToList();
         var keys = new List<DeliveryKey>(asked.Count);
@@ -448,9 +450,17 @@ internal static class DeliveryRecordVerbs
         }
 
         var problem = Issue(context.Arguments.GetOption("--issue"));
-        if (problem is not null && keys.Count > 0)
+        var all = context.Arguments.HasFlag("--all");
+        var ways = (keys.Count > 0 ? 1 : 0) + (problem is null ? 0 : 1) + (all ? 1 : 0);
+        if (ways > 1)
         {
-            return context.UsageError("release the records --key names or the ones --issue keeps blocked, not both.");
+            return context.UsageError("release the records --key names, the ones --issue keeps blocked, or every one with --all: one of them.");
+        }
+
+        if (ways == 0)
+        {
+            return context.UsageError(
+                "name the records to release: --key for each one, --issue for the ones an issue keeps blocked, or --all for every blocked record.");
         }
 
         // The pattern the release records is the issue as the ledger names it now, which is what was listed.
