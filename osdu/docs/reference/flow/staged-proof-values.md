@@ -37,6 +37,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.KnownValues.cs
   - osdu/src/SqlFlow.Delivery/Documents/ConditionReader.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.Assertion.cs
   - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
   - osdu/src/SqlFlow.Delivery/Model/AssertionOperands.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/StagedSql.cs

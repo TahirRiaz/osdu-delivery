@@ -29,6 +29,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.Delivery.cs
 ---
 
 # Delivery flow load errors
