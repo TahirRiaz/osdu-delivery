@@ -50,6 +50,10 @@ related:
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Source.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Target.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Reliability.cs
   - osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/EnrichBinding.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
