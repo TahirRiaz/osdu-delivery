@@ -41,6 +41,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Routes.cs
   - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Partitions.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.Delivery.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlOverlay.cs
   - osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
