@@ -55,6 +55,6 @@ names ([Full and incremental loads](../flow/dimension-incremental.md)).
 
 ## Written and read by
 
-- **Written** by a build for every key it reads (`SqlServerDimensionStore.cs`).
+- **Written** by a build for every key it reads (`SqlServerDimensionStore.Merge.cs`).
 - **Deleted** with its key, when a build removed the key, by the next build's write (`SqlServerDimensionStore.Purge.cs`).
 - **Read** by an incremental load (`DimensionRunner.Incremental.cs`).
