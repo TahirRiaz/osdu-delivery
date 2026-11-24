@@ -61,6 +61,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/LedgerRegistration.cs
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs
 ---
 
 # Submissions, work batches and leases: how a delivery run plans and sends its records

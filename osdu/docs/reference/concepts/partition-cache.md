@@ -75,6 +75,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheUpdateRolloutService.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Configuration/DeliveryModuleOptions.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Caches.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCacheStreams.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs
   - osdu/gui/src/features/delivery/DeliveryCachePage.tsx

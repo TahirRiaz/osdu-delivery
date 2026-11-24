@@ -47,6 +47,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/LedgerRegistration.cs
   - osdu/src/SqlFlow.Delivery/Protocols/IDeliveryProtocol.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordChain.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryRecordVerbs.cs
 ---
