@@ -160,7 +160,7 @@ public sealed class AssertionRunner
         var skipped = selected.Where(t => !t.RunsIn(partition) || AssertionActivity.Disabled(t) is not null).ToList();
         var flagged = selected.Where(t => t.RunsIn(partition) && AssertionActivity.Disabled(t) is null && AssertionActivity.Stale(t, now)).ToList();
         var fits = await AssertionTemplates.FitAsync(runnable, _context.DocumentTemplates, _flow.SourcePath, Mappings, ct).ConfigureAwait(false);
-        var run = await ledger.StartAssertionRunAsync(
+        var run = await ledger.Assertions.StartRunAsync(
             new AssertionRunState
             {
                 FlowId = entry.FlowId,
@@ -248,7 +248,7 @@ public sealed class AssertionRunner
             .ToDictionary(t => t.Name, t => t.DefinitionHash, StringComparer.OrdinalIgnoreCase);
         try
         {
-            var removed = await ledger.PruneReplacedAssertionRunsAsync(flowId, current, CancellationToken.None).ConfigureAwait(false);
+            var removed = await ledger.Assertions.PruneReplacedRunsAsync(flowId, current, CancellationToken.None).ConfigureAwait(false);
             if (removed > 0)
             {
                 _log.LogInformation(
@@ -458,7 +458,7 @@ public sealed class AssertionRunner
 
     private static async Task RecordAsync(ILedger ledger, AssertionRunState run, Guid flowId, TestResult result, CancellationToken ct)
     {
-        await ledger.RecordAssertionResultAsync(
+        await ledger.Assertions.RecordResultAsync(
             new AssertionResultState
             {
                 AssertionRunId = run.AssertionRunId,
@@ -486,7 +486,7 @@ public sealed class AssertionRunner
     {
         try
         {
-            await ledger.CompleteAssertionRunAsync(assertionRunId, status, counts, error, Now, CancellationToken.None).ConfigureAwait(false);
+            await ledger.Assertions.CompleteRunAsync(assertionRunId, status, counts, error, Now, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or InvalidOperationException || ex.GetType().Name.Contains("DbUpdate", StringComparison.Ordinal))
         {
