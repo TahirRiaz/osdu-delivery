@@ -229,24 +229,6 @@ public sealed partial class OsduLedger
             .Concat(scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).OrderBy(r => r.SourceFileName).Select(r => r.DeliveryKey).Take(limit));
 
     /// <summary>
-    /// The records, of any flow, whose source key, label, OSDU id or origin file name starts with <paramref name="term"/>,
-    /// as flow and key pairs: at most <paramref name="limit"/> from each column, read in the order of its own index.
-    /// </summary>
-    private static IQueryable<RecordIdentity> PrefixRecordCandidates(IQueryable<DeliveryRecord> scope, string term, int limit)
-        => scope.Where(r => r.SourceKey.StartsWith(term)).OrderBy(r => r.SourceKey).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit)
-            .Concat(scope.Where(r => r.Label != null && r.Label.StartsWith(term)).OrderBy(r => r.Label).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit))
-            .Concat(scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).OrderBy(r => r.TargetId).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit))
-            .Concat(scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).OrderBy(r => r.SourceFileName).Select(r => new RecordIdentity { FlowId = r.FlowId, DeliveryKey = r.DeliveryKey }).Take(limit));
-
-    /// <summary>A record's identity in a query: its flow and its delivery key.</summary>
-    private sealed class RecordIdentity
-    {
-        public Guid FlowId { get; init; }
-
-        public Guid DeliveryKey { get; init; }
-    }
-
-    /// <summary>
     /// Whether any identity column, or the flow's identity tokens, has at least <paramref name="limit"/> prefix matches,
     /// so candidates were left out.
     /// </summary>
