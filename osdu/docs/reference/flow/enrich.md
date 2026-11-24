@@ -42,6 +42,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.Enrich.cs
   - osdu/src/SqlFlow.Delivery/Documents/EnrichBinding.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryLineage.cs
   - osdu/src/SqlFlow.Delivery/Rendering/RecordComposition.cs
   - osdu/src/SqlFlow.Delivery/Rendering/EnrichTrace.cs

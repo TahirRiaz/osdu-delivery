@@ -23,6 +23,9 @@ related:
   - delivery-flow-interfaces
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Source.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Checks.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
