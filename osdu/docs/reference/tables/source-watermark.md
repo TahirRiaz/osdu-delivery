@@ -21,6 +21,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedgerRecords.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Records.cs
 ---
 
 # osdu.SourceWatermark: how far the last whole-scope plan of a flow scope read

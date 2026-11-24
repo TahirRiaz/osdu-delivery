@@ -20,6 +20,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
   - osdu/src/SqlFlow.Delivery/Ledger/RecordIdentity.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Identities.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Lookups.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordSearchContributor.cs
 ---
 

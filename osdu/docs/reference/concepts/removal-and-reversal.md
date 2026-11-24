@@ -56,6 +56,9 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduRecordProtocol.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/UndoRunner.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Custody.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Interventions.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Verify.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Purges.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Purges.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Problems.cs

@@ -47,6 +47,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/DocumentAccess.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Stats.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Queries.cs
   - osdu/src/SqlFlow.Delivery/Catalog/AccessRestrictionRegistry.cs
   - osdu/src/SqlFlow.Delivery/Validation/MappingCoverage.cs
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs

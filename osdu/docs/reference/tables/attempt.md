@@ -26,6 +26,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/LedgerRows.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Queries.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Activities.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Purges.cs
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20260928064320_LedgerPartitions.cs

@@ -51,6 +51,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedgerRecords.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedgerQueries.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Queries.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Interventions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Reversals.cs
   - osdu/src/SqlFlow.Delivery/Ledger/Reversals.cs
   - osdu/src/SqlFlow.Delivery/Ledger/Artifacts.cs

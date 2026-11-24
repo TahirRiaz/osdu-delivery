@@ -74,6 +74,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedgerCacheSets.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.CacheSets.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.UpdateTags.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheUpdateRolloutService.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Configuration/DeliveryModuleOptions.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs

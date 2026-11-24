@@ -24,6 +24,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Adoptions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Removal.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Interventions.cs
 ---
 
 # osdu.ActivityRecord: each record an intervention for many records changed, named once

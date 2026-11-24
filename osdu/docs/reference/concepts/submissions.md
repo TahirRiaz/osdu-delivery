@@ -42,6 +42,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedgerSubmissions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/LedgerRows.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Submissions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Leases.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs

@@ -33,6 +33,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.Data/OsduDbContext.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduSchema.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Activities.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Leases.cs
   - osdu/src/SqlFlow.Delivery/Ledger/AssertionStore.cs
   - osdu/src/SqlFlow.Delivery/Ledger/RecordIdentity.cs
