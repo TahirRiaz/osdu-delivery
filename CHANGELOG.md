@@ -791,6 +791,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing=<group>` ([Restricted until complete](osdu/docs/reference/flow/mapping-restricted-access.md)).
 
 ### Changed
+- **`sqlflow records adopt --key` takes the partition typed back.** Every adoption from the command line now takes
+  `--confirm <partition>`, records named by `--key` as well as every record or an issue's, the rule the API's flow routes
+  already kept; a command without it, or with another partition, asks nothing. The refusals of a release or an adoption
+  are decided once, in the engine, for the API, the CLI and the MCP server alike
+  ([records adopt](osdu/docs/reference/cli/records.md#records-adopt)).
 - `reliability.maxRequestBodyBytes` bounds each block of a file going to an Azure location, rather than holding a file that can be split. It still
   holds a file that has to go in one request ([large files](osdu/docs/reference/flow/large-files.md#a-request-body-ceiling)).
 - **Acting on every record of a flow has to be asked for by name.** A release, a redelivery, bringing records up to date

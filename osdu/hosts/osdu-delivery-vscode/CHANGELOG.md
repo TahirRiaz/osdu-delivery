@@ -36,6 +36,10 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   records in the same way; **Release blocked** and **Redeliver** on the pages, and the MCP server's `allHeld`, say which
   records they mean and work as before
   ([records release](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/cli/records.md#records-release)).
+- **`sqlflow records adopt --key` takes `--confirm`.** Adopting records named by key takes the partition typed back, as
+  adopting every record or an issue's already did and as the pages' **Adopt** in the Records tab's selection bar does;
+  without it nothing is asked
+  ([records adopt](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/cli/records.md#records-adopt)).
 
 ## [1.0.5]
 
