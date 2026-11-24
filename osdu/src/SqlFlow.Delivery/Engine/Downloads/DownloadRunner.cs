@@ -59,7 +59,7 @@ public sealed record DownloadPlanSummary(string Download, string Kind, string? Q
 public sealed record DownloadPlanOutcome(string Operation, string Flow, string Partition, IReadOnlyList<DownloadPlanSummary> Downloads);
 
 /// <summary>Every download of a run was taken up and at least one failed: the run ends failed, carrying how each came out.</summary>
-public sealed class DownloadRunsFailedException : DeliveryException
+public sealed class DownloadRunsFailedException : DeliveryException, IFailureWithOutcome
 {
     public DownloadRunsFailedException(DownloadOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -68,6 +68,8 @@ public sealed class DownloadRunsFailedException : DeliveryException
     }
 
     public DownloadOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 /// <summary>

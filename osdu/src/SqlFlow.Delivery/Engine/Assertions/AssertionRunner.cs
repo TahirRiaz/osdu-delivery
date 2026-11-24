@@ -85,7 +85,7 @@ public sealed record AssertionPlanOutcome(string Operation, string Flow, string 
 }
 
 /// <summary>A test run whose tests came out as the flow says fails the run; it carries the outcome, so the run still reports it.</summary>
-public sealed class AssertionTestsFailedException : DeliveryException
+public sealed class AssertionTestsFailedException : DeliveryException, IFailureWithOutcome
 {
     public AssertionTestsFailedException(AssertionRunOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -94,6 +94,8 @@ public sealed class AssertionTestsFailedException : DeliveryException
     }
 
     public AssertionRunOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 /// <summary>

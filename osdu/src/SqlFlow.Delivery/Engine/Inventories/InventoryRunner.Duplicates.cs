@@ -40,7 +40,7 @@ public sealed record InventoryDuplicatesOutcome(
 }
 
 /// <summary>A duplicate check's run that stopped: the run ends failed, carrying what it came to.</summary>
-public sealed class InventoryDuplicatesFailedException : DeliveryException
+public sealed class InventoryDuplicatesFailedException : DeliveryException, IFailureWithOutcome
 {
     public InventoryDuplicatesFailedException(InventoryDuplicatesOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -49,6 +49,8 @@ public sealed class InventoryDuplicatesFailedException : DeliveryException
     }
 
     public InventoryDuplicatesOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 public sealed partial class InventoryRunner

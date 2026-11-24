@@ -35,7 +35,7 @@ public sealed record InventoryMatchOutcome(
 }
 
 /// <summary>A match that stopped: the run ends failed, carrying what it came to, its selection failed and holding no id.</summary>
-public sealed class InventoryMatchFailedException : DeliveryException
+public sealed class InventoryMatchFailedException : DeliveryException, IFailureWithOutcome
 {
     public InventoryMatchFailedException(InventoryMatchOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -44,6 +44,8 @@ public sealed class InventoryMatchFailedException : DeliveryException
     }
 
     public InventoryMatchOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 public sealed partial class InventoryRunner
