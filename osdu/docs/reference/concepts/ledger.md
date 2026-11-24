@@ -31,6 +31,10 @@ related:
   - concept-provenance-and-row-keys
 sourceRefs:
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Records.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Submissions.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Activities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Partitions.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduDbContext.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduSchema.cs
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20260928064320_LedgerPartitions.cs

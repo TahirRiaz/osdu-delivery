@@ -76,6 +76,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Dimensions/DimensionBlueprint.cs
   - osdu/src/SqlFlow.Delivery/Engine/Search/ExplorerChecks.cs
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Repositories.cs
   - osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Configuration/DeliveryModuleOptions.cs

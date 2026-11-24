@@ -30,6 +30,7 @@ sourceRefs:
   - osdu/deploy/bicep/main.bicep
   - osdu/deploy/bicep/worker.bicep
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Records.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduDbContext.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduSchema.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs

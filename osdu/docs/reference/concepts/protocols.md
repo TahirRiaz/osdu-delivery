@@ -58,6 +58,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Http/UrlGuard.cs
   - osdu/src/SqlFlow.Delivery/Http/NetworkPolicy.cs
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Records.cs
   - osdu/specs/core/legal/openapi.yaml
 ---
 
