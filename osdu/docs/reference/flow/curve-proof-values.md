@@ -31,6 +31,7 @@ related:
   - delivery-guide-data-quality-tests
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.Curves.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
   - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
   - osdu/src/SqlFlow.Delivery/Engine/Assertions/KnownCurves.cs

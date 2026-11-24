@@ -60,6 +60,10 @@ related:
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/AssertionFlowKind.cs
   - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.Tests.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.Assertions.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.Subjects.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.Values.cs
   - osdu/src/SqlFlow.Delivery/Documents/AssertionLineage.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
   - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
