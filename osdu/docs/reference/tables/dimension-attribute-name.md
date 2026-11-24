@@ -51,5 +51,5 @@ the dimension declares no more keeps its number, with no place ([The tables a di
 
 ## Written and read by
 
-- **Written** by a build, which gives each attribute it reads its number and place (`SqlServerDimensionStore.cs`).
+- **Written** by a build, which gives each attribute it reads its number and place (`SqlServerDimensionStore.Merge.cs`).
 - **Read** by the build that lays out the dimension's table, and by the pages and searches that show attributes by name.
