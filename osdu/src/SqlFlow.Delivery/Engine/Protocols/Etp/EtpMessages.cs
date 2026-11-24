@@ -1,7 +1,8 @@
 // Written from the pinned ETP 1.2 protocol, osdu/specs/reservoir-ddms/etp-1.2.avpr: one C# record per message of the
 // protocols this route speaks (Core 0, Discovery 3, Store 4, DataArray 9, Transaction 18, Dataspace 24 and
-// DataspaceOSDU 2424), its properties in the schema's field order. EtpSchemaTests round-trips every one of them
-// against a codec driven by that same file, so this file and the schema cannot drift apart.
+// DataspaceOSDU 2424), its properties in the schema's field order, in a file per protocol beside this one
+// (EtpMessages.Core.cs and the others). EtpSchemaTests round-trips every one of them against a codec driven by that
+// same file, so the records and the schema cannot drift apart.
 
 namespace SqlFlow.Delivery.Engine.Protocols.Etp;
 
