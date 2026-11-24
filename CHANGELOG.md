@@ -800,6 +800,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing=<group>` ([Restricted until complete](osdu/docs/reference/flow/mapping-restricted-access.md)).
 
 ### Changed
+- **Acting on every record of a flow has to be asked for by name.** A release, a redelivery, bringing records up to date
+  (and its preview) and deleting from the ledger take `all: true` for every record; a request that names no records
+  (no `keys`, no `filter`, no `all`), such as a missing body, is refused with 400 where it used to act on every record of
+  the flow, and one that names them more than one way is refused too. A release by keys takes at most 25,000, as a
+  redelivery does. `sqlflow records release` needs `--key`, `--issue` or `--all`, where leaving them out released every
+  blocked record. The GUI and the MCP server already said which records they meant and act as before
+  ([interventions](osdu/docs/reference/concepts/api.md#interventions), [records release](osdu/docs/reference/cli/records.md#records-release)).
 - `InsertedDate_DW` and `UpdatedDate_DW` are columns every dimension's table has, so a dimension flow naming an attribute,
   an element field, or its key's or value's column (`columns:`) after either is refused when it loads
   ([labels and attributes](osdu/docs/reference/flow/dimension-attributes.md)).
