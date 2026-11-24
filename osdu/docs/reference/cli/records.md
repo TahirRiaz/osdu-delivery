@@ -298,8 +298,8 @@ a delivery key; 'records list' prints them.`
 Asks held records to adopt the record OSDU already holds at the OSDU id each one's key makes, written by another system or
 another instance of the delivery whose ledger this database does not hold ([Adopting a record OSDU already holds](../concepts/record-lifecycle.md#adopting-a-record-osdu-already-holds)):
 every record of the interface held so, every one `--issue` keeps held, or the ones `--key` names (repeat it; delivery keys
-only). Every record or an issue's takes the partition the ledger is kept in typed back as `--confirm`. Nothing is claimed
-yet: the flow's next run takes each record over, at the version OSDU holds then, and writes its row there. A record held
+only). Every adoption takes the partition the ledger is kept in typed back as `--confirm` (case ignored), as the API's flow
+routes do. Nothing is claimed yet: the flow's next run takes each record over, at the version OSDU holds then, and writes its row there. A record held
 for anything else, claiming an id, held by a delivery or asked already is left as it is. The adoption is recorded on the
 audit trail as `cli:<user>@<machine>`'s, with every record it asked named under it.
 
@@ -308,8 +308,9 @@ welldb-namespaces-03-delivery: <n> record(s) held for an id OSDU holds asked to 
 ```
 
 `--key` and `--issue` together are refused (`adopt the records --key names or the ones --issue keeps held, not both; name
-neither to adopt every record held for an id OSDU holds.`), and every record or an issue's without the partition typed back
-is refused (`... type the partition back with --confirm dev.`).
+neither to adopt every record held for an id OSDU holds.`). An adoption without the partition typed back is refused (`...
+Type the partition back with --confirm dev.`), and one with another partition too (`The adoption confirms partition 'prod',
+and the records of <flow> are kept in 'dev'. Nothing was adopted.`); nothing is asked of any record either way.
 
 `--json`: `flow`, `flowId`, `issue` (when `--issue` named one) and `asked`, the delivery keys asked.
 

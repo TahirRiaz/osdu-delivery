@@ -123,7 +123,7 @@ public sealed class RecordReleaseCommandTests : IAsyncLifetime, IDisposable
             },
             CancellationToken.None);
         var ledger = Ledger;
-        var exit = await DeliveryRecordVerbs.ReleaseAsync(command, ledger, Samples.Engine(ledger, _clock), _flow, Label, CancellationToken.None);
+        var exit = await DeliveryRecordVerbs.ReleaseAsync(command, Samples.Engine(ledger, _clock), _flow, Label, CancellationToken.None);
         return (exit, output.ToString(), usage);
     }
 }

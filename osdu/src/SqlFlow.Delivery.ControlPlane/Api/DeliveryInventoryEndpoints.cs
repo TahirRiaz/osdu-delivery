@@ -463,14 +463,13 @@ public static partial class DeliveryInventoryEndpoints
         }
 
         // A new id is for good: the records are written under it from then on, and records that name the old one keep naming it.
-        var confirm = request.Confirm?.Trim();
-        if (string.IsNullOrEmpty(confirm))
+        if (PartitionConfirmation.Typed(request.Confirm) is not { } confirm)
         {
             return Problem(StatusCodes.Status400BadRequest, "Confirmation required",
                 "New OSDU ids are for good: name the partition the inventory is kept in as 'confirm'; nothing is repaired without it.");
         }
 
-        return string.Equals(confirm, inventory.Partition, StringComparison.OrdinalIgnoreCase)
+        return PartitionConfirmation.Names(confirm, inventory.Partition)
             ? null
             : Problem(StatusCodes.Status400BadRequest, "Confirmation does not match",
                 $"The confirmation names '{confirm}', and inventory '{inventory.Name}' is kept in partition '{inventory.Partition}'. Nothing was repaired.");

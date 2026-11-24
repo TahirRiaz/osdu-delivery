@@ -201,14 +201,13 @@ public static partial class DeliveryInventoryEndpoints
     /// </summary>
     private static ProblemHttpResult? ConfirmationProblem(string? typed, InventoryState inventory, string done)
     {
-        var confirm = typed?.Trim();
-        if (string.IsNullOrEmpty(confirm))
+        if (PartitionConfirmation.Typed(typed) is not { } confirm)
         {
             return Problem(StatusCodes.Status400BadRequest, "Confirmation required",
                 $"Name the partition the inventory is kept in as 'confirm'; nothing is {done} without it.");
         }
 
-        return string.Equals(confirm, inventory.Partition, StringComparison.OrdinalIgnoreCase)
+        return PartitionConfirmation.Names(confirm, inventory.Partition)
             ? null
             : Problem(StatusCodes.Status400BadRequest, "Confirmation does not match",
                 $"The confirmation names '{confirm}', and inventory '{inventory.Name}' is kept in partition '{inventory.Partition}'. Nothing was queued.");

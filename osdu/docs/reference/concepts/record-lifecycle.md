@@ -435,12 +435,12 @@ interfaces.
 | Every such record of the source, of every interface | **Adopt (N)** on the flow's Delivery tab | `POST /flows/{pipelineId}/adopt` naming no record and no interface | |
 | Every such record of one interface | | the same route with `interface` | `sqlflow records adopt <flow.yaml> --confirm <partition>` |
 | The records one issue keeps held | **Adopt N** on the flow's Issues tab | `POST /flows/{pipelineId}/issues/{issue}/adopt` ([Adopting an issue](#issues)) | `--issue <id> --confirm <partition>` |
-| The records ticked, or every record a filter matches | **Adopt** in the Records tab's selection bar | `POST /flows/{pipelineId}/adopt` with `keys`, or `filter` with `expected` | `--key <delivery key>...` |
-| One record | **Adopt** on a held record's page | `POST /records/{flowId}/{key}/adopt` | `--key <delivery key>` |
+| The records ticked, or every record a filter matches | **Adopt** in the Records tab's selection bar | `POST /flows/{pipelineId}/adopt` with `keys`, or `filter` with `expected` | `--key <delivery key>... --confirm <partition>` |
+| One record | **Adopt** on a held record's page | `POST /records/{flowId}/{key}/adopt` | `--key <delivery key> --confirm <partition>` |
 
 Every adoption through a flow's routes, and so every batch in the GUI, takes the partition the ledgers are kept in typed
 back (`confirm`, case ignored): without it, or with another partition, nothing is asked (400). The CLI asks for it
-(`--confirm`) for every record or an issue's. Each can queue a deliver run straight after (`run`): of the whole source
+(`--confirm`) for every adoption the same way. Only a record's own page asks one record it shows without it. Each can queue a deliver run straight after (`run`): of the whole source
 when every interface was asked, of the interface otherwise, and of the record for one record.
 
 ```bash
