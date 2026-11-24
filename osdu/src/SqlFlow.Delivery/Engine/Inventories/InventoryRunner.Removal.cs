@@ -105,7 +105,7 @@ public sealed partial class InventoryRunner
         var spec = _flow.Inventory(inventoryName)
             ?? throw new DeliveryException($"Inventory flow '{_flow.Name}' has no inventory named '{inventoryName}'. Nothing was removed.");
         var flowId = _flow.LedgerId;
-        var state = (await ledger.ListInventoriesAsync(partition, ct).ConfigureAwait(false))
+        var state = (await ledger.Inventories.ListAsync(partition, ct).ConfigureAwait(false))
             .FirstOrDefault(i => i.FlowId == flowId && string.Equals(i.Name, spec.Name, StringComparison.OrdinalIgnoreCase));
         if (state?.LastReconcileRunId is null)
         {
@@ -185,7 +185,7 @@ public sealed partial class InventoryRunner
                 ParametersJson = parameters,
             },
             ct).ConfigureAwait(false);
-        var removalId = await ledger.StartInventoryRemovalAsync(flowId, start with { ActivityId = activity.ActivityId }, ct).ConfigureAwait(false);
+        var removalId = await ledger.Inventories.StartRemovalAsync(flowId, start with { ActivityId = activity.ActivityId }, ct).ConfigureAwait(false);
 
         var tally = InventoryRemovalTally.None;
         string? error = null;
@@ -212,7 +212,7 @@ public sealed partial class InventoryRunner
         // The removal and its activity are closed whatever happened, so the audit trail never shows one still running.
         if (error is not null)
         {
-            var recorded = await ledger.GetInventoryRemovalAsync(partition, removalId, CancellationToken.None).ConfigureAwait(false);
+            var recorded = await ledger.Inventories.GetRemovalAsync(partition, removalId, CancellationToken.None).ConfigureAwait(false);
             if (recorded is not null)
             {
                 tally = recorded.Tally;
@@ -220,7 +220,7 @@ public sealed partial class InventoryRunner
         }
 
         var status = error is null ? InventoryRunStatus.Completed : InventoryRunStatus.Failed;
-        await ledger.CompleteInventoryRemovalAsync(flowId, removalId, status, error, Now, CancellationToken.None).ConfigureAwait(false);
+        await ledger.Inventories.CompleteRemovalAsync(flowId, removalId, status, error, Now, CancellationToken.None).ConfigureAwait(false);
         var outcome = new InventoryRemovalOutcome(
             operation, _flow.Name, partition, spec.Name, removalId, start.Finding, start.Scope, start.Requested,
             tally.Removed, tally.Gone, tally.Skipped, tally.Failed, error, tally.Restored, start.RestoresRemovalId);
@@ -264,7 +264,7 @@ public sealed partial class InventoryRunner
     {
         if (request.Selection is { } selectionId)
         {
-            var selection = await ledger.GetInventorySelectionAsync(partition, selectionId, ct).ConfigureAwait(false);
+            var selection = await ledger.Inventories.GetSelectionAsync(partition, selectionId, ct).ConfigureAwait(false);
             if (selection is null || selection.InventoryId != state.InventoryId)
             {
                 throw new DeliveryException($"Inventory '{state.Name}' holds no selection {selectionId}: it was retired, or made of another inventory. Nothing was removed.");
@@ -283,7 +283,7 @@ public sealed partial class InventoryRunner
                     : $"Selection {selectionId} was matched against an earlier build of inventory '{state.Name}', and the inventory was built again since: match its conditions again before removing what it holds. Nothing was removed.");
             }
 
-            var selected = (await ledger.InventorySelectionCountsAsync(partition, selectionId, ct).ConfigureAwait(false)).Of(request.Finding);
+            var selected = (await ledger.Inventories.SelectionCountsAsync(partition, selectionId, ct).ConfigureAwait(false)).Of(request.Finding);
             if (selected != request.Expected)
             {
                 throw new DeliveryException(string.Create(
@@ -296,7 +296,7 @@ public sealed partial class InventoryRunner
 
         if (request.NamesIds)
         {
-            var held = await ledger.InventoryRecordsOfAsync(partition, state.InventoryId, request.Ids, ct).ConfigureAwait(false);
+            var held = await ledger.Inventories.RecordsOfAsync(partition, state.InventoryId, request.Ids, ct).ConfigureAwait(false);
             var unknown = request.Ids.Except(held.Select(r => r.TargetId), StringComparer.Ordinal).ToList();
             if (unknown.Count > 0)
             {
@@ -308,7 +308,7 @@ public sealed partial class InventoryRunner
             return null;
         }
 
-        var counts = await ledger.InventoryCountsAsync(_flow.LedgerId, state.InventoryId, ct).ConfigureAwait(false);
+        var counts = await ledger.Inventories.CountsAsync(_flow.LedgerId, state.InventoryId, ct).ConfigureAwait(false);
         var holds = counts.Of(request.Finding);
         if (holds != request.Expected)
         {
@@ -332,7 +332,7 @@ public sealed partial class InventoryRunner
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var round = await ledger.RemoveFromInventoryAsync(
+            var round = await ledger.Inventories.RemoveIdsAsync(
                 _flow.LedgerId, state.InventoryId, removalId, request.NamesIds ? request.Ids : null, after, InventoryRemovals.InventoryChunk, Now, ct).ConfigureAwait(false);
             tally = tally with { Removed = tally.Removed + round.Removed, Skipped = tally.Skipped + round.Skipped };
             if (round.Read < InventoryRemovals.InventoryChunk)
@@ -376,7 +376,7 @@ public sealed partial class InventoryRunner
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var chunk = await ledger.InventoryRemovalCandidatesAsync(
+            var chunk = await ledger.Inventories.RemovalCandidatesAsync(
                 _flow.LedgerId, state.InventoryId, request.Finding, request.NamesIds ? request.Ids : null, owners, after, InventoryRemovals.Chunk, request.Selection, ct).ConfigureAwait(false);
             if (chunk.Count == 0)
             {
@@ -385,7 +385,7 @@ public sealed partial class InventoryRunner
 
             after = chunk[^1].InventoryRecordId;
             var (items, refusal) = await RemoveChunkAsync(ledger, storage, headers, chunk, request, scope, owners, duplicates, removalId, actor, stats, ct).ConfigureAwait(false);
-            await ledger.RecordInventoryRemovalAsync(_flow.LedgerId, state.InventoryId, removalId, items, removedDetail, goneDetail, Now, ct).ConfigureAwait(false);
+            await ledger.Inventories.RecordRemovalAsync(_flow.LedgerId, state.InventoryId, removalId, items, removedDetail, goneDetail, Now, ct).ConfigureAwait(false);
             tally = tally.Add(items);
             if (refusal is not null)
             {
@@ -442,7 +442,7 @@ public sealed partial class InventoryRunner
 
         // A copy a duplicate check picked goes only while storage holds the copy its group keeps: both are read in one pass.
         var keepers = duplicates && request.Selection is { } selectionId
-            ? (await ledger.InventorySelectionKeepersAsync(_flow.LedgerId, selectionId, checking.Select(c => c.InventoryRecordId).ToList(), ct).ConfigureAwait(false))
+            ? (await ledger.Inventories.SelectionKeepersAsync(_flow.LedgerId, selectionId, checking.Select(c => c.InventoryRecordId).ToList(), ct).ConfigureAwait(false))
                 .ToDictionary(k => k.InventoryRecordId)
             : [];
         var read = await headers.ReadAsync(

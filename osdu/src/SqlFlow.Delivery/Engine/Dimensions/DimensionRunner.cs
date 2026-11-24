@@ -388,7 +388,7 @@ public sealed partial class DimensionRunner
     /// </summary>
     private async Task<DimensionViewsWritten> WriteViewsAsync(ILedger ledger, string partition, Guid runId, string actor, CancellationToken ct)
     {
-        var written = await ledger.WriteDimensionViewsAsync(
+        var written = await ledger.Dimensions.WriteViewsAsync(
             new DimensionViewWrite
             {
                 Flow = _flow.Name,
@@ -441,7 +441,7 @@ public sealed partial class DimensionRunner
 
         try
         {
-            return await ledger.ResolveDimensionTargetAsync(_flow.Name, _flow.Target, _context.Secrets, ct).ConfigureAwait(false);
+            return await ledger.Dimensions.ResolveTargetAsync(_flow.Name, _flow.Target, _context.Secrets, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is (SqlFlowException and not DeliveryException) or Microsoft.Data.SqlClient.SqlException or InvalidOperationException)
         {
@@ -586,7 +586,7 @@ public sealed partial class DimensionRunner
         {
             var (kept, problem) = await TryResolveTargetAsync(ledger, ct).ConfigureAwait(false);
             target = problem;
-            probes = kept is null ? [] : await ledger.ProbeDimensionViewsAsync(_flow.Name, _flow.Views, kept, _context.Secrets, ct).ConfigureAwait(false);
+            probes = kept is null ? [] : await ledger.Dimensions.ProbeViewsAsync(_flow.Name, _flow.Views, kept, _context.Secrets, ct).ConfigureAwait(false);
         }
 
         return _flow.Views.Select(view =>
@@ -610,7 +610,7 @@ public sealed partial class DimensionRunner
         var query = Query(dimension, partition);
         var started = Now;
         var load = await PlanLoadAsync(ledger, dimension, query, request, started, ct).ConfigureAwait(false);
-        var (_, run) = await ledger.StartDimensionRunAsync(
+        var (_, run) = await ledger.Dimensions.StartRunAsync(
             new DimensionDeclaration
             {
                 FlowId = _flow.LedgerId,
@@ -695,7 +695,7 @@ public sealed partial class DimensionRunner
             {
                 RecordKey = incremental?.RecordKey,
             };
-            var empty = await ledger.WriteDimensionAsync(Nothing(run, dimension, progress.Read, keepsRecords: incremental is not null), ct).ConfigureAwait(false);
+            var empty = await ledger.Dimensions.WriteAsync(Nothing(run, dimension, progress.Read, keepsRecords: incremental is not null), ct).ConfigureAwait(false);
             _log.LogWarning("dimension {Dimension}: {Note}", dimension.Name, resolved.Note);
             return Summary(dimension, empty, progress.Read, null);
         }
@@ -703,7 +703,7 @@ public sealed partial class DimensionRunner
         var keyColumns = incremental is null ? null : (await SettleRecordColumnsAsync(search, templates, dimension, query, resolved, incremental, ct).ConfigureAwait(false)).Keys;
         var concurrency = Math.Max(1, _flow.Parallelism.RecordsAtOnce);
         _log.LogInformation("dimension {Dimension}: reading {Kind} {Path} as {Field}", dimension.Name, dimension.Kind, dimension.Path, field.AggregateBy);
-        await using var stage = await ledger.StageDimensionAsync(_flow.LedgerId, run.DimensionId, run.DimensionRunId, ct).ConfigureAwait(false);
+        await using var stage = await ledger.Dimensions.StageAsync(_flow.LedgerId, run.DimensionId, run.DimensionRunId, ct).ConfigureAwait(false);
         try
         {
             var keys = new StagedKeys(stage);
@@ -733,7 +733,7 @@ public sealed partial class DimensionRunner
 
             var counted = Counts(values, templatesJson, countQueries, notes, read.Labels, read.Collected);
             progress.Read = load.Stamp(counted with { ScanPages = counted.ScanPages + read.ElementPages + (records?.Pages ?? 0) }) with { RecordKey = incremental?.RecordKey };
-            var written = await ledger.WriteDimensionAsync(
+            var written = await ledger.Dimensions.WriteAsync(
                 stage, Staged(dimension, FieldState(field, resolved.Repeats), progress.Read, read.Collected, partial: false, keepsRecords: incremental is not null), ct).ConfigureAwait(false);
             _log.LogInformation(
                 "dimension {Dimension}: loaded in full, {Values} value(s) from {Keys} key(s), {LeftOut} of none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
@@ -1475,7 +1475,7 @@ public sealed partial class DimensionRunner
     {
         try
         {
-            await ledger.CloseDimensionRunAsync(dimensionRunId, status, read, error, Now, CancellationToken.None).ConfigureAwait(false);
+            await ledger.Dimensions.CloseRunAsync(dimensionRunId, status, read, error, Now, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or InvalidOperationException || ex.GetType().Name.Contains("DbUpdate", StringComparison.Ordinal))
         {
