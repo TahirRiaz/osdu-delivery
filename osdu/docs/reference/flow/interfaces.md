@@ -47,6 +47,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Worker.cs
   - osdu/src/SqlFlow.Delivery/Engine/Planning/ReferenceReader.cs
   - osdu/src/SqlFlow.Delivery/Engine/Worker/FailureGuard.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Waits.cs

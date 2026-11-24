@@ -37,6 +37,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/AssertionStore.cs
   - osdu/src/SqlFlow.Delivery/Ledger/RecordIdentity.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Unattended.cs
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/ProtocolFactory.cs
   - osdu/src/SqlFlow.Delivery/Source/SqlServerIngestionSource.cs
   - osdu/src/SqlFlow.Delivery/Identity/TargetId.cs

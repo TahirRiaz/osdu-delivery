@@ -38,6 +38,10 @@ related:
   - delivery-concept-access-restriction
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Removals.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.RemovalChunks.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.LedgerDeletion.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.RecordActions.cs
   - osdu/src/SqlFlow.Delivery/Engine/RecordRemoval.cs
   - osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs

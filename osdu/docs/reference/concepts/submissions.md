@@ -47,6 +47,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryExecutor.cs
   - osdu/src/SqlFlow.Delivery/Engine/DeliveryRunPayload.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Deliver.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Unattended.cs
   - osdu/src/SqlFlow.Delivery/Engine/FanOut/IFanOutDispatcher.cs
   - osdu/src/SqlFlow.Delivery/Engine/TargetConnection.cs
   - osdu/src/SqlFlow.Delivery/Http/RateLimiter.cs

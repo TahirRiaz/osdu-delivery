@@ -66,6 +66,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheSteps.cs
   - osdu/src/SqlFlow.Delivery/Rendering/EntryValues.Id.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.CacheSteps.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/SnapshotBuilder.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/SystemPropertyCapture.cs

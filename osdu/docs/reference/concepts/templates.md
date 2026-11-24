@@ -63,6 +63,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Snapshots/RenderContext.cs
   - osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Worker.cs
   - osdu/src/SqlFlow.Delivery/Rendering/MappingRenderer.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingLineage.cs

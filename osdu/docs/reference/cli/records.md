@@ -58,6 +58,9 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Protocols/TargetArtifacts.cs
   - osdu/src/SqlFlow.Delivery/Engine/Reversals/ReversalRunner.cs
   - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.RecordActions.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Removals.cs
+  - osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Undo.cs
   - osdu/src/SqlFlow.Delivery/Identity/DeliveryKey.cs
   - osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs
 ---
