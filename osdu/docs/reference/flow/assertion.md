@@ -66,6 +66,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.Values.cs
   - osdu/src/SqlFlow.Delivery/Documents/AssertionLineage.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.Assertion.cs
   - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
   - osdu/src/SqlFlow.Delivery/Model/DeclaredPartition.cs
   - osdu/src/SqlFlow.Delivery/Model/DdmsCatalog.cs

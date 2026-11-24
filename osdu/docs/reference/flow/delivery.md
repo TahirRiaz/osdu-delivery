@@ -57,6 +57,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/EnrichBinding.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.Delivery.cs
+  - osdu/src/SqlFlow.Delivery/Documents/YamlModels.DeliveryTarget.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryLayout.cs
   - osdu/src/SqlFlow.Delivery/Documents/MappingCatalog.cs
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
