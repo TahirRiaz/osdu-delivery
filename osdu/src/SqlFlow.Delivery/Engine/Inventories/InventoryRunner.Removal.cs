@@ -41,7 +41,7 @@ public sealed record InventoryRemovalOutcome(
 }
 
 /// <summary>A removal (or a restore) that stopped part way: the run ends failed, carrying what it did up to there.</summary>
-public sealed class InventoryRemovalFailedException : DeliveryException
+public sealed class InventoryRemovalFailedException : DeliveryException, IFailureWithOutcome
 {
     public InventoryRemovalFailedException(InventoryRemovalOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -50,6 +50,8 @@ public sealed class InventoryRemovalFailedException : DeliveryException
     }
 
     public InventoryRemovalOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 public sealed partial class InventoryRunner

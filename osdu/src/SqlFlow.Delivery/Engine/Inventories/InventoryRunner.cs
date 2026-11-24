@@ -55,7 +55,7 @@ public sealed record InventoryPlanSummary(string Inventory, string Kind, string?
 public sealed record InventoryPlanOutcome(string Operation, string Flow, string Partition, IReadOnlyList<InventoryPlanSummary> Inventories);
 
 /// <summary>Every inventory of a run was taken up and at least one failed: the run ends failed, carrying how each came out.</summary>
-public sealed class InventoryRunsFailedException : DeliveryException
+public sealed class InventoryRunsFailedException : DeliveryException, IFailureWithOutcome
 {
     public InventoryRunsFailedException(InventoryOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -64,6 +64,8 @@ public sealed class InventoryRunsFailedException : DeliveryException
     }
 
     public InventoryOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 /// <summary>

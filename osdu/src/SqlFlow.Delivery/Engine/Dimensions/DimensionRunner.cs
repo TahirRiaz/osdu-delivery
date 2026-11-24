@@ -141,7 +141,7 @@ public sealed record DimensionBuildOutcome(string Operation, string Flow, string
 }
 
 /// <summary>A build run in which a dimension failed: it carries the outcome, so the run still reports every dimension.</summary>
-public sealed class DimensionBuildsFailedException : DeliveryException
+public sealed class DimensionBuildsFailedException : DeliveryException, IFailureWithOutcome
 {
     public DimensionBuildsFailedException(DimensionBuildOutcome outcome)
         : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
@@ -150,6 +150,8 @@ public sealed class DimensionBuildsFailedException : DeliveryException
     }
 
     public DimensionBuildOutcome Outcome { get; }
+
+    object IFailureWithOutcome.Outcome => Outcome;
 }
 
 /// <summary>What a plan found of one dimension: the field it would read, the kinds and records it would read them from, and what stops it.</summary>
