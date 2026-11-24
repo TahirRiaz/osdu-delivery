@@ -55,6 +55,8 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs
   - osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduRecordProtocol.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs
+  - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Problems.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ProblemSignature.cs

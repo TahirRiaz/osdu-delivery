@@ -1108,6 +1108,8 @@
         "osdu/src/SqlFlow.Delivery/Catalog/AccessRestrictionRegistry.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryAccessRestrictionEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Removals.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
         "osdu/gui/src/features/delivery/RemovalDialog.tsx",
         "osdu/gui/src/features/delivery/AccessRestrictionsPage.tsx",
         "osdu/gui/src/features/delivery/DeliveryRecordPage.tsx",
@@ -1239,6 +1241,16 @@
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Activities.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Mappings.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Caches.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Direct.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Sync.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Removals.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DirectOperationRunner.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryInventoryEndpoints.Duplicates.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/WorkbenchPartition.cs",
@@ -1484,6 +1496,7 @@
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryConfigEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryPartitionEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.cs",
@@ -1868,6 +1881,8 @@
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryRecordVerbs.cs",
         "osdu/gui/src/features/delivery/DeliveryReasonView.tsx",
         "osdu/gui/src/features/delivery/deliveryReason.ts"
@@ -2397,6 +2412,10 @@
         "osdu/gui/src/features/delivery/downloads/DownloadFlowPanels.tsx",
         "osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Caches.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Direct.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryPartitionEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryConfigEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryDimensionEndpoints.cs",
@@ -2540,7 +2559,14 @@
         "osdu/gui/src/features/delivery/ReverseDialog.tsx",
         "osdu/gui/src/features/delivery/removals/DeliveryRemovalsPage.tsx",
         "osdu/gui/src/features/delivery/removals/RemovedKeysGrid.tsx",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs"
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Activities.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Direct.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Removals.cs"
       ]
     },
     {
@@ -2596,6 +2622,8 @@
         "osdu/src/SqlFlow.Delivery/Engine/LedgerRegistration.cs",
         "osdu/src/SqlFlow.Delivery/Protocols/IDeliveryProtocol.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/RecordChain.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryRecordVerbs.cs"
       ]
@@ -2781,6 +2809,7 @@
         "osdu/src/SqlFlow.Delivery/Engine/Operations/TableRowsOperation.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/CacheProofSql.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Caches.cs",
         "osdu/gui/src/features/delivery/overview/OverviewRows.tsx",
         "osdu/gui/src/features/delivery/overview/MappingOverview.tsx"
       ]
@@ -3011,6 +3040,7 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Background/CacheUpdateRolloutService.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Configuration/DeliveryModuleOptions.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Caches.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCacheStreams.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs",
         "osdu/gui/src/features/delivery/DeliveryCachePage.tsx",
@@ -3061,6 +3091,8 @@
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
         "osdu/src/SqlFlow.Delivery/Model/DeclaredPartition.cs",
         "osdu/src/SqlFlow.Delivery/Model/RegisteredPartitions.cs",
         "osdu/src/SqlFlow.Delivery/Model/SourceDefinition.cs",
@@ -3294,6 +3326,8 @@
         "osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs",
         "osdu/src/SqlFlow.Delivery/Engine/Protocols/OsduRecordProtocol.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Problems.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/ProblemSignature.cs",
@@ -3380,6 +3414,9 @@
         "osdu/src/SqlFlow.Delivery/Ledger/Artifacts.cs",
         "osdu/src/SqlFlow.Delivery/Protocols/IDeliveryProtocol.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Removals.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Sync.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryLedgerEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryReversalEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.Cli/DeliveryReversalVerbs.cs",
@@ -3799,7 +3836,8 @@
         "osdu/src/SqlFlow.Delivery/Engine/Worker/LeaseJournal.cs",
         "osdu/src/SqlFlow.Delivery/Engine/LedgerRegistration.cs",
         "osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs"
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs"
       ]
     },
     {
@@ -5690,6 +5728,7 @@
         "osdu/src/SqlFlow.Delivery.ControlPlane/Background/InterfaceCatalogBackfillService.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryPipelines.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Stats.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryValueCheckEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryPartitionEndpoints.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCacheStreams.cs",
@@ -6720,6 +6759,7 @@
         "osdu/src/SqlFlow.Delivery/Validation/MappingCoverage.cs",
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs",
         "osdu/gui/src/features/delivery/DeliveryFlowPanel.tsx",
         "osdu/gui/src/features/delivery/RecordSituation.tsx",
         "osdu/docs/census/keys.mapping.json"
@@ -7160,6 +7200,7 @@
         "osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs",
         "osdu/specs/core/search/openapi.yaml",
         "osdu/specs/core/storage/openapi.yaml"
       ]
@@ -8169,6 +8210,9 @@
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Leases.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Interventions.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Sync.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Removals.cs",
         "osdu/gui/src/module.tsx",
         "osdu/gui/src/features/delivery/DeliveryFlowPanel.tsx",
         "osdu/gui/src/features/delivery/DeliveryRecordPage.tsx"
@@ -8342,6 +8386,7 @@
         "osdu/src/SqlFlow.Delivery/Engine/Search/OsduSearch.cs",
         "osdu/src/SqlFlow.Delivery/Storage/FileStore.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Submissions.cs",
         "sqlflow/src/SqlFlow.Sources/SourceFormatDetector.cs",
         "sqlflow/src/SqlFlow.ControlPlane/Background/ScheduleFire.cs"
       ]
@@ -8740,7 +8785,8 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.cs",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs"
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Activities.cs"
       ]
     },
     {
@@ -10233,7 +10279,8 @@
         "osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs",
         "osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs",
         "osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Mappings.cs",
-        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs"
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs",
+        "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Mappings.cs"
       ]
     },
     {
