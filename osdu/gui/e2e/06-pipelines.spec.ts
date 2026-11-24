@@ -118,7 +118,8 @@ test.describe.serial("pipelines", () => {
     await sync.click();
     const panel = adminPage.locator("section[data-testid='bottom-panel']");
     await expect(panel).toBeVisible();
-    await expect(panel).toHaveAttribute("aria-label", `Sync timelines · ${DELIVERY_FLOW}`);
+    // The trace is titled by the ledger it acts on, as every action of a flow is: the flow and the partition it delivers to.
+    await expect(panel).toHaveAttribute("aria-label", `Sync timelines · ${DELIVERY_FLOW} in partition dev`);
     // Closed, it would stay behind the title bar's trace indicator, which holds it already.
     await expect(adminPage.getByTestId("trace-indicator")).toBeVisible();
 
