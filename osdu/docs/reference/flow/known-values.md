@@ -38,6 +38,8 @@ related:
   - delivery-concept-search-paging
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.KnownValues.cs
+  - osdu/src/SqlFlow.Delivery/Documents/AssertionDocumentMapper.KnownPaths.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
   - osdu/src/SqlFlow.Delivery/Documents/ConditionReader.cs
   - osdu/src/SqlFlow.Delivery/Model/AssertionFlowDefinition.cs
