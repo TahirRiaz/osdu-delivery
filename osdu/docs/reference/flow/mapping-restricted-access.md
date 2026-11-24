@@ -52,6 +52,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Catalog/AccessRestrictionRegistry.cs
   - osdu/src/SqlFlow.Delivery/Validation/MappingCoverage.cs
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Records.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryEndpoints.Records.cs
   - osdu/gui/src/features/delivery/DeliveryFlowPanel.tsx

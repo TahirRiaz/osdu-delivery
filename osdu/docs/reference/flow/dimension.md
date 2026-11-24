@@ -121,6 +121,7 @@ sourceRefs:
   - osdu/gui/src/features/delivery/dimensions/DimensionViewTabs.tsx
   - osdu/gui/src/features/delivery/dimensions/DimensionViewSuggest.tsx
   - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.cs
+  - osdu/src/SqlFlow.Delivery.Data/DeliveryEntities.Dimensions.cs
   - osdu/src/SqlFlow.Delivery.Data/OsduDbContext.cs
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20260930103543_DimensionFlows.cs
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20261001163440_DimensionTables.cs
