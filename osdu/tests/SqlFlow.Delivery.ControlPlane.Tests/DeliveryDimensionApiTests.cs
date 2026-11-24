@@ -190,9 +190,9 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(["GR", "gr"], value.GetProperty("keys").EnumerateArray().Select(o => o.GetProperty("key").GetString()));
             var valueFilter = value.GetProperty("filter");
             var field = OsduField.Text("data.Curves.Mnemonic", "data.Curves");
-            var expected = DimensionFilters.Of(field, ["GR", "gr"]);
-            Assert.Equal(expected, valueFilter.GetProperty("filters").EnumerateArray().Select(f => f.GetString()));
-            Assert.Equal(expected[0], gr.GetProperty("filter").GetString());
+            const string grFilter = """(nested(data.Curves, (Mnemonic.keyword:"GR"))) OR (nested(data.Curves, (Mnemonic.keyword:"gr")))""";
+            Assert.Equal([grFilter], valueFilter.GetProperty("filters").EnumerateArray().Select(f => f.GetString()));
+            Assert.Equal(grFilter, gr.GetProperty("filter").GetString());
             var history = Assert.Single(value.GetProperty("history").EnumerateArray());
             Assert.Equal(("Gamma Ray", DimensionChangeKinds.Removed), (history.GetProperty("key").GetString(), history.GetProperty("change").GetString()));
 
