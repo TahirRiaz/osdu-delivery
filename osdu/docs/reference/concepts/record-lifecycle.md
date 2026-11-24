@@ -43,6 +43,8 @@ related:
   - delivery-concept-access-restriction
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/LedgerRows.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/ILedgerRecords.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Leases.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Waits.cs

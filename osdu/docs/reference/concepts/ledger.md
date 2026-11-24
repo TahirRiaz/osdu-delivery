@@ -36,6 +36,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20260928064320_LedgerPartitions.cs
   - osdu/src/SqlFlow.Delivery.Data/Migrations/20261010205917_RecordAssertions.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/LedgerRows.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.Purges.cs
   - osdu/src/SqlFlow.Delivery/Ledger/SqlServerLedgerBulk.Purges.cs
