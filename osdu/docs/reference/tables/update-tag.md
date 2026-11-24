@@ -22,6 +22,7 @@ sourceRefs:
   - osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs
   - osdu/src/SqlFlow.Delivery/Ledger/ILedgerCacheSets.cs
   - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.cs
+  - osdu/src/SqlFlow.Delivery/Ledger/OsduLedger.UpdateTags.cs
   - osdu/src/SqlFlow.Delivery/Engine/Snapshots/CacheImpact.cs
   - osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryCacheStreams.cs
 ---
