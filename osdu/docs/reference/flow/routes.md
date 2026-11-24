@@ -34,6 +34,7 @@ related:
 sourceRefs:
   - osdu/src/SqlFlow.Delivery/Protocols/DeliveryProtocol.cs
   - osdu/src/SqlFlow.Delivery/Documents/DeliveryDocumentLoader.cs
+  - osdu/src/SqlFlow.Delivery/Documents/FlowMapper.Routes.cs
   - osdu/src/SqlFlow.Delivery/Documents/WorkflowMapper.cs
   - osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs
   - osdu/src/SqlFlow.Delivery/Model/FlowDefinition.cs
