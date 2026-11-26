@@ -465,7 +465,7 @@ internal static class DeliveryInventoryVerbs
 
         if (context.Arguments.GetOption("--out") is not { } outPath)
         {
-            await InventoryExport.WriteAsync(ledger, inventory, finding, context.Out, ct).ConfigureAwait(false);
+            await InventoryExport.WriteAsync(ledger, ledger.Inventories, inventory, finding, context.Out, ct).ConfigureAwait(false);
             await context.Out.FlushAsync(ct).ConfigureAwait(false);
             return 0;
         }
@@ -484,7 +484,7 @@ internal static class DeliveryInventoryVerbs
             var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
             await using (file.ConfigureAwait(false))
             {
-                rows = await InventoryExport.WriteAsync(ledger, inventory, finding, file, ct).ConfigureAwait(false);
+                rows = await InventoryExport.WriteAsync(ledger, ledger.Inventories, inventory, finding, file, ct).ConfigureAwait(false);
             }
 
             File.Move(partial, full, overwrite: true);

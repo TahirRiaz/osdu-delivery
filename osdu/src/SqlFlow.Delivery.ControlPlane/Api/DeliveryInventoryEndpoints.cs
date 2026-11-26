@@ -962,13 +962,13 @@ public static partial class DeliveryInventoryEndpoints
 
             var columns = ListOf(picked.ColumnsJson);
             return TypedResults.Stream(
-                stream => InventoryExport.WriteSelectionAsync(ledger, inventory, selectionId, columns, chosen, stream, ct),
+                stream => InventoryExport.WriteSelectionAsync(ledger, ledger.Inventories, inventory, selectionId, columns, chosen, stream, ct),
                 InventoryExport.MediaType,
                 InventoryExport.FileName(inventory, selectionId, chosen));
         }
 
         return TypedResults.Stream(
-            stream => InventoryExport.WriteAsync(ledger, inventory, chosen, stream, ct),
+            stream => InventoryExport.WriteAsync(ledger, ledger.Inventories, inventory, chosen, stream, ct),
             InventoryExport.MediaType,
             InventoryExport.FileName(inventory, chosen));
     }
