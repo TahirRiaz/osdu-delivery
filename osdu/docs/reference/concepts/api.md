@@ -262,6 +262,7 @@ a deletion deletes each ledger as the caller, and refuses one that knows somethi
 | `GET /templates/osdu/schema` | read | `release`, `kind` | One kind's schema from a release, bundled, with the template version its file holds. |
 | `GET /templates/osdu/file` | read | `release`, `kind` | One kind's schema from a release as the template file a template folder keeps, bundled and naming its kind, to save under the kind's file name ([the OSDU data definitions](templates.md#the-osdu-data-definitions)). |
 | `GET /templates/osdu/compare` | read | `fromRelease`, `fromKind`, `toRelease`, `toKind` | Two versions of one kind compared: breaking, additive and wording changes, variable by variable. |
+| `GET /templates/osdu/compare/report` | read | `fromRelease`, `fromKind`, `toRelease`, `toKind`, `format` (`md`, or `json` when left out) | The report on moving from one version to the other, as a file to save: the verdict, what each synced mapping of the kind has to change, and every change with what it asks of a mapping ([the report](template-versions.md#the-report)). |
 | `POST /templates/osdu/sync` | operate | body `release` | Reads the release list again and downloads the release when it is not on disk. |
 | `GET /mapping-builder/repos` | read | | The repositories a mapping can be written for, with their delivery flows and the parameters each renders with. |
 | `GET /mapping-builder/caches` | read | | Every partition cache, its flows, current version and types. |

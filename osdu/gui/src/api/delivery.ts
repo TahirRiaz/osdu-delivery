@@ -70,7 +70,7 @@ import type {
 } from "./delivery/submissions";
 import type {
   DeliveryOsduComparison, DeliveryOsduReleases, DeliveryOsduSchemaFile, DeliveryOsduSchemaIndex, DeliveryOsduSync,
-  DeliveryTemplate, DeliveryTemplateDetail, DeliveryTemplateResolution,
+  DeliveryTemplate, DeliveryTemplateDetail, DeliveryTemplateResolution, TemplateMoveReportFormat,
 } from "./delivery/templates";
 import type {
   DeliverySourceSql, DeliveryValueCheckRequest, DeliveryValueProof, DeliveryValueProofRequest,
@@ -356,6 +356,18 @@ export const deliveryApi = {
       toRelease: to.release,
       toKind: to.kind,
     }),
+  /**
+   * The report on moving from one version of a kind to the other, as the text of the format asked for: what breaks, what each
+   * synced mapping of the kind has to change, and what a mapping may now use. Nothing is kept on the control plane.
+   */
+  osduCompareReport: (from: { release: string; kind: string }, to: { release: string; kind: string }, format: TemplateMoveReportFormat) =>
+    getText(`/api/v1/delivery/templates/osdu/compare/report?${new URLSearchParams({
+      fromRelease: from.release,
+      fromKind: from.kind,
+      toRelease: to.release,
+      toKind: to.kind,
+      format,
+    }).toString()}`),
   /** The repositories the mapping builder offers, with their git source and delivery flows. */
   builderRepos: () => get<DeliveryBuilderRepo[]>("/api/v1/delivery/mapping-builder/repos"),
   /** The partition caches the mapping builder offers, with the flows filling each, their current version and their types. */

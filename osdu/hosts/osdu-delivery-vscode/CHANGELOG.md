@@ -5,6 +5,14 @@ product's own changes are in the [repository's change log](https://github.com/Ta
 
 ## [1.0.6]
 
+### Templates
+
+- **A report on moving to another version of a kind.** Compare versions on the Templates page has a **Report** that
+  copies as Markdown or saves as Markdown or JSON what moving from one version to the other takes: what breaks, what each
+  synced mapping of the kind has to change, and what a mapping may now use. The MCP server's
+  `delivery_osdu_schema_compare` returns the same report ([comparing template
+  versions](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/template-versions.md#the-report)).
+
 ### Lineage
 
 - **The lineage graph's bar is one row.** The bar holds the search, the scope, how much is drawn and **What moved**.
