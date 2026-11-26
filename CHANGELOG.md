@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A report on moving to another version of a kind.** Compare versions on the Templates page's Browse OSDU tab has a
+  **Report** that copies as Markdown or saves as Markdown or JSON what moving from one version to the other takes: what
+  breaks, what each synced mapping of the kind has to change (what it writes that changed, and what the newer version
+  requires that it would leave empty), and what a mapping may now use, each change with what to do about it.
+  `GET /api/v1/delivery/templates/osdu/compare/report` serves it, and the MCP server's `delivery_osdu_schema_compare`
+  returns it ([comparing template versions](osdu/docs/reference/concepts/template-versions.md#the-report)).
 - **The lineage graph shows what moved.** **What moved** in the graph's bar turns the graph into a view of what happened
   on it: every card leads with what its node did in the day looked at (the files that arrived, the rows a flow read and
   changed, what landed in a table, the records a delivery flow delivered) and charts it over the window, and every line
