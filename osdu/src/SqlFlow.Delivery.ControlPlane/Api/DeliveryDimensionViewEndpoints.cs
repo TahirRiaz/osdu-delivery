@@ -238,7 +238,7 @@ public static class DeliveryDimensionViewEndpoints
 
         try
         {
-            var removed = await DimensionViewRemoval.RemoveAsync(ledger, view, RequestActor.Label(user), clock, ct).ConfigureAwait(false);
+            var removed = await DimensionViewRemoval.RemoveAsync(ledger, ledger.Dimensions, view, RequestActor.Label(user), clock, ct).ConfigureAwait(false);
             return TypedResults.Ok(new DeliveryDimensionViewRemovedDto(
                 removed.Name, removed.ViewName, removed.FlowName, removed.Dropped, removed.Checks, removed.Describe(), view.TableTarget.Place));
         }

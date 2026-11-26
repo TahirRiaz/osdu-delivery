@@ -121,7 +121,7 @@ internal static class DeliveryDimensionVerbs
         var dimension = held.FirstOrDefault(d => string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase))
             ?? throw new FlowValidationException(
                 $"{flow.LedgerName} holds no dimension named '{name}'{(held.Count == 0 ? string.Empty : $"; it holds {string.Join(", ", held.Select(d => d.Name).Order(StringComparer.Ordinal))}")}.");
-        var removed = await DimensionRemoval.RemoveAsync(ledger, dimension, RunActors.LocalAccount(), clock, ct).ConfigureAwait(false);
+        var removed = await DimensionRemoval.RemoveAsync(ledger, ledger.Dimensions, dimension, RunActors.LocalAccount(), clock, ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
@@ -395,7 +395,7 @@ internal static class DeliveryDimensionVerbs
                     : $"View {detail.View.Name} was written by flow {detail.View.FlowName}, not {flow.Name}; remove it with that flow's file.");
         }
 
-        var removed = await DimensionViewRemoval.RemoveAsync(ledger, detail.View, RunActors.LocalAccount(), clock, ct).ConfigureAwait(false);
+        var removed = await DimensionViewRemoval.RemoveAsync(ledger, ledger.Dimensions, detail.View, RunActors.LocalAccount(), clock, ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
@@ -513,7 +513,7 @@ internal static class DeliveryDimensionVerbs
         try
         {
             page = await DimensionTable.ReadAsync(
-                ledger,
+                ledger.Dimensions,
                 dimension,
                 new DimensionTableQuery(
                     context.Arguments.GetOption("--search"), TableMatches(context), context.Arguments.GetOption("--order"), context.Arguments.HasFlag("--desc"), 0, max),
@@ -753,7 +753,7 @@ internal static class DeliveryDimensionVerbs
             return context.UsageError("name the values to filter by, exactly as the dimension holds them: --value <value> (repeat it for more).");
         }
 
-        var filter = await DimensionFilters.ForMembersAsync(ledger, dimension, [], named, ct).ConfigureAwait(false);
+        var filter = await DimensionFilters.ForMembersAsync(ledger.Dimensions, dimension, [], named, ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
@@ -858,7 +858,7 @@ internal static class DeliveryDimensionVerbs
             picks.Add(new DimensionPick(dimension, [], values.Distinct(StringComparer.Ordinal).ToList(), byAttribute.GetValueOrDefault(name)));
         }
 
-        var set = await DimensionSearch.ComposeAsync(ledger, picks, context.Arguments.GetOption("--kind"), context.Arguments.GetOption("--within"), ct).ConfigureAwait(false);
+        var set = await DimensionSearch.ComposeAsync(ledger.Dimensions, picks, context.Arguments.GetOption("--kind"), context.Arguments.GetOption("--within"), ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
@@ -1033,7 +1033,7 @@ internal static class DeliveryDimensionVerbs
             ?? throw new FlowValidationException($"--format '{context.Arguments.GetOption("--format")}' is not one of csv, jsonl.");
         if (context.Arguments.GetOption("--out") is not { } outPath)
         {
-            await DimensionExport.WriteAsync(ledger, dimension, set, format, context.Out, ct).ConfigureAwait(false);
+            await DimensionExport.WriteAsync(ledger.Dimensions, dimension, set, format, context.Out, ct).ConfigureAwait(false);
             await context.Out.FlushAsync(ct).ConfigureAwait(false);
             return 0;
         }
@@ -1052,7 +1052,7 @@ internal static class DeliveryDimensionVerbs
             var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
             await using (file.ConfigureAwait(false))
             {
-                rows = await DimensionExport.WriteAsync(ledger, dimension, set, format, file, ct).ConfigureAwait(false);
+                rows = await DimensionExport.WriteAsync(ledger.Dimensions, dimension, set, format, file, ct).ConfigureAwait(false);
             }
 
             File.Move(partial, full, overwrite: true);

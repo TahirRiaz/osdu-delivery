@@ -338,7 +338,7 @@ public static partial class DeliveryDimensionEndpoints
 
         try
         {
-            var removed = await DimensionRemoval.RemoveAsync(ledger, dimension, RequestActor.Label(user), clock, ct).ConfigureAwait(false);
+            var removed = await DimensionRemoval.RemoveAsync(ledger, ledger.Dimensions, dimension, RequestActor.Label(user), clock, ct).ConfigureAwait(false);
             return TypedResults.Ok(new DeliveryDimensionRemovedDto(
                 removed.DimensionId, removed.Name, removed.FlowName, removed.Partition, removed.Values, removed.Keys, removed.Builds, removed.Changes,
                 removed.Attributes, removed.Texts, removed.Describe()));
@@ -454,7 +454,7 @@ public static partial class DeliveryDimensionEndpoints
         try
         {
             var page = await DimensionTable.ReadAsync(
-                ledger, dimension, new DimensionTableQuery(search, matches, order, descending, offset ?? 0, PageSize(limit)), ct).ConfigureAwait(false);
+                ledger.Dimensions, dimension, new DimensionTableQuery(search, matches, order, descending, offset ?? 0, PageSize(limit)), ct).ConfigureAwait(false);
             return TypedResults.Ok(new DeliveryDimensionTableDto(
                 page.Table,
                 page.KeyColumn,
@@ -557,7 +557,7 @@ public static partial class DeliveryDimensionEndpoints
         {
             try
             {
-                filter = ToDto(await DimensionFilters.ForMembersAsync(ledger, dimension, [valueId], [], ct).ConfigureAwait(false));
+                filter = ToDto(await DimensionFilters.ForMembersAsync(ledger.Dimensions, dimension, [valueId], [], ct).ConfigureAwait(false));
             }
             catch (Exception ex) when (ex is DeliveryException or OsduQueryException)
             {
@@ -715,7 +715,7 @@ public static partial class DeliveryDimensionEndpoints
 
         try
         {
-            return TypedResults.Ok(ToDto(await DimensionFilters.ForMembersAsync(ledger, dimension, ids, values, ct).ConfigureAwait(false)));
+            return TypedResults.Ok(ToDto(await DimensionFilters.ForMembersAsync(ledger.Dimensions, dimension, ids, values, ct).ConfigureAwait(false)));
         }
         catch (Exception ex) when (ex is DeliveryException or OsduQueryException)
         {
@@ -774,7 +774,7 @@ public static partial class DeliveryDimensionEndpoints
 
         try
         {
-            var set = await DimensionSearch.ComposeAsync(ledger, picks, body?.Kind, body?.Within, ct).ConfigureAwait(false);
+            var set = await DimensionSearch.ComposeAsync(ledger.Dimensions, picks, body?.Kind, body?.Within, ct).ConfigureAwait(false);
             var request = new JsonObject { ["kind"] = set.Kind, ["query"] = set.Query, ["limit"] = 1000 }.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             return TypedResults.Ok(new DeliveryDimensionSearchDto(
                 set.Kind, set.Query, request,
@@ -813,7 +813,7 @@ public static partial class DeliveryDimensionEndpoints
         // The export is written as it is read, a ledger page at a time, so a dimension of millions of keys is never held whole;
         // the request's own cancellation stops it when the caller goes away.
         return TypedResults.Stream(
-            stream => DimensionExport.WriteAsync(ledger, dimension, chosenSet, chosenFormat, stream, ct),
+            stream => DimensionExport.WriteAsync(ledger.Dimensions, dimension, chosenSet, chosenFormat, stream, ct),
             DimensionExport.MediaType(chosenFormat),
             DimensionExport.FileName(dimension, chosenSet, chosenFormat));
     }
