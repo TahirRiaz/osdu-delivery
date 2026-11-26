@@ -14,8 +14,8 @@ linter's options for a product's wiki (`d7a06ff0`), the table page type (`84b152
 (`c80ca450`), the source-side trace steps (`5a2977c0`), the catalog's platform tables, spellings and forgotten objects
 (`4e1dfeaa`), the catalog browse's one rule (`5b3903d1`), a client's sign-in approved in the GUI, the MCP server's reads and
 actions for an editor, the VS Code extension as a client of the server and a library, the GUI's hosted build, the
-extension's drawn side bar and pages, the lineage description flow type (`flowType: lin`) and the report flow type
-(`flowType: rpt`) are not carried yet. Besides those, `sqlflow/` is SQLFlow as
+extension's drawn side bar and pages, the lineage description flow type (`flowType: lin`), the report flow type
+(`flowType: rpt`) and the connect race and digest tick tests' timing are not carried yet. Besides those, `sqlflow/` is SQLFlow as
 it stands except for the one difference section 5 lists. It is written for whoever wants the reason behind an extension
 point, or resolves a conflict during the next `git subtree pull`.
 
@@ -150,7 +150,7 @@ it, and they are the ones to carry upstream first.
 
 ### Test determinism
 
-Six suites failed on timing or on each other rather than on the code. Each is a fix upstream benefits from, because the
+Eight suites failed on timing or on each other rather than on the code. Each is a fix upstream benefits from, because the
 same races are there for anyone running the suites in parallel or at the wrong moment of the day.
 
 | SQLFlow commit | What raced |
@@ -161,6 +161,8 @@ same races are there for anyone running the suites in parallel or at the wrong m
 | `603750d1` | The sync extension tests left lineage objects another test's sync swept up. |
 | `971f55a6` | The notification digest clamp test asked for "today" and expected a clamp to now; between 00:00 and 00:05 UTC, today so far is shorter than the smallest period a digest may cover, so the endpoint refused it and the test failed for a reason other than the one it checks. |
 | `e77b0714` | The run log test without a database read `flw.SysLog` inside a `CASE` that `OBJECT_ID` guarded, but SQL Server compiles a statement whole, so on a fresh database it failed with "Invalid object name" whenever it ran before any test had created the table. It now reads the table in the branch of an `IF` that runs only when the table exists. |
+| (this change) | The connect race test of the connect timeout cancelled the race 300 ms after it started and expected both attempts cancelled, but the second attempt starts after a 20 ms stagger: on a machine running every test assembly at once that timer fired after the timeout, the race then rightly started no second attempt, and the test waited for a cancellation that never came. The timeout now fires once both attempts are under way, and the suite's waits are capped at 30 s instead of 10. |
+| (this change) | The notification digest tick test armed an hourly clock and expected a tick one minute later to stand down, but the window ends at the next top of the hour, so in the last minute of an hour that tick was due and generated a digest. It now ticks halfway to the boundary the arming returned. |
 
 ### Test tiers
 
