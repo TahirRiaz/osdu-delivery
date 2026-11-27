@@ -29,7 +29,8 @@ public sealed record TypeChangePolicy(bool AllowTableRewrite, bool ConvertTypes)
 /// Carries out and reports the type changes schema sync planned for one target: finishes or rolls back a safe rewrite an
 /// earlier run left, applies the shadow rewrites the flow opted into (after checking a checked conversion's data), and
 /// describes every change, applied or not, as a <see cref="TypeChangeReport"/>. The in-place part (one ALTER COLUMN in
-/// metadata) runs with the rest of schema sync's DDL in <see cref="SchemaSyncService.EvolveAsync"/>.
+/// metadata) runs with the rest of schema sync's DDL in <see cref="SchemaSyncService.EvolveAsync"/>. <see cref="PlanAsync"/>
+/// says what a run would do about each change, through the same decisions and wording, and applies nothing.
 /// </summary>
 public static class TypeChangeApplier
 {
@@ -59,30 +60,11 @@ public static class TypeChangeApplier
         var reports = new List<TypeChangeReport>();
         foreach (var left in pending)
         {
-            var change = plan.TypeChanges.FirstOrDefault(c =>
-                string.Equals(c.Column, left.Column, StringComparison.OrdinalIgnoreCase)
-                && c.Mechanism == TypeChangeMechanism.ShadowRewrite
-                && string.Equals(c.ToType.Render(), left.ToType, StringComparison.OrdinalIgnoreCase));
-
+            var change = Resumable(plan, left);
             if (change is null || !policy.Permits(change))
             {
                 await ColumnRetyper.RollBackAsync(context, left, ct).ConfigureAwait(false);
-                var reason = change is null
-                    ? $"the source no longer asks for [{left.Column}] as {left.ToType}"
-                    : $"the flow no longer sets {change.RequiresOptIn}";
-                reports.Add(new TypeChangeReport
-                {
-                    Layer = TypeChangeReport.TargetLayer,
-                    Table = target.QualifiedName,
-                    Column = left.Column,
-                    FromType = plan.TypeChanges.FirstOrDefault(c => string.Equals(c.Column, left.Column, StringComparison.OrdinalIgnoreCase))?.FromType.Render() ?? string.Empty,
-                    ToType = left.ToType,
-                    Tier = change?.Tier ?? TypeChangeTier.CheckedConversion,
-                    Status = TypeChangeStatus.RolledBack,
-                    RewritesTable = true,
-                    Message = $"An earlier run's conversion of {target.QualifiedName}.[{left.Column}] to {left.ToType} was left unfinished and has " +
-                              $"been rolled back because {reason}; the column keeps its type and every value.",
-                });
+                reports.Add(RolledBack(target, plan, left, change, planned: false));
                 continue;
             }
 
@@ -145,7 +127,7 @@ public static class TypeChangeApplier
                 var check = await ColumnRetyper.CheckAsync(context, change, ct).ConfigureAwait(false);
                 if (check.Failing > 0)
                 {
-                    reports.Add(Refused(change, target, check));
+                    reports.Add(Refused(change, target, check, planned: false));
                     continue;
                 }
             }
@@ -185,33 +167,119 @@ public static class TypeChangeApplier
             {
                 reports.Add(appliedInPlace.Contains(change.Column)
                     ? TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Applied,
-                        $"{change.Describe(target.QualifiedName)}: applied in place. {Capitalize(change.Reason)}. {TypeChangeReport.Downstream}", rows)
+                        InPlace(change, target, planned: false), rows)
                     : NotPermitted(change, target, rows));
                 continue;
             }
 
-            if (change.IsNarrowing)
-            {
-                reports.Add(TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.KeptWider,
-                    $"{change.Describe(target.QualifiedName)}: kept. {Capitalize(change.Reason)}.", rows));
-                continue;
-            }
-
-            var message = $"{change.Describe(target.QualifiedName)}: refused, the engine does not apply a tier 3 change. {Capitalize(change.Reason)}.";
-            if (change.IsKey && TypeChangeClassifier.IsCheckedPair(change.FromType, change.SourceType))
-            {
-                var merges = await ColumnRetyper.KeyMergesAsync(context, change, ct).ConfigureAwait(false);
-                message += merges.MergedKeys == 0
-                    ? $" No two stored keys would become one as {change.SourceType.Render()}."
-                    : $" {merges.MergedKeys.ToString(CultureInfo.InvariantCulture)} converted key(s) would each stand for several stored keys " +
-                      $"(for example {DescribeSample(merges.Sample)}).";
-            }
-
-            reports.Add(TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Manual,
-                message + " Manual steps: " + string.Join(" ", change.ManualSteps), rows));
+            reports.Add(await TierThreeAsync(context, target, change, rows, ct).ConfigureAwait(false));
         }
 
         return reports;
+    }
+
+    /// <summary>
+    /// What a run with <paramref name="policy"/> would do about every type change of <paramref name="plan"/> and every
+    /// rewrite an earlier run left on the table, reported in the order a run reports them (the unfinished rewrites, the
+    /// in-place and tier 3 changes, then the safe rewrites before and after the load), applying nothing. Only the reads a
+    /// run makes before it decides run over <paramref name="connection"/>: the unfinished rewrites, the table's facts, each
+    /// checked conversion's data check (<see cref="ColumnRetyper.CheckAsync"/>) and a key change's merging keys. A change
+    /// the run would apply is <see cref="TypeChangeStatus.Planned"/>, an unfinished rewrite it would roll back
+    /// <see cref="TypeChangeStatus.RolledBack"/>; every other change carries the status and message the run gives it.
+    /// <paramref name="appliedInPlace"/> names the columns the run's DDL batch would alter
+    /// (<see cref="SchemaSyncService.Permitted"/>). The plan must be of an existing table.
+    /// </summary>
+    public static async Task<IReadOnlyList<TypeChangeReport>> PlanAsync(
+        SqlConnection connection, RelationalObject target, EvolutionPlan plan, IReadOnlySet<string> appliedInPlace,
+        TypeChangePolicy policy, RetypeOptions options, Action<string, string> trace, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(appliedInPlace);
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(trace);
+        if (plan.CreateTable)
+        {
+            throw new ArgumentException($"{target.QualifiedName} does not exist yet: a run creates it, so it has no type change to plan.", nameof(plan));
+        }
+
+        var context = new RetypeContext(connection, target, options, trace);
+        var rows = (await TableDependencyReader.ReadAsync(connection, target, ct).ConfigureAwait(false)).RowCount;
+        var reports = new List<TypeChangeReport>();
+
+        // As ResumeAsync, first: a rewrite an earlier run left is finished when the run still wants that change and may make
+        // it, and rolled back otherwise. A finished one is the change itself, so it is not planned a second time below.
+        var finished = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var left in await ColumnRetyper.FindPendingAsync(connection, target, ct).ConfigureAwait(false))
+        {
+            var change = Resumable(plan, left);
+            if (change is null || !policy.Permits(change))
+            {
+                reports.Add(RolledBack(target, plan, left, change, planned: true));
+                continue;
+            }
+
+            finished.Add(change.Column);
+            reports.Add(PlannedResume(target, change, left, rows));
+        }
+
+        // As DescribeAsync: the in-place changes the DDL batch would carry (or leave pending an opt-in), and the tier 3 ones.
+        foreach (var change in plan.TypeChanges.Where(c => c.Mechanism != TypeChangeMechanism.ShadowRewrite && !finished.Contains(c.Column)))
+        {
+            if (change.Mechanism is TypeChangeMechanism.InPlace or TypeChangeMechanism.InPlaceRewrite)
+            {
+                reports.Add(appliedInPlace.Contains(change.Column)
+                    ? TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Planned,
+                        InPlace(change, target, planned: true), rows)
+                    : NotPermitted(change, target, rows));
+                continue;
+            }
+
+            reports.Add(await TierThreeAsync(context, target, change, rows, ct).ConfigureAwait(false));
+        }
+
+        // As ApplyAsync, before the load and then after it: each safe rewrite the flow allows, a checked conversion only once
+        // every stored value is shown to convert.
+        foreach (var timing in new[] { TypeChangeTiming.BeforeLoad, TypeChangeTiming.AfterLoad })
+        {
+            foreach (var change in plan.TypeChanges.Where(c =>
+                         c.Mechanism == TypeChangeMechanism.ShadowRewrite && c.Timing == timing && !finished.Contains(c.Column)))
+            {
+                if (!policy.Permits(change))
+                {
+                    reports.Add(NotPermitted(change, target, rows));
+                    continue;
+                }
+
+                StoredValueCheck? check = null;
+                if (change.Tier == TypeChangeTier.CheckedConversion)
+                {
+                    check = await ColumnRetyper.CheckAsync(context, change, ct).ConfigureAwait(false);
+                    if (check.Failing > 0)
+                    {
+                        reports.Add(Refused(change, target, check, planned: true));
+                        continue;
+                    }
+                }
+
+                reports.Add(PlannedRewrite(change, target, rows, check));
+            }
+        }
+
+        return reports;
+    }
+
+    /// <summary>A report's message without the manual steps a tier 3 message ends with, for a reader that lists
+    /// <see cref="TypeChangeReport.ManualSteps"/> on their own.</summary>
+    public static string WithoutManualSteps(TypeChangeReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        var steps = ManualStepsSuffix(report.ManualSteps);
+        return report.Status == TypeChangeStatus.Manual && report.Message.EndsWith(steps, StringComparison.Ordinal)
+            ? report.Message[..^steps.Length]
+            : report.Message;
     }
 
     private static async Task<TypeChangeReport> ApplyOneAsync(
@@ -232,8 +300,8 @@ public static class TypeChangeApplier
         }
 
         var failedViews = await ColumnRetyper.RefreshViewsAsync(context, dependencies, ct).ConfigureAwait(false);
-        var message = $"{change.Describe(target.QualifiedName)}: applied by the safe rewrite; every row, its identity, system dates, indexes " +
-                      $"and statistics were kept. {Capitalize(change.Reason)}. {TypeChangeReport.Downstream}";
+        var message = $"{change.Describe(target.QualifiedName)}: applied by the safe rewrite; {KeptByRewrite} were kept. {Capitalize(change.Reason)}. " +
+                      TypeChangeReport.Downstream;
         if (failedViews.Count > 0)
         {
             message += " These views over the table could not be refreshed and need attention: " + string.Join("; ", failedViews) + ".";
@@ -269,19 +337,126 @@ public static class TypeChangeApplier
             $"on the flow and the next run {what}.", rows);
     }
 
-    private static TypeChangeReport Refused(ColumnTypeChange change, RelationalObject target, StoredValueCheck check)
+    private static TypeChangeReport Refused(ColumnTypeChange change, RelationalObject target, StoredValueCheck check, bool planned)
     {
         var count = check.Failing.ToString(CultureInfo.InvariantCulture);
-        var next = change.Timing == TypeChangeTiming.AfterLoad
+        var afterLoad = change.Timing == TypeChangeTiming.AfterLoad;
+        var next = afterLoad
             ? "Render them in the source as values of the new type (an expression in its transform, such as NULLIF(@ColName, 'NA') or a " +
               "CONVERT with the style the text is written in), then run this flow once with a full load: the load writes the source's values " +
               "into the column first, and the conversion then checks those. Or correct them in the table."
             : $"Declare a type in the source whose values fit (a longer {change.ToType.BaseType}), or correct them in the table.";
+
+        // A plan checks the values the table holds now; a run checks a text column becoming typed only after its load has
+        // written the source's values into the rows it read.
+        var whenRun = planned && afterLoad
+            ? " A run checks them once its load has written the source's values into the rows it reads, so it converts the column " +
+              "when the load rewrites every one of these rows."
+            : string.Empty;
         return TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Refused,
             $"{change.Describe(target.QualifiedName)}: refused, the table is untouched. {count} of {check.Rows.ToString(CultureInfo.InvariantCulture)} " +
-            $"stored value(s) do not convert to {change.ToType.Render()} without loss (for example {DescribeSample(check.Sample)}). {next}",
+            $"stored value(s) do not convert to {change.ToType.Render()} without loss (for example {DescribeSample(check.Sample)}).{whenRun} {next}",
             check.Rows, check.Failing, check.Sample);
     }
+
+    // What the safe rewrite keeps, as a run's report and a plan both say it.
+    private const string KeptByRewrite = "every row, its identity, system dates, indexes and statistics";
+
+    // The change a rewrite an earlier run left belongs to: the same column, carried by the safe rewrite to the same type.
+    // Null when the source no longer asks for that change.
+    private static ColumnTypeChange? Resumable(EvolutionPlan plan, PendingRetype left)
+        => plan.TypeChanges.FirstOrDefault(c =>
+            string.Equals(c.Column, left.Column, StringComparison.OrdinalIgnoreCase)
+            && c.Mechanism == TypeChangeMechanism.ShadowRewrite
+            && string.Equals(c.ToType.Render(), left.ToType, StringComparison.OrdinalIgnoreCase));
+
+    private static string Unfinished(RelationalObject target, string column, string toType)
+        => $"An earlier run's conversion of {target.QualifiedName}.[{column}] to {toType} was left unfinished";
+
+    // An unfinished rewrite a run rolled back, or (planned) would roll back: the source no longer asks for the change, or
+    // the flow no longer allows it.
+    private static TypeChangeReport RolledBack(
+        RelationalObject target, EvolutionPlan plan, PendingRetype left, ColumnTypeChange? change, bool planned)
+    {
+        var reason = change is null
+            ? $"the source no longer asks for [{left.Column}] as {left.ToType}"
+            : $"the flow no longer sets {change.RequiresOptIn}";
+        var outcome = planned
+            ? $"; a run rolls it back first because {reason}, and the column keeps its type and every value."
+            : $" and has been rolled back because {reason}; the column keeps its type and every value.";
+        return new TypeChangeReport
+        {
+            Layer = TypeChangeReport.TargetLayer,
+            Table = target.QualifiedName,
+            Column = left.Column,
+            FromType = plan.TypeChanges.FirstOrDefault(c => string.Equals(c.Column, left.Column, StringComparison.OrdinalIgnoreCase))?.FromType.Render() ?? string.Empty,
+            ToType = left.ToType,
+            Tier = change?.Tier ?? TypeChangeTier.CheckedConversion,
+            Status = TypeChangeStatus.RolledBack,
+            RewritesTable = true,
+            Message = Unfinished(target, left.Column, left.ToType) + outcome,
+        };
+    }
+
+    // An unfinished rewrite a run would finish: from where it stopped, or from the start when its trigger is gone (writes
+    // may then have reached the column without reaching the shadow).
+    private static TypeChangeReport PlannedResume(RelationalObject target, ColumnTypeChange change, PendingRetype left, long rows)
+    {
+        var how = left.TriggerIntact
+            ? "a run finishes it first"
+            : "its trigger is missing or disabled, so writes may have passed it by: a run removes it first and converts the column again from the start";
+        return TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Planned,
+            $"{Unfinished(target, change.Column, change.ToType.Render())}; {how}, by the safe rewrite, which keeps {KeptByRewrite}. " +
+            $"{Capitalize(change.Reason)}.", rows);
+    }
+
+    private static string InPlace(ColumnTypeChange change, RelationalObject target, bool planned)
+        => $"{change.Describe(target.QualifiedName)}: {(planned ? "planned, a run applies it in place" : "applied in place")}. {Capitalize(change.Reason)}. " +
+           TypeChangeReport.Downstream;
+
+    // A safe rewrite a run would apply; a checked conversion's message says what its data check found.
+    private static TypeChangeReport PlannedRewrite(ColumnTypeChange change, RelationalObject target, long rows, StoredValueCheck? check)
+    {
+        var afterLoad = change.Timing == TypeChangeTiming.AfterLoad;
+        var message = $"{change.Describe(target.QualifiedName)}: planned, a run applies it by the safe rewrite " +
+                      $"{(afterLoad ? "once the load has committed" : "before the load")}, which keeps {KeptByRewrite}. {Capitalize(change.Reason)}.";
+        if (check is not null)
+        {
+            message += check.Rows == 0
+                ? " The table holds no value to check."
+                : $" Every one of the {check.Rows.ToString(CultureInfo.InvariantCulture)} stored value(s) converts to {change.ToType.Render()} without loss" +
+                  (afterLoad ? "; the run checks them again once the load has written the source's values." : ".");
+        }
+
+        return TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Planned, message, rows);
+    }
+
+    // A tier 3 change: a narrowing the column keeps, or a change the engine refuses, with its manual steps and, for a key
+    // column, the stored keys that would merge.
+    private static async Task<TypeChangeReport> TierThreeAsync(
+        RetypeContext context, RelationalObject target, ColumnTypeChange change, long rows, CancellationToken ct)
+    {
+        if (change.IsNarrowing)
+        {
+            return TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.KeptWider,
+                $"{change.Describe(target.QualifiedName)}: kept. {Capitalize(change.Reason)}.", rows);
+        }
+
+        var message = $"{change.Describe(target.QualifiedName)}: refused, the engine does not apply a tier 3 change. {Capitalize(change.Reason)}.";
+        if (change.IsKey && TypeChangeClassifier.IsCheckedPair(change.FromType, change.SourceType))
+        {
+            var merges = await ColumnRetyper.KeyMergesAsync(context, change, ct).ConfigureAwait(false);
+            message += merges.MergedKeys == 0
+                ? $" No two stored keys would become one as {change.SourceType.Render()}."
+                : $" {merges.MergedKeys.ToString(CultureInfo.InvariantCulture)} converted key(s) would each stand for several stored keys " +
+                  $"(for example {DescribeSample(merges.Sample)}).";
+        }
+
+        return TypeChangeReports.From(change, TypeChangeReport.TargetLayer, target.QualifiedName, TypeChangeStatus.Manual,
+            message + ManualStepsSuffix(change.ManualSteps), rows);
+    }
+
+    private static string ManualStepsSuffix(IReadOnlyList<string> steps) => " Manual steps: " + string.Join(" ", steps);
 
     internal static string DescribeSample(IReadOnlyList<TypeChangeValueSample> sample)
         => sample.Count == 0
