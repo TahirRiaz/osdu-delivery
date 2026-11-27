@@ -93,14 +93,9 @@ public sealed class SchemaSyncService
         await connection.OpenAsync(ct).ConfigureAwait(false);
         var plan = await PlanAsync(connection, target, desired, keyColumns, ct).ConfigureAwait(false);
 
-        // An in-place rewrite the flow did not allow is left out of the batch (it stays a pending, reported change)
-        // rather than failing the run: the load still writes whatever the current type holds, guarded against loss.
-        // Generate validates the rest (throws on a blocked plan). A plan with no changes and no block produces an empty
-        // batch, which ApplyDdlAsync treats as a no-op.
-        var permitted = plan with
-        {
-            ColumnsToAlter = plan.ColumnsToAlter.Where(a => allowTableRewrite || a.Footprint == ChangeFootprint.MetadataOnly).ToList(),
-        };
+        // Generate validates the permitted plan (throws on a blocked plan). A plan with no changes and no block produces
+        // an empty batch, which ApplyDdlAsync treats as a no-op.
+        var permitted = Permitted(plan, allowTableRewrite);
         var batch = EvolutionDdlGenerator.Generate(target, permitted, allowTableRewrite);
         await SqlServerSchemaProvider.ApplyDdlAsync(connection, batch, options, ct).ConfigureAwait(false);
         return new EvolutionOutcome
@@ -108,6 +103,19 @@ public sealed class SchemaSyncService
             Plan = plan,
             AppliedStatements = batch.Statements,
             AlteredColumns = permitted.ColumnsToAlter.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase),
+        };
+    }
+
+    /// <summary>The plan as <see cref="EvolveAsync"/> applies it: an in-place change that rewrites the table is left out of
+    /// the DDL batch unless <paramref name="allowTableRewrite"/>, so it stays a pending, reported change rather than failing
+    /// the run (the load still writes whatever the current type holds, guarded against loss). A plan of a run reads the
+    /// columns it would alter from here too.</summary>
+    public static EvolutionPlan Permitted(EvolutionPlan plan, bool allowTableRewrite)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return plan with
+        {
+            ColumnsToAlter = plan.ColumnsToAlter.Where(a => allowTableRewrite || a.Footprint == ChangeFootprint.MetadataOnly).ToList(),
         };
     }
 
