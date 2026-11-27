@@ -46,6 +46,18 @@ product's own changes are in the [repository's change log](https://github.com/Ta
   Record** and the Home page still do
   ([the Delivery page](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/concepts/gui-ledger.md#delivery)).
 
+### Pages left open
+
+- **A page behind another tab asks for nothing.** A page you keep open behind another tab, and the side bar while it is
+  closed, no longer polls the control plane: it reads what went stale as soon as it is in front again. Several pages left
+  open no longer add up past the calls a minute a person is allowed
+  ([the side bar and the pages](https://github.com/TahirRiaz/osdu-delivery/blob/main/osdu/docs/reference/guides/vscode.md#the-side-bar-and-the-pages)).
+- **A page refused for calling too often comes back by itself.** A page the control plane refused with a 429 waits as
+  long as it is told, then reads again what was refused, where it used to show "HTTP 429" until it was closed. The
+  Delivery page reads every flow's counts in one call, and a flow whose document does not parse says **Not counted** and
+  why on its card ([rate
+  limiting](https://github.com/TahirRiaz/osdu-delivery/blob/main/sqlflow/docs/reference/concepts/control-plane.md#health-probes-and-rate-limiting)).
+
 ### Dimensions
 
 - **A dimension's Table tab says how fresh each row is.** Two columns, **Inserted** and **Updated**, show when a build
