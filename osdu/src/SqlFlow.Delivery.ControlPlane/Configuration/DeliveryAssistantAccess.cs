@@ -74,7 +74,7 @@ public static class DeliveryAssistantAccess
         // delivery_mappings, delivery_templates, delivery_osdu_schemas, delivery_osdu_schema_compare.
         "ListDeliveryMappings", "GetDeliveryMapping", "ListDeliveryMappingFlows",
         "ListDeliveryTemplates", "GetDeliveryTemplate",
-        "ListDeliveryOsduReleases", "ListDeliveryOsduSchemas", "GetDeliveryOsduSchema", "CompareDeliveryOsduSchemas",
+        "ListDeliveryOsduReleases", "ListDeliveryOsduSchemas", "GetDeliveryOsduSchema", "ReportDeliveryOsduComparison",
         // delivery_column_types: the type each column a flow's mapping reads should have, from metadata. Its value
         // profile is a SQLFlow compute task, which stays closed to an assistant run.
         "ListDeliveryFlowColumnTypes",
