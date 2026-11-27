@@ -82,6 +82,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   swaps it in under a short lock, keeping every row, identity and system date; a run that dies part way is finished or
   rolled back by the next. Every change is reported in run.json (`result.typeChanges`) and logged as
   `target.typechange` or `view.typechange`, at warning level until it is resolved ([Column type changes](docs/reference/concepts/column-type-changes.md)).
+- Every column keeps its type history. Each change to an existing column's type a run reports (`result.typeChanges`)
+  is a row of `catalog.ColumnTypeChange`, with its tier, its outcome, the values that refused it and the steps to make
+  it by hand; a change the run made sets the column's type in the catalog at once. `GET /runs/{runId}/type-changes`
+  answers a run's, `GET /schema-changes/columns?objectKey=&column=` a column's history, newest first. A run counts its
+  warnings (`warningCount` on a run, a run list and a pipeline's last run; the CLI's run detail prints it), so a run
+  that succeeded with warnings keeps the status `succeeded` and shows apart in the warning tone wherever a run's status
+  does. A run's page lists its type changes, and a pipeline's page shows those its latest run left for an operator
+  until a run no longer reports them. The migration `RunWarningCountAndColumnTypeHistory` adds both
+  ([Column type history](docs/reference/concepts/column-type-history.md)).
 - The title bar names the environment a deployment is and opens the estate's others. An estate that runs dev, test and
   prod as separate deployments gives each control plane the list (`ControlPlane:Environments:Links`, each a name, the
   address of its GUI and a description) and the one it is (`ControlPlane:Environments:Current`); the menu opens another

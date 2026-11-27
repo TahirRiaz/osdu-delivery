@@ -817,6 +817,54 @@
       ]
     },
     {
+      "id": "concept-column-type-history",
+      "corpus": "reference",
+      "path": "concepts/column-type-history.md",
+      "title": "Column type history: what each run did about a column's type, and runs that succeed with warnings",
+      "type": "concept",
+      "summary": "Each change to an existing column's type a run reports, kept per column with its outcome, and the warnings a run raised, so one that succeeded with them shows.",
+      "keywords": [
+        "column type history",
+        "type change",
+        "type changes",
+        "ColumnTypeChange",
+        "CatalogColumnTypeChange",
+        "TypeChangeReport",
+        "warning count",
+        "WarningCount",
+        "succeeded with warnings",
+        "needs attention",
+        "schema.convertTypes",
+        "checked conversion",
+        "widening"
+      ],
+      "related": [
+        "concept-shadow-catalog",
+        "concept-schema-evolution",
+        "concept-control-plane",
+        "concept-maintenance"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.Core/Model/TypeChangeReport.cs",
+        "src/SqlFlow.Catalog/CatalogEntities.cs",
+        "src/SqlFlow.Catalog/CatalogDbContext.cs",
+        "src/SqlFlow.Catalog/CatalogProjection.cs",
+        "src/SqlFlow.Catalog/CatalogSync.cs",
+        "src/SqlFlow.Catalog/RunQueueStore.cs",
+        "src/SqlFlow.Catalog/RepoStore.cs",
+        "src/SqlFlow.Catalog/Migrations/20261127122828_RunWarningCountAndColumnTypeHistory.cs",
+        "src/SqlFlow.ControlPlane/Api/Contracts.cs",
+        "src/SqlFlow.ControlPlane/Api/RunEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Api/CatalogEndpoints.cs",
+        "src/SqlFlow.ControlPlane/Api/PipelineRunDurations.cs",
+        "src/SqlFlow.Cli/Remote/RemoteVerbs.cs",
+        "gui/src/components/StatusBadge.tsx",
+        "gui/src/features/runs/TypeChanges.tsx",
+        "gui/src/features/runs/typeChangeOutcome.ts",
+        "gui/src/features/pipelines/PipelineDetailPage.tsx"
+      ]
+    },
+    {
       "id": "concept-connections-and-secrets",
       "corpus": "reference",
       "path": "concepts/connections-and-secrets.md",
