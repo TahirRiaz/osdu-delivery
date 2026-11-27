@@ -552,6 +552,28 @@ pub struct PipelineColumnsInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct InferColumnTypesInput {
+    /// The table's or view's catalog key (from search_all, lineage_objects or describe_object).
+    pub key: String,
+    /// The columns to profile; omit for every column.
+    pub columns: Option<Vec<String>>,
+    /// Rows to profile: omit for 100,000, 0 for every row, or 1,000 to 10,000,000.
+    #[serde(rename = "sampleSize")]
+    pub sample_size: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SourceColumnsInput {
+    /// The file flow's pipeline id (from list_pipelines, search_all or get_pipeline).
+    #[serde(rename = "pipelineId")]
+    pub pipeline_id: String,
+    /// How many of the newest files to read, 1 to 200 (default 20).
+    pub files: Option<i64>,
+    /// Column names to check against each file, as the file writes them or as the load names them.
+    pub expect: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRunsInput {
     #[serde(rename = "repoId")]
     pub repo_id: Option<String>,
@@ -2168,13 +2190,62 @@ not a flow (a mapping, a schedule library): {path, type, required}. list_flow_ki
         ).await
     }
 
-    #[tool(description = "Get a pipeline's pre-ingestion transform columns (kind: declared|detected).")]
+    #[tool(
+        description = "WHAT TYPE A COLUMN'S VALUES ARE: profiles a table's or view's columns on a node with SQL Server's own \
+            conversions, as a flow's inferTypes does, and returns per column the type the engine would choose (inferredType, \
+            with the expression that casts it) and the counts behind it: of the non-null values profiled, how many convert to \
+            a boolean, an integer, a decimal (with the widest scale and integer digits) or float, a datetime or date, a guid, \
+            and the longest length. Counts, lengths and types only, never a value. Use it for 'what datatype should elevation \
+            be', before declaring transform.columns: a column of 0 and 1 fits bit, int and decimal alike, and the counts show \
+            it. Takes the object key; profiles 100,000 rows unless sampleSize says otherwise."
+    )]
+    async fn infer_column_types(&self, Parameters(i): Parameters<InferColumnTypesInput>) -> String {
+        done(self.run_infer_column_types(i).await)
+    }
+
+    #[tool(
+        description = "A pre-ingestion flow's transform columns: kind declared (the types its YAML gives in transform.columns) or \
+            detected (the typed view its last run generated: each column's SQL type and the expression that casts it, which \
+            inferTypes chose from the loaded data where the YAML gave none). Use it for 'what type does this flow give \
+            elevation'; for what the values themselves convert to, infer_column_types."
+    )]
     async fn pipeline_columns(&self, Parameters(input): Parameters<PipelineColumnsInput>) -> String {
         let q = vec![("kind", input.kind.unwrap_or_default())];
         let links = json!({ "page": self.links.pipeline(&input.id) });
         self.get_about(
             &format!("/api/v1/pipelines/{}/columns", input.id), &q,
             ("pipelineId", &input.id), links,
+        ).await
+    }
+
+    #[tool(
+        description = "WHAT A FILE FLOW'S FILES CARRY NOW, file by file: the columns of each of the newest files its \
+            selection matches (read from each file's header as a run reads it; no row is read), every column with how many \
+            of those files carry it and the oldest and newest that do, and the table the flow loads into: newColumns (in some \
+            file, not yet in the table) and notInFiles (in the table, in no file read; the columns a load adds itself are left \
+            out). Name columns in `expect` to learn, for each, whether every file carries it and which files do not. Use it \
+            for 'did new columns arrive in the drop zone', 'do the latest files still carry spud_date', and before changing a \
+            flow's transform. Reads only the location the flow declares; filesMatched 0 comes with the engine's reason."
+    )]
+    async fn source_columns(&self, Parameters(i): Parameters<SourceColumnsInput>) -> String {
+        let mut q = Vec::new();
+        if let Some(files) = i.files {
+            q.push(("files", files.to_string()));
+        }
+        let expect: Vec<String> = i
+            .expect
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        if !expect.is_empty() {
+            q.push(("expect", expect.join(",")));
+        }
+        let links = json!({ "page": self.links.pipeline(&i.pipeline_id) });
+        self.get_about(
+            &format!("/api/v1/pipelines/{}/source-columns", i.pipeline_id), &q,
+            ("pipelineId", &i.pipeline_id), links,
         ).await
     }
 
@@ -3918,6 +3989,45 @@ impl SqlFlowMcp {
         Ok(json_str(&result))
     }
 
+    /// The profile of one catalog object's columns: the object's reference, database, schema and name are the catalog's
+    /// own, so the caller names the object by its key and never a connection.
+    async fn run_infer_column_types(&self, input: InferColumnTypesInput) -> anyhow::Result<String> {
+        let dossier = self.cp.get("/api/v1/lineage/objects/dossier", &[("key", input.key.clone())]).await?;
+        let object = &dossier["object"];
+        let text = |field: &str| object[field].as_str().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        let (Some(reference), Some(schema), Some(name)) = (text("serverRef"), text("schema"), text("name")) else {
+            anyhow::bail!(
+                "No table or view with a schema matches the key '{}'. Find it with search_all, lineage_objects or describe_object.",
+                input.key
+            );
+        };
+
+        let mut body = json!({
+            "reference": reference,
+            "operation": "inferColumnTypes",
+            "schema": schema,
+            "objectName": name,
+        });
+        if let Some(database) = text("database") {
+            body["database"] = json!(database);
+        }
+        let columns: Vec<String> = input
+            .columns
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if !columns.is_empty() {
+            body["columns"] = json!(columns);
+        }
+        if let Some(sample) = input.sample_size {
+            body["sampleSize"] = json!(sample);
+        }
+
+        self.run_compute_task("inferColumnTypes", body).await
+    }
+
     async fn run_detect_unique_key(&self, input: DetectUniqueKeyInput) -> anyhow::Result<String> {
         let reference = self.resolve_reference(input.reference).await?;
         let mut body = json!({
@@ -4840,7 +4950,7 @@ ONLINE (needs the control plane):
 /// The estate's readers and the links every online result carries.
 const ESTATE_READ: &str = "\
 - Read: list_repos, list_pipelines, get_pipeline, pipeline_definition, pipeline_columns,
-  pipeline_file_stats, list_runs,
+  pipeline_file_stats, source_columns (what a file flow's newest files carry, header by header), list_runs,
   get_run, run_statements/assertions/files/health_metrics, lineage_objects/_detail/_columns/_edges/
   _waves/_dependencies, search_all and search_objects/_columns/_definitions/_flows/_flow_columns/_files/
   _statements, list_schedules, get_schedule, get_schedule_plan, list_nodes, list_repo_sources, summary.

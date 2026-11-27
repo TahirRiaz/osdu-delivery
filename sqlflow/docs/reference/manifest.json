@@ -1316,7 +1316,9 @@
         "src/SqlFlow.Core/Model/FileDateSpec.cs",
         "src/SqlFlow.Core/Model/FileDiscovery.cs",
         "src/SqlFlow.Core/Model/FileRef.cs",
-        "src/SqlFlow.Core/Model/PreIngestionCsv.cs"
+        "src/SqlFlow.Core/Model/PreIngestionCsv.cs",
+        "src/SqlFlow.Core/Model/SourceFileScan.cs",
+        "src/SqlFlow.ControlPlane/Api/PipelineSourceColumns.cs"
       ]
     },
     {
@@ -2193,7 +2195,11 @@
         "src/SqlFlow.SqlServer/SqlServerLocaleProvider.cs",
         "src/SqlFlow.Yaml/YamlFlowLoader.cs",
         "src/SqlFlow.Yaml/InferSpecLoader.cs",
-        "src/SqlFlow.Cli/Program.cs"
+        "src/SqlFlow.Cli/Program.cs",
+        "src/SqlFlow.Core/Model/InferenceReport.cs",
+        "src/SqlFlow.Core/Compute/ComputeTaskModels.cs",
+        "src/SqlFlow.Execution/ComputeTaskExecutor.cs",
+        "tools/sqlflow-mcp/src/server.rs"
       ]
     },
     {
