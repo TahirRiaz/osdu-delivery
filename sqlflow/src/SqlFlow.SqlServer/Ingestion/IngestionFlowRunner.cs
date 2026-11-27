@@ -80,6 +80,11 @@ public sealed record IngestionRunResult
     /// resolved watermark with its probed object); null on the failure path, where it may not have resolved.</summary>
     public IncrementalSummary? Incremental { get; init; }
 
+    /// <summary>Every change to the type of an existing target column this run considered, and what became of it
+    /// (applied, pending an opt-in, refused by its data check, manual, finished or rolled back from an earlier run).
+    /// Serialized into run.json, from where the catalog keeps the column's type history.</summary>
+    public IReadOnlyList<TypeChangeReport> TypeChanges { get; init; } = [];
+
     /// <summary>The failure message (already redacted of any secret), or null on success.</summary>
     public string? Error { get; init; }
 }
@@ -248,6 +253,29 @@ public sealed class IngestionFlowRunner
             trace[index] = trace[index] with { Error = failure.Message };
             statements.ReportFailure(trace[index].Sequence, failure.Message);
         }
+
+        // Every type change the run considers is reported once, at info when it needs nothing (applied, kept wider) and as
+        // a warning when it needs an operator (pending, refused, manual, rolled back), so the run ends with a warning
+        // outcome until the change is resolved, rather than the target silently keeping a type the source moved away from.
+        var typeChanges = new List<TypeChangeReport>();
+        void ReportTypeChanges(IReadOnlyList<TypeChangeReport> reports)
+        {
+            foreach (var report in reports)
+            {
+                typeChanges.Add(report);
+                if (report.IsWarning)
+                {
+                    Warn("target.typechange", report.Message);
+                }
+                else
+                {
+                    Info("target.typechange", report.Message);
+                }
+            }
+        }
+
+        var typePolicy = new TypeChangePolicy(flow.SchemaSync.AllowTableRewrite, flow.SchemaSync.ConvertTypes);
+        var retypeOptions = new RetypeOptions { Apply = applyOptions };
 
         try
         {
@@ -488,11 +516,20 @@ public sealed class IngestionFlowRunner
             string? createCmd = null;
             if (flow.SchemaSync.Sync)
             {
+                var targetKeys = KeySet(EffectiveKeyColumns(flow));
+
+                // 5a. A safe rewrite an earlier run left unfinished (the run died part way) is finished when this run
+                //     still wants that change and may make it, and rolled back otherwise, before anything else touches
+                //     the table: its column is untouched until the swap, so either way the table ends consistent.
+                ReportTypeChanges(await TypeChangeApplier.ResumeAsync(
+                    schemaSync, targetConnectionString, flow.Target.Table, targetSchema.Columns, targetKeys, typePolicy,
+                    retypeOptions, Trace, ct).ConfigureAwait(false));
+
                 var targetOutcome = await schemaSync.EvolveAsync(
                     targetConnectionString,
                     flow.Target.Table,
                     targetSchema.Columns,
-                    KeySet(EffectiveKeyColumns(flow)),
+                    targetKeys,
                     flow.SchemaSync.AllowTableRewrite,
                     applyOptions,
                     ct).ConfigureAwait(false);
@@ -509,10 +546,23 @@ public sealed class IngestionFlowRunner
                 }
 
                 // Adding a column and re-typing one are not the same event, and reporting both as "N change(s)"
-                // hides the one that matters. An added column leaves every existing column as its consumers
-                // know it. An ALTER COLUMN changes the type a consumer already reads, which no downstream query
-                // asked for, so it is a warning even though the engine applied it successfully.
-                ReportEvolution(targetOutcome.Plan, flow.Target.Table, Info, Warn);
+                // hides the one that matters. An added column leaves every existing column as its consumers know it;
+                // every change to an existing column's type is reported on its own below, with its tier and outcome.
+                ReportEvolution(targetOutcome.Plan, flow.Target.Table, Info);
+
+                // 5b. The type changes: the in-place ones the DDL above applied (or left pending an opt-in), the tier 3
+                //     ones with their manual steps, then the safe rewrites that belong before the load (a widening that
+                //     rewrites, a typed column becoming text, a shorter text). A text column becoming typed waits for
+                //     the load (step 7.1), so a full-load run re-renders its stored values from the source first.
+                if (!targetCreated)
+                {
+                    ReportTypeChanges(await TypeChangeApplier.DescribeAsync(
+                        targetConnectionString, flow.Target.Table, targetOutcome.Plan, targetOutcome.AlteredColumns, retypeOptions,
+                        Trace, ct).ConfigureAwait(false));
+                    ReportTypeChanges(await TypeChangeApplier.ApplyAsync(
+                        schemaSync, targetConnectionString, flow.Target.Table, targetSchema.Columns, targetKeys,
+                        TypeChangeTiming.BeforeLoad, typePolicy, retypeOptions, Trace, ct).ConfigureAwait(false));
+                }
 
                 // The planner also records what it deliberately did NOT do. That is the half an operator never
                 // sees otherwise: the target silently keeps a type the source has moved away from, or stays
@@ -626,6 +676,27 @@ public sealed class IngestionFlowRunner
             // types of its own, and hashing a staged row against a target row without accounting for that
             // compares two renderings of the same value and rewrites every matched row on every run.
             var targetColumnTypes = await ReadColumnTypesAsync(targetCatalog, targetConnectionString, flow.Target.Table, ct).ConfigureAwait(false);
+
+            // 6.9. A target column that kept its type while the source declares another (a change pending an opt-in,
+            //      refused, or manual) receives every staged value through SQL Server's implicit conversion, which
+            //      changes a value silently when the column cannot hold it (a fraction into an int, a time into a
+            //      date). Prove none would change, or stop here, before anything is written.
+            if (flow.SchemaSync.Sync && !targetCreated)
+            {
+                var written = stagingColumns
+                    .Where(c => targetColumnTypes.ContainsKey(c.Name))
+                    .Select(c => new StagingWriteGuard.WrittenColumn(c.Name, c.DataType, targetColumnTypes[c.Name]))
+                    .ToList();
+                var guarded = await StagingWriteGuard.EnsureLosslessAsync(
+                    targetConnectionString, staging, flow.Target.Table, written, retypeOptions.SampleSize, Trace, ct).ConfigureAwait(false);
+                if (guarded.Count > 0)
+                {
+                    Info("staging.type-guard",
+                        $"every staged value of {guarded.Count} column(s) goes into the target's own type without loss: "
+                        + string.Join(", ", guarded.Select(g => $"[{g.Name}] {g.Staged.Render()} into {g.Target.Render()}")));
+                }
+            }
+
             var loadStatements = BuildLoadStatements(flow, staging, dataColumnNames, stagingColumns, nameMap, targetColumnTypes, events);
             foreach (var statement in loadStatements)
             {
@@ -655,6 +726,17 @@ public sealed class IngestionFlowRunner
             Info("upsert.apply", reloadReplace
                 ? $"per-file replace on [{flow.Load.ReloadColumn}]: {rowsPurged} purged, {rowsInserted} inserted"
                 : $"{rowsInserted} inserted, {rowsUpdated} updated");
+            // 7.1. The checked conversions of a text column to a typed one run once the load has committed: the load
+            //      wrote the source's current rendering of every row it read into the column, so a full-load run
+            //      re-renders every stored value (an expression in the source mapping 'NA' to NULL, say) before the
+            //      conversion checks them.
+            if (flow.SchemaSync.Sync && !targetCreated)
+            {
+                ReportTypeChanges(await TypeChangeApplier.ApplyAsync(
+                    schemaSync, targetConnectionString, flow.Target.Table, targetSchema.Columns, KeySet(EffectiveKeyColumns(flow)),
+                    TypeChangeTiming.AfterLoad, typePolicy, retypeOptions, Trace, ct).ConfigureAwait(false));
+            }
+
             var insertCmd = loadStatements.FirstOrDefault(s => s.Kind is not LoadKind.Update and not LoadKind.Purge)?.Sql;
             var updateCmd = loadStatements.FirstOrDefault(s => s.Kind == LoadKind.Update)?.Sql;
 
@@ -881,6 +963,7 @@ public sealed class IngestionFlowRunner
                 SqlTrace = trace,
                 TransformView = transformView,
                 Incremental = BuildIncrementalSummary(flow, options, window),
+                TypeChanges = typeChanges,
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -914,6 +997,7 @@ public sealed class IngestionFlowRunner
                 EndTimeUtc = endUtc,
                 DurationSeconds = duration,
                 SqlTrace = trace,
+                TypeChanges = typeChanges,
             };
         }
     }
@@ -1657,23 +1741,13 @@ public sealed class IngestionFlowRunner
     /// warning: <c>SELECT</c> against that column starts returning a different type, no consumer asked for it,
     /// and it is the change an operator needs to find later when a downstream contract breaks.
     /// </summary>
-    private static void ReportEvolution(
-        EvolutionPlan plan, RelationalObject target, Action<string, string> info, Action<string, string> warn)
+    private static void ReportEvolution(EvolutionPlan plan, RelationalObject target, Action<string, string> info)
     {
         if (plan.ColumnsToAdd.Count > 0)
         {
             info("target.evolve",
                 $"{plan.ColumnsToAdd.Count} column(s) added to {target.QualifiedName}: "
                 + string.Join(", ", plan.ColumnsToAdd.Select(c => $"[{c.Name}] {c.DataType.Render()}")));
-        }
-
-        if (plan.ColumnsToAlter.Count > 0)
-        {
-            warn("target.evolve",
-                $"{plan.ColumnsToAlter.Count} existing column(s) of {target.QualifiedName} were re-typed to follow the "
-                + "source, which changes the type every downstream consumer reads: "
-                + string.Join(", ", plan.ColumnsToAlter.Select(a =>
-                    $"[{a.Name}] {a.FromType.Render()} -> {a.ToType.Render()}")));
         }
     }
 
