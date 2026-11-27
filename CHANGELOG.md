@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Every delivery flow's counts in one call.** `GET /api/v1/delivery/flows/stats?partition=` answers each flow's counts
+  as a whole and in the partition named, and says why for a flow that cannot be counted; the Delivery page and the home
+  page read it in place of a call or two per flow. A flow whose document does not parse shows **Not counted** with why on
+  its card, first among the flows that need someone, and the home page counts the rest and says how many it left out,
+  where both used to wait on that flow forever ([the delivery API](osdu/docs/reference/concepts/api.md#flows-and-records)).
 - **A report on moving to another version of a kind.** Compare versions on the Templates page's Browse OSDU tab has a
   **Report** that copies as Markdown or saves as Markdown or JSON what moving from one version to the other takes: what
   breaks, what each synced mapping of the kind has to change (what it writes that changed, and what the newer version
