@@ -233,7 +233,7 @@ A widening that rewrites the table runs only when the ingestion flow set `schema
 | Ingestion flow YAML | `schema.convertTypes` (default false) | Permit a checked conversion of an existing column to the source's type, after a data check. |
 | Ingestion flow YAML | `schema.cleanColumnNames`, `schema.cleanColumnNameRegex`, `schema.replaceInvalidCharsWith` | Column-name cleanup applied while building the desired schema; renames staging columns as well as the target, regardless of `schema.sync`. |
 | Ingestion flow YAML | `schema.convertUnicodeToNonUnicode` | Convert Unicode source types to non-Unicode on the target. |
-| CLI | `sqlflow plan <file>` | Dry run for file flows: prints whether the target exists, the columns to add, and the generated DDL without executing it. Ingestion, export, and stored-procedure work is determined at run time against the live source, so `plan` rejects those documents. |
+| CLI | `sqlflow plan <file>` | Dry run that changes nothing. A file flow prints whether the target exists, the columns to add, and the generated DDL without executing it. An ingestion flow is planned against its live source and target: the columns schema sync would add and alter in place, what blocks the load, and every change to an existing column's type with what a run with the flow's settings would do about it ([sqlflow plan](../cli/plan.md#ingestion-flows)). Export and stored-procedure work is determined at run time against the live source, so `plan` rejects those documents. |
 
 ## Example: opting in to a table rewrite
 
