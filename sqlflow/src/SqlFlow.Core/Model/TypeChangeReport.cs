@@ -128,8 +128,13 @@ public sealed record TypeChangeReport
 
     /// <summary>True when the outcome needs an operator's attention: it stays a warning of every run until resolved.</summary>
     [JsonIgnore]
-    public bool NeedsAttention => Status is TypeChangeStatus.Pending or TypeChangeStatus.Refused or TypeChangeStatus.Manual
-        or TypeChangeStatus.RolledBack;
+    public bool NeedsAttention => StatusNeedsAttention(Status);
+
+    /// <summary>Whether an outcome needs an operator's attention (pending an opt-in, refused, manual, rolled back): the
+    /// one rule the engine's warnings and every reader of a recorded outcome follow.</summary>
+    public static bool StatusNeedsAttention(TypeChangeStatus status)
+        => status is TypeChangeStatus.Pending or TypeChangeStatus.Refused or TypeChangeStatus.Manual
+            or TypeChangeStatus.RolledBack;
 
     /// <summary>True when the run reports the change as a warning: it needs attention, or it changed the type every
     /// consumer of the column reads (applied or finished), which no consumer asked for. A kept-wider narrowing and a
