@@ -416,14 +416,17 @@
       "path": "cli/plan.md",
       "title": "sqlflow plan",
       "type": "cli-command",
-      "summary": "Preview the exact DDL a file flow would run. Reads the source schema, introspects the live target, diffs, and prints the plan without executing anything.",
+      "summary": "Preview what a run would do, changing nothing: the exact DDL of a file flow, or an ingestion flow's schema and type changes against its live source and target.",
       "keywords": [
         "plan",
         "dry run",
         "ddl preview",
         "schema diff",
         "schema delta",
-        "file flows"
+        "file flows",
+        "ingestion flows",
+        "type changes",
+        "convertTypes"
       ],
       "cliCommand": "plan",
       "related": [
@@ -431,6 +434,8 @@
         "cli-validate",
         "concept-schema-evolution",
         "flow-schema",
+        "flow-ing",
+        "flow-ing-schema-incremental",
         "concept-cli-conventions"
       ],
       "sourceRefs": [
@@ -441,6 +446,13 @@
         "src/SqlFlow.SqlServer/SqlServerDdlGenerator.cs",
         "src/SqlFlow.SqlServer/SqlServerTypeMapper.cs",
         "src/SqlFlow.Execution/DocumentLoader.cs",
+        "src/SqlFlow.Execution/DocumentExecutor.cs",
+        "src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs",
+        "src/SqlFlow.SqlServer/Ingestion/IngestionPlan.cs",
+        "src/SqlFlow.SqlServer/Schema/SchemaSyncService.cs",
+        "src/SqlFlow.SqlServer/Schema/TypeChangeApplier.cs",
+        "src/SqlFlow.SqlServer/Schema/ColumnRetyper.cs",
+        "src/SqlFlow.Core/Model/TypeChangeReport.cs",
         "src/SqlFlow.Core/SqlFlowException.cs",
         "samples/quickstart/orders.flow.yaml"
       ]
