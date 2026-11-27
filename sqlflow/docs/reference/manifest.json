@@ -763,6 +763,48 @@
       ]
     },
     {
+      "id": "concept-column-type-changes",
+      "corpus": "reference",
+      "path": "concepts/column-type-changes.md",
+      "title": "Changing the type of a column that already exists",
+      "type": "concept",
+      "summary": "How a declared type change reaches a view and an ingestion target, in three tiers, with a data check, a safe rewrite keeping every row, and a report per run.",
+      "keywords": [
+        "type change",
+        "retype",
+        "convertTypes",
+        "allowTableRewrite",
+        "checked conversion",
+        "safe rewrite",
+        "shadow column",
+        "widening",
+        "narrowing",
+        "key column",
+        "typechange"
+      ],
+      "related": [
+        "concept-schema-evolution",
+        "flow-ing-schema-incremental",
+        "flow-transform",
+        "concept-type-inference",
+        "cli-plan"
+      ],
+      "sourceRefs": [
+        "src/SqlFlow.SqlServer/Schema/TypeChangeClassifier.cs",
+        "src/SqlFlow.SqlServer/Schema/TypeChanges.cs",
+        "src/SqlFlow.SqlServer/Schema/LosslessConversion.cs",
+        "src/SqlFlow.SqlServer/Schema/ColumnRetyper.cs",
+        "src/SqlFlow.SqlServer/Schema/TypeChangeApplier.cs",
+        "src/SqlFlow.SqlServer/Schema/StagingWriteGuard.cs",
+        "src/SqlFlow.SqlServer/Schema/TableDependencies.cs",
+        "src/SqlFlow.SqlServer/Schema/ChangeFootprintClassifier.cs",
+        "src/SqlFlow.Core/Model/TypeChangeReport.cs",
+        "src/SqlFlow.Core/Engine/FlowRunner.cs",
+        "src/SqlFlow.Core/Engine/TypeInferencer.cs",
+        "src/SqlFlow.SqlServer/Ingestion/IngestionFlowRunner.cs"
+      ]
+    },
+    {
       "id": "concept-connections-and-secrets",
       "corpus": "reference",
       "path": "concepts/connections-and-secrets.md",
@@ -1853,6 +1895,7 @@
         "ddl"
       ],
       "related": [
+        "concept-column-type-changes",
         "flow-schema",
         "flow-ing-schema-incremental",
         "cli-plan",
