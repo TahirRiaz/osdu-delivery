@@ -866,6 +866,8 @@
         "src/SqlFlow.ControlPlane/Program.cs",
         "src/SqlFlow.ControlPlane/Configuration/ControlPlaneOptions.cs",
         "src/SqlFlow.ControlPlane/Infrastructure/CatalogConnectionProvider.cs",
+        "src/SqlFlow.ControlPlane/Infrastructure/FixedWindowLimiter.cs",
+        "src/SqlFlow.ControlPlane/Infrastructure/RateLimitRejection.cs",
         "src/SqlFlow.ControlPlane/Background/BootstrapProvisioningService.cs",
         "src/SqlFlow.ControlPlane/Background/RepoSyncService.cs",
         "src/SqlFlow.ControlPlane/Background/RepoSyncWaiter.cs",
