@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Render a C4 architecture model into one SVG per view, Markdown pages and a PowerPoint deck.
+"""Render a C4 architecture model into one SVG per view, Markdown pages and a PowerPoint deck, each in a dark theme (the
+default, under the plain file name) and a light one (the same name with -light before the extension).
 
 The model (YAML) is the one source: its elements and relationships are drawn by every view that places them, so a
 system context, its containers, their components, the dynamic views and the deployment can never disagree. Each view
@@ -37,24 +38,86 @@ FONT_STACK = "'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif"
 
 # ----------------------------------------------------------------------------------------------------------- style ---
 
-INK = "#0F172A"
-INK_2 = "#334155"
-MUTED = "#64748B"
-FAINT = "#94A3B8"
-LINE = "#475569"
-PAPER = "#FFFFFF"
-ACCENT = "#1168BD"
 
-KINDS = {
-    #            fill       stroke     text       sub-text   icon colour
-    "person":    ("#08427B", "#073763", "#FFFFFF", "#D6E4F5", None),
-    "system":    ("#1168BD", "#0E5AA3", "#FFFFFF", "#DCEBFA", "#1168BD"),
-    "container": ("#2F7CC7", "#2869AA", "#FFFFFF", "#E1EEFA", "#2869AA"),
-    "component": ("#9CC8F2", "#6FA9DF", "#0B2540", "#1E3A5F", "#1F5F9E"),
-    "external":  ("#6B7280", "#5B626E", "#FFFFFF", "#E5E7EB", "#4B5563"),
-    "infra":     ("#FFFFFF", "#94A3B8", "#0F172A", "#475569", "#334155"),
+@dataclass(frozen=True)
+class Theme:
+    """The colours of one rendering. The elements keep C4's blues in both themes, so a view reads the same in either;
+    the canvas, the text, the lines and the frames change."""
+
+    name: str
+    suffix: str  # what the theme adds to a file's name: dark is the default and adds nothing
+    paper: str  # the canvas
+    ink: str  # titles, labels, frame names
+    ink2: str  # the key's text and group names
+    muted: str  # technologies and frame types
+    faint: str  # the footer
+    line: str  # relationships and their arrows
+    accent: str  # the level tag and "view inside"
+    lead: str  # the description under the title
+    tag_fill: str  # behind the level tag
+    rule: str  # the line above the key
+    card_fill: str  # the deck's map cards and buttons
+    card_stroke: str
+    node_fill: str  # a deployment node
+    node_stroke: str
+    boundary_fill: str
+    boundary_stroke: str
+    group_stroke: str
+    label_fill: str  # behind a relationship's label
+    chip: str  # behind an element's icon
+    chip_infra: str
+    on_chip: str  # a line icon on a chip, where the element gives no colour
+    kinds: dict = field(default_factory=dict)  # kind: (fill, stroke, text, sub-text, icon colour)
+
+
+THEMES = {
+    "dark": Theme(
+        name="dark", suffix="", paper="#0D1117", ink="#E6EDF3", ink2="#C9D1D9", muted="#8D96A0", faint="#6E7681",
+        line="#7D8590", accent="#58A6FF", lead="#9DA7B3", tag_fill="#12253D", rule="#30363D", card_fill="#161B22",
+        card_stroke="#30363D", node_fill="#10161D", node_stroke="#3D444D", boundary_fill="#0F141B",
+        boundary_stroke="#6E7681", group_stroke="#4D5560", label_fill="#0D1117", chip="#EAF2FB", chip_infra="#DCE3EB",
+        on_chip="#334155",
+        kinds={
+            "person": ("#08427B", "#2B6CB0", "#FFFFFF", "#D6E4F5", None),
+            "system": ("#1168BD", "#3F8BD8", "#FFFFFF", "#DCEBFA", "#1168BD"),
+            "container": ("#2F7CC7", "#5A9BDB", "#FFFFFF", "#E1EEFA", "#2869AA"),
+            "component": ("#9CC8F2", "#C4DFF8", "#0B2540", "#1E3A5F", "#1F5F9E"),
+            "external": ("#6B7280", "#8B929D", "#FFFFFF", "#E5E7EB", "#4B5563"),
+            "infra": ("#161B22", "#484F58", "#E6EDF3", "#9DA7B3", "#334155"),
+        },
+    ),
+    "light": Theme(
+        name="light", suffix="-light", paper="#FFFFFF", ink="#0F172A", ink2="#334155", muted="#64748B",
+        faint="#94A3B8", line="#475569", accent="#1168BD", lead="#475569", tag_fill="#E8F1FB", rule="#E2E8F0",
+        card_fill="#FFFFFF", card_stroke="#CBD5E1", node_fill="#F8FAFC", node_stroke="#94A3B8",
+        boundary_fill="#F7FAFD", boundary_stroke="#7C8A99", group_stroke="#A3AFBC", label_fill="#FFFFFF",
+        chip="#FFFFFF", chip_infra="#F1F5F9", on_chip="#334155",
+        kinds={
+            "person": ("#08427B", "#073763", "#FFFFFF", "#D6E4F5", None),
+            "system": ("#1168BD", "#0E5AA3", "#FFFFFF", "#DCEBFA", "#1168BD"),
+            "container": ("#2F7CC7", "#2869AA", "#FFFFFF", "#E1EEFA", "#2869AA"),
+            "component": ("#9CC8F2", "#6FA9DF", "#0B2540", "#1E3A5F", "#1F5F9E"),
+            "external": ("#6B7280", "#5B626E", "#FFFFFF", "#E5E7EB", "#4B5563"),
+            "infra": ("#FFFFFF", "#94A3B8", "#0F172A", "#475569", "#334155"),
+        },
+    ),
 }
+T = THEMES["dark"]
 AI_FILL, AI_TEXT = "#F5A524", "#3A2500"
+
+
+def use_theme(name: str) -> Theme:
+    """Draw with the named theme from here on."""
+    global T
+    T = THEMES[name]
+    return T
+
+
+def themed(name: str) -> str:
+    """A file's name in the current theme: dark keeps the name, light adds its suffix before the extension."""
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}{T.suffix}{dot}{ext}" if dot else f"{name}{T.suffix}"
+
 
 SIZES = {
     "person": (230, 175),
@@ -228,8 +291,8 @@ def load_model(path: Path) -> dict:
     for key, raw in (model.get("elements") or {}).items():
         raw = dict(raw)
         kind = raw.pop("kind")
-        if kind not in KINDS:
-            raise SystemExit(f"{path}: element {key} has kind {kind!r}; one of {sorted(KINDS)}")
+        if kind not in T.kinds:
+            raise SystemExit(f"{path}: element {key} has kind {kind!r}; one of {sorted(T.kinds)}")
         if kind == "person":
             raw.setdefault("shape", "person")
         elements[key] = Element(id=key, kind=kind, **{k: v for k, v in raw.items()})
@@ -486,14 +549,14 @@ class Svg:
         defs = "".join(self.symbols[k] for k in sorted(self.symbols))
         marker = (
             '<marker id="arrow" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="11" markerHeight="11" '
-            f'markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1 L12,6 L0,11 z" fill="{LINE}"/></marker>'
+            f'markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1 L12,6 L0,11 z" fill="{T.line}"/></marker>'
         )
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {W} {H}" '
             f'width="{W}" height="{H}" role="img" aria-labelledby="title desc" font-family="{esc(FONT_STACK)}">\n'
             f'<title id="title">{esc(self.title)}</title>\n<desc id="desc">{esc(self.desc)}</desc>\n'
             f"<defs>{marker}{defs}</defs>\n"
-            f'<rect width="{W}" height="{H}" fill="{PAPER}"/>\n' + "\n".join(self.body) + "\n</svg>\n"
+            f'<rect width="{W}" height="{H}" fill="{T.paper}"/>\n' + "\n".join(self.body) + "\n</svg>\n"
         )
 
 
@@ -579,7 +642,7 @@ def element_layout(p: Placed) -> Layout:
 
 def svg_element(svg: Svg, icons: Icons, p: Placed, link: str | None):
     el = p.el
-    fill, stroke, text, sub, icon_colour = KINDS[el.kind]
+    fill, stroke, text, sub, icon_colour = T.kinds[el.kind]
     lay = element_layout(p)
     x, y, w, h = lay.body
     if link:
@@ -618,9 +681,9 @@ def svg_element(svg: Svg, icons: Icons, p: Placed, link: str | None):
                 svg.text(x + 12, y + c / 2 + 4.2, ">_", 11, sub, "bold", "start")
     if lay.chip:
         cx, cy = lay.chip
-        chip_fill = "#FFFFFF" if el.kind != "infra" else "#F1F5F9"
+        chip_fill = T.chip if el.kind != "infra" else T.chip_infra
         svg.add(f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{p.chip}" height="{p.chip}" rx="{p.chip / 4.2:.1f}" fill="{chip_fill}"/>')
-        svg.icon(icons, el.icon, cx + (p.chip - p.icon) / 2, cy + (p.chip - p.icon) / 2, p.icon, icon_colour or INK)
+        svg.icon(icons, el.icon, cx + (p.chip - p.icon) / 2, cy + (p.chip - p.icon) / 2, p.icon, icon_colour or T.on_chip)
     for line, baseline, size, weight, role in lay.lines:
         colour = text if role == "name" else sub
         svg.text(lay.tx, baseline, line, size, colour, weight, lay.anchor)
@@ -636,9 +699,9 @@ def badges(p: Placed) -> list[tuple[str, str, str]]:
         out.append(("AI", AI_FILL, AI_TEXT))
     badge = p.badge if p.badge is not None else p.el.badge
     if badge:
-        out.append((badge, "#0F172A", "#FFFFFF"))
+        out.append((badge, T.ink, T.paper))
     if p.zoom:
-        out.append(("view inside \u203a", "#FFFFFF", ACCENT))
+        out.append(("view inside \u203a", T.paper, T.accent))
     return out
 
 
@@ -655,30 +718,30 @@ def badge_boxes(p: Placed) -> list[tuple[float, float, float, float, str, str, s
 
 def _svg_badges(svg: Svg, p: Placed):
     for x, y, w, h, text, fill, colour in badge_boxes(p):
-        stroke = f' stroke="{ACCENT}" stroke-width="1"' if fill == "#FFFFFF" else ""
+        stroke = f' stroke="{T.accent}" stroke-width="1"' if colour == T.accent else ""
         svg.add(f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h}" rx="9" fill="{fill}"{stroke}/>')
         svg.text(x + w / 2, y + 12.6, text, 10.5, colour, "bold")
 
 
 def svg_frame(svg: Svg, icons: Icons, f: Frame):
     if f.style == "node":
-        svg.add(f'<rect x="{f.x:.1f}" y="{f.y:.1f}" width="{f.w:.1f}" height="{f.h:.1f}" rx="14" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1.3"/>')
+        svg.add(f'<rect x="{f.x:.1f}" y="{f.y:.1f}" width="{f.w:.1f}" height="{f.h:.1f}" rx="14" fill="{T.node_fill}" stroke="{T.node_stroke}" stroke-width="1.3"/>')
         tx = f.x + 16
         if f.icon:
-            svg.icon(icons, f.icon, f.x + 14, f.y + 13, 26, INK_2)
+            svg.icon(icons, f.icon, f.x + 14, f.y + 13, 26, T.ink2)
             tx = f.x + 48
-        svg.text(tx, f.y + 25, f.label, 14.5, INK, "bold", "start")
+        svg.text(tx, f.y + 25, f.label, 14.5, T.ink, "bold", "start")
         if f.type:
-            svg.text(tx, f.y + 42, f"[{f.type}]", 11.5, MUTED, "normal", "start")
+            svg.text(tx, f.y + 42, f"[{f.type}]", 11.5, T.muted, "normal", "start")
         return
     dash = "7 5" if f.style == "boundary" else "3 4"
-    fill = "#F7FAFD" if f.style == "boundary" else "none"
-    stroke = "#7C8A99" if f.style == "boundary" else "#A3AFBC"
+    fill = T.boundary_fill if f.style == "boundary" else "none"
+    stroke = T.boundary_stroke if f.style == "boundary" else T.group_stroke
     svg.add(f'<rect x="{f.x:.1f}" y="{f.y:.1f}" width="{f.w:.1f}" height="{f.h:.1f}" rx="16" fill="{fill}" stroke="{stroke}" stroke-width="1.4" stroke-dasharray="{dash}"/>')
     if f.style == "group":
-        svg.text(f.x + 16, f.y + 22, f.label, 13.5, INK_2, "bold", "start")
+        svg.text(f.x + 16, f.y + 22, f.label, 13.5, T.ink2, "bold", "start")
         if f.type:
-            svg.text(f.x + 16 + text_width(f.label, 13.5, "bold") + 8, f.y + 22, f"[{f.type}]", 11.5, MUTED, "normal", "start")
+            svg.text(f.x + 16 + text_width(f.label, 13.5, "bold") + 8, f.y + 22, f"[{f.type}]", 11.5, T.muted, "normal", "start")
         return
     if isinstance(f.corner, list):
         tx, ty, anchor = float(f.corner[0]), float(f.corner[1]), "start"
@@ -686,9 +749,9 @@ def svg_frame(svg: Svg, icons: Icons, f: Frame):
         right = f.corner.endswith("right")
         tx, anchor = (f.x + f.w - 16, "end") if right else (f.x + 16, "start")
         ty = f.y + 24 if f.corner.startswith("top") else f.y + f.h - 26
-    svg.text(tx, ty, f.label, 14.5, INK, "bold", anchor)
+    svg.text(tx, ty, f.label, 14.5, T.ink, "bold", anchor)
     if f.type:
-        svg.text(tx, ty + 16, f"[{f.type}]", 11.5, MUTED, "normal", anchor)
+        svg.text(tx, ty + 16, f"[{f.type}]", 11.5, T.muted, "normal", anchor)
 
 
 def svg_relationship(svg: Svg, r: Route):
@@ -696,7 +759,7 @@ def svg_relationship(svg: Svg, r: Route):
     pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in r.points)
     dash = ' stroke-dasharray="6 5"' if rel.get("dashed") else ""
     both = ' marker-start="url(#arrow)"' if rel.get("both") else ""
-    svg.add(f'<polyline points="{pts}" fill="none" stroke="{LINE}" stroke-width="1.6" stroke-linejoin="round"{dash}{both} marker-end="url(#arrow)"/>')
+    svg.add(f'<polyline points="{pts}" fill="none" stroke="{T.line}" stroke-width="1.6" stroke-linejoin="round"{dash}{both} marker-end="url(#arrow)"/>')
 
 
 def svg_label(svg: Svg, r: Route):
@@ -709,18 +772,18 @@ def svg_label(svg: Svg, r: Route):
     badge_w = 26 if step is not None else 0
     total = w + badge_w
     x0 = cx - total / 2
-    svg.add(f'<rect x="{x0 - 5:.1f}" y="{cy - h / 2 - 3:.1f}" width="{total + 10:.1f}" height="{max(h, 22) + 6:.1f}" rx="5" fill="#FFFFFF" fill-opacity="0.94"/>')
+    svg.add(f'<rect x="{x0 - 5:.1f}" y="{cy - h / 2 - 3:.1f}" width="{total + 10:.1f}" height="{max(h, 22) + 6:.1f}" rx="5" fill="{T.label_fill}" fill-opacity="0.94"/>')
     if step is not None:
         by = cy if h <= 22 else cy - h / 2 + 11
-        svg.add(f'<circle cx="{x0 + 11:.1f}" cy="{by:.1f}" r="11" fill="{INK}"/>')
-        svg.text(x0 + 11, by + 4.3, str(step), 12, "#FFFFFF", "bold")
+        svg.add(f'<circle cx="{x0 + 11:.1f}" cy="{by:.1f}" r="11" fill="{T.ink}"/>')
+        svg.text(x0 + 11, by + 4.3, str(step), 12, T.paper, "bold")
     tx = x0 + badge_w + w / 2
     yy = cy - h / 2
     for line in label:
-        svg.text(tx, yy + 12, line, REL_SIZE, INK)
+        svg.text(tx, yy + 12, line, REL_SIZE, T.ink)
         yy += 15
     for line in tech:
-        svg.text(tx, yy + 11, line, REL_TECH_SIZE, MUTED, "normal", "middle", "italic")
+        svg.text(tx, yy + 11, line, REL_TECH_SIZE, T.muted, "normal", "middle", "italic")
         yy += 14
 
 
@@ -781,7 +844,7 @@ def legend_layout(items) -> list[tuple[str, str, float, float]]:
     return out
 
 
-def render_svg(model: dict, view: dict, icons: Icons, views_by_id: dict[str, dict]) -> tuple[str, list[str]]:
+def render_svg(model: dict, view: dict, icons: Icons) -> tuple[str, list[str]]:
     elements = model["elements"]
     placed = place(view, elements)
     fr = frames(view, placed)
@@ -789,27 +852,15 @@ def render_svg(model: dict, view: dict, icons: Icons, views_by_id: dict[str, dic
     tag, title, desc = header(view)
     svg = Svg(f"{model['product']}: {title}", " ".join(desc))
 
-    # Header: the level, the title, what the view shows, and where to go from here.
+    # Header: the level, the title and what the view shows.
     tw = text_width(tag, 11.5, "bold") + 22
-    svg.add(f'<rect x="48" y="34" width="{tw:.1f}" height="22" rx="11" fill="#E8F1FB"/>')
-    svg.text(48 + tw / 2, 49.5, tag, 11.5, ACCENT, "bold")
-    svg.text(48, 92, title, 28, INK, "600", "start")
+    svg.add(f'<rect x="48" y="34" width="{tw:.1f}" height="22" rx="11" fill="{T.tag_fill}"/>')
+    svg.text(48 + tw / 2, 49.5, tag, 11.5, T.accent, "bold")
+    svg.text(48, 92, title, 28, T.ink, "600", "start")
     for i, line in enumerate(desc[:2]):
-        svg.text(48, 120 + i * 20, line, 15, "#475569", "normal", "start")
+        svg.text(48, 120 + i * 20, line, 15, T.lead, "normal", "start")
     if len(desc) > 2:
         warnings.append(f"{view['id']}: the description runs to {len(desc)} lines; two fit")
-    nav = []
-    if view.get("up"):
-        nav.append((f"Zoom out: {views_by_id[view['up']]['title']}", f"{view['up']}.svg"))
-    nav.append(("All views", "index.svg"))
-    nx = W - 48
-    for text, href in reversed(nav):
-        tw = text_width(text, 12.5, "semibold") + 24
-        nx -= tw
-        svg.add(f'<a href="{esc(href)}" xlink:href="{esc(href)}"><rect x="{nx:.1f}" y="34" width="{tw:.1f}" height="26" rx="13" fill="#FFFFFF" stroke="#CBD5E1"/>')
-        svg.text(nx + tw / 2, 51.5, text, 12.5, ACCENT, "600")
-        svg.add("</a>")
-        nx -= 8
 
     for f in sorted(fr, key=lambda f: -(f.w * f.h)):
         svg_frame(svg, icons, f)
@@ -824,7 +875,7 @@ def render_svg(model: dict, view: dict, icons: Icons, views_by_id: dict[str, dic
     for r in routes:
         svg_relationship(svg, r)
     for key, p in placed.items():
-        link = f"{p.zoom}.svg" if p.zoom else None
+        link = f"{p.zoom}{T.suffix}.svg" if p.zoom else None
         svg_element(svg, icons, p, link)
         lay = element_layout(p)
         if lay.overflow > 0.5:
@@ -833,54 +884,54 @@ def render_svg(model: dict, view: dict, icons: Icons, views_by_id: dict[str, dic
         svg_label(svg, r)
 
     # The key: what every colour, shape, icon, border and line of the view means.
-    svg.add(f'<line x1="48" y1="{LEGEND_TOP}" x2="{W - 48}" y2="{LEGEND_TOP}" stroke="#E2E8F0"/>')
+    svg.add(f'<line x1="48" y1="{LEGEND_TOP}" x2="{W - 48}" y2="{LEGEND_TOP}" stroke="{T.rule}"/>')
     for key, label, x, y in legend_layout(legend_items(view, placed, fr)):
         _svg_legend_swatch(svg, icons, key, x, y)
-        svg.text(x + 30, y + 4.3, label, 12, INK_2, "normal", "start")
+        svg.text(x + 30, y + 4.3, label, 12, T.ink2, "normal", "start")
     _bounds_check(view, placed, routes, warnings, 104 + 20 * min(len(desc), 2) + 4)
     return svg.render(), warnings
 
 
 def _svg_legend_swatch(svg: Svg, icons: Icons, key: str, x: float, y: float):
-    if key in KINDS:
-        fill, stroke = KINDS[key][0], KINDS[key][1]
+    if key in T.kinds:
+        fill, stroke = T.kinds[key][0], T.kinds[key][1]
         if key == "person":
             svg.add(f'<circle cx="{x + 11:.1f}" cy="{y - 5:.1f}" r="4" fill="{fill}"/><rect x="{x + 3:.1f}" y="{y - 1:.1f}" width="16" height="9" rx="4" fill="{fill}"/>')
         else:
             svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="{fill}" stroke="{stroke}"/>')
     elif key == "shape:cylinder":
-        svg.add(f'<path d="M{x + 2:.1f},{y - 5:.1f} A9,3 0 0 1 {x + 20:.1f},{y - 5:.1f} L{x + 20:.1f},{y + 6:.1f} A9,3 0 0 1 {x + 2:.1f},{y + 6:.1f} Z" fill="none" stroke="{INK_2}" stroke-width="1.3"/>')
-        svg.add(f'<path d="M{x + 2:.1f},{y - 5:.1f} A9,3 0 0 0 {x + 20:.1f},{y - 5:.1f}" fill="none" stroke="{INK_2}" stroke-width="1.3"/>')
+        svg.add(f'<path d="M{x + 2:.1f},{y - 5:.1f} A9,3 0 0 1 {x + 20:.1f},{y - 5:.1f} L{x + 20:.1f},{y + 6:.1f} A9,3 0 0 1 {x + 2:.1f},{y + 6:.1f} Z" fill="none" stroke="{T.ink2}" stroke-width="1.3"/>')
+        svg.add(f'<path d="M{x + 2:.1f},{y - 5:.1f} A9,3 0 0 0 {x + 20:.1f},{y - 5:.1f}" fill="none" stroke="{T.ink2}" stroke-width="1.3"/>')
     elif key == "shape:folder":
-        svg.add(f'<path d="M{x + 1:.1f},{y - 8:.1f} h7 l3,3 h10 v13 h-20 z" fill="none" stroke="{INK_2}" stroke-width="1.3" stroke-linejoin="round"/>')
+        svg.add(f'<path d="M{x + 1:.1f},{y - 8:.1f} h7 l3,3 h10 v13 h-20 z" fill="none" stroke="{T.ink2}" stroke-width="1.3" stroke-linejoin="round"/>')
     elif key == "shape:browser":
-        svg.add(f'<rect x="{x + 1:.1f}" y="{y - 8:.1f}" width="20" height="16" rx="2.5" fill="none" stroke="{INK_2}" stroke-width="1.3"/>')
-        svg.add(f'<path d="M{x + 1:.1f},{y - 3:.1f} h20" stroke="{INK_2}" stroke-width="1.1"/>')
+        svg.add(f'<rect x="{x + 1:.1f}" y="{y - 8:.1f}" width="20" height="16" rx="2.5" fill="none" stroke="{T.ink2}" stroke-width="1.3"/>')
+        svg.add(f'<path d="M{x + 1:.1f},{y - 3:.1f} h20" stroke="{T.ink2}" stroke-width="1.1"/>')
     elif key == "shape:terminal":
-        svg.add(f'<rect x="{x + 1:.1f}" y="{y - 8:.1f}" width="20" height="16" rx="2.5" fill="none" stroke="{INK_2}" stroke-width="1.3"/>')
-        svg.text(x + 11, y + 4, ">_", 8.5, INK_2, "bold")
+        svg.add(f'<rect x="{x + 1:.1f}" y="{y - 8:.1f}" width="20" height="16" rx="2.5" fill="none" stroke="{T.ink2}" stroke-width="1.3"/>')
+        svg.text(x + 11, y + 4, ">_", 8.5, T.ink2, "bold")
     elif key == "icon":
-        svg.add(f'<rect x="{x + 2:.1f}" y="{y - 9:.1f}" width="18" height="18" rx="4.5" fill="#FFFFFF" stroke="#CBD5E1"/>')
-        svg.icon(icons, "lucide:box", x + 5, y - 6, 12, INK_2)
+        svg.add(f'<rect x="{x + 2:.1f}" y="{y - 9:.1f}" width="18" height="18" rx="4.5" fill="{T.chip}" stroke="{T.card_stroke}"/>')
+        svg.icon(icons, "lucide:box", x + 5, y - 6, 12, T.on_chip)
     elif key == "ai":
         svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="8" fill="{AI_FILL}"/>')
         svg.text(x + 11, y + 3.6, "AI", 9.5, AI_TEXT, "bold")
     elif key == "zoom":
-        svg.add(f'<rect x="{x - 2:.1f}" y="{y - 8:.1f}" width="26" height="16" rx="8" fill="#FFFFFF" stroke="{ACCENT}"/>')
-        svg.add(f'<path d="M{x + 8:.1f},{y - 4:.1f} l4,4 l-4,4" fill="none" stroke="{ACCENT}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>')
+        svg.add(f'<rect x="{x - 2:.1f}" y="{y - 8:.1f}" width="26" height="16" rx="8" fill="{T.paper}" stroke="{T.accent}"/>')
+        svg.add(f'<path d="M{x + 8:.1f},{y - 4:.1f} l4,4 l-4,4" fill="none" stroke="{T.accent}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>')
     elif key == "node":
-        svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="#F8FAFC" stroke="#94A3B8"/>')
+        svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="{T.node_fill}" stroke="{T.node_stroke}"/>')
     elif key == "boundary":
-        svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="#F7FAFD" stroke="#7C8A99" stroke-dasharray="4 3"/>')
+        svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="{T.boundary_fill}" stroke="{T.boundary_stroke}" stroke-dasharray="4 3"/>')
     elif key == "group":
-        svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="none" stroke="#A3AFBC" stroke-dasharray="2 3"/>')
+        svg.add(f'<rect x="{x:.1f}" y="{y - 8:.1f}" width="22" height="16" rx="4" fill="none" stroke="{T.group_stroke}" stroke-dasharray="2 3"/>')
     elif key == "line":
-        svg.add(f'<line x1="{x:.1f}" y1="{y}" x2="{x + 20:.1f}" y2="{y}" stroke="{LINE}" stroke-width="1.6" marker-end="url(#arrow)"/>')
+        svg.add(f'<line x1="{x:.1f}" y1="{y}" x2="{x + 20:.1f}" y2="{y}" stroke="{T.line}" stroke-width="1.6" marker-end="url(#arrow)"/>')
     elif key == "dashed":
-        svg.add(f'<line x1="{x:.1f}" y1="{y}" x2="{x + 20:.1f}" y2="{y}" stroke="{LINE}" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>')
+        svg.add(f'<line x1="{x:.1f}" y1="{y}" x2="{x + 20:.1f}" y2="{y}" stroke="{T.line}" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>')
     elif key == "step":
-        svg.add(f'<circle cx="{x + 11:.1f}" cy="{y}" r="9" fill="{INK}"/>')
-        svg.text(x + 11, y + 4, "1", 10.5, "#FFFFFF", "bold")
+        svg.add(f'<circle cx="{x + 11:.1f}" cy="{y}" r="9" fill="{T.ink}"/>')
+        svg.text(x + 11, y + 4, "1", 10.5, T.paper, "bold")
 
 
 def _bounds_check(view, placed, routes, warnings, top_limit=150.0):
@@ -982,49 +1033,6 @@ def index_layout(model: dict) -> dict[str, tuple[float, float, float, float]]:
     return boxes
 
 
-def render_index(model: dict) -> str:
-    boxes = index_layout(model)
-    svg = Svg(f"{model['product']}: the views of the C4 model", "Every view of the model, by level; each links to its diagram.")
-    tw = text_width("C4 MODEL", 11.5, "bold") + 22
-    svg.add(f'<rect x="48" y="34" width="{tw:.1f}" height="22" rx="11" fill="#E8F1FB"/>')
-    svg.text(48 + tw / 2, 49.5, "C4 MODEL", 11.5, ACCENT, "bold")
-    svg.text(48, 92, model.get("indexTitle", f"{model['product']}: the views"), 28, INK, "600", "start")
-    for i, line in enumerate(wrap(model.get("indexDescription", ""), 1060, 15)[:2]):
-        svg.text(48, 120 + i * 20, line, 15, "#475569", "normal", "start")
-    for c, heading in enumerate(model.get("columns", [])):
-        xs = [b for v, b in boxes.items() if int(_view(model, v).get("column", 0)) == c]
-        if xs:
-            svg.text(xs[0][0], 176, heading.upper(), 11.5, MUTED, "bold", "start")
-    for view in model["views"]:
-        up = view.get("up")
-        if up and up in boxes:
-            (ax, ay, aw, ah), (bx, by, bw, bh) = boxes[up], boxes[view["id"]]
-            if 0 < bx - (ax + aw) < 60:
-                x1, y1, x2, y2 = ax + aw, ay + ah / 2, bx, by + bh / 2
-                mid = x1 + 18
-                svg.add(f'<polyline points="{x1:.1f},{y1:.1f} {mid:.1f},{y1:.1f} {mid:.1f},{y2:.1f} {x2:.1f},{y2:.1f}" fill="none" stroke="#CBD5E1" stroke-width="1.5" marker-end="url(#arrow)"/>')
-    for view in model["views"]:
-        x, y, w, h = boxes[view["id"]]
-        svg.add(f'<a href="{view["id"]}.svg" xlink:href="{view["id"]}.svg">')
-        svg.add(f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="12" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.2"/>')
-        svg.add(f'<rect x="{x:.1f}" y="{y:.1f}" width="6" height="{h:.1f}" rx="3" fill="{ACCENT}"/>')
-        svg.text(x + 20, y + 24, view["tag"], 10.5, ACCENT, "bold", "start")
-        title = wrap(view["title"], w - 34, 15, "bold")
-        for i, line in enumerate(title[:2]):
-            svg.text(x + 20, y + 46 + i * 19, line, 15, INK, "bold", "start")
-        teaser = wrap(view.get("teaser", ""), w - 34, 12)
-        room = int((h - 56 - len(title[:2]) * 19) // 16)
-        for i, line in enumerate(teaser[: max(0, room)]):
-            svg.text(x + 20, y + 52 + len(title[:2]) * 19 + i * 16, line, 12, MUTED, "normal", "start")
-        svg.add("</a>")
-    footer = model.get("footer", "")
-    svg.add(f'<line x1="48" y1="852" x2="{W - 48}" y2="852" stroke="#E2E8F0"/>')
-    svg.text(48, 876.5, "Every card opens its view; every view links back here and to the level above it. The dynamic and deployment views draw the containers.", 12, INK_2, "normal", "start")
-    if footer:
-        svg.text(W - 48, 876.5, footer, 11.5, FAINT, "normal", "end")
-    return svg.render()
-
-
 def _view(model, vid):
     return next(v for v in model["views"] if v["id"] == vid)
 
@@ -1062,23 +1070,14 @@ def render_page(model: dict, view: dict, root: Path, page_dir: Path, svg_dir: Pa
     title = (meta or {}).get("title", view["title"])
     out.append(f"# {title}\n")
     out.append(f"<!-- Generated by tools/c4/render.py from {Path(os.path.relpath(model['_path'], root)).as_posix()}. Edit the model and render again. -->\n")
+    out.append(breadcrumb(model, view, placed) + "\n")
     out.append(view.get("description", "") + "\n")
     if view.get("intro"):
         out.append(view["intro"].strip() + "\n")
     img = Path(os.path.relpath(svg_dir / f"{view['id']}.svg", page_dir)).as_posix()
+    light = Path(os.path.relpath(svg_dir / f"{view['id']}{THEMES['light'].suffix}.svg", page_dir)).as_posix()
     out.append(f"[![{md_escape(view['title'])}]({img})]({img})\n")
-    link = lambda v: f"[{v['title']}]({v['page_file']})"
-    children = [v for v in model["views"] if v.get("up") == view["id"]]
-    zoom_in = [v for v in children if "LEVEL" in v["tag"] and int(v.get("column", 0)) > int(view.get("column", 0))]
-    beside = [v for v in children if v not in zoom_in]
-    if view.get("up"):
-        out.append(f"- **Zoom out:** {link(by_id[view['up']])}")
-    if zoom_in:
-        out.append("- **Zoom in:** " + "; ".join(link(v) for v in zoom_in))
-    if beside:
-        out.append("- **Drawn from this view:** " + "; ".join(link(v) for v in beside))
-    out.append(f"- **Every view:** [{model.get('indexTitle', 'the C4 model')}]({model['index_file']})")
-    out.append("")
+    out.append(f"[Light version]({light})\n")
     if view.get("relationships") and any("n" in r for r in view["relationships"]):
         out.append("## The steps\n")
         out.append("| Step | From | To | What happens |\n| --- | --- | --- | --- |")
@@ -1088,7 +1087,7 @@ def render_page(model: dict, view: dict, root: Path, page_dir: Path, svg_dir: Pa
             out.append(f"| {rel['n']} | {md_escape(elements[rel['from']].name)} | {md_escape(elements[rel['to']].name)} | {md_escape(what)}{md_escape(tech)} |")
         out.append("")
     out.append("## What the view shows\n")
-    out.append("| Element | Kind | Technology | What it is | Read more |\n| --- | --- | --- | --- | --- |")
+    out.append("| Element | Kind | Technology | What it is | Reference |\n| --- | --- | --- | --- | --- |")
     for key, p in placed.items():
         el = p.el
         name = el.name
@@ -1115,31 +1114,83 @@ def render_page(model: dict, view: dict, root: Path, page_dir: Path, svg_dir: Pa
         for item in meta["seeAlso"]:
             out.append(f"- [{item['title']}]({rel_link(item['path'], page_dir, root)})")
         out.append("")
+    out.append("---\n")
+    out.append(neighbours(model, view) + "\n")
     return "\n".join(out).rstrip() + "\n"
 
 
+def short(view: dict) -> str:
+    """A view's name in a line of links: its `short`, or its title."""
+    return view.get("short", view["title"])
+
+
+def breadcrumb(model: dict, view: dict, placed: dict[str, Placed]) -> str:
+    """The one line of navigation on top of a page: the start page, the views this one zooms out to, this view, and
+    the views its elements zoom into (the ones marked "view inside" on the diagram)."""
+    by_id = {v["id"]: v for v in model["views"]}
+    chain = []
+    up = view.get("up")
+    while up:
+        chain.insert(0, by_id[up])
+        up = by_id[up].get("up")
+    parts = [f"[{model.get('indexShort', 'All views')}]({model['index_file']})"]
+    parts += [f"[{short(v)}]({v['page_file']})" for v in chain]
+    parts.append(f"**{short(view)}**")
+    line = " \u203a ".join(parts)
+    order = [v["id"] for v in model["views"]]
+    inside = sorted({p.zoom for p in placed.values() if p.zoom}, key=order.index)
+    if inside:
+        line += " \u00b7 Zoom in: " + ", ".join(f"[{short(by_id[v])}]({by_id[v]['page_file']})" for v in inside)
+    return line
+
+
+def neighbours(model: dict, view: dict) -> str:
+    """The line at the foot of a page: the views before and after it in the start page's order."""
+    views = model["views"]
+    i = views.index(view)
+    parts = []
+    if i > 0:
+        parts.append(f"Previous: [{short(views[i - 1])}]({views[i - 1]['page_file']})")
+    parts.append(f"[{model.get('indexShort', 'All views')}]({model['index_file']})")
+    if i + 1 < len(views):
+        parts.append(f"Next: [{short(views[i + 1])}]({views[i + 1]['page_file']})")
+    return " \u00b7 ".join(parts)
+
+
 def render_index_page(model: dict, root: Path, page_dir: Path, svg_dir: Path) -> str:
+    """The start page: what the diagrams are, every view in reading order, and the files they come as."""
     meta = model.get("indexPage", {})
     out = []
-    if meta and model.get("pages", {}).get("frontmatter", False):
+    if meta.get("id") and model.get("pages", {}).get("frontmatter", False):
         front = {k: meta[k] for k in ("id", "title", "type", "summary", "keywords", "related", "sourceRefs") if k in meta}
         out.append("---\n" + yaml.safe_dump(front, sort_keys=False, allow_unicode=True, width=10000).strip() + "\n---\n")
     out.append(f"# {meta.get('title', model.get('indexTitle', 'C4 model'))}\n")
     out.append(f"<!-- Generated by tools/c4/render.py from {Path(os.path.relpath(model['_path'], root)).as_posix()}. Edit the model and render again. -->\n")
     if meta.get("intro"):
         out.append(meta["intro"].strip() + "\n")
-    img = Path(os.path.relpath(svg_dir / "index.svg", page_dir)).as_posix()
-    out.append(f"[![The views of the model]({img})]({img})\n")
-    out.append("| View | Level | What it answers |\n| --- | --- | --- |")
+    out.append("## The views\n")
+    out.append("| Level | View | What it answers |\n| --- | --- | --- |")
     for view in model["views"]:
-        out.append(f"| [{view['title']}]({view['page_file']}) | {' '.join(w if w in ('C4', 'AI') else w.capitalize() for w in view['tag'].split(' '))} | {md_escape(view.get('teaser', ''))} |")
+        level = " ".join(w if w in ("C4", "AI") else w.capitalize() for w in view["tag"].split(" "))
+        out.append(f"| {level} | [{view['title']}]({view['page_file']}) | {md_escape(view.get('teaser', ''))} |")
+    out.append("")
+    out.append("## The files\n")
+    rel = lambda path: Path(os.path.relpath(path, page_dir)).as_posix()
+    light_suffix = THEMES["light"].suffix
+    deck = model.get("deck", {}).get("file")
+    if deck:
+        dark = Path(model["_dir"]) / deck
+        light = dark.with_name(dark.stem + light_suffix + dark.suffix)
+        out.append(f"- **The deck:** [{dark.name}]({rel(dark)}), and in light [{light.name}]({rel(light)}). One slide a view, in the order above; a click on an element marked *view inside* opens the slide of its inside, and every slide links back to the map of views.")
+    out.append(f"- **The diagrams:** one SVG a view in [svg]({rel(svg_dir)}), named after its page (`<view>.svg`), and in light `<view>{light_suffix}.svg`. Each page shows the dark one and links the light one.")
+    out.append(f"- **The model:** [{Path(model['_path']).name}]({rel(model['_path'])}), the one source: every element once, and every view that places them. Change it and render again; never edit an SVG, a page or a slide by hand.")
+    if HERE.is_relative_to(root):
+        out.append(f"- **The renderer:** [tools/c4]({rel(HERE)}), with how to render the model, the notation it follows, and the icons and their terms.")
+    else:
+        out.append("- **The renderer:** `tools/c4/render.py` in the OSDU Delivery repository, which draws every file here from the model.")
     out.append("")
     if meta.get("body"):
         out.append(meta["body"].strip() + "\n")
-    deck = model.get("deck", {}).get("file")
-    if deck:
-        deck_link = Path(os.path.relpath(Path(model["_dir"]) / deck, page_dir)).as_posix()
-        out.append(f"The same views as a deck: [{Path(deck).name}]({deck_link}), one slide a view, each element on a slide a link to the view that zooms into it.\n")
     if meta.get("seeAlso"):
         out.append("## See also\n")
         for item in meta["seeAlso"]:
@@ -1263,7 +1314,7 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
         svg_blip.set(qn("r:embed"), rid)
         return pic
 
-    def polyline(slide, points, dashed=False, arrow=True, colour=LINE, width=1.6, both=False):
+    def polyline(slide, points, dashed=False, arrow=True, colour=T.line, width=1.6, both=False):
         if len(points) == 2:
             (x1, y1), (x2, y2) = points
             shape = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, e(x1), e(y1), e(x2), e(y2))
@@ -1296,34 +1347,38 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
 
     def chrome(slide, tag, title, desc, up_id=None, footer=""):
         tw = text_width(tag, 11.5, "bold") + 22
-        pill = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 48, 34, tw, 22, "#E8F1FB", radius=11)
-        text(slide, 48, 34, tw, 22, [{"text": tag, "size": 11.5, "bold": True, "colour": ACCENT}], anchor="middle")
-        text(slide, 46, 60, 1300, 40, [{"text": title, "size": 28, "bold": True, "colour": INK}], align="left", wrap_text=False)
+        pill = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, 48, 34, tw, 22, T.tag_fill, radius=11)
+        text(slide, 48, 34, tw, 22, [{"text": tag, "size": 11.5, "bold": True, "colour": T.accent}], anchor="middle")
+        text(slide, 46, 60, 1300, 40, [{"text": title, "size": 28, "bold": True, "colour": T.ink}], align="left", wrap_text=False)
         if desc:
-            text(slide, 48, 104, 1100, 44, [{"text": " ".join(desc), "size": 15, "colour": "#475569", "line": 20}], align="left")
+            text(slide, 48, 104, 1100, 44, [{"text": " ".join(desc), "size": 15, "colour": T.lead, "line": 20}], align="left")
         nav = []
         if up_id:
             nav.append((f"Zoom out: {by_id[up_id]['title']}", slides[up_id]))
-        nav.append(("All views", index_slide))
+        if slide is not index_slide:
+            nav.append(("All views", index_slide))
         nx = W - 48
         for label, target in reversed(nav):
             tw = text_width(label, 12.5, "semibold") + 24
             nx -= tw
-            btn = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, nx, 34, tw, 26, "#FFFFFF", "#CBD5E1", radius=13, width=1)
+            btn = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, nx, 34, tw, 26, T.card_fill, T.card_stroke, radius=13, width=1)
             btn.text_frame.text = ""
-            tb = text(slide, nx, 34, tw, 26, [{"text": label, "size": 12.5, "bold": True, "colour": ACCENT}], anchor="middle")
+            tb = text(slide, nx, 34, tw, 26, [{"text": label, "size": 12.5, "bold": True, "colour": T.accent}], anchor="middle")
             link(btn, target)
             link(tb, target)
             nx -= 8
         if footer and up_id is None and slide is index_slide:
-            text(slide, W - 760, 866, 712, 20, [{"text": footer, "size": 11.5, "colour": FAINT}], align="right")
+            text(slide, W - 760, 866, 712, 20, [{"text": footer, "size": 11.5, "colour": T.faint}], align="right")
 
     by_id = {v["id"]: v for v in model["views"]}
+    for s in [index_slide, *slides.values()]:
+        s.background.fill.solid()
+        s.background.fill.fore_color.rgb = rgb(T.paper)
 
     # The title slide.
     slide = title_slide
     box(slide, MSO_SHAPE.RECTANGLE, 0, 0, W, H, "#0B2540")
-    box(slide, MSO_SHAPE.RECTANGLE, 0, 0, 14, H, ACCENT)
+    box(slide, MSO_SHAPE.RECTANGLE, 0, 0, 14, H, "#1168BD")
     text(slide, 110, 280, 1300, 30, [{"text": deck.get("kicker", "ARCHITECTURE"), "size": 15, "bold": True, "colour": "#9CC8F2"}], align="left")
     text(slide, 108, 318, 1380, 90, [{"text": deck.get("title", model["product"]), "size": 54, "bold": True, "colour": "#FFFFFF"}], align="left")
     text(slide, 110, 410, 860, 120, [{"text": deck.get("subtitle", ""), "size": 22, "colour": "#D6E4F5", "line": 30}], align="left")
@@ -1350,7 +1405,7 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
     for c, heading in enumerate(model.get("columns", [])):
         xs = [b for v, b in boxes.items() if int(by_id[v].get("column", 0)) == c]
         if xs:
-            text(slide, xs[0][0], 164, xs[0][2], 18, [{"text": heading.upper(), "size": 11.5, "bold": True, "colour": MUTED}], align="left")
+            text(slide, xs[0][0], 164, xs[0][2], 18, [{"text": heading.upper(), "size": 11.5, "bold": True, "colour": T.muted}], align="left")
     for view in model["views"]:
         up = view.get("up")
         if up and up in boxes:
@@ -1359,17 +1414,17 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
                 x1, y1, x2, y2 = ax + aw, ay + ah / 2, bx, by + bh / 2
                 mid = x1 + 18
                 pts = [(x1, y1), (mid, y1), (mid, y2), (x2, y2)] if abs(y1 - y2) > 0.5 else [(x1, y1), (x2, y2)]
-                polyline(slide, pts, colour="#CBD5E1", width=1.5)
+                polyline(slide, pts, colour=T.card_stroke, width=1.5)
     for view in model["views"]:
         x, y, w, h = boxes[view["id"]]
-        card = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h, "#FFFFFF", "#CBD5E1", radius=12)
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, 6, h, ACCENT, radius=3)
+        card = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h, T.card_fill, T.card_stroke, radius=12)
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, 6, h, T.accent, radius=3)
         runs = [
-            {"text": view["tag"], "size": 10.5, "bold": True, "colour": ACCENT},
-            {"text": view["title"], "size": 15, "bold": True, "colour": INK, "before": 4},
+            {"text": view["tag"], "size": 10.5, "bold": True, "colour": T.accent},
+            {"text": view["title"], "size": 15, "bold": True, "colour": T.ink, "before": 4},
         ]
         if view.get("teaser"):
-            runs.append({"text": view["teaser"], "size": 12, "colour": MUTED, "before": 4, "line": 16})
+            runs.append({"text": view["teaser"], "size": 12, "colour": T.muted, "before": 4, "line": 16})
         tb = text(slide, x + 20, y + 12, w - 34, h - 18, runs, align="left")
         link(card, slides[view["id"]])
         link(tb, slides[view["id"]])
@@ -1384,22 +1439,22 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
         chrome(slide, tag, title, desc[:2], view.get("up"), model.get("footer", ""))
         for f in sorted(fr, key=lambda f: -(f.w * f.h)):
             if f.style == "node":
-                box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, f.x, f.y, f.w, f.h, "#F8FAFC", "#94A3B8", radius=14, width=1.3)
+                box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, f.x, f.y, f.w, f.h, T.node_fill, T.node_stroke, radius=14, width=1.3)
                 tx = f.x + 16
                 if f.icon:
-                    picture(slide, f.icon, INK_2, f.x + 14, f.y + 13, 26)
+                    picture(slide, f.icon, T.ink2, f.x + 14, f.y + 13, 26)
                     tx = f.x + 48
-                runs = [{"text": f.label, "size": 14.5, "bold": True, "colour": INK}]
+                runs = [{"text": f.label, "size": 14.5, "bold": True, "colour": T.ink}]
                 if f.type:
-                    runs.append({"text": f"[{f.type}]", "size": 11.5, "colour": MUTED})
+                    runs.append({"text": f"[{f.type}]", "size": 11.5, "colour": T.muted})
                 text(slide, tx, f.y + 10, f.w - (tx - f.x) - 10, 40, runs, align="left")
             else:
                 boundary = f.style == "boundary"
-                box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, f.x, f.y, f.w, f.h, "#F7FAFD" if boundary else None, "#7C8A99" if boundary else "#A3AFBC", radius=16, width=1.4, dash="dash" if boundary else "sysDot")
+                box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, f.x, f.y, f.w, f.h, T.boundary_fill if boundary else None, T.boundary_stroke if boundary else T.group_stroke, radius=16, width=1.4, dash="dash" if boundary else "sysDot")
                 if boundary:
-                    runs = [{"text": f.label, "size": 14.5, "bold": True, "colour": INK}]
+                    runs = [{"text": f.label, "size": 14.5, "bold": True, "colour": T.ink}]
                     if f.type:
-                        runs.append({"text": f"[{f.type}]", "size": 11.5, "colour": MUTED})
+                        runs.append({"text": f"[{f.type}]", "size": 11.5, "colour": T.muted})
                     if isinstance(f.corner, list):
                         text(slide, float(f.corner[0]), float(f.corner[1]) - 18, 400, 40, runs, align="left")
                     else:
@@ -1408,7 +1463,7 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
                         text(slide, f.x + 16, ty, f.w - 32, 40, runs, align="right" if right else "left", anchor="top" if f.corner.startswith("top") else "bottom")
                 else:
                     label = f.label + (f"  [{f.type}]" if f.type else "")
-                    text(slide, f.x + 16, f.y + 8, f.w - 32, 20, [{"text": label, "size": 13.5, "bold": True, "colour": INK_2}], align="left")
+                    text(slide, f.x + 16, f.y + 8, f.w - 32, 20, [{"text": label, "size": 13.5, "bold": True, "colour": T.ink2}], align="left")
         routes = []
         for rel in view.get("relationships") or []:
             pts = route(rel, placed[rel["from"]], placed[rel["to"]])
@@ -1416,7 +1471,7 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
             polyline(slide, pts, dashed=bool(rel.get("dashed")), both=bool(rel.get("both")))
         for key, p in placed.items():
             el = p.el
-            fill, stroke, colour, sub, icon_colour = KINDS[el.kind]
+            fill, stroke, colour, sub, icon_colour = T.kinds[el.kind]
             lay = element_layout(p)
             x, y, w, h = lay.body
             target = slides.get(p.zoom) if p.zoom else None
@@ -1449,9 +1504,9 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
             link(body, target)
             if lay.chip:
                 cx, cy = lay.chip
-                chip = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, cx, cy, p.chip, p.chip, "#FFFFFF" if el.kind != "infra" else "#F1F5F9", radius=p.chip / 4.2)
+                chip = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, cx, cy, p.chip, p.chip, T.chip if el.kind != "infra" else T.chip_infra, radius=p.chip / 4.2)
                 link(chip, target)
-                pic = picture(slide, el.icon, icon_colour or INK, cx + (p.chip - p.icon) / 2, cy + (p.chip - p.icon) / 2, p.icon)
+                pic = picture(slide, el.icon, icon_colour or T.on_chip, cx + (p.chip - p.icon) / 2, cy + (p.chip - p.icon) / 2, p.icon)
                 link(pic, target)
             first = lay.lines[0][1] - lay.lines[0][2] * 0.95
             runs = []
@@ -1472,7 +1527,7 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
                 tb = text(slide, x + 10, first - 3, w - 20, (y + h) - first, runs)
             link(tb, target)
             for bx, by, bw, bh, label, bfill, bcolour in badge_boxes(p):
-                pill = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, bx, by, bw, bh, bfill, ACCENT if bfill == "#FFFFFF" else None, radius=9, width=1)
+                pill = box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, bx, by, bw, bh, bfill, T.accent if bcolour == T.accent else None, radius=9, width=1)
                 tbb = text(slide, bx, by, bw, bh, [{"text": label, "size": 10.5, "bold": True, "colour": bcolour}], anchor="middle", wrap_text=False)
                 link(pill, target)
                 link(tbb, target)
@@ -1485,24 +1540,24 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
             badge_w = 26 if step is not None else 0
             total = w + badge_w
             x0 = cx - total / 2
-            box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x0 - 5, cy - h / 2 - 3, total + 10, max(h, 22) + 6, "#FFFFFF", radius=5)
+            box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x0 - 5, cy - h / 2 - 3, total + 10, max(h, 22) + 6, T.label_fill, radius=5)
             if step is not None:
                 by_ = cy if h <= 22 else cy - h / 2 + 11
-                circle = box(slide, MSO_SHAPE.OVAL, x0, by_ - 11, 22, 22, INK)
-                text(slide, x0, by_ - 11, 22, 22, [{"text": str(step), "size": 12, "bold": True, "colour": "#FFFFFF"}], anchor="middle", wrap_text=False)
+                circle = box(slide, MSO_SHAPE.OVAL, x0, by_ - 11, 22, 22, T.ink)
+                text(slide, x0, by_ - 11, 22, 22, [{"text": str(step), "size": 12, "bold": True, "colour": T.paper}], anchor="middle", wrap_text=False)
             runs = []
             if label:
-                runs.append({"text": " ".join(label), "size": REL_SIZE, "colour": INK, "line": 15})
+                runs.append({"text": " ".join(label), "size": REL_SIZE, "colour": T.ink, "line": 15})
             if tech:
-                runs.append({"text": " ".join(tech), "size": REL_TECH_SIZE, "italic": True, "colour": MUTED, "line": 14})
+                runs.append({"text": " ".join(tech), "size": REL_TECH_SIZE, "italic": True, "colour": T.muted, "line": 14})
             if runs:
                 text(slide, x0 + badge_w - 2, cy - h / 2 - 1, w + 6, h + 4, runs)
         line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, e(48), e(LEGEND_TOP), e(W - 48), e(LEGEND_TOP))
-        line.line.color.rgb = rgb("#E2E8F0")
+        line.line.color.rgb = rgb(T.rule)
         line.line.width = e(1)
         for key, label, lx, ly in legend_layout(legend_items(view, placed, fr)):
             _deck_swatch(slide, box, polyline, text, picture, key, lx, ly, MSO_SHAPE)
-            text(slide, lx + 30, ly - 9, text_width(label, 12) + 12, 18, [{"text": label, "size": 12, "colour": INK_2}], align="left", wrap_text=False)
+            text(slide, lx + 30, ly - 9, text_width(label, 12) + 12, 18, [{"text": label, "size": 12, "colour": T.ink2}], align="left", wrap_text=False)
         notes = [view.get("description", "")]
         if view.get("relationships") and any("n" in rel for rel in view["relationships"]):
             for rel in sorted((r for r in view["relationships"] if "n" in r), key=lambda r: float(r["n"])):
@@ -1522,46 +1577,46 @@ def render_deck(model: dict, icons: Icons, out_path: Path):
 
 
 def _deck_swatch(slide, box, polyline, text, picture, key, x, y, MSO_SHAPE):
-    if key in KINDS:
-        fill, stroke = KINDS[key][0], KINDS[key][1]
+    if key in T.kinds:
+        fill, stroke = T.kinds[key][0], T.kinds[key][1]
         if key == "person":
             box(slide, MSO_SHAPE.OVAL, x + 7, y - 9, 8, 8, fill)
             box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x + 3, y - 1, 16, 9, fill, radius=4)
         else:
             box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, fill, stroke, radius=4)
     elif key == "shape:cylinder":
-        can = box(slide, MSO_SHAPE.CAN, x + 2, y - 8, 18, 16, None, INK_2, width=1.3)
+        can = box(slide, MSO_SHAPE.CAN, x + 2, y - 8, 18, 16, None, T.ink2, width=1.3)
         can.adjustments[0] = 0.35
     elif key == "shape:folder":
-        box(slide, MSO_SHAPE.FOLDED_CORNER, x + 1, y - 8, 20, 16, None, INK_2, width=1.3)
+        box(slide, MSO_SHAPE.FOLDED_CORNER, x + 1, y - 8, 20, 16, None, T.ink2, width=1.3)
     elif key in ("shape:browser", "shape:terminal"):
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x + 1, y - 8, 20, 16, None, INK_2, radius=2.5, width=1.3)
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x + 1, y - 8, 20, 16, None, T.ink2, radius=2.5, width=1.3)
         if key == "shape:browser":
-            polyline(slide, [(x + 1, y - 3), (x + 21, y - 3)], arrow=False, colour=INK_2, width=1.1)
+            polyline(slide, [(x + 1, y - 3), (x + 21, y - 3)], arrow=False, colour=T.ink2, width=1.1)
         else:
-            text(slide, x + 1, y - 8, 20, 16, [{"text": ">_", "size": 8.5, "bold": True, "colour": INK_2}], anchor="middle", wrap_text=False)
+            text(slide, x + 1, y - 8, 20, 16, [{"text": ">_", "size": 8.5, "bold": True, "colour": T.ink2}], anchor="middle", wrap_text=False)
     elif key == "icon":
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x + 2, y - 9, 18, 18, "#FFFFFF", "#CBD5E1", radius=4.5, width=1)
-        picture(slide, "lucide:box", INK_2, x + 5, y - 6, 12)
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x + 2, y - 9, 18, 18, T.chip, T.card_stroke, radius=4.5, width=1)
+        picture(slide, "lucide:box", T.on_chip, x + 5, y - 6, 12)
     elif key == "ai":
         box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, AI_FILL, radius=8)
         text(slide, x, y - 8, 22, 16, [{"text": "AI", "size": 9.5, "bold": True, "colour": AI_TEXT}], anchor="middle", wrap_text=False)
     elif key == "zoom":
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x - 2, y - 8, 26, 16, "#FFFFFF", ACCENT, radius=8, width=1)
-        polyline(slide, [(x + 8, y - 4), (x + 12, y), (x + 8, y + 4)], arrow=False, colour=ACCENT, width=1.6)
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x - 2, y - 8, 26, 16, T.paper, T.accent, radius=8, width=1)
+        polyline(slide, [(x + 8, y - 4), (x + 12, y), (x + 8, y + 4)], arrow=False, colour=T.accent, width=1.6)
     elif key == "node":
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, "#F8FAFC", "#94A3B8", radius=4, width=1)
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, T.node_fill, T.node_stroke, radius=4, width=1)
     elif key == "boundary":
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, "#F7FAFD", "#7C8A99", radius=4, width=1, dash="dash")
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, T.boundary_fill, T.boundary_stroke, radius=4, width=1, dash="dash")
     elif key == "group":
-        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, None, "#A3AFBC", radius=4, width=1, dash="sysDot")
+        box(slide, MSO_SHAPE.ROUNDED_RECTANGLE, x, y - 8, 22, 16, None, T.group_stroke, radius=4, width=1, dash="sysDot")
     elif key == "line":
         polyline(slide, [(x, y), (x + 20, y)])
     elif key == "dashed":
         polyline(slide, [(x, y), (x + 20, y)], dashed=True)
     elif key == "step":
-        box(slide, MSO_SHAPE.OVAL, x + 2, y - 9, 18, 18, INK)
-        text(slide, x + 2, y - 9, 18, 18, [{"text": "1", "size": 10.5, "bold": True, "colour": "#FFFFFF"}], anchor="middle", wrap_text=False)
+        box(slide, MSO_SHAPE.OVAL, x + 2, y - 9, 18, 18, T.ink)
+        text(slide, x + 2, y - 9, 18, 18, [{"text": "1", "size": 10.5, "bold": True, "colour": T.paper}], anchor="middle", wrap_text=False)
 
 
 # --------------------------------------------------------------------------------------------------------- main ---
@@ -1596,17 +1651,19 @@ def main(argv: list[str]) -> int:
     model["index_file"] = model.get("pages", {}).get("index", f"{page_prefix}index.md")
 
     icons = Icons()
-    by_id = {v["id"]: v for v in model["views"]}
     outputs: dict[Path, str] = {}
     warnings: list[str] = []
-    for view in model["views"]:
-        svg, warn = render_svg(model, view, icons, by_id)
-        outputs[svg_dir / f"{view['id']}.svg"] = svg
-        warnings += warn
-        if model.get("pages", {}).get("write", True):
-            outputs[page_dir / view["page_file"]] = render_page(model, view, root, page_dir, svg_dir)
-    outputs[svg_dir / "index.svg"] = render_index(model)
+    for theme in THEMES:
+        use_theme(theme)
+        for view in model["views"]:
+            svg, warn = render_svg(model, view, icons)
+            outputs[svg_dir / themed(f"{view['id']}.svg")] = svg
+            if theme == "dark":
+                warnings += warn
+    use_theme("dark")
     if model.get("pages", {}).get("write", True):
+        for view in model["views"]:
+            outputs[page_dir / view["page_file"]] = render_page(model, view, root, page_dir, svg_dir)
         outputs[page_dir / model["index_file"]] = render_index_page(model, root, page_dir, svg_dir)
 
     for warning in warnings:
@@ -1631,8 +1688,11 @@ def main(argv: list[str]) -> int:
             handle.write(text)
     deck_file = model.get("deck", {}).get("file")
     if deck_file and not args.no_pptx:
-        render_deck(model, icons, base / deck_file)
-    print(f"rendered {len(model['views'])} views of {model_path.name}: {len(outputs)} files" + ("" if args.no_pptx or not deck_file else " and the deck"))
+        for theme in THEMES:
+            use_theme(theme)
+            render_deck(model, icons, base / themed(deck_file))
+        use_theme("dark")
+    print(f"rendered {len(model['views'])} views of {model_path.name}: {len(outputs)} files" + ("" if args.no_pptx or not deck_file else " and the dark and light decks"))
     return 0
 
 
