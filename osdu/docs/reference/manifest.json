@@ -19,7 +19,6 @@
         "eu ai act"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-concept-ai-features",
         "delivery-concept-eu-ai-act",
         "delivery-c4-mcp-server"
@@ -49,7 +48,6 @@
         "change detection"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-containers",
         "delivery-concept-ledger",
         "delivery-concept-submissions"
@@ -80,7 +78,6 @@
         "ingestion database"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-system-context",
         "delivery-concept-architecture"
       ],
@@ -109,7 +106,6 @@
         "reconcile"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-containers",
         "delivery-concept-control-plane"
       ],
@@ -138,7 +134,6 @@
         "keda"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-containers",
         "delivery-guide-deployment"
       ],
@@ -167,7 +162,6 @@
         "pinned commit"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-containers",
         "delivery-flow-repository"
       ],
@@ -193,7 +187,6 @@
         "estate mode"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-ai-usage",
         "delivery-guide-mcp"
       ],
@@ -202,32 +195,6 @@
         "osdu/hosts/osdu-delivery-mcp/src/instructions.rs",
         "osdu/hosts/osdu-delivery-mcp/src/docs.rs",
         "osdu/hosts/osdu-delivery-mcp/src/support.rs"
-      ]
-    },
-    {
-      "id": "delivery-c4-model",
-      "corpus": "reference",
-      "path": "architecture/c4-model.md",
-      "title": "Architecture diagrams: OSDU Delivery in the C4 model",
-      "type": "concept",
-      "summary": "The C4 diagrams of OSDU Delivery: system context, containers, components, the paths of a record, a question and a commit, and the Azure deployment.",
-      "keywords": [
-        "c4 model",
-        "architecture diagrams",
-        "system context",
-        "container diagram",
-        "component diagram",
-        "deployment diagram",
-        "dynamic diagram"
-      ],
-      "related": [
-        "delivery-concept-architecture",
-        "delivery-concept-overview",
-        "delivery-concept-ai-features"
-      ],
-      "sourceRefs": [
-        "tools/c4/render.py",
-        "osdu/deploy/terraform/main.tf"
       ]
     },
     {
@@ -247,7 +214,6 @@
         "delegated token"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-c4-ai-usage",
         "delivery-concept-ai-features",
         "delivery-guide-mcp"
@@ -275,7 +241,6 @@
         "ing flow"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-concept-overview",
         "delivery-concept-ledger",
         "delivery-concept-record-lifecycle"
@@ -302,7 +267,6 @@
         "osdu platform"
       ],
       "related": [
-        "delivery-c4-model",
         "delivery-concept-overview",
         "delivery-c4-containers"
       ],
