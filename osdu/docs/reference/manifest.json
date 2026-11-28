@@ -4249,7 +4249,7 @@
       "path": "concepts/template-versions.md",
       "title": "Comparing template versions: what changed between two versions of a kind, and what moving a mapping takes",
       "type": "concept",
-      "summary": "Compare two versions of an OSDU kind from any releases, and take a report of what moving a mapping from one to the other breaks, synced mappings included.",
+      "summary": "Compare two versions of an OSDU kind, each change weighed against what the synced mappings write, and take a report of what moving a mapping means.",
       "keywords": [
         "compare versions",
         "compare templates",
@@ -4258,12 +4258,17 @@
         "breaking change",
         "additive change",
         "wording change",
+        "significant change",
+        "minor change",
+        "in use",
+        "deprecated",
         "move a mapping",
         "upgrade a mapping",
         "newer version of a kind",
         "migration report",
         "what breaks",
         "report",
+        "html report",
         "copy as markdown",
         "shared schema",
         "browse osdu"
@@ -4275,12 +4280,15 @@
         "delivery-concept-preflight",
         "delivery-cli-template",
         "delivery-guide-writing-a-mapping",
-        "delivery-concept-api"
+        "delivery-concept-api",
+        "delivery-concept-mapping-overview"
       ],
       "sourceRefs": [
         "osdu/src/SqlFlow.Delivery/Templates/TemplateComparison.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateChangeAdvice.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateDeprecation.cs",
         "osdu/src/SqlFlow.Delivery/Templates/TemplateMoveReport.cs",
+        "osdu/src/SqlFlow.Delivery/Templates/TemplateMoveReport.Html.cs",
         "osdu/src/SqlFlow.Delivery/Validation/MappingMove.cs",
         "osdu/src/SqlFlow.Delivery/Validation/MappingCoverage.cs",
         "osdu/src/SqlFlow.Delivery.ControlPlane/Api/DeliveryTemplateEndpoints.Compare.cs",
