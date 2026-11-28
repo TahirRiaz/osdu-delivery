@@ -1,6 +1,6 @@
 # The C4 model of OSDU Delivery: every element once, and the views that place them.
 #
-# Render the diagrams, the pages beside this file and the deck with:
+# Render the diagrams (dark, and light as <view>-light.svg), the pages beside this file and the two decks with:
 #   python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml
 # Each view places its elements by their centre on a 1600 x 900 canvas: [x, y] or [x, y, width, height]. Relationships
 # route orthogonally between the boxes they join, or along the sides and waypoints they name (tools/c4/README.md).
@@ -17,32 +17,24 @@ footer: "OSDU Delivery, powered by SQLFlow"
 pages:
   frontmatter: true
   dir: .
-  index: c4-model.md
+  index: README.md
 indexTitle: "OSDU Delivery in the C4 model"
+indexShort: Architecture diagrams
 indexDescription: "Each view answers one question, from the product's place among people and systems down to the components inside each container, how a record, a question and a commit move, and how it is deployed."
 indexPage:
-  id: delivery-c4-model
   title: "Architecture diagrams: OSDU Delivery in the C4 model"
-  type: concept
-  summary: "The C4 diagrams of OSDU Delivery: system context, containers, components, the paths of a record, a question and a commit, and the Azure deployment."
-  keywords: [c4 model, architecture diagrams, system context, container diagram, component diagram, deployment diagram, dynamic diagram]
-  related: [delivery-concept-architecture, delivery-concept-overview, delivery-concept-ai-features]
-  sourceRefs: [tools/c4/render.py, osdu/deploy/terraform/main.tf]
   intro: |
-    OSDU Delivery drawn in the [C4 model](https://c4model.com): a system context, the containers inside it, the components
-    inside the three containers that hold its logic, three dynamic views of how a record, a question and a commit move
-    through them, and the deployment the Terraform in `osdu/deploy/terraform` creates on Azure. Every diagram follows the
-    notation's checklist: a title naming the diagram's type and scope, every element with its name, its type and
-    technology and what it does, every line with what it does and how, and a key to every colour, shape, icon, border and
-    line style it uses.
+    OSDU Delivery drawn in the [C4 model](https://c4model.com): who uses it and what it relies on, the containers it runs
+    as, the components inside the three that hold its logic, how a record, a question and a commit move through them,
+    and what the Terraform in `osdu/deploy/terraform` creates on Azure. Start with the system context and read down the
+    list. On every page, the line on top leads to the start, the views it zooms out of and the views it zooms into; the
+    line at its foot leads to the view before and after it here.
 
-    The diagrams, these pages and the deck are drawn from one model,
-    [c4-model.yaml](c4-model.yaml), by [tools/c4/render.py](../../../../tools/c4/render.py): an element is described once
-    and every view that shows it shows the same thing. Change the model and render again; never edit an SVG or a page by
-    hand. How the module meets SQLFlow underneath is [the architecture page](../concepts/architecture.md).
-  body: |
-    A view marked *view inside* on an element links to the view of what is inside it: on these pages through the tables,
-    in the SVG files when they are opened on their own, and on the slides by a click.
+    Every diagram follows the [C4 notation checklist](https://c4model.com/diagrams/checklist): a title naming its type
+    and scope, every element with its name, its type and technology and what it does, every line with what it does and
+    how, and a key to every colour, shape, icon, border and line style it uses. The diagrams are dark; each page links
+    its light version, and the deck comes in both. How the module meets SQLFlow underneath is
+    [the architecture page](../concepts/architecture.md).
   seeAlso:
     - {title: "Architecture: the OSDU module on SQLFlow", path: osdu/docs/reference/concepts/architecture.md}
     - {title: "AI in OSDU Delivery", path: osdu/docs/reference/concepts/ai-features.md}
@@ -499,6 +491,7 @@ elements:
 views:
   # ================================================================================================ LEVEL 1 ===
   - id: system-context
+    short: System context
     column: 0
     tag: "C4 LEVEL 1 · SYSTEM CONTEXT"
     title: System Context diagram for OSDU Delivery
@@ -508,7 +501,7 @@ views:
       id: delivery-c4-system-context
       summary: "OSDU Delivery in its surroundings: the people who build, run and administer an estate, the source systems, the OSDU platform and what it relies on."
       keywords: [c4 model, system context, architecture diagram, external systems, actors, osdu platform]
-      related: [delivery-c4-model, delivery-concept-overview, delivery-c4-containers]
+      related: [delivery-concept-overview, delivery-c4-containers]
       sourceRefs: [osdu/hosts/SqlFlow.Delivery.ControlPlane.Host/Program.cs, osdu/deploy/terraform/main.tf]
     elements:
       repo: [175, 245, 255, 165]
@@ -540,6 +533,7 @@ views:
 
   # ================================================================================================ LEVEL 2 ===
   - id: containers
+    short: Containers
     column: 1
     up: system-context
     tag: "C4 LEVEL 2 · CONTAINERS"
@@ -552,7 +546,7 @@ views:
       id: delivery-c4-containers
       summary: "The containers of OSDU Delivery: the GUI, the VS Code extension, the CLI, the MCP server, the control plane, the compute nodes and the three stores."
       keywords: [c4 model, container diagram, control plane, compute node, mcp server, catalog database, ingestion database]
-      related: [delivery-c4-model, delivery-c4-system-context, delivery-concept-architecture]
+      related: [delivery-c4-system-context, delivery-concept-architecture]
       sourceRefs: [osdu/hosts/SqlFlow.Delivery.ControlPlane.Host/Program.cs, osdu/hosts/SqlFlow.Delivery.Worker.Host/Program.cs, osdu/hosts/SqlFlow.Delivery.Cli.Host/Program.cs, osdu/hosts/osdu-delivery-mcp/src/lib.rs, osdu/hosts/osdu-delivery-vscode/package.json]
     elements:
       developer: [400, 180, 180, 104]
@@ -602,6 +596,7 @@ views:
       is pinned to ([git integration](git-integration.md)).
 
   - id: ai-usage
+    short: AI paths
     column: 1
     up: containers
     tag: "C4 LEVEL 2 · AI USAGE"
@@ -614,7 +609,7 @@ views:
       id: delivery-c4-ai-usage
       summary: "Every path from OSDU Delivery to an AI model: the GUI assistant, Explain, voice, the MCP server, coding assistants, Slack and Anthropic, with their fences."
       keywords: [c4 model, ai usage, assistant, mcp server, ai context, azure ai foundry, eu ai act]
-      related: [delivery-c4-model, delivery-concept-ai-features, delivery-concept-eu-ai-act, delivery-c4-mcp-server]
+      related: [delivery-concept-ai-features, delivery-concept-eu-ai-act, delivery-c4-mcp-server]
       sourceRefs: [sqlflow/src/SqlFlow.Assistant/ResponsesApiGateway.cs, sqlflow/src/SqlFlow.Assistant/AnthropicGateway.cs, osdu/hosts/osdu-delivery-mcp/src/lib.rs, osdu/deploy/terraform/modules/ai-foundry/main.tf]
     elements:
       operator: [250, 180, 190, 104]
@@ -658,6 +653,7 @@ views:
 
   # ================================================================================================ LEVEL 3 ===
   - id: control-plane
+    short: Control plane
     column: 2
     up: containers
     tag: "C4 LEVEL 3 · COMPONENTS"
@@ -670,7 +666,7 @@ views:
       id: delivery-c4-control-plane
       summary: "The components of the control plane: REST API, node protocol, scheduler, repository sync, direct operations, assistant and the hosted services."
       keywords: [c4 model, component diagram, control plane, node protocol, repository sync, scheduler, reconcile]
-      related: [delivery-c4-model, delivery-c4-containers, delivery-concept-control-plane]
+      related: [delivery-c4-containers, delivery-concept-control-plane]
       sourceRefs: [osdu/src/SqlFlow.Delivery.ControlPlane/DeliveryControlPlaneModule.cs, osdu/src/SqlFlow.Delivery.ControlPlane/Background/ConfiguredRunDispatcher.cs, osdu/src/SqlFlow.Delivery/Engine/Operations/DeliveryOperations.cs, osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs]
     elements:
       gui: [155, 180, 210, 86]
@@ -724,6 +720,7 @@ views:
       [question](question.md) it answers.
 
   - id: compute-node
+    short: Compute node
     column: 2
     up: containers
     tag: "C4 LEVEL 3 · COMPONENTS"
@@ -736,7 +733,7 @@ views:
       id: delivery-c4-compute-node
       summary: "The components of a compute node: runtime, SQLFlow's flow engine, the OSDU executors, intake and change detection, renderer, routes and the ledger."
       keywords: [c4 model, component diagram, compute node, worker, renderer, routes, ledger, change detection]
-      related: [delivery-c4-model, delivery-c4-containers, delivery-concept-ledger, delivery-concept-submissions]
+      related: [delivery-c4-containers, delivery-concept-ledger, delivery-concept-submissions]
       sourceRefs: [osdu/hosts/SqlFlow.Delivery.Worker.Host/Program.cs, osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.cs, osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs, osdu/src/SqlFlow.Delivery/Engine/RenderResolver.cs, osdu/src/SqlFlow.Delivery/Protocols/DeliveryProtocol.cs, osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs]
     elements:
       cp: [180, 180, 200, 86]
@@ -780,6 +777,7 @@ views:
       catalog; the routes get OSDU tokens by client credentials from the partition's token endpoint.
 
   - id: mcp-server
+    short: MCP server
     column: 2
     up: containers
     tag: "C4 LEVEL 3 · COMPONENTS"
@@ -792,7 +790,7 @@ views:
       id: delivery-c4-mcp-server
       summary: "The components of the MCP server: its transports, the instructions and modes, the estate tools, the data tools and the documentation index."
       keywords: [c4 model, component diagram, mcp server, model context protocol, assistant tools, data mode, estate mode]
-      related: [delivery-c4-model, delivery-c4-ai-usage, delivery-guide-mcp]
+      related: [delivery-c4-ai-usage, delivery-guide-mcp]
       sourceRefs: [osdu/hosts/osdu-delivery-mcp/src/lib.rs, osdu/hosts/osdu-delivery-mcp/src/instructions.rs, osdu/hosts/osdu-delivery-mcp/src/docs.rs, osdu/hosts/osdu-delivery-mcp/src/support.rs]
     elements:
       ai_clients: [330, 195, 240, 90]
@@ -825,6 +823,7 @@ views:
 
   # ================================================================================================= DYNAMIC ===
   - id: record-delivery
+    short: A record delivered
     column: 3
     up: containers
     tag: "C4 DYNAMIC · DATA"
@@ -837,7 +836,7 @@ views:
       id: delivery-c4-record-delivery
       summary: "Numbered, the path a source row takes to OSDU: a file flow lands it, an ing flow keys it, a delivery flow renders, sends and records it."
       keywords: [c4 model, dynamic diagram, delivery flow, record lifecycle, ledger, change detection, pre flow, ing flow]
-      related: [delivery-c4-model, delivery-concept-overview, delivery-concept-ledger, delivery-concept-record-lifecycle]
+      related: [delivery-concept-overview, delivery-concept-ledger, delivery-concept-record-lifecycle]
       sourceRefs: [osdu/src/SqlFlow.Delivery/Engine/FlowRuntime.Deliver.cs, osdu/src/SqlFlow.Delivery/Engine/Intake/SubmissionIntake.cs, osdu/src/SqlFlow.Delivery/Ledger/ILedger.cs]
     elements:
       sources: [140, 250, 210, 96]
@@ -867,6 +866,7 @@ views:
       back and records `match`, `drifted` or `missing` ([submissions](../concepts/submissions.md)).
 
   - id: question
+    short: A question answered
     column: 3
     up: ai-usage
     tag: "C4 DYNAMIC · AI"
@@ -879,7 +879,7 @@ views:
       id: delivery-c4-question
       summary: "Numbered, how a ! question in the GUI chat is answered: a delegated run token, the model, the MCP tools, the column guard, and a read-only query on a node."
       keywords: [c4 model, dynamic diagram, assistant, data mode, ai context, prepare_query, delegated token]
-      related: [delivery-c4-model, delivery-c4-ai-usage, delivery-concept-ai-features, delivery-guide-mcp]
+      related: [delivery-c4-ai-usage, delivery-concept-ai-features, delivery-guide-mcp]
       sourceRefs: [sqlflow/src/SqlFlow.Assistant/ResponsesApiGateway.cs, osdu/hosts/osdu-delivery-mcp/src/lib.rs]
     elements:
       operator: [110, 290, 170, 120]
@@ -907,6 +907,7 @@ views:
       the ledger's bookkeeping and the module's definitions, never a record's content or a source row.
 
   - id: git-integration
+    short: A commit synced
     column: 3
     up: containers
     tag: "C4 DYNAMIC · GIT"
@@ -919,7 +920,7 @@ views:
       id: delivery-c4-git-integration
       summary: "Numbered, how a commit reaches the runs: push, an external trigger proved by GitHub's OIDC token, a sync with the GitHub App, and the node's pinned checkout."
       keywords: [c4 model, dynamic diagram, git integration, github app, repository sync, external trigger, pinned commit]
-      related: [delivery-c4-model, delivery-c4-containers, delivery-flow-repository]
+      related: [delivery-c4-containers, delivery-flow-repository]
       sourceRefs: [osdu/deploy/terraform/main.tf, osdu/src/SqlFlow.Delivery/Catalog/DeliveryCatalogSync.cs]
     elements:
       developer: [130, 290, 180, 120]
@@ -955,6 +956,7 @@ views:
 
   # ============================================================================================== DEPLOYMENT ===
   - id: deployment-azure
+    short: Azure deployment
     column: 4
     up: containers
     tag: "C4 DEPLOYMENT · AZURE"
@@ -967,7 +969,7 @@ views:
       id: delivery-c4-deployment-azure
       summary: "The Azure deployment the Terraform creates: four container apps, Azure SQL with two databases, ADLS Gen2, Key Vault, AI Foundry, identities and their grants."
       keywords: [c4 model, deployment diagram, azure container apps, terraform, azure sql, key vault, managed identity, keda]
-      related: [delivery-c4-model, delivery-c4-containers, delivery-guide-deployment]
+      related: [delivery-c4-containers, delivery-guide-deployment]
       sourceRefs: [osdu/deploy/terraform/main.tf, osdu/deploy/terraform/modules/worker/main.tf, osdu/deploy/terraform/modules/mcp/main.tf, osdu/deploy/terraform/modules/ai-foundry/main.tf, osdu/deploy/terraform/modules/entra-app/main.tf]
     elements:
       mcp: {at: [145, 305], size: [190, 100], desc: "/mcp; optional.", badge: "1 replica"}

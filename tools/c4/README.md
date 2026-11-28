@@ -1,16 +1,17 @@
 # C4 diagrams from one model
 
-`render.py` draws a C4 architecture model, one YAML file, into one SVG per view, a Markdown page per view and a
-PowerPoint deck. Every element is described once in the model and every view that places it draws the same thing, so a
-system context, its containers, their components, the dynamic views and the deployment cannot disagree.
+`render.py` draws a C4 architecture model, one YAML file, into one SVG per view, a Markdown page per view, a start page
+that lists them, and a PowerPoint deck. Every element is described once in the model and every view that places it draws
+the same thing, so a system context, its containers, their components, the dynamic views and the deployment cannot
+disagree.
 
 The product's model is [osdu/docs/reference/architecture/c4-model.yaml](../../osdu/docs/reference/architecture/c4-model.yaml),
-and its pages start at [c4-model.md](../../osdu/docs/reference/architecture/c4-model.md). An estate repository can keep a
-model of its own and render it with this script.
+and its start page is [README.md](../../osdu/docs/reference/architecture/README.md) beside it. An estate repository can
+keep a model of its own and render it with this script.
 
 ```bash
-python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml            # SVGs, pages and the deck
-python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml --no-pptx  # without the deck
+python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml            # SVGs, pages and the decks
+python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml --no-pptx  # without the decks
 python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml --check    # exit 1 when an SVG or page is stale
 python tools/c4/render.py osdu/docs/reference/architecture/c4-model.yaml --strict   # fail on any layout warning
 ```
@@ -20,12 +21,28 @@ outputs name, so render on Windows (or a machine with Segoe UI installed) to rep
 elsewhere it measures with Arial or DejaVu Sans and wraps a little differently. After rendering a reference page, rebuild
 the manifest and run the MCP server's tests ([osdu/docs/reference/README.md](../../osdu/docs/reference/README.md#maintenance)).
 
+## Dark and light
+
+Every SVG and the deck are drawn twice. The dark theme is the default and takes the plain name (`containers.svg`,
+`osdu-delivery-c4.pptx`); the light theme adds `-light` before the extension (`containers-light.svg`,
+`osdu-delivery-c4-light.pptx`). The elements keep C4's blues in both, so a view reads the same in either; the canvas,
+the text, the lines and the frames change. A page shows the dark SVG and links the light one under it.
+
+## The pages
+
+The start page (`pages.index`, `README.md` so a folder opens on it) says what the diagrams are, lists every view in the
+model's order with its level and the question it answers, and links the deck, the SVGs, the model and this renderer. A
+view's page has one line of navigation on top (the start page, the views it zooms out of, the view itself, and the views
+its elements zoom into) and the views before and after it at its foot. Below the diagram come its numbered steps (a
+dynamic view), every element it shows with its reference page, and every relationship.
+
 ## The model
 
 | Key | What it holds |
 | --- | --- |
 | `elements` | Every person, software system, container, component and infrastructure node, by id: `kind` (`person`, `system`, `external`, `container`, `component`, `infra`), `name`, `tech`, `description` (what the diagrams show, two or three lines), `brief` (one line, for dense views), `detail` (the full text, for the pages and the speaker notes), `shape` (`box`, `cylinder`, `folder`, `browser`, `terminal`), `icon`, `tags` (`ai` marks what calls or serves a model), `zoom` (the view of its inside) and `ref` (the page that documents it) |
-| `views` | Each view: its `tag`, `title` (the diagram's type and scope, as C4 asks), `description`, the `page` frontmatter, the `elements` it places, its `boundaries` and its `relationships`. `up` names the view it zooms out to |
+| `views` | Each view, in the start page's order: its `tag`, `title` (the diagram's type and scope, as C4 asks), `short` (its name in a line of links), `teaser` (the question it answers, on the start page), `description`, the `page` frontmatter, the `elements` it places, its `boundaries` and its `relationships`. `up` names the view it zooms out to |
+| `pages` | `frontmatter` (write the reference corpus's frontmatter on each view's page), `dir`, and `index`, the start page's file. `indexPage` holds the start page's `title`, `intro` and `seeAlso`, and `indexShort` its name in a line of links |
 
 A view places each element by its centre on a 1600 x 900 canvas, `[x, y]` or `[x, y, width, height]`, or as
 `{at, size, desc, badge, brief}` to give it this view's own text or badge. `compact: true` draws cards (the icon beside
